@@ -236,12 +236,7 @@
 
   /* Card surfaces */
   --card-bg: linear-gradient(180deg, rgba(22, 28, 37, 0.98) 0%, rgba(16, 21, 29, 0.98) 100%);
-  --card-merge-bg: linear-gradient(
-    180deg,
-    rgba(22, 29, 38, 0.98) 0%,
-    rgba(17, 23, 31, 0.98) 58%,
-    rgba(14, 19, 27, 0.98) 100%
-  );
+  --card-merge-bg: rgba(17, 23, 31, 0.98);
   --card-expanded-bg: linear-gradient(
     180deg,
     rgba(26, 34, 45, 0.98) 0%,
