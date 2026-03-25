@@ -17,7 +17,8 @@ export default async function PullRequestsRoute(props: {
   searchParams: Promise<{ project?: string }>;
 }) {
   const searchParams = await props.searchParams;
-  const pageData = await getDashboardPageData(searchParams.project);
+  const projectFilter = resolveDashboardProjectFilter(searchParams.project);
+  const pageData = await getDashboardPageData(projectFilter);
 
   return (
     <PullRequestsPage
