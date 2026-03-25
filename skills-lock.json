@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "architecture-audit": {
+      "source": "harshitsinghbhandari/domain-expansion",
+      "sourceType": "github",
+      "computedHash": "4df0ce4bf1c9a51b93c9ce8db524a1a03e133870006743f30e19ea81ac59a264"
+    }
+  }
+}
