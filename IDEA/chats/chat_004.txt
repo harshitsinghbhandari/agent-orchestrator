@@ -1,0 +1,352 @@
+## Part 1: The foundation — what is information?
+
+Shannon's starting question in 1948 was deceptively simple: **what is the minimum number of bits needed to communicate a message?** Not how to communicate it — just the theoretical floor.
+
+His insight was that information content is inversely related to probability. If I tell you "the sun rose this morning," I've communicated almost nothing — you already expected it. If I tell you "the server caught fire at 3am," I've communicated a lot — you didn't expect it. **Information is surprise.**
+
+Formally, the **self-information** of an event x with probability p(x):
+
+```
+I(x) = -log₂ p(x)    [measured in bits]
+```
+
+If p(x) = 1 (certain), I(x) = 0. Zero surprise, zero information.
+If p(x) = 0.5 (coin flip), I(x) = 1 bit.
+If p(x) = 0.01 (rare event), I(x) ≈ 6.64 bits.
+
+---
+
+### Shannon entropy
+
+Entropy H(X) is the *expected* information content of a random variable — the average surprise across all possible outcomes:
+
+```
+H(X) = -Σ p(x) · log₂ p(x)
+```
+
+A fair coin has H = 1 bit. A biased coin (90% heads) has H ≈ 0.47 bits — less surprise on average because you mostly know what's coming. A uniform distribution over 256 outcomes has H = 8 bits — maximum entropy, maximum uncertainty.
+
+Entropy is the theoretical minimum average bits needed to encode X. No compression scheme can do better. This is Shannon's source coding theorem.
+
+---
+
+### Joint entropy and conditional entropy
+
+**Joint entropy** H(X, Y) is the entropy of two variables together — the uncertainty of the pair:
+
+```
+H(X,Y) = -Σₓ Σᵧ p(x,y) · log₂ p(x,y)
+```
+
+**Conditional entropy** H(X|Y) is the remaining uncertainty about X after you know Y:
+
+```
+H(X|Y) = H(X,Y) - H(Y)
+```
+
+If X and Y are independent, knowing Y tells you nothing: H(X|Y) = H(X).
+If Y completely determines X, knowing Y eliminates all uncertainty: H(X|Y) = 0.
+
+---
+
+### Mutual information — the core concept
+
+**Mutual information** I(X;Y) is how much knowing Y reduces uncertainty about X:
+
+```
+I(X;Y) = H(X) - H(X|Y)
+       = H(X) + H(Y) - H(X,Y)
+       = H(Y) - H(Y|X)
+```
+
+It's symmetric: knowing Y about X gives you the same reduction as knowing X about Y. It's always non-negative. It's zero iff X and Y are completely independent.
+
+This is the formal definition of *relevance*. If X is the agent's output and Y is a context chunk, I(X;Y) is exactly how relevant that chunk is — how much it reduces uncertainty about what the agent will produce.---
+see chats/information_theory_venn.svg
+
+## Part 2: KL divergence and cross-entropy
+
+These are two more tools you need before the APEX application makes full sense.
+
+**KL divergence** (Kullback-Leibler divergence) measures how different one probability distribution is from another:
+
+```
+D_KL(P || Q) = Σ p(x) · log₂(p(x) / q(x))
+```
+
+It answers: "if I assumed the world follows distribution Q, but it actually follows P, how many extra bits am I wasting per symbol?" It's not symmetric — D_KL(P||Q) ≠ D_KL(Q||P). It's always non-negative. Zero iff P = Q.
+
+**Cross-entropy** H(P, Q) is the total bits needed to encode events from P using a code optimized for Q:
+
+```
+H(P, Q) = -Σ p(x) · log₂ q(x)
+         = H(P) + D_KL(P || Q)
+```
+
+Cross-entropy = true entropy + waste from distributional mismatch. This is what neural networks minimize during training — reducing the gap between predicted distribution Q and true distribution P. It appears directly in APEX's context relevance model.
+
+---
+
+## Part 3: Kolmogorov complexity — the algorithmic view
+
+Shannon entropy is about *ensembles* — probability distributions over many symbols. But often you have a single string — one piece of code, one task description — and you want to know its information content without a probability distribution.
+
+**Kolmogorov complexity** K(x) of a string x is the length of the shortest program that produces x:
+
+```
+K(x) = min { |p| : U(p) = x }
+```
+
+Where U is a universal Turing machine and |p| is the program's length in bits. It's the most compact possible description of x — its irreducible information content.
+
+Key properties: K(x) ≤ |x| + c (you can always just output x literally, with small overhead). K(x) is uncomputable in general (you can't always find the shortest program). But it's *approximable* by real compressors. gzip, zstd, brotli are all lower-bound approximations of K — they find short descriptions without guaranteeing the shortest.
+
+**Conditional Kolmogorov complexity** K(x|y) is the length of the shortest program that produces x *given* y as free input. If x and y share a lot of structure, K(x|y) << K(x) — knowing y dramatically shortens the description of x.
+
+The algorithmic mutual information between x and y:
+
+```
+I(x;y) = K(x) - K(x|y)   [approximately]
+```
+
+How much does knowing y shorten the description of x? That's the shared information — the algorithmic analog of Shannon mutual information, but for individual strings rather than distributions.
+
+---
+
+## Part 4: Normalized Compression Distance
+
+The practical tool derived from Kolmogorov complexity. NCD gives you a similarity metric between any two strings using a real compressor as a proxy for K:
+
+```
+NCD(x, y) = (C(xy) - min(C(x), C(y))) / max(C(x), C(y))
+```
+
+Where C(x) is the compressed size of x, and C(xy) is the compressed size of x and y concatenated. The intuition: if x and y share structure, the compressor can use patterns from x to compress y — so C(xy) < C(x) + C(y). The more shared structure, the lower NCD.
+
+NCD = 0: identical information content.
+NCD = 1: completely unrelated.
+NCD is metric-like: symmetric, and approximately satisfies the triangle inequality.
+
+This works for *any* compressor, *any* data type, with no training required. It discovered mammal phylogeny from mitochondrial DNA. It clusters languages by syntactic similarity. It detects plagiarism. And it's exactly what L2 needs for code relevance scoring.
+
+---
+
+## Part 5: Rate-distortion theory — the full picture
+
+Now the framework that ties everything together for L2's context budget decisions.
+
+**The setup:** You have a source X (the full relevant context — every file, every artifact, every LSP graph node that could conceivably be useful). You have a channel capacity R (your context window token budget). You must compress X down to R tokens. The compression introduces distortion — some relevant information is lost. The question: *what is the minimum distortion achievable at rate R?*
+
+The **rate-distortion function** D(R) answers this. It's a curve, always monotonically decreasing (more budget → less distortion), always convex (diminishing returns). Shannon proved this curve exists and is achievable — there always exists an optimal compression scheme for any (R, D) point on the curve.
+
+The distortion measure d(x, x̂) quantifies how bad it is to reconstruct x̂ when the true value was x. For APEX, distortion is task performance degradation — how much worse does the agent perform with a truncated context x̂ versus the full context x.
+
+**The rate-distortion theorem:** For a source X with rate-distortion function R(D), any compression scheme operating at rate R achieves distortion at least D(R). The bound is tight — there exist schemes that achieve it.
+
+The formal rate-distortion function:
+
+```
+R(D) = min_{p(x̂|x): E[d(x,x̂)] ≤ D} I(X; X̂)
+```
+
+Read: minimize the mutual information between source and reconstruction, subject to the constraint that average distortion stays below D. The mutual information here is the minimum description rate — how many bits you need to describe the compressed version well enough to stay within distortion budget D.
+
+**The critical shape — why it matters for APEX:**
+
+The curve has a *knee* — a region where small increases in rate (more tokens) give large reductions in distortion (much better agent performance), followed by a region of diminishing returns where more tokens barely help. Operating to the left of the knee wastes quality. Operating far to the right of the knee wastes tokens. The optimal operating point *is* the knee, and it shifts right as task complexity increases.---
+
+<style>
+  .mono { font-family: var(--font-mono, monospace); font-size: 11px; }
+  .region { opacity: 0.12; }
+</style>
+<svg width="100%" viewBox="0 0 680 460" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<!-- Axes -->
+<line x1="80" y1="360" x2="620" y2="360" stroke="var(--color-text-secondary)" stroke-width="0.8" fill="none" marker-end="url(#arrow)"/>
+<line x1="80" y1="360" x2="80" y2="40" stroke="var(--color-text-secondary)" stroke-width="0.8" fill="none" marker-end="url(#arrow)"/>
+
+<!-- Axis labels -->
+<text class="ts" x="350" y="398" text-anchor="middle">Rate R — context window tokens</text>
+<text class="ts" x="22" y="200" text-anchor="middle" transform="rotate(-90 22 200)">Distortion D — quality loss</text>
+
+<!-- Axis ticks -->
+<text class="ts" x="80" y="374" text-anchor="middle">0</text>
+<text class="ts" x="220" y="374" text-anchor="middle">25%</text>
+<text class="ts" x="350" y="374" text-anchor="middle">50%</text>
+<text class="ts" x="480" y="374" text-anchor="middle">75%</text>
+<text class="ts" x="610" y="374" text-anchor="middle">100%</text>
+
+<!-- Grid -->
+<line x1="220" y1="360" x2="220" y2="44" stroke="var(--color-border-tertiary)" stroke-width="0.4"/>
+<line x1="350" y1="360" x2="350" y2="44" stroke="var(--color-border-tertiary)" stroke-width="0.4"/>
+<line x1="480" y1="360" x2="480" y2="44" stroke="var(--color-border-tertiary)" stroke-width="0.4"/>
+<line x1="80" y1="280" x2="616" y2="280" stroke="var(--color-border-tertiary)" stroke-width="0.4"/>
+<line x1="80" y1="200" x2="616" y2="200" stroke="var(--color-border-tertiary)" stroke-width="0.4"/>
+<line x1="80" y1="120" x2="616" y2="120" stroke="var(--color-border-tertiary)" stroke-width="0.4"/>
+
+<!-- Region: under-budgeted (left of simple knee) -->
+<rect x="80" y="44" width="165" height="316" fill="#E24B4A" class="region"/>
+<text class="ts" x="163" y="390" text-anchor="middle" fill="#A32D2D">under-budgeted</text>
+
+<!-- Region: over-budgeted (right of complex knee) -->
+<rect x="455" y="44" width="160" height="316" fill="#1D9E75" class="region"/>
+<text class="ts" x="537" y="390" text-anchor="middle" fill="#0F6E56">over-budgeted</text>
+
+<!-- Curve A: simple bug fix -->
+<path d="M80 58 C120 62, 160 120, 210 230 C240 280, 290 330, 380 348 C460 358, 540 360, 616 360"
+      fill="none" stroke="#1D9E75" stroke-width="2"/>
+<text class="ts" x="612" y="354" fill="#1D9E75" text-anchor="end">simple fix</text>
+
+<!-- Curve B: module refactor -->
+<path d="M80 56 C110 58, 140 76, 180 110 C230 158, 300 230, 360 295 C410 335, 470 352, 616 358"
+      fill="none" stroke="#7F77DD" stroke-width="2"/>
+<text class="ts" x="612" y="340" fill="#7F77DD" text-anchor="end">module refactor</text>
+
+<!-- Curve C: arch refactor -->
+<path d="M80 54 C100 55, 120 62, 150 76 C200 102, 270 154, 350 220 C420 272, 500 318, 616 350"
+      fill="none" stroke="#D85A30" stroke-width="2"/>
+<text class="ts" x="612" y="326" fill="#D85A30" text-anchor="end">arch refactor</text>
+
+<!-- Knee A -->
+<circle cx="222" cy="238" r="6" fill="none" stroke="#1D9E75" stroke-width="1.5"/>
+<line x1="222" y1="238" x2="222" y2="360" stroke="#1D9E75" stroke-width="0.8" stroke-dasharray="4 3"/>
+<line x1="80" y1="238" x2="222" y2="238" stroke="#1D9E75" stroke-width="0.8" stroke-dasharray="4 3"/>
+<text class="mono" x="228" y="234" fill="#1D9E75">knee A ≈ 26%</text>
+
+<!-- Knee B -->
+<circle cx="360" cy="295" r="6" fill="none" stroke="#7F77DD" stroke-width="1.5"/>
+<line x1="360" y1="295" x2="360" y2="360" stroke="#7F77DD" stroke-width="0.8" stroke-dasharray="4 3"/>
+<line x1="80" y1="295" x2="360" y2="295" stroke="#7F77DD" stroke-width="0.8" stroke-dasharray="4 3"/>
+<text class="mono" x="366" y="291" fill="#7F77DD">knee B ≈ 52%</text>
+
+<!-- Knee C -->
+<circle cx="480" cy="310" r="6" fill="none" stroke="#D85A30" stroke-width="1.5"/>
+<line x1="480" y1="310" x2="480" y2="360" stroke="#D85A30" stroke-width="0.8" stroke-dasharray="4 3"/>
+<line x1="80" y1="310" x2="480" y2="310" stroke="#D85A30" stroke-width="0.8" stroke-dasharray="4 3"/>
+<text class="mono" x="486" y="306" fill="#D85A30">knee C ≈ 74%</text>
+
+<!-- Annotation: optimal operating point -->
+<rect x="86" y="48" width="178" height="52" rx="4" fill="none" stroke="var(--color-border-tertiary)" stroke-width="0.5" stroke-dasharray="3 2"/>
+<text class="ts" x="175" y="66" text-anchor="middle">operate at the knee</text>
+<text class="ts" x="175" y="82" text-anchor="middle">= PID setpoint from</text>
+<text class="ts" x="175" y="96" text-anchor="middle">L8 learned curves</text>
+</svg>
+
+
+## Part 6: The full APEX application — precisely
+
+Now we land all of this on L2 with surgical precision. There are four distinct problems information theory solves, each using a different tool from the framework.
+
+---
+
+### Problem 1: What is the right context budget for this task?
+
+**Tool: rate-distortion theory.**
+
+L2 needs to know — before assembling context — how many tokens to target for the current task. Not "fill the window" and not a fixed fraction. The optimal amount.
+
+L8 maintains empirical rate-distortion curves built from historical task executions. Every completed task contributes a data point: `(token_count_used, L6_quality_score, task_type, task_complexity_estimate)`. L8 bins these by task type and fits smooth curves using isotonic regression (preserving the monotone decreasing shape guaranteed by theory).
+
+At runtime, L3 classifies the incoming task — bug fix, module refactor, cross-module architectural change, new feature, test generation. L2 queries L8's curve for that class, finds the knee (maximum curvature point, computable analytically from the fitted curve), and sets that as the token budget target. This budget becomes the setpoint for the PID controller.
+
+The knee is found by maximizing the curvature κ of the D(R) curve:
+
+```
+κ(R) = |D''(R)| / (1 + D'(R)²)^(3/2)
+```
+
+The R at maximum κ is the optimal operating point — the token count where marginal returns on additional context start diminishing sharply. L8 computes this offline and caches it per task class.
+
+---
+
+### Problem 2: Which context chunks are most relevant?
+
+**Tool: Normalized Compression Distance.**
+
+L2 has a pool of candidates: SSA artifact versions in the context store, LSP graph fragments, file excerpts retrieved by L1. It needs to rank them by relevance to the current task.
+
+The task descriptor T is a structured string: task type + target files + natural language description + DAG node metadata. Each candidate chunk C is compressed independently: `compressed_size(C)`. Then each pair is compressed together: `compressed_size(T + C)`. NCD is:
+
+```
+NCD(T, C) = (compressed_size(T+C) - min(compressed_size(T), compressed_size(C)))
+            / max(compressed_size(T), compressed_size(C))
+```
+
+Chunks are ranked ascending by NCD — lowest NCD (most shared structure) admitted first. This catches things embedding similarity misses entirely: shared variable naming conventions, shared error handling patterns, shared architectural idioms, shared test structure. A function that uses the same unusual parameter ordering as the target function will compress together dramatically better than an unrelated function — and NCD will score it accordingly.
+
+**Implementation note:** Use zstd with a shared dictionary trained on your codebase. zstd's dictionary compression is fast enough (microseconds per chunk) and the shared dictionary makes cross-chunk compression more accurate — it already knows the codebase's common patterns and so the marginal compression from shared structure is more precisely measured.
+
+---
+
+### Problem 3: When is adding more context actually hurting?
+
+**Tool: Conditional entropy and information gain.**
+
+This is a subtler problem. Adding a context chunk C to an already-assembled context set S should be evaluated not by NCD(T, C) alone — that ignores what's already in S. If C is highly relevant to T but is almost a duplicate of something already in S, its *marginal* information contribution is near zero. You're wasting tokens on redundancy.
+
+The correct measure is **conditional information gain**:
+
+```
+IG(C | S, T) = I(T; C | S) = H(T | S) - H(T | S, C)
+```
+
+How much does adding C reduce uncertainty about T, *given that S is already in context?*
+
+In practice this is approximated via conditional NCD:
+
+```
+NCD(T, C | S) = (compressed_size(T+S+C) - compressed_size(T+S))
+                / compressed_size(C)
+```
+
+The numerator is the additional compression gained by adding C to an already-compressed (T+S) block. If C is redundant with S, this is near zero — zstd already captured that structure. If C adds genuinely new information, it compresses (T+S+C) substantially better than (T+S) alone.
+
+L2's admission loop should use conditional NCD, not plain NCD. The ranking is recomputed incrementally as each chunk is admitted — early high-relevance admissions change the marginal value of remaining candidates. This is a greedy approximation of the optimal subset selection problem, which is NP-hard in general but well-approximated greedily when the information gain function is submodular (which it is — adding more context to a large set gives diminishing returns, by the concavity of entropy).
+
+**Submodularity is the theoretical guarantee that greedy works.** The information gain function I(T; C | S) is submodular in S — adding C to a smaller context set S₁ gives at least as much gain as adding C to a larger set S₂ ⊇ S₁. This means the greedy algorithm (always admit the chunk with highest current conditional NCD) achieves at least (1 - 1/e) ≈ 63% of the optimal subset's information content. For a context assembly problem, this bound is tight enough to be practically optimal.
+
+---
+
+### Problem 4: Is the assembled context sufficient, or is L2 flying blind?
+
+**Tool: Entropy estimation on the task posterior.**
+
+Before dispatching to the agent, L2 can estimate *how uncertain the agent will be* given the assembled context. High residual entropy means the context is insufficient — the agent has too many equally plausible completions and will either hallucinate or produce low-confidence output. Low residual entropy means the context strongly constrains the solution space.
+
+The proxy is **cross-entropy between the assembled context and the task descriptor** under a lightweight language model (a small local model, not the full L0 model — this is a cheap signal, not a full inference):
+
+```
+H(T, S) = -Σ p_T(x) · log q_S(x)
+```
+
+Where p_T is the true distribution over task solutions and q_S is the distribution predicted by the context S. High cross-entropy means the context is a poor model of the task — L2 should either fetch more context or flag the task for L7 human review before dispatch.
+
+In practice: run a quick perplexity measurement of the task descriptor T under a context-conditioned small model. If perplexity is above a threshold (calibrated from L8 historical data — high perplexity → high L6 failure rate), L2 sends a `CONTEXT_INSUFFICIENT` signal on the event bus before the task dispatches. L3 can then decompose the task further (reducing scope reduces required context) or L7 can be invoked.
+
+This is the information-theoretic basis for L2 refusing to dispatch underprepared tasks — something currently missing from the APEX spec entirely.
+
+---
+
+### The complete L2 pipeline---
+see apex_l2_information_theory_pipeline.svg
+
+## What this gives APEX that the current spec lacks
+
+The current L2 spec describes "5-layer weighted context assembly (C1-C5)" with weights — but weights are heuristics, not principles. You tune them by intuition and they don't generalize across codebases or task types.
+
+The information-theoretic replacement gives you four things the weighted scheme cannot:
+
+**Theoretical guarantees.** The greedy conditional NCD algorithm is provably within 63% of optimal — not "probably good enough" but mathematically bounded. The rate-distortion knee is the provably optimal token budget for a given task class, not a guess.
+
+**Codebase agnosticism.** NCD with a zstd shared dictionary adapts to any codebase's idioms automatically during the dictionary training phase. C1-C5 weights need manual retuning per project.
+
+**A formal notion of context insufficiency.** The entropy gate gives L2 a principled reason to refuse dispatch — not a timeout or a heuristic retry limit. This directly serves your correctness-first priority.
+
+**Emergent redundancy detection.** Conditional NCD naturally suppresses duplicate information without explicitly deduplicating chunks. Two files that cover the same abstraction will have near-zero marginal conditional NCD — the greedy loop skips the second one automatically.
+
+The implementation path is concrete: zstd dictionary training runs once at project ingestion in L1, NCD scoring is microseconds per chunk, and the rate-distortion curve fitting is an L8 background job that improves continuously as the system runs more tasks.

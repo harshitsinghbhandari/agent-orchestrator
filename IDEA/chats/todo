@@ -1,0 +1,2 @@
+lazy evaluation - create the DAG lazily based on inputs
+dataflow, start the next nodes work automatically once the previous node is done
