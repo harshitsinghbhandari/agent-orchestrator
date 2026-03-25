@@ -37,6 +37,7 @@ import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
+import { TokenBucketRateLimiter } from "./rate-limiter.js";
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
 function parseDuration(str: string): number {
@@ -198,6 +199,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
 
+  const scmRateLimiter = new TokenBucketRateLimiter(10, 1);
+  const prStateCache = new Map<string, { state: PRState; timestamp: number }>();
+
+  async function getCachedPRState(scm: SCM, pr: any): Promise<PRState> {
+    const cacheKey = `${scm.name}:${pr.url}`;
+    const cached = prStateCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 30000) {
+      return cached.state;
+    }
+
+    await scmRateLimiter.acquire(1);
+    const state = await scm.getPRState(pr);
+    prStateCache.set(cacheKey, { state, timestamp: Date.now() });
+    return state;
+  }
+
   /** Check if idle time exceeds the agent-stuck threshold. */
   function isIdleBeyondThreshold(session: Session, idleTimestamp: Date): boolean {
     const stuckReaction = getReactionConfigForSession(session, "agent-stuck");
@@ -294,6 +311,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       !session.id.endsWith("-orchestrator")
     ) {
       try {
+        await scmRateLimiter.acquire(1);
         const detectedPR = await scm.detectPR(session, project);
         if (detectedPR) {
           session.pr = detectedPR;
@@ -311,21 +329,24 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // 4. Check PR state if PR exists
     if (session.pr && scm) {
       try {
-        const prState = await scm.getPRState(session.pr);
+        const prState = await getCachedPRState(scm, session.pr);
         if (prState === PR_STATE.MERGED) return "merged";
         if (prState === PR_STATE.CLOSED) return "killed";
 
         // Check CI
+        await scmRateLimiter.acquire(1);
         const ciStatus = await scm.getCISummary(session.pr);
         if (ciStatus === CI_STATUS.FAILING) return "ci_failed";
 
         // Check reviews
+        await scmRateLimiter.acquire(1);
         const reviewDecision = await scm.getReviewDecision(session.pr);
         if (reviewDecision === "changes_requested") return "changes_requested";
         if (reviewDecision === "approved" || reviewDecision === "none") {
           // Check merge readiness — treat "none" (no reviewers required)
           // the same as "approved" so CI-green PRs reach "mergeable" status
           // and fire the merge.ready event / approved-and-green reaction.
+          await scmRateLimiter.acquire(1);
           const mergeReady = await scm.getMergeability(session.pr);
           if (mergeReady.mergeable) return "mergeable";
           if (reviewDecision === "approved") return "approved";
@@ -561,10 +582,13 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return;
     }
 
-    const [pendingResult, automatedResult] = await Promise.allSettled([
-      scm.getPendingComments(session.pr),
-      scm.getAutomatedComments(session.pr),
-    ]);
+    await scmRateLimiter.acquire(1);
+    const results = await Promise.allSettled([scm.getPendingComments(session.pr)]);
+    const pendingResult = results[0];
+
+    await scmRateLimiter.acquire(1);
+    const resultsAuto = await Promise.allSettled([scm.getAutomatedComments(session.pr)]);
+    const automatedResult = resultsAuto[0];
 
     // null means "failed to fetch" — preserve existing metadata.
     // [] means "confirmed no comments" — safe to clear.

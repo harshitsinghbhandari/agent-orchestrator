@@ -55,6 +55,12 @@ export type { LifecycleManagerDeps } from "./lifecycle-manager.js";
 export { buildPrompt, BASE_AGENT_PROMPT } from "./prompt-builder.js";
 export type { PromptBuildConfig } from "./prompt-builder.js";
 
+export * from "./dag-executor.js";
+export * from "./dag-scheduler.js";
+export * from "./cost-tracker.js";
+export * from "./rate-limiter.js";
+export * from "./pid-controller.js";
+
 // Decomposer — LLM-driven task decomposition
 export {
   decompose,

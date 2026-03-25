@@ -26,6 +26,11 @@ export interface TaskNode {
   status: TaskStatus;
   lineage: string[]; // ancestor descriptions root→parent
   children: TaskNode[];
+  depends_on: string[];      // NEW: list of node_id strings this task depends on
+  inputs: string[];           // NEW: SSA-style artifact identifiers, e.g. "auth.py@v1"
+  outputs: string[];          // NEW: SSA-style artifact identifiers, e.g. "auth.py@v2"
+  risk_score?: number;        // NEW: 0.0 - 1.0 risk assessment
+  parallelizable?: boolean;   // NEW: can run concurrently with siblings
   result?: string;
   issueId?: string; // tracker issue created for this subtask
   sessionId?: string; // AO session working on this task
@@ -111,6 +116,37 @@ Respond with a JSON array of strings, each being a subtask description. Example:
 
 Nothing else — just the JSON array.`;
 
+const DEPENDENCY_SYSTEM = `You are a dependency analyzer and SSA artifact mapper for software subtasks. Given a list of subtasks and a codebase context, perform two actions:
+1. Identify which subtasks depend on which others.
+2. Determine the SSA (Static Single Assignment) style input and output artifacts for each subtask.
+   - Use the format \`filename@v{n}\` (e.g., \`auth.py@v1\`, \`main.ts@v2\`).
+   - Every modified file produces a new version number.
+   - A file consumed but not modified is just an input.
+
+Respond with a JSON object mapping task IDs to objects with \`depends_on\`, \`inputs\`, and \`outputs\` arrays.
+Example:
+{
+  "1.2": {
+    "depends_on": ["1.1"],
+    "inputs": ["auth.py@v1"],
+    "outputs": ["auth.py@v2"]
+  },
+  "1.3": {
+    "depends_on": ["1.1", "1.2"],
+    "inputs": ["auth.py@v2", "main.ts@v1"],
+    "outputs": ["main.ts@v2"]
+  }
+}
+Tasks with no dependencies should have an empty \`depends_on\` array.
+Only include real dependencies — do NOT make every task depend on the previous one.`;
+
+const RISK_SCORE_SYSTEM = `You are a risk assessor for software tasks. Evaluate the provided task description and return a risk score from 0.0 to 1.0.
+- 0.0 = Trivial (e.g. fixing a typo, updating a README)
+- 0.5 = Moderate (e.g. adding a standard endpoint, UI component)
+- 1.0 = High Risk (e.g. database migration, core logic rewrite, auth changes)
+
+Respond with ONLY the numeric score (e.g., 0.3). Nothing else.`;
+
 async function classifyTask(
   client: Anthropic,
   model: string,
@@ -157,6 +193,126 @@ async function decomposeTask(
   return subtasks;
 }
 
+export interface DependencyAnalysisResult {
+  depends_on: string[];
+  inputs: string[];
+  outputs: string[];
+}
+
+async function analyzeDependencies(
+  client: Anthropic,
+  model: string,
+  nodes: TaskNode[],
+  lineage: string[],
+  cycleInfo?: string
+): Promise<Record<string, DependencyAnalysisResult>> {
+  const nodeDescriptions = nodes.map(n => `${n.id}: ${n.description}`).join('\n');
+  let cycleConstraint = "";
+  if (cycleInfo) {
+    cycleConstraint = `\nThe following dependency graph contained a cycle: ${cycleInfo}. Remove the edge that is least critical.`;
+  }
+  const res = await client.messages.create({
+    model,
+    max_tokens: 1024,
+    system: DEPENDENCY_SYSTEM + cycleConstraint,
+    messages: [{ role: "user", content: `Lineage:\n${lineage.join(' > ')}\n\nSubtasks:\n${nodeDescriptions}` }],
+  });
+
+  const text = res.content[0].type === "text" ? res.content[0].text.trim() : "{}";
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return {};
+  }
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return {};
+  }
+}
+
+async function estimateRisk(
+  client: Anthropic,
+  model: string,
+  description: string,
+): Promise<number> {
+  // Use a fast model for this if possible, defaulting to the passed model
+  const res = await client.messages.create({
+    model: "claude-3-haiku-20240307", // Haiku-class model as spec'd
+    max_tokens: 10,
+    system: RISK_SCORE_SYSTEM,
+    messages: [{ role: "user", content: `Task: ${description}` }],
+  });
+
+  const text = res.content[0].type === "text" ? res.content[0].text.trim() : "0.5";
+  const score = parseFloat(text);
+  if (isNaN(score) || score < 0 || score > 1) {
+    return 0.5;
+  }
+  return score;
+}
+
+export function validateSSAInvariant(nodes: TaskNode[]): { valid: boolean; violations: string[] } {
+  const outputsCount: Record<string, number> = {};
+  for (const node of nodes) {
+    for (const out of node.outputs || []) {
+      outputsCount[out] = (outputsCount[out] || 0) + 1;
+    }
+  }
+
+  const violations: string[] = [];
+  for (const [artifact, count] of Object.entries(outputsCount)) {
+    if (count > 1) {
+      violations.push(`Artifact ${artifact} is output by multiple nodes (${count} times).`);
+    }
+  }
+
+  return { valid: violations.length === 0, violations };
+}
+
+export function validateDAG(nodes: TaskNode[]): { valid: boolean; cycle?: string[] } {
+  const inDegree: Record<string, number> = {};
+  const graph: Record<string, string[]> = {};
+
+  for (const node of nodes) {
+    inDegree[node.id] = 0;
+    graph[node.id] = [];
+  }
+
+  for (const node of nodes) {
+    for (const dep of node.depends_on) {
+      if (graph[dep]) {
+        graph[dep].push(node.id);
+        inDegree[node.id] = (inDegree[node.id] || 0) + 1;
+      }
+    }
+  }
+
+  const queue: string[] = [];
+  for (const id in inDegree) {
+    if (inDegree[id] === 0) queue.push(id);
+  }
+
+  let visitedCount = 0;
+  while (queue.length > 0) {
+    const u = queue.shift()!;
+    visitedCount++;
+    for (const v of graph[u]) {
+      inDegree[v]--;
+      if (inDegree[v] === 0) {
+        queue.push(v);
+      }
+    }
+  }
+
+  if (visitedCount !== nodes.length) {
+    // Has cycle, we could trace the cycle but returning the nodes involved is enough for the LLM
+    const cycleNodes = nodes.filter(n => inDegree[n.id] > 0).map(n => n.id);
+    return { valid: false, cycle: cycleNodes };
+  }
+
+  return { valid: true };
+}
+
 // =============================================================================
 // TREE OPERATIONS
 // =============================================================================
@@ -167,7 +323,17 @@ function createTaskNode(
   depth: number,
   lineage: string[],
 ): TaskNode {
-  return { id, depth, description, status: "pending", lineage, children: [] };
+  return {
+    id,
+    depth,
+    description,
+    status: "pending",
+    lineage,
+    children: [],
+    depends_on: [],
+    inputs: [],
+    outputs: []
+  };
 }
 
 /** Recursively decompose a task tree (planning phase — no execution). */
@@ -194,8 +360,50 @@ async function planTree(
     createTaskNode(`${task.id}.${i + 1}`, desc, task.depth + 1, childLineage),
   );
 
-  // Recurse on children concurrently
-  await Promise.all(task.children.map((child) => planTree(client, model, child, maxDepth)));
+  let valid = false;
+  let cycleInfo: string | undefined;
+  let retries = 0;
+
+  while (!valid && retries < 3) {
+    const deps = await analyzeDependencies(client, model, task.children, task.lineage, cycleInfo);
+    for (const child of task.children) {
+      const depInfo = deps[child.id];
+      if (depInfo) {
+        child.depends_on = depInfo.depends_on || [];
+        child.inputs = depInfo.inputs || [];
+        child.outputs = depInfo.outputs || [];
+      } else {
+        child.depends_on = [];
+        child.inputs = [];
+        child.outputs = [];
+      }
+    }
+    const validation = validateDAG(task.children);
+    valid = validation.valid;
+    if (!valid) {
+      cycleInfo = validation.cycle?.join(", ");
+      retries++;
+    }
+  }
+
+  // If we couldn't resolve the cycle after 3 retries, fallback to a sequential chain
+  if (!valid) {
+    for (let i = 0; i < task.children.length; i++) {
+      if (i > 0) {
+        task.children[i].depends_on = [task.children[i - 1].id];
+      } else {
+        task.children[i].depends_on = [];
+      }
+      task.children[i].inputs = [];
+      task.children[i].outputs = [];
+    }
+  }
+
+  // Recurse on children concurrently and compute risk scores
+  await Promise.all(task.children.map(async (child) => {
+    child.risk_score = await estimateRisk(client, model, child.description);
+    return planTree(client, model, child, maxDepth);
+  }));
 
   task.status = "ready";
   return task;

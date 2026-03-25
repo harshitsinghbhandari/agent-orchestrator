@@ -912,6 +912,9 @@ export interface OrchestratorConfig {
 
   /** Default reaction configs */
   reactions: Record<string, ReactionConfig>;
+
+  /** Plugins to dynamically load from npm or local paths */
+  plugins?: Array<{ package?: string; path?: string }>;
 }
 
 export interface DefaultPlugins {

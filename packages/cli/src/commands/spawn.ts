@@ -13,6 +13,7 @@ import {
   type OrchestratorConfig,
   type DecomposerConfig,
   DEFAULT_DECOMPOSER_CONFIG,
+  DAGExecutor,
 } from "@composio/ao-core";
 import { exec } from "../lib/shell.js";
 import { banner } from "../lib/format.js";
@@ -255,29 +256,18 @@ export function registerSpawn(program: Command): void {
               console.log(chalk.yellow("Task is atomic — spawning directly."));
               await spawnSession(config, projectId, issueId, opts.open, opts.agent, claimOptions);
             } else {
-              // Create child issues and spawn sessions with lineage context
               const sm = await getSessionManager(config);
-              console.log(chalk.bold(`Spawning ${leaves.length} sessions with lineage context...`));
+              console.log(chalk.bold(`Executing DAG with ${leaves.length} subtasks...`));
               console.log();
 
-              for (const leaf of leaves) {
-                const siblings = getSiblings(plan.tree, leaf.id);
-                try {
-                  const session = await sm.spawn({
-                    projectId,
-                    issueId, // All work on the same parent issue for now
-                    lineage: leaf.lineage,
-                    siblings,
-                    agent: opts.agent,
-                  });
-                  console.log(`  ${chalk.green("✓")} ${session.id} — ${leaf.description}`);
-                } catch (err) {
-                  console.error(
-                    `  ${chalk.red("✗")} ${leaf.description} — ${err instanceof Error ? err.message : err}`,
-                  );
-                }
-                await new Promise((r) => setTimeout(r, 500));
-              }
+              const executor = new DAGExecutor(plan, {
+                sessionManager: sm,
+                projectId,
+                issueId,
+                onNotify: (msg) => console.log(chalk.blue(`[DAG Executor] ${msg}`))
+              });
+
+              await executor.execute();
             }
           } else {
             await spawnSession(config, projectId, issueId, opts.open, opts.agent, claimOptions);

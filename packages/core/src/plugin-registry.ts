@@ -130,8 +130,34 @@ export function createPluginRegistry(): PluginRegistry {
       // Load built-ins with orchestrator config so plugins receive their settings
       await this.loadBuiltins(config, importFn);
 
-      // Then, load any additional plugins specified in project configs
-      // (future: support npm package names and local file paths)
+      const doImport = importFn ?? ((pkg: string) => import(pkg));
+      const pluginsToLoad: Array<{ package?: string; path?: string }> = (config as any).plugins || [];
+
+      for (const p of pluginsToLoad) {
+        try {
+          let mod: unknown;
+          if (p.package) {
+            mod = await doImport(p.package);
+          } else if (p.path) {
+            const resolvedPath = import("node:path").then(path => path.resolve(require("node:path").dirname(config.configPath || process.cwd()), p.path!));
+            mod = await doImport(await resolvedPath);
+          }
+
+          const pluginModule = mod as PluginModule;
+          if (pluginModule && pluginModule.manifest && typeof pluginModule.create === "function") {
+            const pluginConfig = extractPluginConfig(
+              pluginModule.manifest.slot,
+              pluginModule.manifest.name,
+              config
+            );
+            this.register(pluginModule, pluginConfig);
+          } else {
+            console.warn(`Warning: Plugin from ${p.package || p.path} does not conform to the PluginModule interface.`);
+          }
+        } catch (err) {
+          console.warn(`Warning: Failed to load plugin from ${p.package || p.path}:`, err);
+        }
+      }
     },
   };
 }
