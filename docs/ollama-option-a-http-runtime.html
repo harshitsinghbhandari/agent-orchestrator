@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama HTTP Runtime Plugin - Implementation Plan</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1e40af;
+            --secondary: #64748b;
+            --background: #f8fafc;
+            --surface: #ffffff;
+            --text: #1e293b;
+            --border: #e2e8f0;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--background);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            padding: 3rem 2rem;
+            text-align: center;
+            border-radius: 12px 12px 0 0;
+        }
+
+        .header h1 {
+            font-size: 2.25rem;
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 1.125rem;
+            opacity: 0.9;
+        }
+
+        /* Navigation */
+        .toc {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .toc h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .toc ul {
+            list-style: none;
+        }
+
+        .toc li {
+            margin-bottom: 0.5rem;
+        }
+
+        .toc a {
+            color: var(--primary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .toc a:hover {
+            color: var(--primary-dark);
+            text-decoration: underline;
+        }
+
+        /* Sections */
+        section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 2.5rem;
+            margin-bottom: 2rem;
+        }
+
+        section h2 {
+            font-size: 1.75rem;
+            margin-bottom: 1.5rem;
+            color: var(--primary);
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0.75rem;
+        }
+
+        section h3 {
+            font-size: 1.25rem;
+            margin: 1.5rem 0 0.75rem;
+            font-weight: 600;
+        }
+
+        section p, section li {
+            margin-bottom: 0.75rem;
+        }
+
+        /* Architecture Diagram Container */
+        .diagram-container {
+            background: #1e1e2e;
+            border-radius: 10px;
+            padding: 2rem;
+            overflow-x: auto;
+            margin: 1.5rem 0;
+        }
+
+        .diagram-container svg {
+            width: 100%;
+            height: auto;
+        }
+
+        /* Code Blocks */
+        .code-block {
+            background: #1e1e2e;
+            border-radius: 8px;
+            padding: 1.5rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+
+        .code-block pre {
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            color: #d4d4d4;
+            line-height: 1.5;
+        }
+
+        .code-keyword { color: #569cd6; }
+        .code-string { color: #ce9178; }
+        .code-type { color: #4ec9b0; }
+        .code-function { color: #dcdcaa; }
+        .code-comment { color: #6a9955; }
+
+        /* Comparison Table */
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .comparison-table th {
+            background: var(--background);
+            font-weight: 600;
+        }
+
+        .comparison-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Cards */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin: 1.5rem 0;
+        }
+
+        .card {
+            background: var(--background);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+
+        .card h4 {
+            margin-bottom: 0.75rem;
+            color: var(--primary);
+        }
+
+        /* Status Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-high { background: #fee2e2; color: #991b1b; }
+        .badge-medium { background: #fef3c7; color: #92400e; }
+        .badge-low { background: #d1fae5; color: #065f46; }
+
+        /* Checklist */
+        .checklist {
+            list-style: none;
+            margin: 1rem 0;
+        }
+
+        .checklist li {
+            display: flex;
+            align-items: start;
+            margin-bottom: 0.75rem;
+        }
+
+        .checklist li::before {
+            content: '';
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--primary);
+            border-radius: 4px;
+            margin-right: 10px;
+            margin-top: 2px;
+        }
+
+        .checklist.completed li::before {
+            background: var(--primary);
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M9 16.2l-4.2-4.2L1 14.2l4 4 8-8-1.5-1.5z'/%3E%3C/svg%3E");
+            background-size: 12px;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+
+        /* FAQ */
+        .faq {
+            margin: 1.5rem 0;
+        }
+
+        .faq-item {
+            margin-bottom: 1rem;
+        }
+
+        .faq-question {
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        /* Callout Boxes */
+        .callout {
+            padding: 1.25rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+
+        .callout-info {
+            background: #eff6ff;
+            border-left: 4px solid var(--primary);
+        }
+
+        .callout-warning {
+            background: #fffbeb;
+            border-left: 4px solid var(--warning);
+        }
+
+        .callout-success {
+            background: #f0fdf4;
+            border-left: 4px solid var(--success);
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--secondary);
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Ollama HTTP Runtime Plugin</h1>
+        <p>Option A: First-Class HTTP Runtime for Ollama Integration</p>
+    </div>
+
+    <div class="container">
+        <!-- Table of Contents -->
+        <nav class="toc">
+            <h3>On This Page</h3>
+            <ul>
+                <li><a href="#summary">Quick Summary</a></li>
+                <li><a href="#architecture">Architecture Overview</a></li>
+                <li><a href="#current-state">Current State</a></li>
+                <li><a href="#what-we-need">What We Need to Build</a></li>
+                <li><a href="#implementation">Implementation Details</a></li>
+                <li><a href="#file-changes">File Changes</a></li>
+                <li><a href="#foundation">Making the Foundation Strong</a></li>
+                <li><a href="#ui-ux">UI/UX Impact</a></li>
+                <li><a href="#tradeoffs">Tradeoffs & Considerations</a></li>
+                <li><a href="#faq">FAQ</a></li>
+            </ul>
+        </nav>
+
+        <!-- Quick Summary -->
+        <section id="summary">
+            <h2>Quick Summary</h2>
+            <p><strong>What this is:</strong> A new HTTP-based runtime plugin that treats Ollama as a first-class agent by communicating via REST API instead of spawning CLI processes.</p>
+
+            <div class="grid">
+                <div class="card">
+                    <h4>Core Concept</h4>
+                    <p>Replace process spawning with HTTP requests to Ollama's `/api/chat` endpoint.</p>
+                </div>
+                <div class="card">
+                    <h4>Key Benefit</h4>
+                    <p>Ollama becomes equally first-class as Claude, Codex, and other agents.</p>
+                </div>
+                <div class="card">
+                    <h4>Complexity</h4>
+                    <span class="badge badge-high">High</span>
+                    <p>New runtime pattern + new agent plugin</p>
+                </div>
+            </div>
+
+            <h3>What Changes for Users?</h3>
+            <ul>
+                <li><strong>Config changes:</strong> Users select <code>runtime: http</code> for Ollama sessions</li>
+                <li><strong>Launch command:</strong> No shell command needed - HTTP server handles everything</li>
+                <li><strong>Activity detection:</strong> Timing-based (last message age) instead of process state</li>
+                <li><strong>Session management:</strong> Full control via API - no tmux/process cleanup needed</li>
+            </ul>
+
+            <div class="callout callout-info">
+                <strong>TL;DR:</strong> Build a new HTTP runtime that talks to Ollama's API, plus a small agent plugin to adapt Ollama to the agent interface. This gives Ollama first-class status with proper streaming, tool calling, and session history.
+            </div>
+        </section>
+
+        <!-- Architecture Overview -->
+        <section id="architecture">
+            <h2>Architecture Overview</h2>
+
+            <h3>Current Architecture</h3>
+            <div class="diagram-container">
+<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#2563eb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e40af;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Agent Orchestrator -->
+  <rect x="20" y="20" width="760" height="120" rx="10" fill="url(#grad1)" opacity="0.1"/>
+  <text x="400" y="45" text-anchor="middle" fill="#1e293b" font-weight="bold" font-size="16">Agent Orchestrator</text>
+  <rect x="40" y="55" width="220" height="70" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="150" y="78" text-anchor="middle" font-weight="bold" font-size="14">Claude Agent</text>
+  <rect x="290" y="55" width="220" height="70" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="400" y="78" text-anchor="middle" font-weight="bold" font-size="14">Codex Agent</text>
+  <rect x="540" y="55" width="220" height="70" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="650" y="78" text-anchor="middle" font-weight="bold" font-size="14">Ollama Agent</text>
+
+  <!-- Arrows from agents to registry -->
+  <path d="M150 125 L400 150" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M400 125 L400 150" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M650 125 L400 150" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Plugin Registry -->
+  <rect x="320" y="150" width="160" height="60" rx="8" fill="#e0f2fe" stroke="#3b82f6"/>
+  <text x="400" y="183" text-anchor="middle" font-weight="bold" font-size="14" fill="#1e40af">Plugin Registry</text>
+
+  <!-- Runtime Slots -->
+  <rect x="60" y="230" width="150" height="100" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="135" y="250" text-anchor="middle" font-weight="bold" font-size="12" fill="#64748b">Runtime</text>
+  <rect x="80" y="260" width="110" height="30" rx="4" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="135" y="280" text-anchor="middle" font-size="12">tmux</text>
+  <rect x="80" y="295" width="110" height="30" rx="4" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="135" y="315" text-anchor="middle" font-size="12">process</text>
+
+  <!-- Arrows to runtime -->
+  <path d="M320 180 L135 230" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Arrow to Ollama server -->
+  <path d="M650 125 L700 125" stroke="#10b981" stroke-width="2"/>
+  <text x="675" y="120" text-anchor="middle" font-size="10" fill="#10b981">? HTTP</text>
+  <rect x="650" y="230" width="200" height="100" rx="6" fill="#f0fdf4" stroke="#34d399"/>
+  <text x="750" y="250" text-anchor="middle" font-weight="bold" font-size="12" fill="#059669">Ollama Server</text>
+  <rect x="660" y="260" width="180" height="50" rx="4" fill="#ffffff" stroke="#34d399"/>
+  <text x="750" y="285" text-anchor="middle" font-size="12" fill="#1e293b">localhost:11434</text>
+  <text x="750" y="300" text-anchor="middle" font-size="12" fill="#1e293b">/api/chat</text>
+</svg>
+            </div>
+
+            <h3>New Architecture (Option A)</h3>
+            <div class="diagram-container">
+<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#10b981"/>
+    </marker>
+  </defs>
+
+  <!-- Agent Orchestrator -->
+  <rect x="20" y="20" width="760" height="120" rx="10" fill="url(#grad2)" opacity="0.1"/>
+  <text x="400" y="45" text-anchor="middle" fill="#1e293b" font-weight="bold" font-size="16">Agent Orchestrator</text>
+  <rect x="40" y="55" width="220" height="70" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="150" y="78" text-anchor="middle" font-weight="bold" font-size="14">Claude Agent</text>
+  <rect x="290" y="55" width="220" height="70" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="400" y="78" text-anchor="middle" font-weight="bold" font-size="14">Codex Agent</text>
+  <rect x="540" y="55" width="220" height="70" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="650" y="78" text-anchor="middle" font-weight="bold" font-size="14">Ollama Agent</text>
+
+  <!-- Arrows from agents to registry -->
+  <path d="M150 125 L400 150" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M400 125 L400 150" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M650 125 L400 150" stroke="#10b981" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- Plugin Registry -->
+  <rect x="320" y="150" width="160" height="60" rx="8" fill="#e0f2fe" stroke="#3b82f6"/>
+  <text x="400" y="183" text-anchor="middle" font-weight="bold" font-size="14" fill="#1e40af">Plugin Registry</text>
+
+  <!-- Runtime Slots - NEW http runtime added -->
+  <rect x="60" y="230" width="150" height="140" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="135" y="250" text-anchor="middle" font-weight="bold" font-size="12" fill="#64748b">Runtime</text>
+  <rect x="80" y="260" width="110" height="30" rx="4" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="135" y="280" text-anchor="middle" font-size="12">tmux</text>
+  <rect x="80" y="295" width="110" height="30" rx="4" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="135" y="315" text-anchor="middle" font-size="12">process</text>
+  <rect x="80" y="330" width="110" height="30" rx="4" fill="#dcfce7" stroke="#86efac"/>
+  <text x="135" y="350" text-anchor="middle" font-size="12" fill="#059669">http (NEW)</text>
+
+  <!-- Arrow to http runtime -->
+  <path d="M320 180 L135 230" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M320 180 L135 330" stroke="#10b981" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- Ollama Server with HTTP connection -->
+  <rect x="380" y="230" width="200" height="100" rx="6" fill="#f0fdf4" stroke="#34d399"/>
+  <text x="480" y="250" text-anchor="middle" font-weight="bold" font-size="12" fill="#059669">Ollama HTTP Runtime</text>
+  <rect x="390" y="260" width="180" height="50" rx="4" fill="#ffffff" stroke="#34d399"/>
+  <text x="480" y="285" text-anchor="middle" font-size="12" fill="#1e293b">POST /api/chat</text>
+  <text x="480" y="300" text-anchor="middle" font-size="12" fill="#1e293b">Streaming responses</text>
+  <path d="M135 360 L135 380 L480 380 L480 340" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="300" y="395" text-anchor="middle" font-size="10" fill="#10b981">HTTP connections</text>
+</svg>
+            </div>
+        </section>
+
+        <!-- Current State -->
+        <section id="current-state">
+            <h2>Current State</h2>
+
+            <h3>How Agents Work Today</h3>
+            <p>Currently, the orchestrator supports 4 agents: Claude Code, Codex, Aider, and OpenCode. All of them share a common pattern:</p>
+
+            <div class="callout callout-info">
+                <strong>Agent Plugin:</strong> Adapts a specific AI tool to the agent interface.<br/>
+                <strong>Runtime Plugin:</strong> Determines HOW the agent session executes (tmux, process, etc.)
+            </div>
+
+            <h3>Runtime Plugins - What They Do</h3>
+            <div class="grid">
+                <div class="card">
+                    <h4><code>runtime-tmux</code></h4>
+                    <ul>
+                        <li>Creates tmux sessions</li>
+                        <li>Sends commands via <code>tmux send-keys</code></li>
+                        <li>Captures pane output</li>
+                        <li>Manages session lifecycle</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h4><code>runtime-process</code></h4>
+                    <ul>
+                        <li>Spawns child processes</li>
+                        <li>Captures stdout/stderr</li>
+                        <li>Manages process lifecycle</li>
+                        <li>Rolling buffer for output</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Agent Plugins - What They Do</h3>
+            <div class="card">
+                <h4>Agent Plugin Responsibilities</h4>
+                <ul>
+                    <li><code>getLaunchCommand(config)</code> - What shell command starts this agent?</li>
+                    <li><code>getEnvironment(config)</code> - Environment variables needed</li>
+                    <li><code>detectActivity(output)</code> - Is the agent working or idle?</li>
+                    <li><code>getActivityState(session)</code> - Native activity detection</li>
+                    <li><code>isProcessRunning(handle)</code> - Is the agent still alive?</li>
+                    <li><code>getSessionInfo(session)</code> - Extract summary, cost, session ID</li>
+                    <li><code>promptDelivery</code> - "inline" or "post-launch" for initial prompt</li>
+                </ul>
+            </div>
+
+            <h3>Current Ollama Situation</h3>
+            <div class="callout callout-warning">
+                <strong>No Ollama integration exists yet.</strong> Options considered:
+                <ol>
+                    <li><strong>Process Runtime + CLI wrapper:</strong> Treat Ollama CLI like Claude CLI - spawn as process</li>
+                    <li><strong><em>HTTP Runtime + API client:</em></strong> <em>Option A: Native HTTP integration</em></li>
+                </ol>
+            </div>
+        </section>
+
+        <!-- What We Need -->
+        <section id="what-we-need">
+            <h2>What We Need to Build</h2>
+
+            <h3>New Package Structure</h3>
+            <div class="code-block">
+<pre><code><span class="code-comment"># New package location</span>
+packages/plugins/
+<span class="code-comment"># Existing runtimes...</span>
+<span class="code-comment"># Existing agents...</span>
+<span class="code-comment"># NEW:</span>
+<span class="code-type">runtime-http/</span>           <span class="code-comment"># HTTP-based runtime plugin</span>
+  <span class="code-type">package.json</span>
+  <span class="code-type">src/</span>
+    <span class="code-type">index.ts</span>           <span class="code-comment"># ~150-200 lines</span>
+
+<span class="code-type">agent-ollama/</span>           <span class="code-comment"># Ollama-specific agent plugin</span>
+  <span class="code-type">package.json</span>
+  <span class="code-type">src/</span>
+    <span class="code-type">index.ts</span>           <span class="code-comment"># ~300-400 lines</span></span></pre>
+            </div>
+
+            <h3>Two New Plugins</h3>
+
+            <h4>1. Runtime Plugin (<code>runtime-http</code>)</h4>
+            <p><em>What it is:</em> A generic HTTP runtime that manages HTTP connections to any HTTP-based agent server.</p>
+
+            <div class="code-block">
+<pre><code><span class="code-keyword">interface</span> HttpRuntimeConfig {
+  <span class="code-property">baseUrl</span>: <span class="code-type">string</span>;           <span class="code-comment">// http://localhost:11434</span>
+  <span class="code-property">model</span>?: <span class="code-type">string</span>;             <span class="code-comment">// default model</span>
+  <span class="code-property">keepAlive</span>?: <span class="code-type">string</span>;         <span class="code-comment">// "5m", etc.</span>
+  <span class="code-property">timeout</span>?: <span class="code-type">number</span>;          <span class="code-comment">// request timeout</span>
+}
+
+<span class="code-keyword">export function</span> <span class="code-function">create</span>(config?: HttpRuntimeConfig): <span class="code-type">Runtime</span> {
+  <span class="code-keyword">return</span> {
+    <span class="code-property">name</span>: <span class="code-string">"http"</span>,
+    <span class="code-keyword">async</span> <span class="code-function">create</span>(handle) { <span class="code-comment">/* return handle with connection info */</span> },
+    <span class="code-keyword">async</span> <span class="code-function">destroy</span>(handle) { <span class="code-comment">/* cleanup */</span> },
+    <span class="code-keyword">async</span> <span class="code-function">sendMessage</span>(handle, message) {
+      <span class="code-comment">// POST to /api/chat with streaming</span>
+      <span class="code-comment">// Store response chunks for getOutput()</span>
+    },
+    <span class="code-keyword">async</span> <span class="code-function">getOutput</span>(handle, lines) { <span class="code-comment">/* return accumulated output */</span> },
+    <span class="code-keyword">async</span> <span class="code-function">isAlive</span>(handle) { <span class="code-comment">/* ping /api/version */</span> },
+    <span class="code-keyword">async</span> <span class="code-function">getMetrics</span>(handle) { <span class="code-comment">/* track request counts, timing */</span> },
+  };
+}</span></pre>
+            </div>
+
+            <h4>2. Agent Plugin (<code>agent-ollama</code>)</h4>
+            <p><em>What it is:</em> Adapts Ollama's specific behaviors to the agent interface.</p>
+
+            <div class="code-block">
+<pre><code><span class="code-keyword">export function</span> <span class="code-function">create</span>(): <span class="code-type">Agent</span> {
+  <span class="code-keyword">return</span> {
+    <span class="code-property">name</span>: <span class="code-string">"ollama"</span>,
+    <span class="code-property">processName</span>: <span class="code-string">"ollama"</span>,  <span class="code-comment">// Process name for activity detection</span>
+    <span class="code-property">promptDelivery</span>: <span class="code-string">"post-launch"</span>,  <span class="code-comment">// Keep Ollama in interactive mode</span>
+
+    <span class="code-function">getLaunchCommand</span>(config) {
+      <span class="code-comment">// Empty or starts "ollama serve" if needed</span>
+      <span class="code-keyword">return</span> <span class="code-string">""</span>;
+    },
+
+    <span class="code-function">getEnvironment</span>(config) {
+      <span class="code-keyword">return</span> { <span class="code-property">OLLAMA_MODEL</span>: config.model };
+    },
+
+    <span class="code-keyword">async</span> <span class="code-function">getActivityState</span>(session) {
+      <span class="code-comment">// Returns "ready" when last message was &lt; 30s ago</span>
+      <span class="code-comment">// Returns "idle" otherwise</span>
+    },
+
+    <span class="code-keyword">async</span> <span class="code-function">getSessionInfo</span>(session) {
+      <span class="code-comment">// Returns message count as "summary"</span>
+      <span class="code-comment">// Track token usage if available</span>
+    },
+  };
+}</span></pre>
+            </div>
+        </section>
+
+        <!-- Implementation Details -->
+        <section id="implementation">
+            <h2>Implementation Details</h2>
+
+            <h3>HTTP Runtime - Key Design Decisions</h3>
+
+            <div class="card">
+                <h4>1. State Management</h4>
+                <p><strong>Challenge:</strong> Ollama is stateless - we must manage conversation history client-side.</p>
+                <p><strong>Solution:</strong> Store message history in session metadata or runtime handle data.</p>
+                <div class="code-block">
+<pre><code><span class="code-comment">// Runtime handle data stores history</span>
+<span class="code-keyword">interface</span> HttpHandleData {
+  <span class="code-property">messages</span>: <span class="code-type">Message</span>[];
+  <span class="code-property">lastActivityAt</span>: <span class="code-type">number</span>;
+  <span class="code-property">model</span>: <span class="code-type">string</span>;
+  <span class="code-property">baseUrl</span>: <span class="code-type">string</span>;
+  <span class="code-property">sessionId</span>: <span class="code-type">string</span>;
+}</span></pre>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>2. Streaming Support</h4>
+                <p><strong>How it works:</strong></p>
+                <ol>
+                    <li>User sends message via <code>sendMessage()</code></li>
+                    <li>HTTP POST to <code>/api/chat</code> with <code>stream: true</code></li>
+                    <li>Read streaming JSON lines from response</li>
+                    <li>Store each chunk in runtime's output buffer</li>
+                    <li>Return accumulated output via <code>getOutput()</code></li>
+                </ol>
+                <div class="callout callout-info">
+                    <strong>Tip:</strong> The streaming logic can be shared with other HTTP-based agents (e.g., OpenAI, Groq) by making the HTTP runtime generic.
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>3. Activity Detection</h4>
+                <p><strong>Challenge:</strong> No process to check - Ollama server is stateless.</p>
+                <p><strong>Solution:</strong> Timing-based detection</p>
+                <div class="code-block">
+<pre><code><span class="code-function">getActivityState</span>(session, readyThresholdMs = <span class="code-value">300000</span>) {
+  <span class="code-keyword">if</span> (!session.runtimeHandle) <span class="code-keyword">return</span> { state: <span class="code-string">"exited"</span> };
+
+  <span class="code-keyword">const</span> lastActivity = session.runtimeHandle.data.lastActivityAt;
+  <span class="code-keyword">const</span> age = <span class="code-keyword">new</span> <span class="code-type">Date</span>().getTime() - lastActivity;
+
+  <span class="code-keyword">if</span> (age &gt; readyThresholdMs) {
+    <span class="code-keyword">return</span> { state: <span class="code-string">"idle"</span>, timestamp: <span class="code-keyword">new</span> <span class="code-type">Date</span>(lastActivity) };
+  }
+
+  <span class="code-keyword">return</span> { state: <span class="code-string">"ready"</span>, timestamp: <span class="code-keyword">new</span> <span class="code-type">Date</span>(lastActivity) };
+}</span></pre>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>4. Error Handling</h4>
+                <p><strong>Key errors to handle:</strong></p>
+                <ul>
+                    <li><strong>Connection refused:</strong> Ollama server not running</li>
+                    <li><strong>Model not found:</strong> Invalid model name configured</li>
+                    <li><strong>Timeout:</strong> Request took too long</li>
+                    <li><strong>Rate limited:</strong> Ollama returns 429</li>
+                </ul>
+                <p><strong>Recovery strategy:</strong> Gracefully fail, log error, let user retry</p>
+            </div>
+
+            <h3>Integration Points</h3>
+
+            <div class="card">
+                <h4>Session Manager Changes</h4>
+                <p>When spawning a session with Ollama agent + HTTP runtime:</p>
+                <ol>
+                    <li>Create HTTP runtime handle with base URL and empty message history</li>
+                    <li>Launch Ollama server if not running (optional)</li>
+                    <li>Send initial prompt via <code>sendMessage()</code></li>
+                    <li>Store session metadata with runtime handle ID</li>
+                </ol>
+            </div>
+
+            <div class="card">
+                <h4>Lifecycle Manager Changes</h4>
+                <p>Check Ollama sessions via polling:</p>
+                <ol>
+                    <li>Get session with Ollama agent + HTTP runtime</li>
+                    <li>Call <code>agent.getActivityState(session)</code></li>
+                    <li>Update session status based on activity</li>
+                    <li>If idle too long, mark as "needs_input" or "idle"</li>
+                </ol>
+            </div>
+        </section>
+
+        <!-- File Changes -->
+        <section id="file-changes">
+            <h2>File Changes</h2>
+
+            <h3>Files to CREATE (New Packages)</h3>
+
+            <div class="card">
+                <h4>1. <code>packages/plugins/runtime-http/</code></h4>
+                <div class="code-block">
+<pre><code>runtime-http/
+├── package.json
+│   {
+│     "name": "@composio/ao-plugin-runtime-http",
+│     "version": "0.1.0",
+│     "dependencies": {
+│       "@composio/ao-core": "workspace:*"
+│     }
+│   }
+└── src/
+    └── index.ts           <span class="code-comment"># ~150-200 lines</span>
+        <span class="code-comment"># - Manifest export</span>
+        <span class="code-comment"># - create() function returning Runtime</span>
+        <span class="code-comment"># - HTTP client with streaming support</span>
+        <span class="code-comment"># - Message history storage</span></pre>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>2. <code>packages/plugins/agent-ollama/</code></h4>
+                <div class="code-block">
+<pre><code>agent-ollama/
+├── package.json
+│   {
+│     "name": "@composio/ao-plugin-agent-ollama",
+│     "version": "0.1.0",
+│     "dependencies": {
+│       "@composio/ao-core": "workspace:*"
+│     }
+│   }
+└── src/
+    └── index.ts           <span class="code-comment"># ~300-400 lines</span>
+        <span class="code-comment"># - Manifest export</span>
+        <span class="code-comment"># - Agent interface implementation</span>
+        <span class="code-comment"># - Ollama-specific activity detection</span>
+        <span class="code-comment"># - Session info extraction</span></pre>
+                </div>
+            </div>
+
+            <h3>Files to MODIFY (Existing Code)</h3>
+
+            <div class="card">
+                <h4>3. <code>packages/core/src/plugin-registry.ts</code></h4>
+                <p><strong>Change:</strong> Add two new entries to <code>BUILTIN_PLUGINS</code> array</p>
+                <div class="code-block">
+<pre><code><span class="code-keyword">const</span> BUILTIN_PLUGINS: <span class="code-type">Array</span>&lt;{ slot: <span class="code-type">PluginSlot</span>; name: <span class="code-type">string</span>; pkg: <span class="code-type">string</span> }&gt; = [
+  <span class="code-comment">// ... existing plugins ...</span>
+  { slot: <span class="code-string">"runtime"</span>, name: <span class="code-string">"http"</span>, pkg: <span class="code-string">"@composio/ao-plugin-runtime-http"</span> },
+  { slot: <span class="code-string">"agent"</span>, name: <span class="code-string">"ollama"</span>, pkg: <span class="code-string">"@composio/ao-plugin-agent-ollama"</span> },
+];</span></pre>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>4. <code>packages/core/src/types.ts</code> (Optional)</h4>
+                <p><strong>Change:</strong> Add Ollama-specific config to <code>AgentLaunchConfig</code></p>
+                <div class="code-block">
+<pre><code><span class="code-keyword">interface</span> AgentLaunchConfig {
+  sessionId: <span class="code-type">SessionId</span>;
+  projectConfig: <span class="code-type">ProjectConfig</span>;
+  <span class="code-comment">// ... existing fields ...</span>
+  <span class="code-property">ollamaOptions</span>?: {
+    <span class="code-property">model</span>?: <span class="code-type">string</span>;
+    <span class="code-property">temperature</span>?: <span class="code-type">number</span>;
+    <span class="code-property">numCtx</span>?: <span class="code-type">number</span>;
+    <span class="code-property">keepAlive</span>?: <span class="code-type">string</span>;
+  };
+}</span></pre>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>5. <code>packages/core/src/index.ts</code></h4>
+                <p><strong>Change:</strong> No changes needed - the runtime-http package will be loaded dynamically</p>
+            </div>
+
+            <div class="card">
+                <h4>6. <code>packages/plugins/agent-ollama/package.json</code></h4>
+                <p><strong>Change:</strong> Update exports to include new package (if using monorepo build)</p>
+            </div>
+        </section>
+
+        <!-- Making the Foundation Strong -->
+        <section id="foundation">
+            <h2>Making the Foundation Strong</h2>
+
+            <h3>1. Abstract the HTTP Client</h3>
+            <p>Create a shared HTTP client module that can be used by multiple HTTP-based agents:</p>
+
+            <div class="code-block">
+<pre><code><span class="code-comment"># packages/plugins/runtime-http/src/http-client.ts</span>
+
+<span class="code-keyword">export interface</span> HttpClientConfig {
+  <span class="code-property">baseUrl</span>: <span class="code-type">string</span>;
+  <span class="code-property">timeout</span>: <span class="code-type">number</span>;
+  <span class="code-property">headers</span>?: <span class="code-type">Record</span>&lt;<span class="code-type">string</span>, <span class="code-type">string</span>&gt;;
+}
+
+<span class="code-keyword">export class</span> <span class="code-function">HttpClient</span> {
+  <span class="code-keyword">private</span> <span class="code-property">config</span>: <span class="code-type">HttpClientConfig</span>;
+
+  <span class="code-keyword">constructor</span>(config: <span class="code-type">HttpClientConfig</span>) {
+    <span class="code-keyword">this</span>.config = config;
+  }
+
+  <span class="code-keyword">async</span> <span class="code-function">chat</span>(messages: <span class="code-type">Message</span>[], options?: <span class="code-type">ChatOptions</span>): <span class="code-type">Promise</span>&lt;<span class="code-type">ChatResponse</span>&gt; {
+    <span class="code-comment">// POST to /api/chat with streaming support</span>
+  }
+
+  <span class="code-keyword">async</span> <span class="code-function">health</span>(): <span class="code-type">Promise</span>&lt;<span class="code-type">HealthResponse</span>&gt; {
+    <span class="code-comment">// GET /api/version or /health</span>
+  }
+}</span></pre>
+                </div>
+
+            <div class="callout callout-success">
+                <strong>Benefit:</strong> HTTP runtime becomes reusable for any HTTP-based agent (Ollama, OpenAI, custom API servers).
+            </div>
+
+            <h3>2. Session Metadata Integration</h3>
+            <p>Store HTTP session state in the same metadata system:</p>
+
+            <div class="code-block">
+<pre><code><span class="code-comment"># Session metadata format</span>
+<span class="code-keyword">interface</span> HttpSessionMetadata {
+  <span class="code-property">runtimeType</span>: <span class="code-string">"http"</span>;
+  <span class="code-property">baseUrl</span>: <span class="code-type">string</span>;
+  <span class="code-property">messages</span>: <span class="code-type">Message</span>[];  <span class="code-comment"># JSON array</span>
+  <span class="code-property">lastActivityAt</span>: <span class="code-type">string</span>;  <span class="code-comment"># ISO timestamp</span>
+  <span class="code-property">stats</span>: {
+    <span class="code-property">requestCount</span>: <span class="code-type">number</span>;
+    <span class="code-property">totalTokens</span>: <span class="code-type">number</span>;
+  };
+}</span></pre>
+                </div>
+            </div>
+
+            <h3>3. Error Handling Strategy</h3>
+
+            <div class="card">
+                <h4>Connection Errors</h4>
+                <ul>
+                    <li><strong>Detect:</strong> Catch network errors, connection refused</li>
+                    <li><strong>Log:</strong> Include URL, attempt count, retry timing</li>
+                    <li><strong>Notify:</strong> Mark session as "errored" with clear message</li>
+                    <li><strong>Recover:</strong> User must fix server or restart Ollama</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h4>Request Errors</h4>
+                <ul>
+                    <li><strong>400 Bad Request:</strong> Invalid model, malformed JSON</li>
+                    <li><strong>401 Unauthorized:</strong> API key missing/invalid</li>
+                    <li><strong>429 Too Many Requests:</strong> Rate limited - add backoff retry</li>
+                    <li><strong>500 Server Error:</strong> Ollama crash - mark session as errored</li>
+                </ul>
+            </div>
+
+            <h3>4. Testing Strategy</h3>
+
+            <div class="card">
+                <h4>Unit Tests</h4>
+                <ul>
+                    <li><code>sendMessage() - basic message</code></li>
+                    <li><code>sendMessage() - long message</code></li>
+                    <li><code>sendMessage() - streaming response</code></li>
+                    <li><code>getOutput() - empty buffer</code></li>
+                    <li><code>getOutput() - accumulated output</code></li>
+                    <li><code>isAlive() - healthy server</code></li>
+                    <li><code>isAlive() - server down</code></li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h4>Integration Tests</h4>
+                <ul>
+                    <li>Full agent lifecycle with Ollama server</li>
+                    <li>Session spawn → message → response</li>
+                    <li>Multiple consecutive messages</li>
+                    <li>Session restore after crash</li>
+                </ul>
+            </div>
+
+            <h3>5. Configuration Validation</h3>
+            <p>Add validation in the runtime <code>create()</code> function:</p>
+
+            <div class="code-block">
+<pre><code><span class="code-keyword">export function</span> <span class="code-function">create</span>(config?: HttpRuntimeConfig): <span class="code-type">Runtime</span> {
+  <span class="code-keyword">const</span> resolvedConfig = {
+    <span class="code-property">baseUrl</span>: config?.baseUrl ?? <span class="code-string">"http://localhost:11434"</span>,
+    <span class="code-property">model</span>: config?.model ?? <span class="code-string">"llama3"</span>,
+    <span class="code-property">timeout</span>: config?.timeout ?? <span class="code-value">60000</span>,
+    <span class="code-property">keepAlive</span>: config?.keepAlive ?? <span class="code-string">"5m"</span>,
+  };
+
+  <span class="code-comment">// Validate URL format</span>
+  <span class="code-keyword">try</span> {
+    <span class="code-keyword">new</span> <span class="code-type">URL</span>(resolvedConfig.baseUrl);
+  } <span class="code-keyword">catch</span> (err) {
+    <span class="code-keyword">throw new</span> <span class="code-type">Error</span>(<span class="code-type">Error</span>.message);
+  }
+
+  <span class="code-comment">// Validate keepAlive format (e.g., "5m", "1h")</span>
+  <span class="code-keyword">if</span> (resolvedConfig.keepAlive &amp;&amp; !<span class="code-string">/^[0-9]+[smhd]$/</span>.test(resolvedConfig.keepAlive)) {
+    <span class="code-keyword">throw new</span> <span class="code-type">Error</span>(<span class="code-type">Error</span>.message);
+  }
+
+  <span class="code-comment">// ... return runtime</span>
+}</span></pre>
+                </div>
+        </section>
+
+        <!-- UI/UX Impact -->
+        <section id="ui-ux">
+            <h2>UI/UX Impact</h2>
+
+            <h3>Dashboard - Sessions View</h3>
+            <p><strong>Before:</strong> Ollama sessions not visible</p>
+            <p><strong>After:</strong> Ollama sessions visible alongside Claude, Codex</p>
+
+            <div class="card">
+                <h4>What Changes</h4>
+                <ul>
+                    <li><strong>Session Status:</strong> New status "idle" appears (timing-based)</li>
+                    <li><strong>Activity Column:</strong> Shows "ready/idle" instead of "active/exited"</li>
+                    <li><strong>Runtime Column:</strong> Shows "http" for Ollama sessions</li>
+                    <li><strong>Agent Column:</strong> Shows "ollama" as agent type</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h4>Session Details</h4>
+                <ul>
+                    <li><strong>Runtime Info:</strong> Shows HTTP connection URL</li>
+                    <li><strong>Messages:</strong> Shows message count (if tracked)</li>
+                    <li><strong>Model:</strong> Shows configured model</li>
+                    <li><strong>Token Usage:</strong> Optional - if Ollama API returns tokens</li>
+                </ul>
+            </div>
+
+            <h3>Session Creation</h3>
+
+            <div class="card">
+                <h4>New Config Options</h4>
+                <p>When creating a session with Ollama agent:</p>
+                <ul>
+                    <li><strong>Model Selection:</strong> Dropdown of available Ollama models</li>
+                    <li><strong>Temperature:</strong> Slider for temperature (0.0 - 1.0)</li>
+                    <li><strong>Context Window:</strong> numCtx parameter</li>
+                    <li><strong>Keep-Alive:</strong> Duration to keep model in memory</li>
+                </ul>
+            </div>
+
+            <h3>Command Line</h3>
+
+            <div class="card">
+                <h4>Session List</h4>
+                <div class="code-block">
+<pre><code><span class="code-type">ao status</span>
+<span class="code-comment"># Session        Project      Agent   Runtime  Status   Activity</span>
+<span class="code-comment"># proj-1         myapp        ollama  http       working  ready</span>
+<span class="code-comment"># proj-2         myapp        ollama  http       idle     idle</span>
+<span class="code-comment"># mysession      myapp        claude  tmux       working  active</span></pre>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>Send Message</h4>
+                <div class="code-block">
+<pre><code><span class="code-type">ao send proj-1 "What is the project structure?"</span></pre>
+                </div>
+                <p><strong>Behind the scenes:</strong></p>
+                <ol>
+                    <li>Look up session "proj-1"</li>
+                    <li>Get runtime handle with HTTP config</li>
+                    <li>POST to <code>http://localhost:11434/api/chat</code></li>
+                    <li>Wait for streaming response</li>
+                    <li>Update session metadata with new message</li>
+                    <li>Return response to user</li>
+                </ol>
+            </div>
+
+            <h3>Performance Perception</h3>
+
+            <div class="callout callout-info">
+                <strong>User-Visible Performance:</strong>
+                <ul>
+                    <li><strong>First request:</strong> May be slower if Ollama model not loaded</li>
+                    <li><strong>Subsequent requests:</strong> Fast (model already in memory)</li>
+                    <li><strong>Idle sessions:</strong> No performance impact</li>
+                    <li><strong>Concurrent sessions:</strong> Each uses separate HTTP connection</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Tradeoffs -->
+        <section id="tradeoffs">
+            <h2>Tradeoffs & Considerations</h2>
+
+            <h3>Pros</h3>
+
+            <div class="grid">
+                <div class="card">
+                    <h4>✅ Clean Separation</h4>
+                    <p>Ollama is treated equally with other agents. No CLI-specific hacks needed.</p>
+                </div>
+                <div class="card">
+                    <h4>✅ Full Streaming Support</h4>
+                    <p>Native HTTP streaming via Ollama's /api/chat endpoint.</p>
+                </div>
+                <div class="card">
+                    <h4>✅ Tool Calling & JSON Mode</h4>
+                    <p>Ollama's native features accessible via API parameters.</p>
+                </div>
+                <div class="card">
+                    <h4>✅ Client-Side History</h4>
+                    <p>Full control over conversation history management.</p>
+                </div>
+                <div class="card">
+                    <h4>✅ No Process Cleanup</h4>
+                    <p>No need to kill child processes or tmux sessions.</p>
+                </div>
+                <div class="card">
+                    <h4>✅ Generic Runtime</h4>
+                    <p>HTTP runtime can be reused for other API-based agents.</p>
+                </div>
+            </div>
+
+            <h3>Cons</h3>
+
+            <div class="grid">
+                <div class="card">
+                    <h4>❌ Implementation Effort</h4>
+                    <p>Largest implementation effort among options. Requires new runtime + new agent plugin.</p>
+                </div>
+                <div class="card">
+                    <h4>❌ New Runtime Pattern</h4>
+                    <p>Diverges from existing CLI-based model. Teams must learn new pattern.</p>
+                </div>
+                <div class="card">
+                    <h4>❌ Maintenance burden</h4>
+                    <p>HTTP connection management, error handling, retry logic.</p>
+                </div>
+                <div class="card">
+                    <h4>❌ Activity Detection</h4>
+                    <p>Timing-based instead of process-based. Less precise.</p>
+                </div>
+            </div>
+
+            <h3>Comparison with Other Options</h3>
+
+            <div class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Criteria</th>
+                        <th>Option A: HTTP Runtime</th>
+                        <th>Option B: CLI Wrapper</th>
+                        <th>Option C: Local Backend</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Complexity</strong></td>
+                        <td>High</td>
+                        <td>Medium</td>
+                        <td>Medium</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Code to write</strong></td>
+                        <td>~600 lines (runtime + agent)</td>
+                        <td>~300 lines (agent only)</td>
+                        <td>~400 lines (agent only)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Streaming</strong></td>
+                        <td>Native support</td>
+                        <td>Buffered output</td>
+                        <td>Native support</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Tool Calling</strong></td>
+                        <td>Full API support</td>
+                        <td>CLI flag support</td>
+                        <td>Full API support</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Activity Detection</strong></td>
+                        <td>Timing-based</td>
+                        <td>Process-based</td>
+                        <td>Process-based</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Session History</strong></td>
+                        <td>Client-side managed</td>
+                        <td>Server-side managed</td>
+                        <td>Server-side managed</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Reusability</strong></td>
+                        <td>High (HTTP runtime generic)</td>
+                        <td>Low (CLI-specific)</td>
+                        <td>Medium (backend-specific)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Server Management</strong></td>
+                        <td>Optional auto-start</td>
+                        <td>Requires Ollama CLI</td>
+                        <td>Requires local backend</td>
+                    </tr>
+                </tbody>
+            </div>
+        </section>
+
+        <!-- FAQ -->
+        <section id="faq">
+            <h2>FAQ - Common Questions</h2>
+
+            <div class="faq">
+                <div class="faq-item">
+                    <div class="faq-question">Q: Why not use the "process" runtime with Ollama CLI?</div>
+                    <p><strong>A:</strong> You could! But Ollama's CLI has limitations:</p>
+                    <ul>
+                        <li>The <code>-p</code> flag causes one-shot mode (agent exits after response)</li>
+                        <li>No interactive session for follow-up questions</li>
+                        <li>Less control over conversation history</li>
+                        <li>Shell escaping issues with long prompts</li>
+                    </ul>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: Does this require Ollama to be running?</div>
+                    <p><strong>A:</strong> Yes. But the agent plugin can auto-start Ollama:</p>
+                    <div class="code-block">
+<pre><code><span class="code-function">getLaunchCommand</span>(config) {
+  <span class="code-keyword">if</span> (!isOllamaRunning()) {
+    <span class="code-function">startOllamaServer</span>();
+  }
+  <span class="code-keyword">return</span> <span class="code-string">""</span>;  <span class="code-comment">// No command needed - server runs in background</span>
+}</span></pre>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: How is this different from "process" runtime with HTTP server?</div>
+                    <p><strong>A:</strong> Good question! The "process" runtime would:</p>
+                    <ul>
+                        <li>Start Ollama as a child process</li>
+                        <li>Use <code>sendMessage()</code> to send to stdin</li>
+                        <li>Parse stdout for response</li>
+                    </ul>
+                    <p>The "http" runtime:</p>
+                    <ul>
+                        <li>Starts Ollama as separate process</li>
+                        <li>Connects via HTTP to /api/chat</li>
+                        <li>Reads JSON from streaming response</li>
+                    </ul>
+                    <p><strong>HTTP is cleaner and more reliable.</strong></p>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: What happens if Ollama server crashes?</div>
+                    <p><strong>A:</strong> The HTTP client returns an error. The lifecycle manager:</p>
+                    <ol>
+                        <li>Detects error state</li>
+                        <li>Updates session status to "errored"</li>
+                        <li>Notifies user (if notifier configured)</li>
+                        <li>Can optionally restart Ollama</li>
+                    </ol>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: Can multiple agents share the same Ollama instance?</div>
+                    <p><strong>A:</strong> Yes! All agents connect to the same HTTP server (localhost:11434). Each session maintains its own message history.</p>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: How do I configure Ollama models in my project?</div>
+                    <p><strong>A:</strong> Add to your <code>agent-orchestrator.yaml</code>:</p>
+                    <div class="code-block">
+<pre><code><span class="code-property">projects</span>:
+  myproject:
+    <span class="code-property">repo</span>: ...
+    <span class="code-property">agent</span>: ollama
+    <span class="code-property">agentConfig</span>:
+      <span class="code-property">model</span>: llama3:8b-instruction
+      <span class="code-property">temperature</span>: <span class="code-value">0.7</span>
+      <span class="code-property">numCtx</span>: <span class="code-value">8192</span></span></pre>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: What about tool calling? Does Ollama support it?</div>
+                    <p><strong>A:</strong> Yes! Ollama supports tool calling via the API. The HTTP runtime passes tool definitions and captures tool responses:</p>
+                    <div class="code-block">
+<pre><code><span class="code-comment"># HTTP request</span>
+{
+  <span class="code-property">model</span>: <span class="code-string">"llama3"</span>,
+  <span class="code-property">messages</span>: [...],
+  <span class="code-property">tools</span>: [
+    {
+      <span class="code-property">type</span>: <span class="code-string">"function"</span>,
+      <span class="code-property">function</span>: {
+        <span class="code-property">name</span>: <span class="code-string">"get_weather"</span>,
+        <span class="code-property">parameters</span>: {...}
+      }
+    }
+  ]
+}</span></pre>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: Is this production-ready?</div>
+                    <p><strong>A:</strong> This is a design proposal. Production readiness depends on:</p>
+                    <ul>
+                        <li>Test coverage</li>
+                        <li>Error handling in production scenarios</li>
+                        <li>Performance under load</li>
+                        <li>Monitoring and observability</li>
+                    </ul>
+                </div>
+
+                <div class="faq-item">
+                    <div class="faq-question">Q: What about security? Are credentials exposed?</div>
+                    <p><strong>A:</strong> Ollama runs locally by default. For remote Ollama instances:</p>
+                    <ul>
+                        <li>Use HTTPS for encrypted communication</li>
+                        <li>Store API keys in environment variables</li>
+                        <li>Network isolation (localhost only)</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Call to Action -->
+        <section>
+            <h2>Next Steps</h2>
+
+            <div class="card">
+                <h4>Implementation Checklist</h4>
+                <ul class="checklist">
+                    <li>Create <code>packages/plugins/runtime-http/</code> structure</li>
+                    <li>Implement <code>Runtime</code> interface with HTTP client</li>
+                    <li>Implement message history storage</li>
+                    <li>Create <code>packages/plugins/agent-ollama/</code> structure</li>
+                    <li>Implement <code>Agent</code> interface with Ollama-specific logic</li>
+                    <li>Add plugin entries to <code>BUILTIN_PLUGINS</code></li>
+                    <li>Write unit tests</li>
+                    <li>Write integration tests with local Ollama</li>
+                    <li>Update documentation</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h4>Estimated Timeline</h4>
+                <div class="grid">
+                    <div>
+                        <strong>Days 1-2:</strong>
+                        <ul>
+                            <li>Runtime structure + HTTP client</li>
+                            <li>Message history storage</li>
+                            <li>Error handling</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <strong>Days 3-4:</strong>
+                        <ul>
+                            <li>Agent plugin structure</li>
+                            <li>Activity detection</li>
+                            <li>Session info extraction</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <strong>Days 5-6:</strong>
+                        <ul>
+                            <li>Testing (unit + integration)</li>
+                            <li>Documentation</li>
+                            <li>Performance tuning</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <footer class="footer">
+        <p>Ollama HTTP Runtime Plugin - Option A Implementation Plan</p>
+        <p>Last updated: 2026-03-28</p>
+    </footer>
+</body>
+</html>
