@@ -1,0 +1,5 @@
+{
+  "name": "code-refactor-executor",
+  "description": "Executes a multi-stage refactoring plan based on existing audit and improvements documentation.",
+  "entry": "SKILL.md"
+}

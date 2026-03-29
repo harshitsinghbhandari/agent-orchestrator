@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "code-quality-audit": {
+      "source": "harshitsinghbhandari/domain-expansion",
+      "sourceType": "github",
+      "computedHash": "1470ed0dd1e6b993e1464403de14157bc54257afa57363b0d78f904f21254a07"
+    },
+    "code-refactor-executor": {
+      "source": "harshitsinghbhandari/domain-expansion",
+      "sourceType": "github",
+      "computedHash": "959ed195a0e080ad0f34671419a833fc60b62f1d73c870e39420a86050e07667"
+    }
+  }
+}
