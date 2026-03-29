@@ -51,21 +51,34 @@ export function registerSession(program: Command): void {
           continue;
         }
 
-        for (const s of projectSessions) {
-          // Get live branch from worktree if available
-          let branchStr = s.branch || "";
-          if (s.workspacePath) {
-            const liveBranch = await git(["branch", "--show-current"], s.workspacePath);
-            if (liveBranch) branchStr = liveBranch;
-          }
+        const sessionDetails = await Promise.all(
+          projectSessions.map(async (s) => {
+            // Get live branch from worktree if available
+            let branchStr = s.branch || "";
+            const branchPromise = s.workspacePath
+              ? git(["branch", "--show-current"], s.workspacePath)
+              : Promise.resolve(null);
 
-          // Get tmux activity age
-          const tmuxTarget = s.runtimeHandle?.id ?? s.id;
-          const activityTs = await getTmuxActivity(tmuxTarget);
-          const age = activityTs ? formatAge(activityTs) : "-";
+            // Get tmux activity age
+            const tmuxTarget = s.runtimeHandle?.id ?? s.id;
+            const activityPromise = getTmuxActivity(tmuxTarget);
+
+            const [liveBranch, activityTs] = await Promise.all([branchPromise, activityPromise]);
+            if (liveBranch) branchStr = liveBranch;
+
+            return {
+              ...s,
+              branchStr,
+              activityTs,
+            };
+          }),
+        );
+
+        for (const s of sessionDetails) {
+          const age = s.activityTs ? formatAge(s.activityTs) : "-";
 
           const parts = [chalk.green(s.id), chalk.dim(`(${age})`)];
-          if (branchStr) parts.push(chalk.cyan(branchStr));
+          if (s.branchStr) parts.push(chalk.cyan(s.branchStr));
           if (s.status) parts.push(chalk.dim(`[${s.status}]`));
           const prUrl = s.metadata["pr"];
           if (prUrl) parts.push(chalk.blue(prUrl));
