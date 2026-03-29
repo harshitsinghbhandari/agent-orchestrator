@@ -5,6 +5,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { TMUX_DELAYS } from "./config/constants.js";
 
 /** Run a tmux command and return stdout. */
 function tmux(...args: string[]): Promise<string> {
@@ -130,7 +131,7 @@ export async function sendKeys(
   // Clear any partial input first (matches bash reference scripts)
   await tmux("send-keys", "-t", sessionName, "Escape");
   // Small delay to ensure Escape is processed before pasting
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, TMUX_DELAYS.ESCAPE_CLEAR_MS));
 
   if (text.includes("\n") || text.length > 200) {
     // Use a named buffer to avoid global paste buffer race conditions
@@ -149,8 +150,8 @@ export async function sendKeys(
     } finally {
       try {
         unlinkSync(tmpFile);
-      } catch {
-        /* ignore cleanup errors */
+      } catch (err) {
+        /* ignore cleanup errors, file may have been already deleted */
       }
     }
   } else {
@@ -164,7 +165,7 @@ export async function sendKeys(
     // Higher delay needed when using paste-buffer to ensure tmux processes the paste
     // before receiving the Enter keystroke (especially with Claude permission prompts)
     if (text.includes("\n") || text.length > 200) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, TMUX_DELAYS.PASTE_SETTLE_MS));
     }
     await tmux("send-keys", "-t", sessionName, "Enter");
   }

@@ -1,9 +1,9 @@
 import type { OrchestratorConfig, PluginRegistry, Runtime, Workspace } from "../types.js";
-import { updateMetadata, deleteMetadata } from "../metadata.js";
 import { getSessionsDir } from "../paths.js";
 import { validateStatus } from "../utils/validation.js";
 import { sessionFromMetadata } from "../utils/session-from-metadata.js";
 import type { RecoveryAssessment, RecoveryResult, RecoveryContext } from "./types.js";
+import { metadataService } from "../services/metadata-service.js";
 
 export async function recoverSession(
   assessment: RecoveryAssessment,
@@ -42,7 +42,7 @@ export async function recoverSession(
     const sessionsDir = getSessionsDir(config.configPath, project.path);
 
     if (recoveryCount > context.recoveryConfig.maxRecoveryAttempts) {
-      updateMetadata(sessionsDir, sessionId, {
+      await metadataService.update(sessionsDir, sessionId, {
         status: "stuck",
         escalatedAt: now,
         escalationReason: `Exceeded max recovery attempts (${context.recoveryConfig.maxRecoveryAttempts})`,
@@ -58,7 +58,7 @@ export async function recoverSession(
       };
     }
 
-    updateMetadata(sessionsDir, sessionId, {
+    await metadataService.update(sessionsDir, sessionId, {
       status: preservedStatus,
       restoredAt: now,
       recoveryCount: String(recoveryCount),
@@ -137,13 +137,13 @@ export async function cleanupSession(
 
     const sessionsDir = getSessionsDir(config.configPath, project.path);
 
-    updateMetadata(sessionsDir, sessionId, {
+    await metadataService.update(sessionsDir, sessionId, {
       status: "terminated",
       terminatedAt: new Date().toISOString(),
       terminationReason: "cleanup",
     });
 
-    deleteMetadata(sessionsDir, sessionId, true);
+    await metadataService.archive(sessionsDir, sessionId);
 
     return {
       success: true,
@@ -182,7 +182,7 @@ export async function escalateSession(
     const project = config.projects[projectId];
     const sessionsDir = getSessionsDir(config.configPath, project.path);
 
-    updateMetadata(sessionsDir, sessionId, {
+    await metadataService.update(sessionsDir, sessionId, {
       status: "stuck",
       escalatedAt: new Date().toISOString(),
       escalationReason: reason,

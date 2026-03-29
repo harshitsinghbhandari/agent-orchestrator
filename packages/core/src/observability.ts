@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { OrchestratorConfig, SessionId } from "./types.js";
 import { getObservabilityBaseDir } from "./paths.js";
+import { OBSERVABILITY_LIMITS } from "./config/constants.js";
 
 export type ObservabilityLevel = "debug" | "info" | "warn" | "error";
 export type ObservabilityOutcome = "success" | "failure";
@@ -131,8 +132,6 @@ export interface ProjectObserver {
   setHealth(input: SetHealthInput): void;
 }
 
-const TRACE_LIMIT = 80;
-const SESSION_LIMIT = 200;
 const LEVEL_ORDER: Record<ObservabilityLevel, number> = {
   debug: 10,
   info: 20,
@@ -373,7 +372,7 @@ export function createProjectObserver(
 
           snapshot.traces = [trace, ...snapshot.traces]
             .sort((a, b) => compareIsoDesc(a.timestamp, b.timestamp))
-            .slice(0, TRACE_LIMIT);
+            .slice(0, OBSERVABILITY_LIMITS.TRACES);
 
           if (input.sessionId) {
             snapshot.sessions[input.sessionId] = {
@@ -389,7 +388,7 @@ export function createProjectObserver(
             const sessionEntries = Object.entries(snapshot.sessions).sort(([, a], [, b]) =>
               compareIsoDesc(a.updatedAt, b.updatedAt),
             );
-            snapshot.sessions = Object.fromEntries(sessionEntries.slice(0, SESSION_LIMIT));
+            snapshot.sessions = Object.fromEntries(sessionEntries.slice(0, OBSERVABILITY_LIMITS.SESSIONS));
           }
         },
         {
@@ -547,7 +546,7 @@ export function readObservabilitySummary(config: OrchestratorConfig): Observabil
   for (const project of Object.values(projects)) {
     project.recentTraces = project.recentTraces
       .sort((a, b) => compareIsoDesc(a.timestamp, b.timestamp))
-      .slice(0, TRACE_LIMIT);
+      .slice(0, OBSERVABILITY_LIMITS.TRACES);
     for (const health of Object.values(project.health)) {
       if (healthSeverity(health.status) > healthSeverity(overallStatus)) {
         overallStatus = health.status;

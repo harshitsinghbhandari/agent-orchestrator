@@ -14,6 +14,13 @@ import type {
   PluginRegistry,
   OrchestratorConfig,
 } from "./types.js";
+import { z } from "zod";
+
+const PluginManifestSchema = z.object({
+  slot: z.enum(["runtime", "agent", "workspace", "tracker", "scm", "notifier", "terminal", "lifecycle"]),
+  name: z.string(),
+  version: z.string().optional(),
+});
 
 /** Map from "slot:name" → plugin instance */
 type PluginMap = Map<string, { manifest: PluginManifest; instance: unknown }>;
@@ -83,6 +90,11 @@ export function createPluginRegistry(): PluginRegistry {
 
   return {
     register(plugin: PluginModule, config?: Record<string, unknown>): void {
+      try {
+        PluginManifestSchema.parse(plugin.manifest);
+      } catch (err) {
+        throw new Error(`Invalid plugin manifest for ${plugin.manifest?.name || "unknown"}: ${err}`);
+      }
       const { manifest } = plugin;
       const key = makeKey(manifest.slot, manifest.name);
       const instance = plugin.create(config);
