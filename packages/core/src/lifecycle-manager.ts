@@ -33,27 +33,15 @@ import {
   type EventPriority,
   type ProjectConfig as _ProjectConfig,
 } from "./types.js";
-import { updateMetadata } from "./metadata.js";
+import { metadataService } from "./services/metadata-service.js";
+import { LIFECYCLE_DEFAULTS } from "./config/constants.js";
+import { handleError } from "./errors.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
-
-/** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
-function parseDuration(str: string): number {
-  const match = str.match(/^(\d+)(s|m|h)$/);
-  if (!match) return 0;
-  const value = parseInt(match[1], 10);
-  switch (match[2]) {
-    case "s":
-      return value * 1000;
-    case "m":
-      return value * 60_000;
-    case "h":
-      return value * 3_600_000;
-    default:
-      return 0;
-  }
-}
+import { createSessionStateDetector } from "./services/session-state-detector.js";
+import { createReactionExecutor } from "./services/reaction-executor.js";
+import { createReviewBacklogManager } from "./services/review-backlog-manager.js";
 
 /** Infer a reasonable priority from event type. */
 function inferPriority(type: EventType): EventPriority {
@@ -181,339 +169,25 @@ export interface LifecycleManagerDeps {
   projectId?: string;
 }
 
-/** Track attempt counts for reactions per session. */
-interface ReactionTracker {
-  attempts: number;
-  firstTriggered: Date;
-}
-
 /** Create a LifecycleManager instance. */
 export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleManager {
   const { config, registry, sessionManager, projectId: scopedProjectId } = deps;
   const observer = createProjectObserver(config, "lifecycle-manager");
 
   const states = new Map<SessionId, SessionStatus>();
-  const reactionTrackers = new Map<string, ReactionTracker>(); // "sessionId:reactionKey"
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
 
-  /** Check if idle time exceeds the agent-stuck threshold. */
-  function isIdleBeyondThreshold(session: Session, idleTimestamp: Date): boolean {
-    const stuckReaction = getReactionConfigForSession(session, "agent-stuck");
-    const thresholdStr = stuckReaction?.threshold;
-    if (typeof thresholdStr !== "string") return false;
-    const stuckThresholdMs = parseDuration(thresholdStr);
-    if (stuckThresholdMs <= 0) return false;
-    const idleMs = Date.now() - idleTimestamp.getTime();
-    return idleMs > stuckThresholdMs;
-  }
+  const stateDetector = createSessionStateDetector(config, registry);
+  const reactionExecutor = createReactionExecutor(config, sessionManager, notifyHuman, createEvent);
 
-  /** Determine current status for a session by polling plugins. */
-  async function determineStatus(session: Session): Promise<SessionStatus> {
-    const project = config.projects[session.projectId];
-    if (!project) return session.status;
-
-    const agentName = resolveAgentSelection({
-      role: resolveSessionRole(session.id, session.metadata),
-      project,
-      defaults: config.defaults,
-      persistedAgent: session.metadata["agent"],
-    }).agentName;
-    const agent = registry.get<Agent>("agent", agentName);
-    const scm = project.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
-
-    // Track activity state across steps so stuck detection can run after PR checks
-    let detectedIdleTimestamp: Date | null = null;
-
-    // 1. Check if runtime is alive
-    if (session.runtimeHandle) {
-      const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
-      if (runtime) {
-        const alive = await runtime.isAlive(session.runtimeHandle).catch(() => true);
-        if (!alive) return "killed";
-      }
-    }
-
-    // 2. Check agent activity — prefer JSONL-based detection (runtime-agnostic)
-    if (agent && session.runtimeHandle) {
-      try {
-        // Try JSONL-based activity detection first (reads agent's session files directly)
-        const activityState = await agent.getActivityState(session, config.readyThresholdMs);
-        if (activityState) {
-          if (activityState.state === "waiting_input") return "needs_input";
-          if (activityState.state === "exited") return "killed";
-
-          if (
-            (activityState.state === "idle" || activityState.state === "blocked") &&
-            activityState.timestamp
-          ) {
-            detectedIdleTimestamp = activityState.timestamp;
-          }
-
-          // active/ready/idle (below threshold)/blocked (below threshold) —
-          // proceed to PR checks below
-        } else {
-          // getActivityState returned null — fall back to terminal output parsing
-          const runtime = registry.get<Runtime>(
-            "runtime",
-            project.runtime ?? config.defaults.runtime,
-          );
-          const terminalOutput = runtime ? await runtime.getOutput(session.runtimeHandle, 10) : "";
-          if (terminalOutput) {
-            const activity = agent.detectActivity(terminalOutput);
-            if (activity === "waiting_input") return "needs_input";
-
-            const processAlive = await agent.isProcessRunning(session.runtimeHandle);
-            if (!processAlive) return "killed";
-          }
-        }
-      } catch {
-        // On probe failure, preserve current stuck/needs_input state rather
-        // than letting the fallback at the bottom coerce them to "working"
-        if (
-          session.status === SESSION_STATUS.STUCK ||
-          session.status === SESSION_STATUS.NEEDS_INPUT
-        ) {
-          return session.status;
-        }
-      }
-    }
-
-    // 3. Auto-detect PR by branch if metadata.pr is missing.
-    //    This is critical for agents without auto-hook systems (Codex, Aider,
-    //    OpenCode) that can't reliably write pr=<url> to metadata on their own.
-    //    Skip orchestrator sessions — they sit on the base branch (e.g. master)
-    //    and should never own a PR.
-    if (
-      !session.pr &&
-      scm &&
-      session.branch &&
-      session.metadata["prAutoDetect"] !== "off" &&
-      session.metadata["role"] !== "orchestrator" &&
-      !session.id.endsWith("-orchestrator")
-    ) {
-      try {
-        const detectedPR = await scm.detectPR(session, project);
-        if (detectedPR) {
-          session.pr = detectedPR;
-          // Persist PR URL so subsequent polls don't need to re-query.
-          // Don't write status here — step 4 below will determine the
-          // correct status (merged, ci_failed, etc.) on this same cycle.
-          const sessionsDir = getSessionsDir(config.configPath, project.path);
-          updateMetadata(sessionsDir, session.id, { pr: detectedPR.url });
-        }
-      } catch {
-        // SCM detection failed — will retry next poll
-      }
-    }
-
-    // 4. Check PR state if PR exists
-    if (session.pr && scm) {
-      try {
-        const prState = await scm.getPRState(session.pr);
-        if (prState === PR_STATE.MERGED) return "merged";
-        if (prState === PR_STATE.CLOSED) return "killed";
-
-        // Check CI
-        const ciStatus = await scm.getCISummary(session.pr);
-        if (ciStatus === CI_STATUS.FAILING) return "ci_failed";
-
-        // Check reviews
-        const reviewDecision = await scm.getReviewDecision(session.pr);
-        if (reviewDecision === "changes_requested") return "changes_requested";
-        if (reviewDecision === "approved" || reviewDecision === "none") {
-          // Check merge readiness — treat "none" (no reviewers required)
-          // the same as "approved" so CI-green PRs reach "mergeable" status
-          // and fire the merge.ready event / approved-and-green reaction.
-          const mergeReady = await scm.getMergeability(session.pr);
-          if (mergeReady.mergeable) return "mergeable";
-          if (reviewDecision === "approved") return "approved";
-        }
-        if (reviewDecision === "pending") return "review_pending";
-
-        // 4b. Post-PR stuck detection: agent has a PR open but is idle beyond
-        // threshold. This catches the case where step 2's stuck check was
-        // bypassed (getActivityState returned null) or the idle timestamp
-        // wasn't available during step 2 but the session has been at pr_open
-        // for a long time. Without this, sessions get stuck at "pr_open" forever.
-        if (detectedIdleTimestamp && isIdleBeyondThreshold(session, detectedIdleTimestamp)) {
-          return "stuck";
-        }
-
-        return "pr_open";
-      } catch {
-        // SCM check failed — keep current status
-      }
-    }
-
-    // 5. Post-all stuck detection: if we detected idle in step 2 but had no PR,
-    // still check stuck threshold. This handles agents that finish without creating a PR.
-    if (detectedIdleTimestamp && isIdleBeyondThreshold(session, detectedIdleTimestamp)) {
-      return "stuck";
-    }
-
-    // 6. Default: if agent is active, it's working
-    if (
-      session.status === "spawning" ||
-      session.status === SESSION_STATUS.STUCK ||
-      session.status === SESSION_STATUS.NEEDS_INPUT
-    ) {
-      return "working";
-    }
-    return session.status;
-  }
-
-  /** Execute a reaction for a session. */
-  async function executeReaction(
-    sessionId: SessionId,
-    projectId: string,
-    reactionKey: string,
-    reactionConfig: ReactionConfig,
-  ): Promise<ReactionResult> {
-    const trackerKey = `${sessionId}:${reactionKey}`;
-    let tracker = reactionTrackers.get(trackerKey);
-
-    if (!tracker) {
-      tracker = { attempts: 0, firstTriggered: new Date() };
-      reactionTrackers.set(trackerKey, tracker);
-    }
-
-    // Increment attempts before checking escalation
-    tracker.attempts++;
-
-    // Check if we should escalate
-    const maxRetries = reactionConfig.retries ?? Infinity;
-    const escalateAfter = reactionConfig.escalateAfter;
-    let shouldEscalate = false;
-
-    if (tracker.attempts > maxRetries) {
-      shouldEscalate = true;
-    }
-
-    if (typeof escalateAfter === "string") {
-      const durationMs = parseDuration(escalateAfter);
-      if (durationMs > 0 && Date.now() - tracker.firstTriggered.getTime() > durationMs) {
-        shouldEscalate = true;
-      }
-    }
-
-    if (typeof escalateAfter === "number" && tracker.attempts > escalateAfter) {
-      shouldEscalate = true;
-    }
-
-    if (shouldEscalate) {
-      // Escalate to human
-      const event = createEvent("reaction.escalated", {
-        sessionId,
-        projectId,
-        message: `Reaction '${reactionKey}' escalated after ${tracker.attempts} attempts`,
-        data: { reactionKey, attempts: tracker.attempts },
-      });
-      await notifyHuman(event, reactionConfig.priority ?? "urgent");
-      return {
-        reactionType: reactionKey,
-        success: true,
-        action: "escalated",
-        escalated: true,
-      };
-    }
-
-    // Execute the reaction action
-    const action = reactionConfig.action ?? "notify";
-
-    switch (action) {
-      case "send-to-agent": {
-        if (reactionConfig.message) {
-          try {
-            await sessionManager.send(sessionId, reactionConfig.message);
-
-            return {
-              reactionType: reactionKey,
-              success: true,
-              action: "send-to-agent",
-              message: reactionConfig.message,
-              escalated: false,
-            };
-          } catch {
-            // Send failed — allow retry on next poll cycle (don't escalate immediately)
-            return {
-              reactionType: reactionKey,
-              success: false,
-              action: "send-to-agent",
-              escalated: false,
-            };
-          }
-        }
-        break;
-      }
-
-      case "notify": {
-        const event = createEvent("reaction.triggered", {
-          sessionId,
-          projectId,
-          message: `Reaction '${reactionKey}' triggered notification`,
-          data: { reactionKey },
-        });
-        await notifyHuman(event, reactionConfig.priority ?? "info");
-        return {
-          reactionType: reactionKey,
-          success: true,
-          action: "notify",
-          escalated: false,
-        };
-      }
-
-      case "auto-merge": {
-        // Auto-merge is handled by the SCM plugin
-        // For now, just notify
-        const event = createEvent("reaction.triggered", {
-          sessionId,
-          projectId,
-          message: `Reaction '${reactionKey}' triggered auto-merge`,
-          data: { reactionKey },
-        });
-        await notifyHuman(event, "action");
-        return {
-          reactionType: reactionKey,
-          success: true,
-          action: "auto-merge",
-          escalated: false,
-        };
-      }
-    }
-
-    return {
-      reactionType: reactionKey,
-      success: false,
-      action,
-      escalated: false,
-    };
-  }
-
-  function clearReactionTracker(sessionId: SessionId, reactionKey: string): void {
-    reactionTrackers.delete(`${sessionId}:${reactionKey}`);
-  }
-
-  function getReactionConfigForSession(
-    session: Session,
-    reactionKey: string,
-  ): ReactionConfig | null {
-    const project = config.projects[session.projectId];
-    const globalReaction = config.reactions[reactionKey];
-    const projectReaction = project?.reactions?.[reactionKey];
-    const reactionConfig = projectReaction
-      ? { ...globalReaction, ...projectReaction }
-      : globalReaction;
-    return reactionConfig ? (reactionConfig as ReactionConfig) : null;
-  }
-
-  function updateSessionMetadata(session: Session, updates: Partial<Record<string, string>>): void {
+  async function updateSessionMetadata(session: Session, updates: Partial<Record<string, string>>): Promise<void> {
     const project = config.projects[session.projectId];
     if (!project) return;
 
     const sessionsDir = getSessionsDir(config.configPath, project.path);
-    updateMetadata(sessionsDir, session.id, updates);
+    await metadataService.update(sessionsDir, session.id, updates);
 
     const cleaned = Object.fromEntries(
       Object.entries(session.metadata).filter(([key]) => {
@@ -528,160 +202,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     session.metadata = cleaned;
   }
 
-  function makeFingerprint(ids: string[]): string {
-    return [...ids].sort().join(",");
-  }
-
-  async function maybeDispatchReviewBacklog(
-    session: Session,
-    oldStatus: SessionStatus,
-    newStatus: SessionStatus,
-    transitionReaction?: { key: string; result: ReactionResult | null },
-  ): Promise<void> {
-    const project = config.projects[session.projectId];
-    if (!project || !session.pr) return;
-
-    const scm = project.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
-    if (!scm) return;
-
-    const humanReactionKey = "changes-requested";
-    const automatedReactionKey = "bugbot-comments";
-
-    if (newStatus === "merged" || newStatus === "killed") {
-      clearReactionTracker(session.id, humanReactionKey);
-      clearReactionTracker(session.id, automatedReactionKey);
-      updateSessionMetadata(session, {
-        lastPendingReviewFingerprint: "",
-        lastPendingReviewDispatchHash: "",
-        lastPendingReviewDispatchAt: "",
-        lastAutomatedReviewFingerprint: "",
-        lastAutomatedReviewDispatchHash: "",
-        lastAutomatedReviewDispatchAt: "",
-      });
-      return;
-    }
-
-    const [pendingResult, automatedResult] = await Promise.allSettled([
-      scm.getPendingComments(session.pr),
-      scm.getAutomatedComments(session.pr),
-    ]);
-
-    // null means "failed to fetch" — preserve existing metadata.
-    // [] means "confirmed no comments" — safe to clear.
-    const pendingComments =
-      pendingResult.status === "fulfilled" && Array.isArray(pendingResult.value)
-        ? pendingResult.value
-        : null;
-    const automatedComments =
-      automatedResult.status === "fulfilled" && Array.isArray(automatedResult.value)
-        ? automatedResult.value
-        : null;
-
-    // --- Pending (human) review comments ---
-    // null = SCM fetch failed; skip processing to preserve existing metadata.
-    if (pendingComments !== null) {
-      const pendingFingerprint = makeFingerprint(pendingComments.map((comment) => comment.id));
-      const lastPendingFingerprint = session.metadata["lastPendingReviewFingerprint"] ?? "";
-      const lastPendingDispatchHash = session.metadata["lastPendingReviewDispatchHash"] ?? "";
-
-      if (
-        pendingFingerprint !== lastPendingFingerprint &&
-        transitionReaction?.key !== humanReactionKey
-      ) {
-        clearReactionTracker(session.id, humanReactionKey);
-      }
-      if (pendingFingerprint !== lastPendingFingerprint) {
-        updateSessionMetadata(session, {
-          lastPendingReviewFingerprint: pendingFingerprint,
-        });
-      }
-
-      if (!pendingFingerprint) {
-        clearReactionTracker(session.id, humanReactionKey);
-        updateSessionMetadata(session, {
-          lastPendingReviewFingerprint: "",
-          lastPendingReviewDispatchHash: "",
-          lastPendingReviewDispatchAt: "",
-        });
-      } else if (
-        transitionReaction?.key === humanReactionKey &&
-        transitionReaction.result?.success
-      ) {
-        if (lastPendingDispatchHash !== pendingFingerprint) {
-          updateSessionMetadata(session, {
-            lastPendingReviewDispatchHash: pendingFingerprint,
-            lastPendingReviewDispatchAt: new Date().toISOString(),
-          });
-        }
-      } else if (
-        !(oldStatus !== newStatus && newStatus === "changes_requested") &&
-        pendingFingerprint !== lastPendingDispatchHash
-      ) {
-        const reactionConfig = getReactionConfigForSession(session, humanReactionKey);
-        if (
-          reactionConfig &&
-          reactionConfig.action &&
-          (reactionConfig.auto !== false || reactionConfig.action === "notify")
-        ) {
-          const result = await executeReaction(
-            session.id,
-            session.projectId,
-            humanReactionKey,
-            reactionConfig,
-          );
-          if (result.success) {
-            updateSessionMetadata(session, {
-              lastPendingReviewDispatchHash: pendingFingerprint,
-              lastPendingReviewDispatchAt: new Date().toISOString(),
-            });
-          }
-        }
-      }
-    }
-
-    // --- Automated (bot) review comments ---
-    if (automatedComments !== null) {
-      const automatedFingerprint = makeFingerprint(automatedComments.map((comment) => comment.id));
-      const lastAutomatedFingerprint = session.metadata["lastAutomatedReviewFingerprint"] ?? "";
-      const lastAutomatedDispatchHash = session.metadata["lastAutomatedReviewDispatchHash"] ?? "";
-
-      if (automatedFingerprint !== lastAutomatedFingerprint) {
-        clearReactionTracker(session.id, automatedReactionKey);
-        updateSessionMetadata(session, {
-          lastAutomatedReviewFingerprint: automatedFingerprint,
-        });
-      }
-
-      if (!automatedFingerprint) {
-        clearReactionTracker(session.id, automatedReactionKey);
-        updateSessionMetadata(session, {
-          lastAutomatedReviewFingerprint: "",
-          lastAutomatedReviewDispatchHash: "",
-          lastAutomatedReviewDispatchAt: "",
-        });
-      } else if (automatedFingerprint !== lastAutomatedDispatchHash) {
-        const reactionConfig = getReactionConfigForSession(session, automatedReactionKey);
-        if (
-          reactionConfig &&
-          reactionConfig.action &&
-          (reactionConfig.auto !== false || reactionConfig.action === "notify")
-        ) {
-          const result = await executeReaction(
-            session.id,
-            session.projectId,
-            automatedReactionKey,
-            reactionConfig,
-          );
-          if (result.success) {
-            updateSessionMetadata(session, {
-              lastAutomatedReviewDispatchHash: automatedFingerprint,
-              lastAutomatedReviewDispatchAt: new Date().toISOString(),
-            });
-          }
-        }
-      }
-    }
-  }
+  const reviewBacklogManager = createReviewBacklogManager(config, registry, reactionExecutor, updateSessionMetadata);
 
   /** Send a notification to all configured notifiers. */
   async function notifyHuman(event: OrchestratorEvent, priority: EventPriority): Promise<void> {
@@ -708,14 +229,14 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const tracked = states.get(session.id);
     const oldStatus =
       tracked ?? ((session.metadata?.["status"] as SessionStatus | undefined) || session.status);
-    const newStatus = await determineStatus(session);
+    const newStatus = await stateDetector.determineStatus(session);
     let transitionReaction: { key: string; result: ReactionResult | null } | undefined;
 
     if (newStatus !== oldStatus) {
       const correlationId = createCorrelationId("lifecycle-transition");
       // State transition detected
       states.set(session.id, newStatus);
-      updateSessionMetadata(session, { status: newStatus });
+      await updateSessionMetadata(session, { status: newStatus });
       observer.recordOperation({
         metric: "lifecycle_poll",
         operation: "lifecycle.transition",
@@ -737,7 +258,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       if (oldEventType) {
         const oldReactionKey = eventToReactionKey(oldEventType);
         if (oldReactionKey) {
-          clearReactionTracker(session.id, oldReactionKey);
+          reactionExecutor.clearReactionTracker(session.id, oldReactionKey);
         }
       }
 
@@ -748,12 +269,12 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         const reactionKey = eventToReactionKey(eventType);
 
         if (reactionKey) {
-          const reactionConfig = getReactionConfigForSession(session, reactionKey);
+          const reactionConfig = reactionExecutor.getReactionConfigForSession(session, reactionKey);
 
           if (reactionConfig && reactionConfig.action) {
             // auto: false skips automated agent actions but still allows notifications
             if (reactionConfig.auto !== false || reactionConfig.action === "notify") {
-              const reactionResult = await executeReaction(
+              const reactionResult = await reactionExecutor.execute(
                 session.id,
                 session.projectId,
                 reactionKey,
@@ -788,7 +309,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       states.set(session.id, newStatus);
     }
 
-    await maybeDispatchReviewBacklog(session, oldStatus, newStatus, transitionReaction);
+    await reviewBacklogManager.maybeDispatchReviewBacklog(session, oldStatus, newStatus, transitionReaction);
   }
 
   /** Run one polling cycle across all sessions. */
@@ -822,12 +343,8 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           states.delete(trackedId);
         }
       }
-      for (const trackerKey of reactionTrackers.keys()) {
-        const sessionId = trackerKey.split(":")[0];
-        if (sessionId && !currentSessionIds.has(sessionId)) {
-          reactionTrackers.delete(trackerKey);
-        }
-      }
+
+      reactionExecutor.pruneTrackers(currentSessionIds);
 
       // Check if all sessions are complete (trigger reaction only once)
       const activeSessions = sessions.filter((s) => s.status !== "merged" && s.status !== "killed");
@@ -840,7 +357,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           const reactionConfig = config.reactions[reactionKey];
           if (reactionConfig && reactionConfig.action) {
             if (reactionConfig.auto !== false || reactionConfig.action === "notify") {
-              await executeReaction("system", "all", reactionKey, reactionConfig as ReactionConfig);
+              await reactionExecutor.execute("system", "all", reactionKey, reactionConfig as ReactionConfig);
             }
           }
         }
@@ -894,7 +411,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   }
 
   return {
-    start(intervalMs = 30_000): void {
+    start(intervalMs = LIFECYCLE_DEFAULTS.POLL_INTERVAL_MS): void {
       if (pollTimer) return; // Already running
       pollTimer = setInterval(() => void pollAll(), intervalMs);
       // Run immediately on start
