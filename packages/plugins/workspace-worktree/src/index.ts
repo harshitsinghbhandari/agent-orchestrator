@@ -116,11 +116,20 @@ export function create(config?: Record<string, unknown>): Workspace {
         }
       }
 
-      const baseRef = await resolveBaseRef(
-        repoPath,
-        cfg.baseBranch ?? cfg.project.defaultBranch,
-        { hasOrigin },
-      );
+      const baseBranchName = cfg.baseBranch ?? cfg.project.defaultBranch;
+      let baseRef: string;
+      try {
+        baseRef = await resolveBaseRef(repoPath, baseBranchName, { hasOrigin });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (cfg.baseBranch) {
+          throw new Error(
+            `Failed to resolve base ref for configured base branch "${cfg.baseBranch}": ${msg}`,
+            { cause: err },
+          );
+        }
+        throw err;
+      }
 
       // Create worktree with a new branch
       try {
