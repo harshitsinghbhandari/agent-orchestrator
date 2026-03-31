@@ -307,6 +307,34 @@ describe("spawn command", () => {
     });
   });
 
+  it("passes --base-branch flag to sessionManager.spawn()", async () => {
+    const fakeSession: Session = {
+      id: "app-1",
+      projectId: "my-app",
+      status: "spawning",
+      activity: null,
+      branch: "feat/INT-123",
+      issueId: "INT-123",
+      pr: null,
+      workspacePath: "/tmp/wt",
+      runtimeHandle: { id: "hash-app-1", runtimeName: "tmux", data: {} },
+      agentInfo: null,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      metadata: {},
+    };
+
+    mockSessionManager.spawn.mockResolvedValue(fakeSession);
+
+    await program.parseAsync(["node", "test", "spawn", "--base-branch", "develop", "INT-123"]);
+
+    expect(mockSessionManager.spawn).toHaveBeenCalledWith({
+      projectId: "my-app",
+      issueId: "INT-123",
+      baseBranch: "develop",
+    });
+  });
+
   it("warns and exits when two positional args given (old syntax)", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
