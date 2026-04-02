@@ -525,6 +525,7 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker",
           package: "@acme/ao-plugin-tracker-jira",
           expectedPluginName: "jira",
@@ -572,6 +573,7 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker",
           package: "@acme/ao-plugin-tracker-jira",
           // No expectedPluginName - should accept any manifest.name
@@ -617,9 +619,10 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "notifiers.myteams",
+          location: { kind: "notifier", notifierId: "myteams" },
           slot: "notifier",
           package: "@acme/ao-plugin-notifier-teams",
-          // No expectedPluginName
+          // No expectedPluginName - will accept any manifest.name
         },
       ],
     });
@@ -660,6 +663,7 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker", // Expected tracker
           package: "@acme/ao-plugin-tracker-jira",
         },

@@ -113,9 +113,10 @@ function validateManifestName(
 ): void {
   // If the user specified an explicit plugin name, validate it matches the manifest
   if (entry.expectedPluginName && entry.expectedPluginName !== manifest.name) {
+    const specifierType = entry.package ? "package" : "path";
     throw new Error(
       `Plugin manifest.name mismatch at ${entry.source}: ` +
-        `expected "${entry.expectedPluginName}" but package "${specifier}" has manifest.name "${manifest.name}". ` +
+        `expected "${entry.expectedPluginName}" but ${specifierType} "${specifier}" has manifest.name "${manifest.name}". ` +
         `Either update the 'plugin' field to match the actual manifest.name, or remove it to auto-infer.`,
     );
   }
@@ -124,27 +125,26 @@ function validateManifestName(
 /**
  * Update the config with the actual plugin name after loading an external plugin.
  * This ensures resolvePlugins() can look up the plugin by its manifest.name.
+ *
+ * Uses structured location data to avoid ambiguity from parsing dotted strings
+ * (project/notifier keys can legally contain dots).
  */
 function updateConfigWithManifestName(
   manifest: PluginManifest,
   entry: ExternalPluginEntryRef,
   config: OrchestratorConfig,
 ): void {
-  const { source, slot } = entry;
+  const { location, slot, source } = entry;
 
-  // Parse the source to find the config location
-  // Format: "projects.<projectId>.tracker" or "projects.<projectId>.scm" or "notifiers.<notifierId>"
-  const parts = source.split(".");
-
-  if (parts[0] === "projects" && parts.length === 3) {
-    const projectId = parts[1];
-    const configType = parts[2] as "tracker" | "scm";
+  // Use structured location to update the config
+  if (location.kind === "project") {
+    const { projectId, configType } = location;
     const project = config.projects[projectId];
     if (project?.[configType]) {
       project[configType]!.plugin = manifest.name;
     }
-  } else if (parts[0] === "notifiers" && parts.length === 2) {
-    const notifierId = parts[1];
+  } else if (location.kind === "notifier") {
+    const { notifierId } = location;
     const notifierConfig = config.notifiers[notifierId];
     if (notifierConfig) {
       notifierConfig.plugin = manifest.name;
