@@ -11,6 +11,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
+  ExternalPluginEntryRef,
   InstalledPluginConfig,
   PluginSlot,
   PluginManifest,
@@ -82,6 +83,81 @@ function extractPluginConfig(
   }
 
   return undefined;
+}
+
+/**
+ * Find the external plugin entry that matches a given plugin config.
+ * Used for manifest.name validation when loading inline tracker/scm/notifier plugins.
+ */
+function findExternalPluginEntry(
+  plugin: InstalledPluginConfig,
+  externalEntries: ExternalPluginEntryRef[] | undefined,
+): ExternalPluginEntryRef | undefined {
+  if (!externalEntries) return undefined;
+
+  return externalEntries.find((entry) => {
+    if (plugin.package && entry.package === plugin.package) return true;
+    if (plugin.path && entry.path === plugin.path) return true;
+    return false;
+  });
+}
+
+/**
+ * Validate that a plugin's manifest.name matches the expected name (if specified).
+ * Throws an error if there's a mismatch.
+ */
+function validateManifestName(
+  manifest: PluginManifest,
+  entry: ExternalPluginEntryRef,
+  specifier: string,
+): void {
+  // If the user specified an explicit plugin name, validate it matches the manifest
+  if (entry.expectedPluginName && entry.expectedPluginName !== manifest.name) {
+    throw new Error(
+      `Plugin manifest.name mismatch at ${entry.source}: ` +
+        `expected "${entry.expectedPluginName}" but package "${specifier}" has manifest.name "${manifest.name}". ` +
+        `Either update the 'plugin' field to match the actual manifest.name, or remove it to auto-infer.`,
+    );
+  }
+}
+
+/**
+ * Update the config with the actual plugin name after loading an external plugin.
+ * This ensures resolvePlugins() can look up the plugin by its manifest.name.
+ */
+function updateConfigWithManifestName(
+  manifest: PluginManifest,
+  entry: ExternalPluginEntryRef,
+  config: OrchestratorConfig,
+): void {
+  const { source, slot } = entry;
+
+  // Parse the source to find the config location
+  // Format: "projects.<projectId>.tracker" or "projects.<projectId>.scm" or "notifiers.<notifierId>"
+  const parts = source.split(".");
+
+  if (parts[0] === "projects" && parts.length === 3) {
+    const projectId = parts[1];
+    const configType = parts[2] as "tracker" | "scm";
+    const project = config.projects[projectId];
+    if (project?.[configType]) {
+      project[configType]!.plugin = manifest.name;
+    }
+  } else if (parts[0] === "notifiers" && parts.length === 2) {
+    const notifierId = parts[1];
+    const notifierConfig = config.notifiers[notifierId];
+    if (notifierConfig) {
+      notifierConfig.plugin = manifest.name;
+    }
+  }
+
+  // Also validate slot matches
+  if (manifest.slot !== slot) {
+    console.warn(
+      `[plugin-registry] Plugin at ${source} has slot "${manifest.slot}" but was configured as "${slot}". ` +
+        `The plugin will be registered under its declared slot "${manifest.slot}".`,
+    );
+  }
 }
 
 export function isPluginModule(value: unknown): value is PluginModule {
@@ -261,6 +337,7 @@ export function createPluginRegistry(): PluginRegistry {
       await this.loadBuiltins(config, importFn);
 
       const doImport = importFn ?? ((pkg: string) => import(pkg));
+      const externalEntries = config._externalPluginEntries;
 
       for (const plugin of config.plugins ?? []) {
         if (plugin.enabled === false) continue;
@@ -274,6 +351,15 @@ export function createPluginRegistry(): PluginRegistry {
         try {
           const mod = normalizeImportedPluginModule(await doImport(specifier));
           if (!mod) continue;
+
+          // Check if this plugin was auto-added from inline tracker/scm/notifier config
+          const externalEntry = findExternalPluginEntry(plugin, externalEntries);
+          if (externalEntry) {
+            // Validate manifest.name matches expectedPluginName (if specified)
+            validateManifestName(mod.manifest, externalEntry, specifier);
+            // Update the config with the actual manifest.name
+            updateConfigWithManifestName(mod.manifest, externalEntry, config);
+          }
 
           const pluginConfig = extractPluginConfig(mod.manifest.slot, mod.manifest.name, config);
           this.register(mod, pluginConfig);
