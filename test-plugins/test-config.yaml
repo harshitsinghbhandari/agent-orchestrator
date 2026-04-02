@@ -1,0 +1,47 @@
+# Test configuration for external plugin loading
+# This config references all three mock plugins via path:
+
+defaults:
+  runtime: tmux
+  agent: claude-code
+  workspace: worktree
+  notifiers:
+    - mock
+
+readyThresholdMs: 300000
+
+projects:
+  test-project:
+    name: Test Project
+    repo: test-org/test-repo
+    path: /tmp/test-repo
+    defaultBranch: main
+    sessionPrefix: test
+    # External tracker plugin via path
+    tracker:
+      path: ./tracker-mock
+    # External SCM plugin via path
+    scm:
+      path: ./scm-mock
+
+notifiers:
+  # External notifier plugin via path
+  mock:
+    path: ./notifier-mock
+    prefix: "[TEST]"
+    silent: false
+
+notificationRouting:
+  urgent:
+    - mock
+  action:
+    - mock
+  warning:
+    - mock
+  info:
+    - mock
+
+reactions:
+  ciFailure:
+    auto: false
+    action: notify
