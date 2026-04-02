@@ -485,6 +485,7 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker",
           package: "@acme/ao-plugin-tracker-jira",
           expectedPluginName: "jira",
@@ -525,6 +526,7 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker",
           package: "@acme/ao-plugin-tracker-jira",
           expectedPluginName: "jira",
@@ -533,14 +535,13 @@ describe("External plugin manifest validation", () => {
     });
 
     // Should warn but not throw (error is caught and logged)
-    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     await registry.loadFromConfig(config, importFn);
 
-    expect(consoleSpy).toHaveBeenCalledWith(
+    expect(stderrSpy).toHaveBeenCalledWith(
       expect.stringContaining("Failed to load plugin"),
-      expect.any(Error),
     );
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 
   it("infers plugin name when expectedPluginName is not specified", async () => {
@@ -572,6 +573,7 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker",
           package: "@acme/ao-plugin-tracker-jira",
           // No expectedPluginName - should accept any manifest.name
@@ -617,9 +619,10 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "notifiers.myteams",
+          location: { kind: "notifier", notifierId: "myteams" },
           slot: "notifier",
           package: "@acme/ao-plugin-notifier-teams",
-          // No expectedPluginName
+          // No expectedPluginName - will accept any manifest.name
         },
       ],
     });
@@ -660,18 +663,80 @@ describe("External plugin manifest validation", () => {
       _externalPluginEntries: [
         {
           source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
           slot: "tracker", // Expected tracker
           package: "@acme/ao-plugin-tracker-jira",
         },
       ],
     });
 
-    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     await registry.loadFromConfig(config, importFn);
 
-    expect(consoleSpy).toHaveBeenCalledWith(
+    expect(stderrSpy).toHaveBeenCalledWith(
       expect.stringContaining("has slot \"notifier\" but was configured as \"tracker\""),
     );
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("updates all projects sharing same external plugin with manifest.name", async () => {
+    const registry = createPluginRegistry();
+
+    const mockPlugin = {
+      manifest: { name: "jira-cloud", slot: "tracker" as const, version: "1.0.0", description: "Jira Cloud" },
+      create: vi.fn(() => ({})),
+    };
+
+    const importFn = vi.fn(async () => mockPlugin);
+
+    const config = makeOrchestratorConfig({
+      configPath: "/test/config.yaml",
+      plugins: [
+        { name: "jira", source: "npm", package: "@acme/ao-plugin-tracker-jira", enabled: true },
+      ],
+      projects: {
+        proj1: {
+          path: "/repos/test1",
+          repo: "org/test1",
+          name: "proj1",
+          defaultBranch: "main",
+          sessionPrefix: "test1",
+          tracker: { plugin: "jira", package: "@acme/ao-plugin-tracker-jira" },
+        },
+        proj2: {
+          path: "/repos/test2",
+          repo: "org/test2",
+          name: "proj2",
+          defaultBranch: "main",
+          sessionPrefix: "test2",
+          // Same external plugin as proj1
+          tracker: { plugin: "jira", package: "@acme/ao-plugin-tracker-jira" },
+        },
+      },
+      _externalPluginEntries: [
+        {
+          source: "projects.proj1.tracker",
+          location: { kind: "project", projectId: "proj1", configType: "tracker" },
+          slot: "tracker",
+          package: "@acme/ao-plugin-tracker-jira",
+          // No expectedPluginName - will accept any manifest.name
+        },
+        {
+          source: "projects.proj2.tracker",
+          location: { kind: "project", projectId: "proj2", configType: "tracker" },
+          slot: "tracker",
+          package: "@acme/ao-plugin-tracker-jira",
+          // No expectedPluginName - will accept any manifest.name
+        },
+      ],
+    });
+
+    await registry.loadFromConfig(config, importFn);
+
+    // Both projects should be updated with the actual manifest.name
+    expect(config.projects.proj1.tracker?.plugin).toBe("jira-cloud");
+    expect(config.projects.proj2.tracker?.plugin).toBe("jira-cloud");
+    // Plugin should be registered under manifest.name
+    expect(registry.get("tracker", "jira-cloud")).not.toBeNull();
   });
 });
