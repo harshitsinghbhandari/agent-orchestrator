@@ -76,7 +76,16 @@ function extractPluginConfig(
       const hasExplicitPlugin = typeof configuredPlugin === "string" && configuredPlugin.length > 0;
       const matches = hasExplicitPlugin ? configuredPlugin === name : notifierName === name;
       if (matches) {
-        const { plugin: _plugin, ...rest } = notifierConfig as Record<string, unknown>;
+        // Strip loading metadata fields (plugin, package, path) from config passed to plugin.
+        // These are used for plugin resolution, not plugin-specific configuration.
+        // The path field is particularly important to strip since plugins may use it
+        // for their own purposes (e.g., API endpoint path).
+        const {
+          plugin: _plugin,
+          package: _package,
+          path: _path,
+          ...rest
+        } = notifierConfig as Record<string, unknown>;
         return config.configPath ? { ...rest, configPath: config.configPath } : rest;
       }
     }
