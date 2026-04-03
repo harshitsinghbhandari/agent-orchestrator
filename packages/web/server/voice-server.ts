@@ -19,8 +19,8 @@ import {
   type FunctionDeclaration,
 } from "@google/genai";
 
-// MVP function declarations using proper SDK types
-const MVP_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
+// V2 function declarations using proper SDK types
+const V2_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "list_sessions",
     description: "List active agent sessions with their current status",
@@ -49,6 +49,51 @@ const MVP_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       required: ["sessionId"],
     },
   },
+  {
+    name: "get_ci_failures",
+    description:
+      "Get failed CI checks for a session's PR. Use this when asked about CI failures, what broke, or why CI is failing.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the last-discussed session from context.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_review_comments",
+    description:
+      "Get pending/unresolved review comments for a session's PR. Use this when asked about review feedback or comments.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the last-discussed session from context.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_session_changes",
+    description:
+      "Get what changed in a session: files modified, lines added/deleted, commit summary. Use this when asked about changes or diffs.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the last-discussed session from context.",
+        },
+      },
+    },
+  },
 ];
 
 const SYSTEM_INSTRUCTION = `You are the voice interface for Agent Orchestrator (AO), a system that manages parallel AI coding agents.
@@ -66,10 +111,21 @@ Event announcements should be:
 - Action-oriented ("Session ao-94 needs your attention — CI is failing")
 - Not repetitive (don't re-explain what the user already knows)
 
+Conversation context:
+- After discussing a specific session, remember it for follow-up queries
+- When asked "what failed?" or "show me the comments" without a session ID, use the last-discussed session
+- If no session was previously discussed, ask the user to specify one
+
+Available functions:
+- list_sessions: List sessions, optionally filtered by status
+- get_session_summary: Get detailed summary of a specific session
+- get_ci_failures: Get failed CI checks for a session's PR
+- get_review_comments: Get unresolved review comments for a session's PR
+- get_session_changes: Get what changed in a session (additions, deletions, PR info)
+
 When using functions:
-- Use list_sessions to get current session states
-- Use get_session_summary for details on a specific session
-- Always call the function first, then speak based on the results`;
+- Always call the function first, then speak based on the results
+- For follow-up queries, you can omit the session ID to use the previously discussed session`;
 
 // Dedupe state
 const DEDUPE_WINDOW_MS = 30_000;
@@ -114,6 +170,19 @@ interface SessionState {
 
 const previousSessionStates = new Map<string, SessionState>();
 
+interface DashboardCICheck {
+  name: string;
+  status: "pending" | "running" | "passed" | "failed" | "skipped";
+  url?: string;
+}
+
+interface DashboardUnresolvedComment {
+  url: string;
+  path: string;
+  author: string;
+  body: string;
+}
+
 interface DashboardSession {
   id: string;
   projectId: string;
@@ -125,12 +194,19 @@ interface DashboardSession {
     number: number;
     url: string;
     title: string;
+    branch: string;
+    baseBranch: string;
+    state: string;
+    additions: number;
+    deletions: number;
     ciStatus: string;
+    ciChecks: DashboardCICheck[];
     reviewDecision: string;
     mergeability: {
       mergeable: boolean;
     };
     unresolvedThreads: number;
+    unresolvedComments: DashboardUnresolvedComment[];
   } | null;
 }
 
@@ -190,6 +266,12 @@ function generateEventMessage(eventType: string, session: DashboardSession): str
   }
 }
 
+// Conversation context for V2 session tracking
+interface ConversationContext {
+  lastSessionId: string | null;
+  lastUpdatedAt: number;
+}
+
 // Server state
 interface VoiceServerState {
   browserClient: WebSocket | null;
@@ -197,6 +279,7 @@ interface VoiceServerState {
   sseAbortController: AbortController | null;
   isConnected: boolean;
   sessions: DashboardSession[];
+  context: ConversationContext;
 }
 
 const state: VoiceServerState = {
@@ -205,6 +288,10 @@ const state: VoiceServerState = {
   sseAbortController: null,
   isConnected: false,
   sessions: [],
+  context: {
+    lastSessionId: null,
+    lastUpdatedAt: Date.now(),
+  },
 };
 
 // Browser → Server message types
@@ -313,14 +400,187 @@ function handleGetSessionSummary(args: { sessionId: string }): string {
   return lines.join("\n");
 }
 
-function executeFunctionCall(name: string, args: Record<string, unknown>): string {
+/**
+ * Find a session by ID (supports exact, case-insensitive, and partial matching)
+ */
+function findSessionById(sessionId: string): DashboardSession | null {
+  // Try exact match first
+  let session = state.sessions.find((s) => s.id === sessionId);
+  if (session) return session;
+
+  // Try case-insensitive match
+  session = state.sessions.find((s) => s.id.toLowerCase() === sessionId.toLowerCase());
+  if (session) return session;
+
+  // Try partial match (e.g., "94" matches "ao-94")
+  session = state.sessions.find((s) => s.id.endsWith(sessionId) || s.id.includes(sessionId));
+  return session ?? null;
+}
+
+/**
+ * Resolve a session from args or context.
+ */
+function resolveSession(sessionId: string | undefined): { session: DashboardSession | null; error: string | null } {
+  if (sessionId) {
+    const session = findSessionById(sessionId);
+    if (!session) {
+      return { session: null, error: `Session ${sessionId} not found. Use list_sessions to see available sessions.` };
+    }
+    return { session, error: null };
+  }
+
+  // Try context
+  if (state.context.lastSessionId) {
+    const session = findSessionById(state.context.lastSessionId);
+    if (session) {
+      return { session, error: null };
+    }
+    return {
+      session: null,
+      error: `The previous session (${state.context.lastSessionId}) is no longer available. Please specify a session ID.`,
+    };
+  }
+
+  return {
+    session: null,
+    error: "No session specified and no previous session in context. Please specify a session ID like 'ao-94'.",
+  };
+}
+
+/**
+ * Handle get_ci_failures function (V2)
+ */
+function handleGetCIFailures(args: { sessionId?: string }): { result: string; sessionId: string | null } {
+  const { session, error } = resolveSession(args.sessionId);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!session.pr) {
+    return { result: `Session ${session.id} doesn't have a PR yet.`, sessionId: session.id };
+  }
+
+  const pr = session.pr;
+  const failedChecks = pr.ciChecks.filter((c) => c.status === "failed");
+
+  if (failedChecks.length === 0) {
+    if (pr.ciStatus === "passing") {
+      return { result: `No CI failures in session ${session.id}. All ${pr.ciChecks.length} checks are passing.`, sessionId: session.id };
+    }
+    if (pr.ciStatus === "pending") {
+      return { result: `CI is still running for session ${session.id}. ${pr.ciChecks.length} checks in progress.`, sessionId: session.id };
+    }
+    return { result: `No CI checks found for session ${session.id}.`, sessionId: session.id };
+  }
+
+  const lines: string[] = [];
+  lines.push(`Found ${failedChecks.length} failing CI check${failedChecks.length === 1 ? "" : "s"} for session ${session.id}:`);
+  for (const check of failedChecks) {
+    lines.push(`\n• ${check.name}`);
+    if (check.url) lines.push(`  URL: ${check.url}`);
+  }
+  const passingCount = pr.ciChecks.filter((c) => c.status === "passed").length;
+  const pendingCount = pr.ciChecks.filter((c) => c.status === "pending" || c.status === "running").length;
+  lines.push(`\nSummary: ${failedChecks.length} failed, ${passingCount} passed, ${pendingCount} pending`);
+
+  return { result: lines.join("\n"), sessionId: session.id };
+}
+
+/**
+ * Handle get_review_comments function (V2)
+ */
+function handleGetReviewComments(args: { sessionId?: string }): { result: string; sessionId: string | null } {
+  const { session, error } = resolveSession(args.sessionId);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!session.pr) {
+    return { result: `Session ${session.id} doesn't have a PR yet.`, sessionId: session.id };
+  }
+
+  const pr = session.pr;
+  const comments = pr.unresolvedComments;
+
+  if (comments.length === 0) {
+    if (pr.reviewDecision === "approved") {
+      return { result: `No pending review comments for session ${session.id}. PR is approved!`, sessionId: session.id };
+    }
+    if (pr.reviewDecision === "changes_requested") {
+      return { result: `Session ${session.id} has changes requested but no specific comments are available.`, sessionId: session.id };
+    }
+    return { result: `No review comments found for session ${session.id}.`, sessionId: session.id };
+  }
+
+  const lines: string[] = [];
+  lines.push(`Found ${comments.length} unresolved review comment${comments.length === 1 ? "" : "s"} for session ${session.id}:`);
+  for (const comment of comments) {
+    lines.push(`\n• From ${comment.author}:`);
+    if (comment.path) lines.push(`  File: ${comment.path}`);
+    const body = comment.body.length > 200 ? comment.body.slice(0, 197) + "..." : comment.body;
+    lines.push(`  "${body}"`);
+  }
+
+  return { result: lines.join("\n"), sessionId: session.id };
+}
+
+/**
+ * Handle get_session_changes function (V2)
+ */
+function handleGetSessionChanges(args: { sessionId?: string }): { result: string; sessionId: string | null } {
+  const { session, error } = resolveSession(args.sessionId);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!session.pr) {
+    return { result: `Session ${session.id} doesn't have a PR yet. No changes to report.`, sessionId: session.id };
+  }
+
+  const pr = session.pr;
+  const lines: string[] = [];
+  lines.push(`Changes in session ${session.id}:`);
+  lines.push(`\nPR: #${pr.number} — ${pr.title}`);
+  lines.push(`Branch: ${pr.branch} → ${pr.baseBranch}`);
+  lines.push(`\nStats: +${pr.additions} additions, -${pr.deletions} deletions`);
+  const net = pr.additions - pr.deletions;
+  lines.push(`Net change: ${net >= 0 ? "+" : ""}${net} lines`);
+  if (session.summary) {
+    const summary = session.summary.length > 150 ? session.summary.slice(0, 147) + "..." : session.summary;
+    lines.push(`\nSummary: ${summary}`);
+  }
+  lines.push(`\nPR Status: ${pr.state}`);
+  lines.push(`CI: ${pr.ciStatus}`);
+  lines.push(`Review: ${pr.reviewDecision}`);
+
+  return { result: lines.join("\n"), sessionId: session.id };
+}
+
+/**
+ * Execute a function call (V2 with context support)
+ */
+function executeFunctionCall(name: string, args: Record<string, unknown>): { result: string; sessionId: string | null } {
   switch (name) {
     case "list_sessions":
-      return handleListSessions(args as { status?: string });
-    case "get_session_summary":
-      return handleGetSessionSummary(args as { sessionId: string });
+      return { result: handleListSessions(args as { status?: string }), sessionId: null };
+
+    case "get_session_summary": {
+      const sessionId = (args as { sessionId: string }).sessionId;
+      const session = findSessionById(sessionId);
+      return { result: handleGetSessionSummary(args as { sessionId: string }), sessionId: session?.id ?? null };
+    }
+
+    case "get_ci_failures":
+      return handleGetCIFailures(args as { sessionId?: string });
+
+    case "get_review_comments":
+      return handleGetReviewComments(args as { sessionId?: string });
+
+    case "get_session_changes":
+      return handleGetSessionChanges(args as { sessionId?: string });
+
     default:
-      return `Unknown function: ${name}`;
+      return { result: `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`, sessionId: null };
   }
 }
 
@@ -351,7 +611,14 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
 
       // Refresh sessions before function call
       state.sessions = await fetchSessions();
-      const result = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {});
+      const { result, sessionId } = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {});
+
+      // Update conversation context if a session was resolved (V2)
+      if (sessionId) {
+        state.context.lastSessionId = sessionId;
+        state.context.lastUpdatedAt = Date.now();
+        console.log(`[voice] Context updated: lastSessionId = ${sessionId}`);
+      }
 
       if (state.geminiSession) {
         await state.geminiSession.sendToolResponse({
@@ -387,7 +654,7 @@ async function connectToGemini(): Promise<void> {
         systemInstruction: {
           parts: [{ text: SYSTEM_INSTRUCTION }],
         },
-        tools: [{ functionDeclarations: MVP_FUNCTION_DECLARATIONS }],
+        tools: [{ functionDeclarations: V2_FUNCTION_DECLARATIONS }],
       },
       callbacks: {
         onopen: () => {
@@ -587,6 +854,9 @@ wss.on("connection", (ws) => {
       state.browserClient = null;
       stopSSESubscription();
       disconnectFromGemini().catch(console.error);
+      // Reset conversation context (V2)
+      state.context.lastSessionId = null;
+      state.context.lastUpdatedAt = Date.now();
     }
   });
 

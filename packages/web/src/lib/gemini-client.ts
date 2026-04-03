@@ -14,7 +14,7 @@ import {
   type Session,
   type FunctionDeclaration,
 } from "@google/genai";
-import { executeFunctionCall } from "./voice-functions";
+import { executeFunctionCall, createConversationContext, type ConversationContext } from "./voice-functions";
 import type { DashboardSession } from "./types";
 
 /**
@@ -98,7 +98,8 @@ export interface GeminiCallbacks {
   onStateChange?: (state: GeminiSessionState) => void;
   onAudio?: (chunk: AudioChunk) => void;
   onError?: (error: Error) => void;
-  onFunctionCall?: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /** V2: Now returns FunctionResult with result string and optional sessionId for context */
+  onFunctionCall?: (name: string, args: Record<string, unknown>) => Promise<{ result: string; sessionId: string | null }>;
 }
 
 /**
@@ -269,10 +270,11 @@ export class GeminiLiveClient {
       for (const fc of message.toolCall.functionCalls) {
         if (!fc.name || !fc.id) continue;
 
-        const result = await this.callbacks.onFunctionCall?.(
+        const funcResult = await this.callbacks.onFunctionCall?.(
           fc.name,
           (fc.args as Record<string, unknown>) ?? {},
         );
+        const result = funcResult?.result;
 
         // Send function response back to Gemini
         if (this.session && result) {
@@ -322,15 +324,26 @@ export class GeminiLiveClient {
 }
 
 /**
- * Create a Gemini Live client with session data fetching
+ * Create a Gemini Live client with session data fetching and context tracking (V2)
  */
 export function createGeminiClient(
   fetchSessions: () => Promise<DashboardSession[]>,
 ): GeminiLiveClient {
+  // V2: Track conversation context for session retention
+  const context: ConversationContext = createConversationContext();
+
   const client = new GeminiLiveClient({
     onFunctionCall: async (name, args) => {
       const sessions = await fetchSessions();
-      return executeFunctionCall(name, args, sessions);
+      const result = executeFunctionCall(name, args, sessions, context);
+
+      // V2: Update context if session was resolved
+      if (result.sessionId) {
+        context.lastSessionId = result.sessionId;
+        context.lastUpdatedAt = Date.now();
+      }
+
+      return result;
     },
   });
 
