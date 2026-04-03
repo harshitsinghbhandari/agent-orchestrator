@@ -16,7 +16,7 @@
  * - follow_session: Start following a session (sets focus + announces updates)
  */
 
-import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "./types";
+import { getAttentionLevel, type DashboardSession, type AttentionLevel, type DashboardCICheck } from "./types.js";
 
 // =============================================================================
 // CONVERSATION CONTEXT (V2)
@@ -574,7 +574,7 @@ export function handleGetCIFailures(
   }
 
   const pr = session.pr;
-  const failedChecks = pr.ciChecks.filter((c) => c.status === "failed");
+  const failedChecks = pr.ciChecks.filter((c: DashboardCICheck) => c.status === "failed");
 
   if (failedChecks.length === 0) {
     if (pr.ciStatus === "passing") {
@@ -606,8 +606,8 @@ export function handleGetCIFailures(
   }
 
   // Add summary
-  const passingCount = pr.ciChecks.filter((c) => c.status === "passed").length;
-  const pendingCount = pr.ciChecks.filter((c) => c.status === "pending" || c.status === "running").length;
+  const passingCount = pr.ciChecks.filter((c: DashboardCICheck) => c.status === "passed").length;
+  const pendingCount = pr.ciChecks.filter((c: DashboardCICheck) => c.status === "pending" || c.status === "running").length;
   lines.push(`\nSummary: ${failedChecks.length} failed, ${passingCount} passed, ${pendingCount} pending`);
 
   return { result: lines.join("\n"), sessionId: session.id };
