@@ -18,7 +18,7 @@ export type {
 } from "@composio/ao-core/types";
 
 // Re-export global pause state from shared lib (provider-agnostic state contract)
-export type { GlobalPauseState } from "./global-pause";
+export type { GlobalPauseState } from "./global-pause.js";
 
 import {
   ACTIVITY_STATE,
