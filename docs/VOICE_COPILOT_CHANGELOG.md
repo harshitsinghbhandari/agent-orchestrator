@@ -4,7 +4,69 @@
 
 The Voice Copilot is a new feature that adds **spoken situational awareness** to Agent Orchestrator using the Gemini Live API. It announces important events (CI failures, review requests, stuck sessions) and answers questions about session status via voice.
 
-This is an **MVP implementation** that focuses on:
+---
+
+## V2 — Full Query Support + Context Retention
+
+### New Features
+
+**3 New Query Functions:**
+
+| Function | Description | Example Queries |
+|----------|-------------|-----------------|
+| `get_ci_failures` | Get failed CI checks for a session's PR | "What failed in ao-25?" "Show CI failures" |
+| `get_review_comments` | Get unresolved review comments | "What are the review comments?" "Show feedback" |
+| `get_session_changes` | Get PR changes (additions, deletions, summary) | "What changed?" "Show the diff summary" |
+
+**Conversation Context Retention:**
+
+- Voice copilot now remembers the last-discussed session
+- Follow-up queries like "what failed?" work without repeating the session ID
+- Context is stored in-memory and resets when the browser disconnects
+
+### Example Conversation Flow
+
+```
+User: "What's happening with ao-25?"
+Voice: "Session ao-25 is working on... PR #123..."
+
+User: "What failed?"
+Voice: [Uses ao-25 from context] "Found 2 failing CI checks for ao-25..."
+
+User: "What are the review comments?"
+Voice: [Uses ao-25 from context] "Found 3 unresolved comments..."
+
+User: "What changed in that session?"
+Voice: [Uses ao-25 from context] "Changes in ao-25: +150 additions, -30 deletions..."
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `packages/web/server/voice-server.ts` | Added 3 new function declarations, context tracking, V2 function handlers |
+| `packages/web/src/lib/voice-functions.ts` | Added V2 function declarations and handlers with context support |
+| `docs/VOICE_COPILOT_CHANGELOG.md` | Documented V2 changes |
+
+### Technical Details
+
+**Context Tracking:**
+- `ConversationContext` interface stores `lastSessionId` and `lastUpdatedAt`
+- Context is updated after any function that resolves a specific session
+- `list_sessions` does NOT update context (lists many sessions)
+- Context resets when browser WebSocket disconnects
+
+**Session Resolution:**
+- Explicit session ID in query takes priority
+- Falls back to context if no session ID provided
+- Partial matching supported (e.g., "25" matches "ao-25")
+- Clear error messages when context is empty
+
+---
+
+## V1 (MVP) — Spoken Situational Awareness
+
+This is the **MVP implementation** that focuses on:
 - Event-driven voice announcements
 - Two query functions (`list_sessions`, `get_session_summary`)
 - Browser-based audio playback
@@ -142,6 +204,11 @@ These events trigger automatic voice announcements:
 |----------|---------------|
 | `list_sessions` | "What sessions are running?" "Show me stuck sessions" |
 | `get_session_summary` | "What's ao-94 doing?" "Summarize session 42" |
+| `get_ci_failures` | "What failed in ao-25?" "Show CI failures" (V2) |
+| `get_review_comments` | "What are the review comments?" "Show feedback" (V2) |
+| `get_session_changes` | "What changed?" "Show the diff" (V2) |
+
+**Note (V2):** After discussing a session, you can omit the session ID in follow-up queries. The voice copilot will remember the last-discussed session.
 
 ## Technical Details
 
@@ -177,15 +244,15 @@ The voice server maintains previous session states to detect transitions:
 2. **Single client** — Only one browser can connect to voice at a time
 3. **No action execution** — Cannot merge PRs or send messages via voice (planned for V4)
 4. **Local network only** — Voice server runs on localhost
-5. **No conversation memory** — Each query is independent (context retention planned for V2)
+5. ~~**No conversation memory** — Each query is independent~~ ✅ **Fixed in V2** — Context retention now remembers last-discussed session
 
 ## Future Phases
 
-### V2 — Full Query Support
-- `get_ci_failures` — Fetch failed check names + truncated logs
-- `get_review_comments` — Fetch pending review threads
-- `get_session_changes` — PR diff summary
-- Conversation context retention
+### ~~V2 — Full Query Support~~ ✅ COMPLETE
+- ~~`get_ci_failures` — Fetch failed check names + truncated logs~~ ✅
+- ~~`get_review_comments` — Fetch pending review threads~~ ✅
+- ~~`get_session_changes` — PR diff summary~~ ✅
+- ~~Conversation context retention~~ ✅
 
 ### V3 — Voice Input + Basic Commands
 - Microphone capture (browser MediaRecorder)
