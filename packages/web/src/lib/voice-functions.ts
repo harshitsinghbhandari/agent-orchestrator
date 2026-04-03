@@ -81,12 +81,13 @@ export interface FunctionResult {
 }
 
 /**
- * Find a session by ID (supports exact, case-insensitive, and numeric suffix matching)
+ * Find a session by ID (supports exact, case-insensitive, numeric suffix, and orchestrator matching)
  *
  * Matching priority:
  * 1. Exact match: "ao-94" -> "ao-94"
  * 2. Case-insensitive: "AO-94" -> "ao-94"
  * 3. Numeric suffix: "94" -> "ao-94" (but NOT "ao-194")
+ * 4. Orchestrator keyword: "orchestrator" -> first session ending with "-orchestrator"
  */
 export function findSessionById(sessionId: string, sessions: DashboardSession[]): DashboardSession | null {
   // Try exact match first
@@ -105,6 +106,15 @@ export function findSessionById(sessionId: string, sessions: DashboardSession[])
       const match = s.id.match(/-(\d+)$/);
       return match?.[1] === sessionId;
     });
+    if (session) return session;
+  }
+
+  // Try orchestrator keyword match (e.g., "orchestrator" -> "ao-orchestrator")
+  // Supports variations: "orchestrator", "the orchestrator", "orch"
+  const normalizedInput = sessionId.toLowerCase().replace(/^the\s+/, "").trim();
+  if (normalizedInput === "orchestrator" || normalizedInput === "orch") {
+    session = sessions.find((s) => s.id.endsWith("-orchestrator"));
+    if (session) return session;
   }
 
   return session ?? null;

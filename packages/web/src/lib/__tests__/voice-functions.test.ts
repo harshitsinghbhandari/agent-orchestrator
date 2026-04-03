@@ -7,6 +7,7 @@ import {
   handleGetSessionChanges,
   executeFunctionCall,
   createConversationContext,
+  findSessionById,
   MVP_TOOLS,
   type ConversationContext,
 } from "../voice-functions";
@@ -35,6 +36,96 @@ function createMockSession(overrides: Partial<DashboardSession> = {}): Dashboard
 }
 
 describe("voice-functions", () => {
+  describe("findSessionById", () => {
+    it("finds session by exact ID", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const result = findSessionById("ao-94", sessions);
+      expect(result?.id).toBe("ao-94");
+    });
+
+    it("finds session by case-insensitive ID", () => {
+      const sessions = [createMockSession({ id: "AO-94" })];
+      const result = findSessionById("ao-94", sessions);
+      expect(result?.id).toBe("AO-94");
+    });
+
+    it("finds session by numeric suffix", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const result = findSessionById("94", sessions);
+      expect(result?.id).toBe("ao-94");
+    });
+
+    it("does not match numeric suffix that is part of a longer number", () => {
+      const sessions = [
+        createMockSession({ id: "ao-194" }),
+        createMockSession({ id: "ao-94" }),
+      ];
+      const result = findSessionById("94", sessions);
+      expect(result?.id).toBe("ao-94");
+    });
+
+    it("returns null for non-existent session", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const result = findSessionById("ao-999", sessions);
+      expect(result).toBeNull();
+    });
+
+    // Orchestrator matching tests
+    it("finds orchestrator session by exact ID", () => {
+      const sessions = [
+        createMockSession({ id: "ao-94" }),
+        createMockSession({ id: "ao-orchestrator", metadata: { role: "orchestrator" } }),
+      ];
+      const result = findSessionById("ao-orchestrator", sessions);
+      expect(result?.id).toBe("ao-orchestrator");
+    });
+
+    it("finds orchestrator session by 'orchestrator' keyword", () => {
+      const sessions = [
+        createMockSession({ id: "ao-94" }),
+        createMockSession({ id: "ao-orchestrator", metadata: { role: "orchestrator" } }),
+      ];
+      const result = findSessionById("orchestrator", sessions);
+      expect(result?.id).toBe("ao-orchestrator");
+    });
+
+    it("finds orchestrator session by 'orch' keyword", () => {
+      const sessions = [
+        createMockSession({ id: "ao-94" }),
+        createMockSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } }),
+      ];
+      const result = findSessionById("orch", sessions);
+      expect(result?.id).toBe("app-orchestrator");
+    });
+
+    it("finds orchestrator session by 'the orchestrator' keyword", () => {
+      const sessions = [
+        createMockSession({ id: "ao-94" }),
+        createMockSession({ id: "ao-orchestrator", metadata: { role: "orchestrator" } }),
+      ];
+      const result = findSessionById("the orchestrator", sessions);
+      expect(result?.id).toBe("ao-orchestrator");
+    });
+
+    it("orchestrator keyword is case-insensitive", () => {
+      const sessions = [
+        createMockSession({ id: "ao-94" }),
+        createMockSession({ id: "ao-orchestrator", metadata: { role: "orchestrator" } }),
+      ];
+      const result = findSessionById("ORCHESTRATOR", sessions);
+      expect(result?.id).toBe("ao-orchestrator");
+    });
+
+    it("returns null when orchestrator keyword used but no orchestrator exists", () => {
+      const sessions = [
+        createMockSession({ id: "ao-94" }),
+        createMockSession({ id: "ao-95" }),
+      ];
+      const result = findSessionById("orchestrator", sessions);
+      expect(result).toBeNull();
+    });
+  });
+
   describe("MVP_TOOLS", () => {
     it("has correct structure for list_sessions", () => {
       const listSessions = MVP_TOOLS.find((t) => t.name === "list_sessions");
