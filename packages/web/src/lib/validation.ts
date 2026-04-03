@@ -33,6 +33,28 @@ export function validateIdentifier(
   return null;
 }
 
+/** Validate that a value is a number within a range. Returns error message or null. */
+export function validateNumber(
+  value: unknown,
+  fieldName: string,
+  min?: number,
+  max?: number,
+): string | null {
+  if (value === undefined || value === null) {
+    return `${fieldName} is required`;
+  }
+  if (typeof value !== "number" || isNaN(value)) {
+    return `${fieldName} must be a number`;
+  }
+  if (min !== undefined && value < min) {
+    return `${fieldName} must be at least ${min}`;
+  }
+  if (max !== undefined && value > max) {
+    return `${fieldName} must be at most ${max}`;
+  }
+  return null;
+}
+
 /**
  * Validate that a projectId is a configured project (own property, not prototype chain).
  * Returns an error message or null.

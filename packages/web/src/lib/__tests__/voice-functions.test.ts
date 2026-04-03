@@ -5,9 +5,13 @@ import {
   handleGetCIFailures,
   handleGetReviewComments,
   handleGetSessionChanges,
+  handleGetTerminalOutput,
   executeFunctionCall,
   createConversationContext,
   findSessionById,
+  classifyCommandIntent,
+  shouldRespondWithResults,
+  formatTerminalOutputForVoice,
   MVP_TOOLS,
   type ConversationContext,
 } from "../voice-functions";
@@ -598,6 +602,189 @@ describe("voice-functions", () => {
       const func = MVP_TOOLS.find((t) => t.name === "get_session_changes");
       expect(func).toBeDefined();
       expect(func?.description).toContain("changed");
+    });
+  });
+
+  // V5 Function Tests (Terminal Output + Intelligent Response)
+  describe("classifyCommandIntent (V5)", () => {
+    it("classifies question words as query", () => {
+      expect(classifyCommandIntent("what files handle auth?")).toBe("query");
+      expect(classifyCommandIntent("where is the config?")).toBe("query");
+      expect(classifyCommandIntent("how does this work?")).toBe("query");
+      expect(classifyCommandIntent("which module handles routing?")).toBe("query");
+      expect(classifyCommandIntent("why did it fail?")).toBe("query");
+    });
+
+    it("classifies question mark endings as query", () => {
+      expect(classifyCommandIntent("is the build passing?")).toBe("query");
+      expect(classifyCommandIntent("did it work?")).toBe("query");
+    });
+
+    it("classifies show/tell commands as query", () => {
+      expect(classifyCommandIntent("show me the errors")).toBe("query");
+      expect(classifyCommandIntent("tell me what changed")).toBe("query");
+      expect(classifyCommandIntent("list the files")).toBe("query");
+      expect(classifyCommandIntent("find the bug")).toBe("query");
+    });
+
+    it("classifies test/status patterns as status_check", () => {
+      expect(classifyCommandIntent("run the tests")).toBe("status_check");
+      expect(classifyCommandIntent("status of the build")).toBe("status_check");
+      expect(classifyCommandIntent("are the tests passing")).toBe("status_check");
+    });
+
+    it("classifies check commands starting with query words as query", () => {
+      // "check if" starts with a query-like verb, so it's classified as query
+      expect(classifyCommandIntent("check if tests are passing")).toBe("query");
+    });
+
+    it("classifies imperative commands as action", () => {
+      expect(classifyCommandIntent("fix the linting errors")).toBe("action");
+      expect(classifyCommandIntent("implement the feature")).toBe("action");
+      expect(classifyCommandIntent("start working on issue 42")).toBe("action");
+      expect(classifyCommandIntent("add error handling")).toBe("action");
+    });
+
+    it("classifies ambiguous commands as action by default", () => {
+      expect(classifyCommandIntent("do the thing")).toBe("action");
+      expect(classifyCommandIntent("update the code")).toBe("action");
+    });
+  });
+
+  describe("shouldRespondWithResults (V5)", () => {
+    it("returns true for query intent", () => {
+      expect(shouldRespondWithResults("query")).toBe(true);
+    });
+
+    it("returns true for status_check intent", () => {
+      expect(shouldRespondWithResults("status_check")).toBe(true);
+    });
+
+    it("returns false for action intent", () => {
+      expect(shouldRespondWithResults("action")).toBe(false);
+    });
+  });
+
+  describe("formatTerminalOutputForVoice (V5)", () => {
+    it("handles empty output", () => {
+      expect(formatTerminalOutputForVoice("", "ao-94")).toContain("no recent terminal output");
+      expect(formatTerminalOutputForVoice("   ", "ao-94")).toContain("no recent terminal output");
+    });
+
+    it("detects errors in output", () => {
+      const output = "Building...\nError: Module not found\nBuild failed";
+      const result = formatTerminalOutputForVoice(output, "ao-94");
+      expect(result).toContain("error");
+      expect(result).toContain("ao-94");
+    });
+
+    it("detects success indicators", () => {
+      const output = "Running tests...\nAll tests passed\nDone in 5s";
+      const result = formatTerminalOutputForVoice(output, "ao-94");
+      expect(result).toContain("success");
+      expect(result).toContain("No errors detected");
+    });
+
+    it("detects warnings", () => {
+      const output = "Compiling...\nWarning: deprecated API\nBuild complete";
+      const result = formatTerminalOutputForVoice(output, "ao-94");
+      expect(result).toContain("warning");
+    });
+
+    it("includes recent output lines", () => {
+      const output = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
+      const result = formatTerminalOutputForVoice(output, "ao-94");
+      expect(result).toContain("Recent output");
+    });
+
+    it("includes session ID in output", () => {
+      const output = "Some output";
+      const result = formatTerminalOutputForVoice(output, "ao-94");
+      expect(result).toContain("ao-94");
+    });
+  });
+
+  describe("handleGetTerminalOutput (V5)", () => {
+    it("returns error when session not found", () => {
+      const context = createConversationContext();
+      const result = handleGetTerminalOutput({ sessionId: "ao-99" }, [], context);
+      expect(result.result).toContain("not found");
+      expect(result.sessionId).toBeNull();
+    });
+
+    it("returns API call marker for valid session", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const context = createConversationContext();
+      const result = handleGetTerminalOutput({ sessionId: "ao-94" }, sessions, context);
+      expect(result.sessionId).toBe("ao-94");
+      expect("needsApiCall" in result).toBe(true);
+      if ("needsApiCall" in result) {
+        expect(result.needsApiCall).toBe(true);
+        expect(result.apiParams.sessionId).toBe("ao-94");
+      }
+    });
+
+    it("uses default lines when not specified", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const context = createConversationContext();
+      const result = handleGetTerminalOutput({ sessionId: "ao-94" }, sessions, context);
+      if ("apiParams" in result) {
+        expect(result.apiParams.lines).toBe(30);
+      }
+    });
+
+    it("respects custom lines parameter", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const context = createConversationContext();
+      const result = handleGetTerminalOutput({ sessionId: "ao-94", lines: 50 }, sessions, context);
+      if ("apiParams" in result) {
+        expect(result.apiParams.lines).toBe(50);
+      }
+    });
+
+    it("clamps lines to valid range", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const context = createConversationContext();
+
+      // Too high
+      let result = handleGetTerminalOutput({ sessionId: "ao-94", lines: 200 }, sessions, context);
+      if ("apiParams" in result) {
+        expect(result.apiParams.lines).toBe(100);
+      }
+
+      // Too low
+      result = handleGetTerminalOutput({ sessionId: "ao-94", lines: 0 }, sessions, context);
+      if ("apiParams" in result) {
+        expect(result.apiParams.lines).toBe(1);
+      }
+    });
+
+    it("uses context when sessionId not provided", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const context: ConversationContext = {
+        lastSessionId: "ao-94",
+        lastUpdatedAt: Date.now(),
+        focusedSessionId: null,
+        followingSessionId: null,
+        notificationsPaused: false,
+      };
+      const result = handleGetTerminalOutput({}, sessions, context);
+      expect(result.sessionId).toBe("ao-94");
+    });
+  });
+
+  describe("executeFunctionCall routes to get_terminal_output", () => {
+    it("routes to get_terminal_output", () => {
+      const sessions = [createMockSession({ id: "ao-94" })];
+      const context = createConversationContext();
+      const result = executeFunctionCall(
+        "get_terminal_output",
+        { sessionId: "ao-94" },
+        sessions,
+        context,
+      );
+      expect(result.sessionId).toBe("ao-94");
+      expect("needsApiCall" in result).toBe(true);
     });
   });
 });

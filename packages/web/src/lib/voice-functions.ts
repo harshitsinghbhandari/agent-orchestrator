@@ -905,6 +905,171 @@ export function handleFollowSession(
 }
 
 // =============================================================================
+// V5 FUNCTIONS (Terminal Output Access + Intelligent Response)
+// =============================================================================
+
+/**
+ * Command intent classification for intelligent response decisions.
+ * Determines whether voice should proactively respond with results.
+ */
+export type CommandIntent = "query" | "action" | "status_check";
+
+/**
+ * Classify a command's intent to determine if voice should respond with results.
+ *
+ * @param message The command/message being sent to the agent
+ * @returns The classified intent
+ */
+export function classifyCommandIntent(message: string): CommandIntent {
+  const lowerMessage = message.toLowerCase().trim();
+
+  // Query patterns — user expects an answer
+  const queryPatterns = [
+    /^(what|where|which|how|why|who|when|can you|could you|show me|tell me|list|find|search|look for|explore|check|get|fetch)/,
+    /\?$/, // Ends with question mark
+    /(what|where|which|how|why|who).*\?/,
+    /^(explain|describe|summarize|analyze|review)/,
+  ];
+
+  for (const pattern of queryPatterns) {
+    if (pattern.test(lowerMessage)) {
+      return "query";
+    }
+  }
+
+  // Status check patterns — user wants to know current state
+  const statusPatterns = [
+    /^(status|state|progress|how is|how's|what's the status)/,
+    /(run|running|pass|passing|fail|failing|test|tests)/,
+    /^(did|has|have|is|are|was|were).*\?/,
+  ];
+
+  for (const pattern of statusPatterns) {
+    if (pattern.test(lowerMessage)) {
+      return "status_check";
+    }
+  }
+
+  // Default to action — user is giving a command, just acknowledge
+  return "action";
+}
+
+/**
+ * Determine if voice should respond with results after sending a command.
+ *
+ * @param intent The classified command intent
+ * @returns Whether voice should proactively respond with results
+ */
+export function shouldRespondWithResults(intent: CommandIntent): boolean {
+  return intent === "query" || intent === "status_check";
+}
+
+/**
+ * Pending response tracking for commands that need follow-up.
+ */
+export interface PendingResponse {
+  sessionId: string;
+  message: string;
+  intent: CommandIntent;
+  sentAt: number;
+  /** Maximum time to wait for response (ms) */
+  timeout: number;
+}
+
+/**
+ * Handle get_terminal_output function call (V5)
+ *
+ * Fetches recent terminal output from a session for voice summarization.
+ * This is called via the API route since we need access to the runtime.
+ *
+ * @param args Function arguments from Gemini
+ * @param sessions Current session list
+ * @param context Conversation context for session resolution
+ * @returns Function result with terminal output info
+ */
+export function handleGetTerminalOutput(
+  args: { sessionId?: string; lines?: number },
+  sessions: DashboardSession[],
+  context: ConversationContext,
+): FunctionResult & { needsApiCall: true; apiParams: { sessionId: string; lines: number } } | FunctionResult {
+  const { session, error } = resolveSession(args.sessionId, sessions, context);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  // Validate lines parameter
+  const lines = Math.min(Math.max(args.lines ?? 30, 1), 100);
+
+  // Return marker indicating API call needed - the actual output fetching
+  // must happen server-side since we need runtime access
+  return {
+    result: `Fetching last ${lines} lines of terminal output from session ${session.id}...`,
+    sessionId: session.id,
+    needsApiCall: true,
+    apiParams: {
+      sessionId: session.id,
+      lines,
+    },
+  };
+}
+
+/**
+ * Format terminal output for voice response.
+ * Summarizes and cleans output for TTS consumption.
+ *
+ * @param output Raw terminal output
+ * @param sessionId Session ID for context
+ * @returns Formatted voice-friendly summary
+ */
+export function formatTerminalOutputForVoice(output: string, sessionId: string): string {
+  if (!output || output.trim().length === 0) {
+    return `Session ${sessionId} has no recent terminal output.`;
+  }
+
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+  if (lines.length === 0) {
+    return `Session ${sessionId} has no recent terminal output.`;
+  }
+
+  // Detect common patterns and summarize
+  const errorLines = lines.filter((line) =>
+    /error|fail|exception|fatal|panic|crash/i.test(line)
+  );
+  const warningLines = lines.filter((line) =>
+    /warn|warning|deprecated/i.test(line)
+  );
+  const successLines = lines.filter((line) =>
+    /success|passed|complete|done|finished|✓|✔/i.test(line)
+  );
+
+  const summaryParts: string[] = [];
+  summaryParts.push(`Session ${sessionId} terminal output:`);
+
+  if (errorLines.length > 0) {
+    summaryParts.push(`Found ${errorLines.length} error${errorLines.length === 1 ? "" : "s"}.`);
+    // Include first error for context
+    const firstError = truncateText(errorLines[0], 100);
+    summaryParts.push(`First error: ${firstError}`);
+  } else if (successLines.length > 0) {
+    summaryParts.push(`No errors detected. ${successLines.length} success indicator${successLines.length === 1 ? "" : "s"} found.`);
+  } else {
+    summaryParts.push(`${lines.length} lines of output, no obvious errors.`);
+  }
+
+  if (warningLines.length > 0) {
+    summaryParts.push(`${warningLines.length} warning${warningLines.length === 1 ? "" : "s"}.`);
+  }
+
+  // Include last few meaningful lines
+  const recentLines = lines.slice(-3).map((line) => truncateText(line, 80));
+  if (recentLines.length > 0) {
+    summaryParts.push(`Recent output: ${recentLines.join(" | ")}`);
+  }
+
+  return summaryParts.join(" ");
+}
+
+// =============================================================================
 // V4 FUNCTIONS
 // =============================================================================
 
@@ -1077,9 +1242,17 @@ export function executeFunctionCall(
     case "resume_notifications":
       return handleResumeNotifications();
 
+    // V5 functions
+    case "get_terminal_output":
+      return handleGetTerminalOutput(
+        args as { sessionId?: string; lines?: number },
+        sessions,
+        context,
+      );
+
     default:
       return {
-        result: `Unknown function: ${name}. Available functions: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session, merge_pr, pause_notifications, resume_notifications.`,
+        result: `Unknown function: ${name}. Available functions: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session, merge_pr, pause_notifications, resume_notifications, get_terminal_output.`,
         sessionId: null,
       };
   }

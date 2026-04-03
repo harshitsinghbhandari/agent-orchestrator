@@ -25,7 +25,12 @@ import { validateToken } from "../src/lib/voice-token.js";
 import {
   executeFunctionCall,
   createConversationContext,
+  classifyCommandIntent,
+  shouldRespondWithResults,
+  formatTerminalOutputForVoice,
   type ConversationContext,
+  type PendingResponse,
+  type CommandIntent,
 } from "../src/lib/voice-functions.js";
 import { requestMerge } from "../src/lib/pending-merges.js";
 import type { DashboardSession, DashboardOrchestratorLink } from "../src/lib/types.js";
@@ -196,6 +201,27 @@ const V4_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       properties: {},
     },
   },
+  // V5 functions
+  {
+    name: "get_terminal_output",
+    description:
+      "Get recent terminal output from a session. Use this to see what an agent is doing, check test results, view errors, or get context about session activity. Useful after sending a command to check the results.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the focused or last-discussed session.",
+        },
+        lines: {
+          type: Type.NUMBER,
+          description:
+            "Number of lines to fetch (1-100, default 30). Use more lines for detailed analysis, fewer for quick checks.",
+        },
+      },
+    },
+  },
 ];
 
 const SYSTEM_INSTRUCTION = `You are the voice interface for Agent Orchestrator (AO), a system that manages parallel AI coding agents.
@@ -256,6 +282,25 @@ Available functions:
 - merge_pr: Merge a PR (requires confirmation)
 - pause_notifications: Pause automatic announcements
 - resume_notifications: Resume automatic announcements
+- get_terminal_output: Get recent terminal output from a session to see what's happening
+
+Intelligent response workflow (V5):
+After sending a command to an agent, decide whether to follow up with the results:
+
+| Command Type | Should Respond? | When? |
+|--------------|-----------------|-------|
+| "Explore the codebase" | Yes | When exploration completes, use get_terminal_output and summarize |
+| "What files handle auth?" | Yes | When agent responds, summarize the answer |
+| "Start working on issue 42" | No | Just acknowledge the command was sent |
+| "Fix the linting errors" | Maybe | Only if it fails or completes quickly |
+| "Run the tests" | Yes | Report pass/fail using get_terminal_output |
+
+Guidelines for intelligent responses:
+1. For QUERIES (questions, "what", "where", "how", "show me"): Always follow up with results
+2. For STATUS CHECKS (tests, CI, "did it pass"): Follow up with results
+3. For ACTIONS (start working, fix, implement): Just acknowledge, unless you're following the session
+4. When following a session, proactively check get_terminal_output periodically to report progress
+5. If a command takes too long (>30 seconds), say "still working on it" and offer to notify when done
 
 When using functions:
 - Always call the function first, then speak based on the results
@@ -345,6 +390,11 @@ interface CostTracking {
   lastResetTime: number;
 }
 
+// V5: Pending response tracking for intelligent responses
+const pendingResponses = new Map<string, PendingResponse>();
+const PENDING_RESPONSE_TIMEOUT_MS = 30_000; // 30 seconds before "still working" message
+const PENDING_RESPONSE_CLEANUP_INTERVAL_MS = 5_000; // Check every 5 seconds
+
 // Server state
 interface VoiceServerState {
   browserClient: WebSocket | null;
@@ -359,6 +409,8 @@ interface VoiceServerState {
   // V4: Session resumption
   geminiSessionHandle: string | null;
   connectionAttempts: number;
+  // V5: Pending response check interval
+  pendingResponseInterval: NodeJS.Timeout | null;
 }
 
 const state: VoiceServerState = {
@@ -377,6 +429,7 @@ const state: VoiceServerState = {
   },
   geminiSessionHandle: null,
   connectionAttempts: 0,
+  pendingResponseInterval: null,
 };
 
 // Browser → Server message types
@@ -522,7 +575,18 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
       // Refresh sessions before function call
       state.sessions = await fetchSessions();
       console.log(`[voice] Executing function: ${fc.name}`, fc.args);
-      const funcResult = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {}, state.sessions, state.context);
+      let funcResult = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {}, state.sessions, state.context);
+
+      // V5: Handle get_terminal_output specially — needs API call for runtime access
+      if (fc.name === "get_terminal_output" && "needsApiCall" in funcResult && funcResult.needsApiCall) {
+        const apiParams = (funcResult as unknown as { apiParams: { sessionId: string; lines: number } }).apiParams;
+        const terminalResult = await handleGetTerminalOutputAction(apiParams.sessionId, apiParams.lines);
+        funcResult = {
+          result: terminalResult,
+          sessionId: apiParams.sessionId,
+        };
+      }
+
       const { result, sessionId, setFocusedSessionId, setFollowingSessionId, setNotificationsPaused, action } = funcResult;
 
       // Update conversation context if a session was resolved
@@ -564,6 +628,12 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
       // V3: Handle actions (send message to session)
       if (action?.type === "send_message" && action.message) {
         await handleSendMessageAction(action.sessionId, action.message);
+
+        // V5: Track pending response for intelligent follow-up
+        const intent = classifyCommandIntent(action.message);
+        if (shouldRespondWithResults(intent)) {
+          trackPendingResponse(action.sessionId, action.message, intent);
+        }
       }
 
       // V4: Handle merge action (uses pending merge flow)
@@ -688,6 +758,132 @@ async function handleSendMessageAction(sessionId: string, message: string): Prom
 }
 
 // Note: handleSendMessageAction is called by executeFunctionCall output
+
+// =============================================================================
+// V5: Terminal Output Access + Intelligent Response Tracking
+// =============================================================================
+
+/**
+ * Fetch terminal output from a session via the API route.
+ */
+async function fetchTerminalOutput(sessionId: string, lines: number): Promise<string> {
+  const port = process.env["PORT"] || "3000";
+  try {
+    const res = await fetch(
+      `http://localhost:${port}/api/sessions/${encodeURIComponent(sessionId)}/output?lines=${lines}`,
+    );
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[voice] Failed to fetch terminal output for ${sessionId}:`, errorText);
+      return "";
+    }
+    const data = (await res.json()) as { output?: string };
+    return data.output ?? "";
+  } catch (error) {
+    console.error(`[voice] Error fetching terminal output for ${sessionId}:`, error);
+    return "";
+  }
+}
+
+/**
+ * Handle get_terminal_output function by making API call and formatting response.
+ */
+async function handleGetTerminalOutputAction(
+  sessionId: string,
+  lines: number,
+): Promise<string> {
+  const output = await fetchTerminalOutput(sessionId, lines);
+  return formatTerminalOutputForVoice(output, sessionId);
+}
+
+/**
+ * Track a pending response for a command that needs follow-up.
+ */
+function trackPendingResponse(
+  sessionId: string,
+  message: string,
+  intent: CommandIntent,
+): void {
+  const id = `${sessionId}:${Date.now()}`;
+  pendingResponses.set(id, {
+    sessionId,
+    message,
+    intent,
+    sentAt: Date.now(),
+    timeout: PENDING_RESPONSE_TIMEOUT_MS,
+  });
+  console.log(`[voice] Tracking pending response for ${sessionId}: ${intent}`);
+}
+
+/**
+ * Check pending responses and notify if any are taking too long.
+ */
+async function checkPendingResponses(): Promise<void> {
+  const now = Date.now();
+  const toRemove: string[] = [];
+
+  for (const [id, pending] of pendingResponses.entries()) {
+    const elapsed = now - pending.sentAt;
+
+    if (elapsed >= pending.timeout) {
+      // Timeout reached — check session status
+      const session = state.sessions.find((s) => s.id === pending.sessionId);
+
+      if (session) {
+        // Check if session is still actively working
+        if (session.activity === "active") {
+          // Still working — inject "still working" message
+          await injectEvent(
+            `Session ${pending.sessionId} is still working on your request. I'll let you know when it's done.`,
+          );
+        } else if (session.activity === "waiting_input" || session.activity === "blocked") {
+          // Session needs input — notify user
+          await injectEvent(
+            `Session ${pending.sessionId} needs your input to continue.`,
+          );
+        } else {
+          // Session might be done — check terminal output
+          const output = await fetchTerminalOutput(pending.sessionId, 20);
+          if (output) {
+            const summary = formatTerminalOutputForVoice(output, pending.sessionId);
+            await injectEvent(`Update from ${pending.sessionId}: ${summary}`);
+          }
+        }
+      }
+
+      toRemove.push(id);
+    }
+  }
+
+  // Clean up expired pending responses
+  for (const id of toRemove) {
+    pendingResponses.delete(id);
+  }
+}
+
+/**
+ * Start pending response check interval.
+ */
+function startPendingResponseCheck(): void {
+  if (state.pendingResponseInterval) {
+    clearInterval(state.pendingResponseInterval);
+  }
+  state.pendingResponseInterval = setInterval(
+    () => void checkPendingResponses(),
+    PENDING_RESPONSE_CLEANUP_INTERVAL_MS,
+  );
+}
+
+/**
+ * Stop pending response check interval.
+ */
+function stopPendingResponseCheck(): void {
+  if (state.pendingResponseInterval) {
+    clearInterval(state.pendingResponseInterval);
+    state.pendingResponseInterval = null;
+  }
+  pendingResponses.clear();
+}
 
 // V4: Constants for reconnection
 const MAX_RECONNECTION_ATTEMPTS = 3;
@@ -835,6 +1031,8 @@ async function connectToGemini(): Promise<void> {
           state.connectionAttempts = 0; // Reset on successful connection
           // V4: Start session limit check
           startSessionLimitCheck();
+          // V5: Start pending response check
+          startPendingResponseCheck();
           sendToBrowser({ type: "status", status: "connected" });
           console.log("[voice] Connected to Gemini Live API (3.1 Flash)");
         },
@@ -912,6 +1110,8 @@ async function disconnectFromGemini(): Promise<void> {
   state.connectionAttempts = MAX_RECONNECTION_ATTEMPTS; // Prevent auto-reconnect
   // V4: Stop session limit check
   stopSessionLimitCheck();
+  // V5: Stop pending response check
+  stopPendingResponseCheck();
   if (state.geminiSession) {
     try {
       await state.geminiSession.close();
