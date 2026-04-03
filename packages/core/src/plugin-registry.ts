@@ -11,6 +11,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
+  ExternalPluginEntryRef,
   InstalledPluginConfig,
   PluginSlot,
   PluginManifest,
@@ -75,13 +76,101 @@ function extractPluginConfig(
       const hasExplicitPlugin = typeof configuredPlugin === "string" && configuredPlugin.length > 0;
       const matches = hasExplicitPlugin ? configuredPlugin === name : notifierName === name;
       if (matches) {
-        const { plugin: _plugin, ...rest } = notifierConfig as Record<string, unknown>;
+        // Strip loading metadata fields (plugin, package, path) from config passed to plugin.
+        // These are used for plugin resolution, not plugin-specific configuration.
+        // The path field is particularly important to strip since plugins may use it
+        // for their own purposes (e.g., API endpoint path).
+        const {
+          plugin: _plugin,
+          package: _package,
+          path: _path,
+          ...rest
+        } = notifierConfig as Record<string, unknown>;
         return config.configPath ? { ...rest, configPath: config.configPath } : rest;
       }
     }
   }
 
   return undefined;
+}
+
+/**
+ * Find ALL external plugin entries that match a given plugin config.
+ * Used for manifest.name validation when loading inline tracker/scm/notifier plugins.
+ *
+ * Returns all matching entries because multiple projects may share the same
+ * external plugin (same package/path), and all their configs need to be updated
+ * with the actual manifest.name.
+ */
+function findAllExternalPluginEntries(
+  plugin: InstalledPluginConfig,
+  externalEntries: ExternalPluginEntryRef[] | undefined,
+): ExternalPluginEntryRef[] {
+  if (!externalEntries) return [];
+
+  return externalEntries.filter((entry) => {
+    if (plugin.package && entry.package === plugin.package) return true;
+    if (plugin.path && entry.path === plugin.path) return true;
+    return false;
+  });
+}
+
+/**
+ * Validate that a plugin's manifest.name matches the expected name (if specified).
+ * Throws an error if there's a mismatch.
+ */
+function validateManifestName(
+  manifest: PluginManifest,
+  entry: ExternalPluginEntryRef,
+  specifier: string,
+): void {
+  // If the user specified an explicit plugin name, validate it matches the manifest
+  if (entry.expectedPluginName && entry.expectedPluginName !== manifest.name) {
+    const specifierType = entry.package ? "package" : "path";
+    throw new Error(
+      `Plugin manifest.name mismatch at ${entry.source}: ` +
+        `expected "${entry.expectedPluginName}" but ${specifierType} "${specifier}" has manifest.name "${manifest.name}". ` +
+        `Either update the 'plugin' field to match the actual manifest.name, or remove it to auto-infer.`,
+    );
+  }
+}
+
+/**
+ * Update the config with the actual plugin name after loading an external plugin.
+ * This ensures resolvePlugins() can look up the plugin by its manifest.name.
+ *
+ * Uses structured location data to avoid ambiguity from parsing dotted strings
+ * (project/notifier keys can legally contain dots).
+ */
+function updateConfigWithManifestName(
+  manifest: PluginManifest,
+  entry: ExternalPluginEntryRef,
+  config: OrchestratorConfig,
+): void {
+  const { location, slot, source } = entry;
+
+  // Use structured location to update the config
+  if (location.kind === "project") {
+    const { projectId, configType } = location;
+    const project = config.projects[projectId];
+    if (project?.[configType]) {
+      project[configType]!.plugin = manifest.name;
+    }
+  } else if (location.kind === "notifier") {
+    const { notifierId } = location;
+    const notifierConfig = config.notifiers[notifierId];
+    if (notifierConfig) {
+      notifierConfig.plugin = manifest.name;
+    }
+  }
+
+  // Also validate slot matches
+  if (manifest.slot !== slot) {
+    process.stderr.write(
+      `[plugin-registry] Plugin at ${source} has slot "${manifest.slot}" but was configured as "${slot}". ` +
+        `The plugin will be registered under its declared slot "${manifest.slot}".\n`,
+    );
+  }
 }
 
 export function isPluginModule(value: unknown): value is PluginModule {
@@ -261,13 +350,14 @@ export function createPluginRegistry(): PluginRegistry {
       await this.loadBuiltins(config, importFn);
 
       const doImport = importFn ?? ((pkg: string) => import(pkg));
+      const externalEntries = config._externalPluginEntries;
 
       for (const plugin of config.plugins ?? []) {
         if (plugin.enabled === false) continue;
 
         const specifier = resolvePluginSpecifier(plugin, config);
         if (!specifier) {
-          console.warn(`[plugin-registry] Could not resolve specifier for plugin "${plugin.name}" (source: ${plugin.source})`);
+          process.stderr.write(`[plugin-registry] Could not resolve specifier for plugin "${plugin.name}" (source: ${plugin.source})\n`);
           continue;
         }
 
@@ -275,10 +365,20 @@ export function createPluginRegistry(): PluginRegistry {
           const mod = normalizeImportedPluginModule(await doImport(specifier));
           if (!mod) continue;
 
+          // Check if this plugin was auto-added from inline tracker/scm/notifier config
+          // Multiple projects may share the same external plugin, so find ALL matching entries
+          const matchingEntries = findAllExternalPluginEntries(plugin, externalEntries);
+          for (const externalEntry of matchingEntries) {
+            // Validate manifest.name matches expectedPluginName (if specified)
+            validateManifestName(mod.manifest, externalEntry, specifier);
+            // Update the config with the actual manifest.name
+            updateConfigWithManifestName(mod.manifest, externalEntry, config);
+          }
+
           const pluginConfig = extractPluginConfig(mod.manifest.slot, mod.manifest.name, config);
           this.register(mod, pluginConfig);
         } catch (error) {
-          console.warn(`[plugin-registry] Failed to load plugin "${specifier}":`, error);
+          process.stderr.write(`[plugin-registry] Failed to load plugin "${specifier}": ${error}\n`);
         }
       }
     },

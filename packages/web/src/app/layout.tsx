@@ -3,6 +3,7 @@ import { Geist, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { getProjectName } from "@/lib/project-name";
 import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
+import { VoicePanelWrapper } from "@/components/VoicePanelWrapper";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           {children}
         </ThemeProvider>
         <ServiceWorkerRegistrar />
+        <VoicePanelWrapper />
       </body>
     </html>
   );
