@@ -103,6 +103,11 @@ spawnProcess("terminal", "node", [resolve(__dirname, "terminal-websocket.js")], 
 // Start direct terminal WebSocket server (auto-restart on crash)
 spawnProcess("direct-terminal", "node", [resolve(__dirname, "direct-terminal-ws.js")], { restart: true });
 
+// Start voice copilot WebSocket server (only if enabled, auto-restart on crash)
+if (process.env["AO_VOICE_ENABLED"] === "true" || process.env["NEXT_PUBLIC_AO_VOICE_ENABLED"] === "true") {
+  spawnProcess("voice", "node", [resolve(__dirname, "voice-server.js")], { restart: true });
+}
+
 // Graceful shutdown — send SIGTERM to children and wait for them to exit
 let shuttingDown = false;
 
