@@ -230,7 +230,8 @@ export function useVoiceCopilot(
             if (message.status) {
               setStatus(message.status);
               if (message.status === "error" || message.status === "disconnected") {
-                // Clear queue on error or disconnect
+                // Stop recording and clear queue on error or disconnect
+                stopRecording();
                 audioQueueRef.current = [];
                 if (message.status === "error") {
                   setError("Connection error or interrupted");

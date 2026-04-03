@@ -1,5 +1,16 @@
+import path from "node:path";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  webpack: (config) => {
+    // Ignore @composio/core during build since it is an optional dependency
+    // that tracker-linear imports via dynamic import() and types.
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      "@composio/core": false,
+    };
+    return config;
+  },
   transpilePackages: [
     "@composio/ao-core",
     "@composio/ao-plugin-agent-claude-code",

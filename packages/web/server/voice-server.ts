@@ -346,6 +346,7 @@ interface VoiceServerState {
   isConnected: boolean;
   sessions: DashboardSession[];
   context: ConversationContext;
+  lastErrorSentAt?: number;
 }
 
 const state: VoiceServerState = {
@@ -360,6 +361,7 @@ const state: VoiceServerState = {
     focusedSessionId: null,
     followingSessionId: null,
   },
+  lastErrorSentAt: 0,
 };
 
 // Browser → Server message types
@@ -549,7 +551,7 @@ function resolveSession(sessionId: string | undefined): { session: DashboardSess
 /**
  * Handle get_ci_failures function (V2)
  */
-function handleGetCIFailures(args: { sessionId?: string }): { result: string; sessionId: string | null } {
+function handleGetCIFailures(args: { sessionId?: string }): V3FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -588,7 +590,7 @@ function handleGetCIFailures(args: { sessionId?: string }): { result: string; se
 /**
  * Handle get_review_comments function (V2)
  */
-function handleGetReviewComments(args: { sessionId?: string }): { result: string; sessionId: string | null } {
+function handleGetReviewComments(args: { sessionId?: string }): V3FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -626,7 +628,7 @@ function handleGetReviewComments(args: { sessionId?: string }): { result: string
 /**
  * Handle get_session_changes function (V2)
  */
-function handleGetSessionChanges(args: { sessionId?: string }): { result: string; sessionId: string | null } {
+function handleGetSessionChanges(args: { sessionId?: string }): V3FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -999,7 +1001,8 @@ async function disconnectFromGemini(): Promise<void> {
 
 async function sendTextToGemini(text: string): Promise<void> {
   if (!state.geminiSession || !state.isConnected) {
-    sendToBrowser({ type: "error", error: "Not connected to Gemini" });
+    const reason = !state.geminiSession ? "Session not initialized" : "Wait for 'connected' status";
+    sendToBrowser({ type: "error", error: `Not connected to Gemini (${reason})` });
     return;
   }
 
@@ -1013,14 +1016,21 @@ async function sendTextToGemini(text: string): Promise<void> {
  */
 async function sendAudioToGemini(audioData: string, mimeType: string): Promise<void> {
   if (!state.geminiSession || !state.isConnected) {
-    sendToBrowser({ type: "error", error: "Not connected to Gemini" });
+    // Basic rate limit for errors to browser
+    const now = Date.now();
+    if (!state.lastErrorSentAt || now - state.lastErrorSentAt > 3000) {
+      state.lastErrorSentAt = now;
+      const reason = !state.geminiSession ? "Session not initialized" : "Wait for 'connected' status";
+      sendToBrowser({ type: "error", error: `Not connected to Gemini (${reason})` });
+    }
     return;
   }
 
   // Send audio as realtime input
-  // The mimeType should be "audio/pcm;rate=16000" for 16kHz PCM
+  // The SDK expects it in { audio: { data, mimeType } } format, NOT { media: ... }
+  // data should be base64 string
   await state.geminiSession.sendRealtimeInput({
-    media: {
+    audio: {
       data: audioData,
       mimeType: mimeType,
     },
