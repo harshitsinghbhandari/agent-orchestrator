@@ -9,6 +9,11 @@
  * - get_ci_failures: Get failed CI checks for a session's PR
  * - get_review_comments: Get pending review comments for a session's PR
  * - get_session_changes: Get what changed in a session (files, additions/deletions)
+ *
+ * V3 functions:
+ * - send_message_to_session: Send a message/command to a specific agent session
+ * - focus_session: Set the focused session for follow-up commands
+ * - follow_session: Start following a session (sets focus + announces updates)
  */
 
 import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "./types";
@@ -20,12 +25,17 @@ import { getAttentionLevel, type DashboardSession, type AttentionLevel } from ".
 /**
  * Conversation context for session resolution.
  * Tracks the last-discussed session to enable follow-up queries without repeating session IDs.
+ * V3: Adds focus/follow mode for targeted session interactions.
  */
 export interface ConversationContext {
   /** Last discussed session ID (set after each function that resolves a session) */
   lastSessionId: string | null;
   /** Timestamp of the last context update */
   lastUpdatedAt: number;
+  /** V3: Focused session ID (user explicitly said "focus on X") */
+  focusedSessionId: string | null;
+  /** V3: Following session ID (actively tracking updates for this session) */
+  followingSessionId: string | null;
 }
 
 /**
@@ -35,6 +45,8 @@ export function createConversationContext(): ConversationContext {
   return {
     lastSessionId: null,
     lastUpdatedAt: Date.now(),
+    focusedSessionId: null,
+    followingSessionId: null,
   };
 }
 
@@ -46,6 +58,16 @@ export interface FunctionResult {
   result: string;
   /** Session ID to update context with (null if no session was resolved) */
   sessionId: string | null;
+  /** V3: Set the focused session (user said "focus on X") */
+  setFocusedSessionId?: string | null;
+  /** V3: Set the following session (user said "follow X") */
+  setFollowingSessionId?: string | null;
+  /** V3: Action to perform (send message to session) */
+  action?: {
+    type: "send_message";
+    sessionId: string;
+    message: string;
+  };
 }
 
 /**
@@ -68,6 +90,7 @@ function findSessionById(sessionId: string, sessions: DashboardSession[]): Dashb
 /**
  * Resolve a session from args or context.
  * Returns the session and any error message.
+ * V3: Now checks focusedSessionId before lastSessionId.
  */
 function resolveSession(
   sessionId: string | undefined,
@@ -81,6 +104,15 @@ function resolveSession(
       return { session: null, error: `Session ${sessionId} not found. Use list_sessions to see available sessions.` };
     }
     return { session, error: null };
+  }
+
+  // V3: Try focused session first (user explicitly said "focus on X")
+  if (context.focusedSessionId) {
+    const session = findSessionById(context.focusedSessionId, sessions);
+    if (session) {
+      return { session, error: null };
+    }
+    // Focused session no longer exists - don't error, fall through to lastSessionId
   }
 
   // Try to use context
@@ -192,6 +224,58 @@ export const MVP_TOOLS = [
             "Session ID like 'ao-94'. If omitted, uses the last-discussed session from context.",
         },
       },
+    },
+  },
+  // V3 functions
+  {
+    name: "send_message_to_session",
+    description:
+      "Send a message or command to an agent session. Use this when the user wants to tell an agent to do something, like 'tell ao-25 to fix linting' or 'ask ao-94 to add tests'.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        sessionId: {
+          type: "string" as const,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the focused or last-discussed session.",
+        },
+        message: {
+          type: "string" as const,
+          description:
+            "The message to send to the agent. Should be a clear instruction or question.",
+        },
+      },
+      required: ["message"],
+    },
+  },
+  {
+    name: "focus_session",
+    description:
+      "Set the focused session for subsequent commands. Use this when the user says 'focus on ao-25' or 'switch to ao-94'. The focused session becomes the default target for commands.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        sessionId: {
+          type: "string" as const,
+          description: "Session ID to focus on, like 'ao-94'.",
+        },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
+    name: "follow_session",
+    description:
+      "Start following a session to receive proactive updates about its progress. Use this when the user says 'follow ao-25' or 'track ao-94'. Following a session means you'll announce CI failures, review comments, and other important events for that session.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        sessionId: {
+          type: "string" as const,
+          description: "Session ID to follow, like 'ao-94'. Pass null or 'none' to stop following.",
+        },
+      },
+      required: ["sessionId"],
     },
   },
 ];
@@ -613,8 +697,143 @@ function truncateSummary(summary: string, maxLength = 80): string {
   return summary.slice(0, maxLength - 3) + "...";
 }
 
+// =============================================================================
+// V3 FUNCTIONS
+// =============================================================================
+
 /**
- * Execute a function call from Gemini (V2 - with context support)
+ * Handle send_message_to_session function call
+ *
+ * @param args Function arguments from Gemini
+ * @param sessions Current session list
+ * @param context Conversation context for session resolution
+ * @returns Function result with action to send message
+ */
+export function handleSendMessageToSession(
+  args: { sessionId?: string; message: string },
+  sessions: DashboardSession[],
+  context: ConversationContext,
+): FunctionResult {
+  const { session, error } = resolveSession(args.sessionId, sessions, context);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!args.message || args.message.trim().length === 0) {
+    return {
+      result: "No message provided. Please specify what you want to tell the agent.",
+      sessionId: session.id,
+    };
+  }
+
+  // Check if session is in a state that can receive messages
+  const canReceive =
+    session.activity === "active" ||
+    session.activity === "ready" ||
+    session.activity === "idle" ||
+    session.activity === "waiting_input" ||
+    session.status === "working" ||
+    session.status === "pr_open" ||
+    session.status === "review_pending";
+
+  if (!canReceive) {
+    return {
+      result: `Session ${session.id} is in state "${session.status}" and may not be able to receive messages. The message will be queued.`,
+      sessionId: session.id,
+      action: {
+        type: "send_message",
+        sessionId: session.id,
+        message: args.message.trim(),
+      },
+    };
+  }
+
+  return {
+    result: `Sending message to session ${session.id}: "${truncateText(args.message, 100)}"`,
+    sessionId: session.id,
+    action: {
+      type: "send_message",
+      sessionId: session.id,
+      message: args.message.trim(),
+    },
+  };
+}
+
+/**
+ * Handle focus_session function call
+ *
+ * @param args Function arguments from Gemini
+ * @param sessions Current session list
+ * @returns Function result with focus update
+ */
+export function handleFocusSession(
+  args: { sessionId: string },
+  sessions: DashboardSession[],
+): FunctionResult {
+  const session = findSessionById(args.sessionId, sessions);
+  if (!session) {
+    return {
+      result: `Session ${args.sessionId} not found. Use list_sessions to see available sessions.`,
+      sessionId: null,
+    };
+  }
+
+  const label = session.issueLabel ? ` (${session.issueLabel})` : "";
+  const statusInfo = session.summary
+    ? ` Currently: ${truncateText(session.summary, 60)}`
+    : ` Status: ${session.status}`;
+
+  return {
+    result: `Now focused on session ${session.id}${label}.${statusInfo} All commands will target this session until you focus on another.`,
+    sessionId: session.id,
+    setFocusedSessionId: session.id,
+  };
+}
+
+/**
+ * Handle follow_session function call
+ *
+ * @param args Function arguments from Gemini
+ * @param sessions Current session list
+ * @returns Function result with follow update
+ */
+export function handleFollowSession(
+  args: { sessionId: string },
+  sessions: DashboardSession[],
+): FunctionResult {
+  // Handle "none" or "null" to stop following
+  if (!args.sessionId || args.sessionId.toLowerCase() === "none" || args.sessionId.toLowerCase() === "null") {
+    return {
+      result: "Stopped following sessions. You won't receive proactive updates for any specific session.",
+      sessionId: null,
+      setFollowingSessionId: null,
+      setFocusedSessionId: null, // Also clear focus when stopping follow
+    };
+  }
+
+  const session = findSessionById(args.sessionId, sessions);
+  if (!session) {
+    return {
+      result: `Session ${args.sessionId} not found. Use list_sessions to see available sessions.`,
+      sessionId: null,
+    };
+  }
+
+  const label = session.issueLabel ? ` (${session.issueLabel})` : "";
+  const statusInfo = session.summary
+    ? ` Working on: ${truncateText(session.summary, 60)}`
+    : ` Status: ${session.status}`;
+
+  return {
+    result: `Now following session ${session.id}${label}.${statusInfo} I'll proactively announce CI failures, review comments, and other important events for this session.`,
+    sessionId: session.id,
+    setFocusedSessionId: session.id, // Following also sets focus
+    setFollowingSessionId: session.id,
+  };
+}
+
+/**
+ * Execute a function call from Gemini (V3 - with context + focus/follow support)
  *
  * @param name Function name
  * @param args Function arguments
@@ -655,9 +874,23 @@ export function executeFunctionCall(
     case "get_session_changes":
       return handleGetSessionChanges(args as { sessionId?: string }, sessions, context);
 
+    // V3 functions
+    case "send_message_to_session":
+      return handleSendMessageToSession(
+        args as { sessionId?: string; message: string },
+        sessions,
+        context,
+      );
+
+    case "focus_session":
+      return handleFocusSession(args as { sessionId: string }, sessions);
+
+    case "follow_session":
+      return handleFollowSession(args as { sessionId: string }, sessions);
+
     default:
       return {
-        result: `Unknown function: ${name}. Available functions: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`,
+        result: `Unknown function: ${name}. Available functions: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session.`,
         sessionId: null,
       };
   }

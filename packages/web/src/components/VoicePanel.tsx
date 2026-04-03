@@ -3,14 +3,17 @@
 /**
  * Voice Copilot panel component.
  *
- * Provides:
+ * V3 Features:
  * - Toggle button to enable/disable voice
  * - Connection status indicator
+ * - Push-to-talk button with recording indicator
+ * - Spacebar shortcut for push-to-talk
+ * - Focus/follow mode display
  * - Query input for testing
  */
 
-import { useState, useCallback } from "react";
-import { useVoiceCopilot, type VoiceStatus } from "@/hooks/useVoiceCopilot";
+import { useState, useCallback, useEffect } from "react";
+import { useVoiceCopilot, type VoiceStatus, type VoiceContext } from "@/hooks/useVoiceCopilot";
 
 /**
  * Get status indicator color based on connection state
@@ -101,22 +104,65 @@ interface VoicePanelProps {
 }
 
 /**
+ * V3: Get display label for focused/following session
+ */
+function getContextLabel(context: VoiceContext): string | null {
+  if (context.followingSessionId) {
+    return `Following ${context.followingSessionId}`;
+  }
+  if (context.focusedSessionId) {
+    return `Focused on ${context.focusedSessionId}`;
+  }
+  return null;
+}
+
+/**
  * Voice Copilot panel component
  */
 export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [queryText, setQueryText] = useState("");
   const [transcript, setTranscript] = useState<string[]>([]);
+  const [voiceContext, setVoiceContext] = useState<VoiceContext>({
+    focusedSessionId: null,
+    followingSessionId: null,
+  });
 
-  const { status, isPlaying, connect, disconnect, sendQuery, error } =
-    useVoiceCopilot({
-      onText: (text) => {
-        setTranscript((prev) => [...prev.slice(-4), text]);
-      },
-      onError: (err) => {
-        setTranscript((prev) => [...prev.slice(-4), `Error: ${err}`]);
-      },
-    });
+  const {
+    status,
+    isPlaying,
+    isRecording,
+    connect,
+    disconnect,
+    sendQuery,
+    startRecording,
+    stopRecording,
+    error,
+    context,
+  } = useVoiceCopilot({
+    onText: (text) => {
+      setTranscript((prev) => [...prev.slice(-4), text]);
+    },
+    onError: (err) => {
+      setTranscript((prev) => [...prev.slice(-4), `Error: ${err}`]);
+    },
+    onAction: (action) => {
+      if (action.type === "send_message") {
+        const msg = action.success
+          ? `✓ Message sent to ${action.sessionId}`
+          : `✗ Failed to send: ${action.error}`;
+        setTranscript((prev) => [...prev.slice(-4), msg]);
+      }
+    },
+    onContextChange: (newContext) => {
+      setVoiceContext(newContext);
+    },
+  });
+
+  // Keep voiceContext in sync with hook context
+  useEffect(() => {
+    setVoiceContext(context);
+  }, [context]);
 
   const isConnected = status === "connected";
 
@@ -139,6 +185,57 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     },
     [queryText, isConnected, sendQuery],
   );
+
+  // V3: Push-to-talk with mouse
+  const handlePushToTalkStart = useCallback(() => {
+    if (isConnected && !isRecording) {
+      startRecording();
+    }
+  }, [isConnected, isRecording, startRecording]);
+
+  const handlePushToTalkEnd = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
+    }
+  }, [isRecording, stopRecording]);
+
+  // V3: Spacebar shortcut for push-to-talk
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      // Space key for push-to-talk
+      if (e.code === "Space" && !e.repeat) {
+        e.preventDefault();
+        if (!isRecording) {
+          startRecording();
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (isRecording) {
+          stopRecording();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [isConnected, isRecording, startRecording, stopRecording]);
+
+  const contextLabel = getContextLabel(voiceContext);
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
@@ -179,6 +276,20 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
             </button>
           </div>
 
+          {/* V3: Focus/Follow context indicator */}
+          {contextLabel && (
+            <div
+              className="border-b px-4 py-2 text-xs font-medium"
+              style={{
+                borderColor: "var(--color-border-subtle)",
+                backgroundColor: "var(--color-bg-hover)",
+                color: "var(--color-accent)",
+              }}
+            >
+              {contextLabel}
+            </div>
+          )}
+
           {/* Transcript */}
           <div
             className="h-32 overflow-y-auto px-4 py-2 text-sm"
@@ -187,7 +298,7 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
             {transcript.length === 0 ? (
               <p className="italic">
                 {isConnected
-                  ? "Listening for events..."
+                  ? "Hold space or click mic to talk..."
                   : "Click the button to enable voice"}
               </p>
             ) : (
@@ -198,6 +309,47 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
               ))
             )}
           </div>
+
+          {/* V3: Push-to-talk button */}
+          {isConnected && (
+            <div
+              className="flex items-center justify-center border-t px-4 py-3"
+              style={{ borderColor: "var(--color-border-subtle)" }}
+            >
+              <button
+                type="button"
+                onMouseDown={handlePushToTalkStart}
+                onMouseUp={handlePushToTalkEnd}
+                onMouseLeave={handlePushToTalkEnd}
+                onTouchStart={handlePushToTalkStart}
+                onTouchEnd={handlePushToTalkEnd}
+                className="flex items-center gap-2 rounded-full px-6 py-3 font-medium transition-all"
+                style={{
+                  backgroundColor: isRecording
+                    ? "var(--color-status-error)"
+                    : "var(--color-accent)",
+                  color: "white",
+                  transform: isRecording ? "scale(1.05)" : "scale(1)",
+                }}
+                aria-label={isRecording ? "Recording..." : "Hold to talk"}
+              >
+                <MicrophoneIcon className={isRecording ? "animate-pulse" : ""} />
+                <span className="text-sm">
+                  {isRecording ? "Recording..." : "Hold to Talk"}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* V3: Keyboard shortcut hint */}
+          {isConnected && !isRecording && (
+            <div
+              className="px-4 pb-2 text-center text-xs"
+              style={{ color: "var(--color-text-tertiary)" }}
+            >
+              Or hold <kbd className="rounded border px-1" style={{ borderColor: "var(--color-border-subtle)" }}>Space</kbd> anywhere
+            </div>
+          )}
 
           {/* Query input */}
           <form
@@ -210,7 +362,7 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
                 type="text"
                 value={queryText}
                 onChange={(e) => setQueryText(e.target.value)}
-                placeholder={isConnected ? "Ask a question..." : "Connect first"}
+                placeholder={isConnected ? "Or type a question..." : "Connect first"}
                 disabled={!isConnected}
                 className="flex-1 rounded border px-3 py-2 text-sm disabled:opacity-50"
                 style={{
@@ -250,23 +402,25 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
         onClick={isExpanded ? handleToggle : () => setIsExpanded(true)}
         className="flex items-center gap-2 rounded-full px-4 py-2 shadow-lg transition-all hover:scale-105"
         style={{
-          backgroundColor: isConnected
-            ? "var(--color-status-working)"
-            : "var(--color-bg-surface)",
-          color: isConnected ? "white" : "var(--color-text-primary)",
-          borderWidth: isConnected ? 0 : 1,
+          backgroundColor: isRecording
+            ? "var(--color-status-error)"
+            : isConnected
+              ? "var(--color-status-working)"
+              : "var(--color-bg-surface)",
+          color: isConnected || isRecording ? "white" : "var(--color-text-primary)",
+          borderWidth: isConnected || isRecording ? 0 : 1,
           borderColor: "var(--color-border-subtle)",
         }}
-        aria-label={isConnected ? "Voice active" : "Enable voice"}
+        aria-label={isRecording ? "Recording..." : isConnected ? "Voice active" : "Enable voice"}
       >
         {isPlaying ? (
           <SpeakerIcon className="animate-pulse" />
         ) : (
-          <MicrophoneIcon />
+          <MicrophoneIcon className={isRecording ? "animate-pulse" : ""} />
         )}
         {!isExpanded && (
           <span className="text-sm font-medium">
-            {isConnected ? "Voice" : "Enable Voice"}
+            {isRecording ? "Recording..." : isConnected ? "Voice" : "Enable Voice"}
           </span>
         )}
       </button>

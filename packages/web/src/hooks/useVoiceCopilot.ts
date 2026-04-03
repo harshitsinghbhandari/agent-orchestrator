@@ -1,10 +1,12 @@
 /**
  * Voice Copilot hook for browser-side WebSocket connection and audio playback.
  *
- * Manages:
+ * V3 Features:
  * - WebSocket connection to voice server
  * - Audio playback via Web Audio API
- * - Connection state
+ * - Microphone capture and streaming (push-to-talk)
+ * - Connection state and recording state
+ * - Focus/follow mode context
  */
 
 "use client";
@@ -20,11 +22,31 @@ export type VoiceStatus = "disconnected" | "connecting" | "connected" | "error";
  * Server → Browser message types
  */
 interface ServerMessage {
-  type: "status" | "audio" | "error" | "text";
+  type: "status" | "audio" | "error" | "text" | "action";
   status?: VoiceStatus;
   data?: string;
   mimeType?: string;
   error?: string;
+  // V3: Action result
+  action?: {
+    type: "send_message";
+    sessionId: string;
+    success: boolean;
+    error?: string;
+  };
+  // V3: Context updates
+  context?: {
+    focusedSessionId?: string | null;
+    followingSessionId?: string | null;
+  };
+}
+
+/**
+ * V3: Voice context for focus/follow mode
+ */
+export interface VoiceContext {
+  focusedSessionId: string | null;
+  followingSessionId: string | null;
 }
 
 /**
@@ -39,6 +61,10 @@ interface UseVoiceCopilotOptions {
   onText?: (text: string) => void;
   /** Callback when error occurs */
   onError?: (error: string) => void;
+  /** V3: Callback when action result is received */
+  onAction?: (action: { type: "send_message"; sessionId: string; success: boolean; error?: string }) => void;
+  /** V3: Callback when context changes */
+  onContextChange?: (context: VoiceContext) => void;
 }
 
 /**
@@ -49,14 +75,22 @@ interface UseVoiceCopilotReturn {
   status: VoiceStatus;
   /** Whether voice is currently playing */
   isPlaying: boolean;
+  /** V3: Whether microphone is recording */
+  isRecording: boolean;
   /** Connect to voice server */
   connect: () => void;
   /** Disconnect from voice server */
   disconnect: () => void;
   /** Send a text query */
   sendQuery: (text: string) => void;
+  /** V3: Start recording audio from microphone */
+  startRecording: () => Promise<void>;
+  /** V3: Stop recording and send final audio */
+  stopRecording: () => void;
   /** Last error message */
   error: string | null;
+  /** V3: Current voice context (focus/follow state) */
+  context: VoiceContext;
 }
 
 
@@ -72,11 +106,18 @@ export function useVoiceCopilot(
     autoConnect = false,
     onText,
     onError,
+    onAction,
+    onContextChange,
   } = options;
 
   const [status, setStatus] = useState<VoiceStatus>("disconnected");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [context, setContext] = useState<VoiceContext>({
+    focusedSessionId: null,
+    followingSessionId: null,
+  });
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -85,11 +126,20 @@ export function useVoiceCopilot(
   const nextPlayTimeRef = useRef<number>(0);
   const onTextRef = useRef(onText);
   const onErrorRef = useRef(onError);
+  const onActionRef = useRef(onAction);
+  const onContextChangeRef = useRef(onContextChange);
+
+  // V3: Microphone recording refs
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const micAudioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     onTextRef.current = onText;
     onErrorRef.current = onError;
-  }, [onText, onError]);
+    onActionRef.current = onAction;
+    onContextChangeRef.current = onContextChange;
+  }, [onText, onError, onAction, onContextChange]);
 
   /**
    * Process audio queue sequentially
@@ -187,6 +237,15 @@ export function useVoiceCopilot(
                 }
               }
             }
+            // V3: Handle context updates in status messages
+            if (message.context) {
+              const newContext: VoiceContext = {
+                focusedSessionId: message.context.focusedSessionId ?? null,
+                followingSessionId: message.context.followingSessionId ?? null,
+              };
+              setContext(newContext);
+              onContextChangeRef.current?.(newContext);
+            }
             break;
 
           case "audio":
@@ -209,6 +268,13 @@ export function useVoiceCopilot(
             if (message.error) {
               setError(message.error);
               onErrorRef.current?.(message.error);
+            }
+            break;
+
+          // V3: Handle action results
+          case "action":
+            if (message.action) {
+              onActionRef.current?.(message.action);
             }
             break;
         }
@@ -298,6 +364,108 @@ export function useVoiceCopilot(
     }
   }, []);
 
+  /**
+   * V3: Send audio data to voice server
+   */
+  const sendAudio = useCallback((audioData: string, mimeType: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "audio", data: audioData, mimeType }));
+    }
+  }, []);
+
+  /**
+   * V3: Start recording audio from microphone
+   * Uses AudioWorklet for efficient PCM capture at 16kHz
+   */
+  const startRecording = useCallback(async () => {
+    if (isRecording) return;
+    if (status !== "connected") {
+      setError("Must be connected to start recording");
+      return;
+    }
+
+    try {
+      // Request microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+
+      // Create audio context for processing
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      micAudioContextRef.current = audioContext;
+
+      // Create source from microphone
+      const source = audioContext.createMediaStreamSource(stream);
+
+      // Use ScriptProcessorNode for audio capture (AudioWorklet requires module loading)
+      // Buffer size of 4096 gives ~256ms chunks at 16kHz
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        // Convert Float32 to Int16 PCM
+        const pcmData = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, inputData[i]));
+          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        // Convert to base64
+        const uint8Array = new Uint8Array(pcmData.buffer);
+        let binary = "";
+        for (let i = 0; i < uint8Array.length; i++) {
+          binary += String.fromCharCode(uint8Array[i]);
+        }
+        const base64 = btoa(binary);
+        sendAudio(base64, "audio/pcm;rate=16000");
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      // Store processor for cleanup (using audioWorkletNodeRef for simplicity)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      audioWorkletNodeRef.current = processor as any;
+
+      setIsRecording(true);
+      console.log("[voice] Started recording");
+    } catch (err) {
+      console.error("[voice] Failed to start recording:", err);
+      setError("Failed to access microphone");
+    }
+  }, [isRecording, status, sendAudio]);
+
+  /**
+   * V3: Stop recording audio
+   */
+  const stopRecording = useCallback(() => {
+    if (!isRecording) return;
+
+    // Stop media stream tracks
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+
+    // Disconnect and close audio context
+    if (audioWorkletNodeRef.current) {
+      audioWorkletNodeRef.current.disconnect();
+      audioWorkletNodeRef.current = null;
+    }
+    if (micAudioContextRef.current) {
+      micAudioContextRef.current.close();
+      micAudioContextRef.current = null;
+    }
+
+    setIsRecording(false);
+    console.log("[voice] Stopped recording");
+  }, [isRecording]);
+
   // Auto-connect if enabled
   useEffect(() => {
     if (autoConnect) {
@@ -319,9 +487,19 @@ export function useVoiceCopilot(
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Cleanup playback audio context
       if (audioContextRef.current) {
         audioContextRef.current.close();
         audioContextRef.current = null;
+      }
+      // V3: Cleanup recording resources
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+      if (micAudioContextRef.current) {
+        micAudioContextRef.current.close();
+        micAudioContextRef.current = null;
       }
     };
   }, []);
@@ -329,9 +507,13 @@ export function useVoiceCopilot(
   return {
     status,
     isPlaying,
+    isRecording,
     connect,
     disconnect,
     sendQuery,
+    startRecording,
+    stopRecording,
     error,
+    context,
   };
 }

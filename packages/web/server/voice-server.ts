@@ -19,8 +19,8 @@ import {
   type FunctionDeclaration,
 } from "@google/genai";
 
-// V2 function declarations using proper SDK types
-const V2_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
+// V3 function declarations using proper SDK types
+const V3_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "list_sessions",
     description: "List active agent sessions with their current status",
@@ -94,6 +94,58 @@ const V2_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       },
     },
   },
+  // V3 functions
+  {
+    name: "send_message_to_session",
+    description:
+      "Send a message or command to an agent session. Use this when the user wants to tell an agent to do something, like 'tell ao-25 to fix linting' or 'ask ao-94 to add tests'.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the focused or last-discussed session.",
+        },
+        message: {
+          type: Type.STRING,
+          description:
+            "The message to send to the agent. Should be a clear instruction or question.",
+        },
+      },
+      required: ["message"],
+    },
+  },
+  {
+    name: "focus_session",
+    description:
+      "Set the focused session for subsequent commands. Use this when the user says 'focus on ao-25' or 'switch to ao-94'. The focused session becomes the default target for commands.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description: "Session ID to focus on, like 'ao-94'.",
+        },
+      },
+      required: ["sessionId"],
+    },
+  },
+  {
+    name: "follow_session",
+    description:
+      "Start following a session to receive proactive updates about its progress. Use this when the user says 'follow ao-25' or 'track ao-94'. Following a session means you'll announce CI failures, review comments, and other important events for that session.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description: "Session ID to follow, like 'ao-94'. Pass 'none' to stop following.",
+        },
+      },
+      required: ["sessionId"],
+    },
+  },
 ];
 
 const SYSTEM_INSTRUCTION = `You are the voice interface for Agent Orchestrator (AO), a system that manages parallel AI coding agents.
@@ -101,6 +153,7 @@ const SYSTEM_INSTRUCTION = `You are the voice interface for Agent Orchestrator (
 Your role:
 - Announce important events concisely (CI failures, review requests, stuck sessions, merge-ready PRs)
 - Answer questions about session status and agent activity
+- Send commands to agents when the user asks (e.g., "tell ao-25 to fix linting")
 - Keep responses brief and actionable — this is spoken audio, not text
 - Use session IDs like "ao-94" consistently
 - When listing multiple sessions, group by urgency
@@ -116,16 +169,26 @@ Conversation context:
 - When asked "what failed?" or "show me the comments" without a session ID, use the last-discussed session
 - If no session was previously discussed, ask the user to specify one
 
+Focus and Follow modes:
+- When the user says "focus on ao-25", set that as the focused session
+- When the user says "follow ao-25", start tracking that session for proactive updates
+- The focused session becomes the default target for all commands until changed
+- When following a session, proactively announce important events for that session
+
 Available functions:
 - list_sessions: List sessions, optionally filtered by status
 - get_session_summary: Get detailed summary of a specific session
 - get_ci_failures: Get failed CI checks for a session's PR
 - get_review_comments: Get unresolved review comments for a session's PR
 - get_session_changes: Get what changed in a session (additions, deletions, PR info)
+- send_message_to_session: Send a message/command to an agent (e.g., "fix linting", "add tests")
+- focus_session: Set the focused session for subsequent commands
+- follow_session: Start/stop following a session for proactive updates
 
 When using functions:
 - Always call the function first, then speak based on the results
-- For follow-up queries, you can omit the session ID to use the previously discussed session`;
+- For follow-up queries, you can omit the session ID to use the focused or previously discussed session
+- When sending messages to agents, confirm the action was taken`;
 
 // Dedupe state
 const DEDUPE_WINDOW_MS = 30_000;
@@ -266,10 +329,13 @@ function generateEventMessage(eventType: string, session: DashboardSession): str
   }
 }
 
-// Conversation context for V2 session tracking
+// Conversation context for V3 session tracking
 interface ConversationContext {
   lastSessionId: string | null;
   lastUpdatedAt: number;
+  // V3: Focus and follow mode
+  focusedSessionId: string | null;
+  followingSessionId: string | null;
 }
 
 // Server state
@@ -291,22 +357,39 @@ const state: VoiceServerState = {
   context: {
     lastSessionId: null,
     lastUpdatedAt: Date.now(),
+    focusedSessionId: null,
+    followingSessionId: null,
   },
 };
 
 // Browser → Server message types
 interface BrowserMessage {
-  type: "connect" | "disconnect" | "query";
+  type: "connect" | "disconnect" | "query" | "audio";
   text?: string;
+  // V3: Audio data for voice input
+  data?: string; // Base64 encoded PCM audio
+  mimeType?: string; // e.g., "audio/pcm;rate=16000"
 }
 
 // Server → Browser message types
 interface ServerMessage {
-  type: "status" | "audio" | "error" | "text";
+  type: "status" | "audio" | "error" | "text" | "action";
   status?: "connecting" | "connected" | "disconnected" | "error";
   data?: string; // Base64 audio or text content
   mimeType?: string;
   error?: string;
+  // V3: Action result (e.g., message sent to session)
+  action?: {
+    type: "send_message";
+    sessionId: string;
+    success: boolean;
+    error?: string;
+  };
+  // V3: Context updates for the browser
+  context?: {
+    focusedSessionId?: string | null;
+    followingSessionId?: string | null;
+  };
 }
 
 function sendToBrowser(message: ServerMessage): void {
@@ -425,6 +508,7 @@ function findSessionById(sessionId: string): DashboardSession | null {
 
 /**
  * Resolve a session from args or context.
+ * V3: Now checks focusedSessionId before lastSessionId.
  */
 function resolveSession(sessionId: string | undefined): { session: DashboardSession | null; error: string | null } {
   if (sessionId) {
@@ -435,7 +519,16 @@ function resolveSession(sessionId: string | undefined): { session: DashboardSess
     return { session, error: null };
   }
 
-  // Try context
+  // V3: Try focused session first (user explicitly said "focus on X")
+  if (state.context.focusedSessionId) {
+    const session = findSessionById(state.context.focusedSessionId);
+    if (session) {
+      return { session, error: null };
+    }
+    // Focused session no longer exists - don't error, fall through to lastSessionId
+  }
+
+  // Try lastSessionId context
   if (state.context.lastSessionId) {
     const session = findSessionById(state.context.lastSessionId);
     if (session) {
@@ -563,9 +656,112 @@ function handleGetSessionChanges(args: { sessionId?: string }): { result: string
 }
 
 /**
- * Execute a function call (V2 with context support)
+ * V3 function result type with context and action support
  */
-function executeFunctionCall(name: string, args: Record<string, unknown>): { result: string; sessionId: string | null } {
+interface V3FunctionResult {
+  result: string;
+  sessionId: string | null;
+  setFocusedSessionId?: string | null;
+  setFollowingSessionId?: string | null;
+  action?: {
+    type: "send_message";
+    sessionId: string;
+    message: string;
+  };
+}
+
+/**
+ * V3: Handle send_message_to_session
+ */
+function handleSendMessageToSession(args: { sessionId?: string; message: string }): V3FunctionResult {
+  const { session, error } = resolveSession(args.sessionId);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!args.message || args.message.trim().length === 0) {
+    return {
+      result: "No message provided. Please specify what you want to tell the agent.",
+      sessionId: session.id,
+    };
+  }
+
+  const truncatedMsg = args.message.length > 100 ? args.message.slice(0, 97) + "..." : args.message;
+
+  return {
+    result: `Sending message to session ${session.id}: "${truncatedMsg}"`,
+    sessionId: session.id,
+    action: {
+      type: "send_message",
+      sessionId: session.id,
+      message: args.message.trim(),
+    },
+  };
+}
+
+/**
+ * V3: Handle focus_session
+ */
+function handleFocusSession(args: { sessionId: string }): V3FunctionResult {
+  const session = findSessionById(args.sessionId);
+  if (!session) {
+    return {
+      result: `Session ${args.sessionId} not found. Use list_sessions to see available sessions.`,
+      sessionId: null,
+    };
+  }
+
+  const label = session.issueLabel ? ` (${session.issueLabel})` : "";
+  const statusInfo = session.summary
+    ? ` Currently: ${session.summary.slice(0, 60)}${session.summary.length > 60 ? "..." : ""}`
+    : ` Status: ${session.status}`;
+
+  return {
+    result: `Now focused on session ${session.id}${label}.${statusInfo} All commands will target this session until you focus on another.`,
+    sessionId: session.id,
+    setFocusedSessionId: session.id,
+  };
+}
+
+/**
+ * V3: Handle follow_session
+ */
+function handleFollowSession(args: { sessionId: string }): V3FunctionResult {
+  // Handle "none" or "null" to stop following
+  if (!args.sessionId || args.sessionId.toLowerCase() === "none" || args.sessionId.toLowerCase() === "null") {
+    return {
+      result: "Stopped following sessions. You won't receive proactive updates for any specific session.",
+      sessionId: null,
+      setFollowingSessionId: null,
+      setFocusedSessionId: null,
+    };
+  }
+
+  const session = findSessionById(args.sessionId);
+  if (!session) {
+    return {
+      result: `Session ${args.sessionId} not found. Use list_sessions to see available sessions.`,
+      sessionId: null,
+    };
+  }
+
+  const label = session.issueLabel ? ` (${session.issueLabel})` : "";
+  const statusInfo = session.summary
+    ? ` Working on: ${session.summary.slice(0, 60)}${session.summary.length > 60 ? "..." : ""}`
+    : ` Status: ${session.status}`;
+
+  return {
+    result: `Now following session ${session.id}${label}.${statusInfo} I'll proactively announce CI failures, review comments, and other important events for this session.`,
+    sessionId: session.id,
+    setFocusedSessionId: session.id,
+    setFollowingSessionId: session.id,
+  };
+}
+
+/**
+ * Execute a function call (V3 with context + focus/follow support)
+ */
+function executeFunctionCall(name: string, args: Record<string, unknown>): V3FunctionResult {
   console.log(`[voice] Executing function: ${name}`, args);
   let result: string;
   switch (name) {
@@ -587,8 +783,18 @@ function executeFunctionCall(name: string, args: Record<string, unknown>): { res
     case "get_session_changes":
       return handleGetSessionChanges(args as { sessionId?: string });
 
+    // V3 functions
+    case "send_message_to_session":
+      return handleSendMessageToSession(args as { sessionId?: string; message: string });
+
+    case "focus_session":
+      return handleFocusSession(args as { sessionId: string });
+
+    case "follow_session":
+      return handleFollowSession(args as { sessionId: string });
+
     default:
-      result = `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`;
+      result = `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session.`;
   }
   console.log(`[voice] Function ${name} result:`, result.slice(0, 100) + (result.length > 100 ? "..." : ""));
   return { result, sessionId: null };
@@ -630,13 +836,38 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
 
       // Refresh sessions before function call
       state.sessions = await fetchSessions();
-      const { result, sessionId } = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {});
+      const funcResult = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {});
+      const { result, sessionId, setFocusedSessionId, setFollowingSessionId, action } = funcResult;
 
-      // Update conversation context if a session was resolved (V2)
+      // Update conversation context if a session was resolved
       if (sessionId) {
         state.context.lastSessionId = sessionId;
         state.context.lastUpdatedAt = Date.now();
         console.log(`[voice] Context updated: lastSessionId = ${sessionId}`);
+      }
+
+      // V3: Update focus/follow state
+      if (setFocusedSessionId !== undefined) {
+        state.context.focusedSessionId = setFocusedSessionId;
+        console.log(`[voice] Context updated: focusedSessionId = ${setFocusedSessionId}`);
+      }
+      if (setFollowingSessionId !== undefined) {
+        state.context.followingSessionId = setFollowingSessionId;
+        console.log(`[voice] Context updated: followingSessionId = ${setFollowingSessionId}`);
+        // Notify browser of context change
+        sendToBrowser({
+          type: "status",
+          status: "connected",
+          context: {
+            focusedSessionId: state.context.focusedSessionId,
+            followingSessionId: state.context.followingSessionId,
+          },
+        });
+      }
+
+      // V3: Handle actions (send message to session)
+      if (action?.type === "send_message") {
+        await handleSendMessageAction(action.sessionId, action.message);
       }
 
       if (state.geminiSession) {
@@ -652,6 +883,57 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
         });
       }
     }
+  }
+}
+
+/**
+ * V3: Send a message to a session via the dashboard API
+ */
+async function handleSendMessageAction(sessionId: string, message: string): Promise<void> {
+  const port = process.env["PORT"] || "3000";
+  try {
+    console.log(`[voice] Sending message to session ${sessionId}: ${message}`);
+    const res = await fetch(`http://localhost:${port}/api/sessions/${encodeURIComponent(sessionId)}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[voice] Failed to send message to ${sessionId}:`, errorText);
+      sendToBrowser({
+        type: "action",
+        action: {
+          type: "send_message",
+          sessionId,
+          success: false,
+          error: errorText || "Failed to send message",
+        },
+      });
+      return;
+    }
+
+    console.log(`[voice] Message sent successfully to ${sessionId}`);
+    sendToBrowser({
+      type: "action",
+      action: {
+        type: "send_message",
+        sessionId,
+        success: true,
+      },
+    });
+  } catch (error) {
+    console.error(`[voice] Error sending message to ${sessionId}:`, error);
+    sendToBrowser({
+      type: "action",
+      action: {
+        type: "send_message",
+        sessionId,
+        success: false,
+        error: String(error),
+      },
+    });
   }
 }
 
@@ -675,7 +957,7 @@ async function connectToGemini(): Promise<void> {
         systemInstruction: {
           parts: [{ text: SYSTEM_INSTRUCTION }],
         },
-        tools: [{ functionDeclarations: V2_FUNCTION_DECLARATIONS }],
+        tools: [{ functionDeclarations: V3_FUNCTION_DECLARATIONS }],
       },
       callbacks: {
         onopen: () => {
@@ -724,6 +1006,25 @@ async function sendTextToGemini(text: string): Promise<void> {
   console.log(`[voice] Sending query to Gemini via sendRealtimeInput: ${text}`);
   // Using sendRealtimeInput for live text as recommended by SKILL.md
   await state.geminiSession.sendRealtimeInput({ text });
+}
+
+/**
+ * V3: Send audio data to Gemini Live API
+ */
+async function sendAudioToGemini(audioData: string, mimeType: string): Promise<void> {
+  if (!state.geminiSession || !state.isConnected) {
+    sendToBrowser({ type: "error", error: "Not connected to Gemini" });
+    return;
+  }
+
+  // Send audio as realtime input
+  // The mimeType should be "audio/pcm;rate=16000" for 16kHz PCM
+  await state.geminiSession.sendRealtimeInput({
+    media: {
+      data: audioData,
+      mimeType: mimeType,
+    },
+  });
 }
 
 async function injectEvent(message: string): Promise<void> {
@@ -788,8 +1089,8 @@ function startSSESubscription(): void {
             }
           }
         }
-      } catch (error: any) {
-        if (error.name === "AbortError") break;
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === "AbortError") break;
         if (state.sseAbortController?.signal.aborted) break;
         console.error("[voice] SSE error:", error);
         // Wait before retry
@@ -830,7 +1131,10 @@ function stopSSESubscription(): void {
 async function handleBrowserMessage(data: string): Promise<void> {
   try {
     const message = JSON.parse(data) as BrowserMessage;
-    console.log(`[voice] Received from browser:`, message.type);
+    // Don't log audio data (too noisy)
+    if (message.type !== "audio") {
+      console.log(`[voice] Received from browser:`, message.type);
+    }
 
     switch (message.type) {
       case "connect":
@@ -847,6 +1151,13 @@ async function handleBrowserMessage(data: string): Promise<void> {
       case "query":
         if (message.text) {
           await sendTextToGemini(message.text);
+        }
+        break;
+
+      // V3: Handle audio input from browser
+      case "audio":
+        if (message.data && message.mimeType) {
+          await sendAudioToGemini(message.data, message.mimeType);
         }
         break;
     }
@@ -885,9 +1196,11 @@ wss.on("connection", async (ws) => {
       state.browserClient = null;
       stopSSESubscription();
       disconnectFromGemini().catch(console.error);
-      // Reset conversation context (V2)
+      // Reset conversation context (V3)
       state.context.lastSessionId = null;
       state.context.lastUpdatedAt = Date.now();
+      state.context.focusedSessionId = null;
+      state.context.followingSessionId = null;
     }
   });
 
