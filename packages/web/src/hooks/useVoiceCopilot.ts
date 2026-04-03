@@ -59,53 +59,7 @@ interface UseVoiceCopilotReturn {
   error: string | null;
 }
 
-/**
- * Decode base64 PCM audio and play via Web Audio API
- */
-async function playPCMAudio(
-  audioContext: AudioContext,
-  base64Data: string,
-  _mimeType: string,
-): Promise<void> {
-  // Decode base64 to raw bytes
-  const binaryString = atob(base64Data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
 
-  // Gemini outputs PCM 16-bit mono 24kHz
-  const sampleRate = 24000;
-  const numChannels = 1;
-  const bytesPerSample = 2; // 16-bit
-
-  // Convert Int16 PCM to Float32
-  const numSamples = bytes.length / bytesPerSample;
-  const float32Data = new Float32Array(numSamples);
-
-  for (let i = 0; i < numSamples; i++) {
-    // Little-endian 16-bit signed integer
-    const sample = bytes[i * 2] | (bytes[i * 2 + 1] << 8);
-    // Convert to signed
-    const signedSample = sample > 32767 ? sample - 65536 : sample;
-    // Normalize to -1.0 to 1.0
-    float32Data[i] = signedSample / 32768;
-  }
-
-  // Create AudioBuffer
-  const audioBuffer = audioContext.createBuffer(numChannels, numSamples, sampleRate);
-  audioBuffer.copyToChannel(float32Data, 0);
-
-  // Return a promise that resolves when the chunk finishes playing
-  return new Promise((resolve) => {
-    // Play the buffer
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    source.onended = () => resolve();
-    source.start();
-  });
-}
 
 /**
  * Hook for managing voice copilot connection and audio playback

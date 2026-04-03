@@ -588,10 +588,10 @@ function executeFunctionCall(name: string, args: Record<string, unknown>): { res
       return handleGetSessionChanges(args as { sessionId?: string });
 
     default:
-      result = { result: `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`, sessionId: null };
+      result = `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`;
   }
   console.log(`[voice] Function ${name} result:`, result.slice(0, 100) + (result.length > 100 ? "..." : ""));
-  return result;
+  return { result, sessionId: null };
 }
 
 async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
