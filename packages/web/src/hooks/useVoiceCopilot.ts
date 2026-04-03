@@ -302,13 +302,30 @@ export function useVoiceCopilot(
   /**
    * Connect to voice server
    */
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
 
     setStatus("connecting");
     setError(null);
+
+    // Fetch ephemeral token first
+    let token: string;
+    try {
+      const tokenRes = await fetch("/api/voice/token");
+      if (!tokenRes.ok) {
+        const errData = await tokenRes.json().catch(() => ({ error: "Failed to fetch token" }));
+        throw new Error(errData.error || `Token fetch failed: ${tokenRes.status}`);
+      }
+      const tokenData = await tokenRes.json();
+      token = tokenData.token;
+    } catch (err) {
+      console.error("[voice] Failed to fetch token:", err);
+      setStatus("error");
+      setError(err instanceof Error ? err.message : "Failed to fetch voice token");
+      return;
+    }
 
     // Initialize AudioContext on user gesture
     if (!audioContextRef.current) {
@@ -326,8 +343,8 @@ export function useVoiceCopilot(
 
     ws.onopen = () => {
       console.log("[voice] WebSocket connected");
-      // Request Gemini connection
-      ws.send(JSON.stringify({ type: "connect" }));
+      // Request Gemini connection with token
+      ws.send(JSON.stringify({ type: "connect", token }));
     };
 
     ws.onmessage = handleMessage;
