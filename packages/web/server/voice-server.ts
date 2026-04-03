@@ -20,17 +20,17 @@ import {
 } from "@google/genai";
 
 // Import from library modules instead of duplicating code
-import { shouldSpeak, cleanupDedupeCache, DEDUPE_WINDOW_MS } from "../src/lib/voice-dedupe";
-import { validateToken } from "../src/lib/voice-token";
+import { shouldSpeak, cleanupDedupeCache, DEDUPE_WINDOW_MS } from "../src/lib/voice-dedupe.js";
+import { validateToken } from "../src/lib/voice-token.js";
 import {
   findSessionById,
   executeFunctionCall,
   createConversationContext,
   type FunctionResult,
   type ConversationContext,
-} from "../src/lib/voice-functions";
-import { requestMerge } from "../src/lib/pending-merges";
-import type { DashboardSession } from "../src/lib/types";
+} from "../src/lib/voice-functions.js";
+import { requestMerge } from "../src/lib/pending-merges.js";
+import type { DashboardSession } from "../src/lib/types.js";
 
 // V4 function declarations using proper SDK types
 const V4_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
