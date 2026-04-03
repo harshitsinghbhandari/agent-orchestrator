@@ -64,8 +64,14 @@ interface UseVoiceCopilotOptions {
   onText?: (text: string) => void;
   /** Callback when error occurs */
   onError?: (error: string) => void;
-  /** V3: Callback when action result is received */
-  onAction?: (action: { type: "send_message"; sessionId: string; success: boolean; error?: string }) => void;
+  /** V4: Callback when action result is received */
+  onAction?: (action: {
+    type: "send_message" | "merge_pr";
+    sessionId: string;
+    success: boolean;
+    error?: string;
+    prNumber?: number;
+  }) => void;
   /** V3: Callback when context changes */
   onContextChange?: (context: VoiceContext) => void;
 }
