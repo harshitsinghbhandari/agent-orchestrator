@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
+import { createHmac, randomBytes } from "crypto";
 import { GET, POST, validateToken } from "../route";
 
 describe("Voice Token API", () => {
@@ -137,12 +138,10 @@ describe("Voice Token API", () => {
       process.env["GEMINI_API_KEY"] = "test-secret-key";
 
       // Create a token with an old timestamp
-      const crypto = require("crypto");
       const oldTimestamp = Date.now() - 10 * 60 * 1000; // 10 minutes ago
-      const nonce = crypto.randomBytes(16).toString("hex");
+      const nonce = randomBytes(16).toString("hex");
       const data = `${oldTimestamp}:${nonce}`;
-      const hmac = crypto
-        .createHmac("sha256", "test-secret-key")
+      const hmac = createHmac("sha256", "test-secret-key")
         .update(data)
         .digest("hex");
       const token = Buffer.from(`${data}:${hmac}`).toString("base64");
