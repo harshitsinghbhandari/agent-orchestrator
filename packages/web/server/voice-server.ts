@@ -1214,7 +1214,9 @@ async function handleMergePRAction(sessionId: string, prNumber: number): Promise
     });
 
     if (!res.ok) {
-      const errorData = await res.json().catch(() => ({ error: "Failed to merge PR" }));
+      const errorData = (await res.json().catch(() => ({ error: "Failed to merge PR" }))) as {
+        error?: string;
+      };
       console.error(`[voice] Failed to merge PR #${prNumber}:`, errorData);
       sendToBrowser({
         type: "action",
