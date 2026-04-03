@@ -74,6 +74,8 @@ interface UseVoiceCopilotOptions {
   }) => void;
   /** V3: Callback when context changes */
   onContextChange?: (context: VoiceContext) => void;
+  /** V5: Callback when audio playback completes (queue empties) */
+  onPlaybackComplete?: () => void;
 }
 
 /**
@@ -119,6 +121,7 @@ export function useVoiceCopilot(
     onError,
     onAction,
     onContextChange,
+    onPlaybackComplete,
   } = options;
 
   const [status, setStatus] = useState<VoiceStatus>("disconnected");
@@ -140,6 +143,7 @@ export function useVoiceCopilot(
   const onErrorRef = useRef(onError);
   const onActionRef = useRef(onAction);
   const onContextChangeRef = useRef(onContextChange);
+  const onPlaybackCompleteRef = useRef(onPlaybackComplete);
 
   // V3: Microphone recording refs
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -151,7 +155,8 @@ export function useVoiceCopilot(
     onErrorRef.current = onError;
     onActionRef.current = onAction;
     onContextChangeRef.current = onContextChange;
-  }, [onText, onError, onAction, onContextChange]);
+    onPlaybackCompleteRef.current = onPlaybackComplete;
+  }, [onText, onError, onAction, onContextChange, onPlaybackComplete]);
 
   /**
    * Process audio queue sequentially
@@ -226,7 +231,11 @@ export function useVoiceCopilot(
     // in the buffers we scheduled. But for simple UI, this is okay for now.
     // Better: set timeout until nextPlayTimeRef.current
     const finalDelay = (nextPlayTimeRef.current - (audioContextRef.current?.currentTime || 0)) * 1000;
-    setTimeout(() => setIsPlaying(false), Math.max(0, finalDelay));
+    setTimeout(() => {
+      setIsPlaying(false);
+      // V5: Fire playback complete callback
+      onPlaybackCompleteRef.current?.();
+    }, Math.max(0, finalDelay));
   }, []);
 
   /**

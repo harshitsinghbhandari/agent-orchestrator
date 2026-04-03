@@ -10,10 +10,16 @@
  * - Spacebar shortcut for push-to-talk
  * - Focus/follow mode display
  * - Query input for testing
+ *
+ * V5 Features:
+ * - Hands-free mode with wake word detection ("Hey AO")
+ * - Auto-activates Gemini streaming on wake word
+ * - Resumes wake word listening after response playback
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useVoiceCopilot, type VoiceStatus, type VoiceContext } from "@/hooks/useVoiceCopilot";
+import { useWakeWord } from "@/hooks/useWakeWord";
 
 /**
  * Get status indicator color based on connection state
@@ -145,6 +151,37 @@ function MuteIcon({ className }: { className?: string }) {
 }
 
 /**
+ * V5: Headphones icon SVG for hands-free mode
+ */
+function HeadphonesIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+    </svg>
+  );
+}
+
+/**
+ * V5: Mic handoff delay (ms) to allow SpeechRecognition to release mic
+ */
+const MIC_HANDOFF_DELAY = 150;
+
+/**
+ * V5: Resume delay (ms) after playback completes before restarting wake word
+ */
+const RESUME_DELAY = 500;
+
+/**
  * Voice Copilot panel component
  */
 export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
@@ -156,6 +193,21 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     followingSessionId: null,
     notificationsPaused: false,
   });
+
+  // V5: Hands-free mode state
+  const [handsFreeModeEnabled, setHandsFreeModeEnabled] = useState(false);
+  const [wakeWordFlash, setWakeWordFlash] = useState(false);
+  const resumeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // V5: Callback to resume wake word listening after playback
+  const handlePlaybackComplete = useCallback(() => {
+    if (handsFreeModeEnabled && !resumeTimeoutRef.current) {
+      resumeTimeoutRef.current = setTimeout(() => {
+        resumeTimeoutRef.current = null;
+        resumeWakeWord();
+      }, RESUME_DELAY);
+    }
+  }, [handsFreeModeEnabled]);
 
   const {
     status,
@@ -190,6 +242,34 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     },
     onContextChange: (newContext) => {
       setVoiceContext(newContext);
+    },
+    onPlaybackComplete: handlePlaybackComplete,
+  });
+
+  // V5: Wake word detection hook
+  const {
+    state: wakeWordState,
+    isSupported: isWakeWordSupported,
+    start: startWakeWord,
+    stop: stopWakeWord,
+    pause: pauseWakeWord,
+    resume: resumeWakeWord,
+    error: wakeWordError,
+  } = useWakeWord({
+    onWakeWord: (wakeTranscript, matchedWord) => {
+      console.log(`[voice-panel] Wake word detected: "${matchedWord}"`);
+      // Flash animation
+      setWakeWordFlash(true);
+      setTimeout(() => setWakeWordFlash(false), 300);
+
+      // Pause wake word listening and start recording after mic handoff delay
+      pauseWakeWord();
+      setTimeout(() => {
+        startRecording();
+      }, MIC_HANDOFF_DELAY);
+    },
+    onError: (err) => {
+      setTranscript((prev) => [...prev.slice(-4), `Wake word error: ${err}`]);
     },
   });
 
@@ -269,7 +349,56 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     };
   }, [isConnected, isRecording, startRecording, stopRecording]);
 
+  // V5: Handle hands-free mode toggle
+  const handleHandsFreeToggle = useCallback(() => {
+    const newEnabled = !handsFreeModeEnabled;
+    setHandsFreeModeEnabled(newEnabled);
+
+    if (newEnabled) {
+      // Start wake word listening when enabled
+      startWakeWord();
+    } else {
+      // Stop wake word listening when disabled
+      stopWakeWord();
+      // Clear any pending resume timeout
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+        resumeTimeoutRef.current = null;
+      }
+    }
+  }, [handsFreeModeEnabled, startWakeWord, stopWakeWord]);
+
+  // V5: Pause wake word during recording or playback
+  useEffect(() => {
+    if (!handsFreeModeEnabled) return;
+
+    if (isRecording || isPlaying) {
+      // Pause wake word while recording or playing
+      pauseWakeWord();
+    }
+  }, [handsFreeModeEnabled, isRecording, isPlaying, pauseWakeWord]);
+
+  // V5: Stop wake word when disconnecting
+  useEffect(() => {
+    if (!isConnected && handsFreeModeEnabled) {
+      stopWakeWord();
+      setHandsFreeModeEnabled(false);
+    }
+  }, [isConnected, handsFreeModeEnabled, stopWakeWord]);
+
+  // V5: Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const contextLabel = getContextLabel(voiceContext);
+
+  // V5: Wake word listening state for UI
+  const isListeningForWakeWord = handsFreeModeEnabled && wakeWordState === "listening";
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
@@ -338,6 +467,75 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
             </div>
           )}
 
+          {/* V5: Hands-free mode toggle (only show when connected and supported) */}
+          {isConnected && isWakeWordSupported && (
+            <div
+              className="flex items-center justify-between border-b px-4 py-2"
+              style={{ borderColor: "var(--color-border-subtle)" }}
+            >
+              <div className="flex items-center gap-2">
+                <HeadphonesIcon />
+                <span
+                  className="text-sm"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  Hands-free mode
+                </span>
+              </div>
+              <button
+                onClick={handleHandsFreeToggle}
+                className="relative h-6 w-11 rounded-full transition-colors"
+                style={{
+                  backgroundColor: handsFreeModeEnabled
+                    ? "var(--color-accent)"
+                    : "var(--color-bg-hover)",
+                }}
+                aria-label={handsFreeModeEnabled ? "Disable hands-free mode" : "Enable hands-free mode"}
+                aria-pressed={handsFreeModeEnabled}
+              >
+                <span
+                  className="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform"
+                  style={{
+                    transform: handsFreeModeEnabled ? "translateX(22px)" : "translateX(2px)",
+                  }}
+                />
+              </button>
+            </div>
+          )}
+
+          {/* V5: Wake word listening indicator */}
+          {isListeningForWakeWord && (
+            <div
+              className="flex items-center gap-2 border-b px-4 py-2 transition-colors"
+              style={{
+                borderColor: "var(--color-border-subtle)",
+                backgroundColor: wakeWordFlash ? "var(--color-accent)" : "var(--color-bg-base)",
+                color: wakeWordFlash ? "white" : "var(--color-text-secondary)",
+              }}
+            >
+              <span
+                className="inline-block h-2 w-2 animate-pulse rounded-full"
+                style={{ backgroundColor: wakeWordFlash ? "white" : "var(--color-accent)" }}
+              />
+              <span className="text-sm">
+                {wakeWordFlash ? "Wake word detected!" : "Listening for \"Hey AO\"..."}
+              </span>
+            </div>
+          )}
+
+          {/* V5: Wake word error display */}
+          {handsFreeModeEnabled && wakeWordError && (
+            <div
+              className="border-b px-4 py-2 text-sm"
+              style={{
+                borderColor: "var(--color-border-subtle)",
+                color: "var(--color-status-error)",
+              }}
+            >
+              {wakeWordError}
+            </div>
+          )}
+
           {/* Transcript */}
           <div
             className="h-32 overflow-y-auto px-4 py-2 text-sm"
@@ -346,7 +544,9 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
             {transcript.length === 0 ? (
               <p className="italic">
                 {isConnected
-                  ? "Hold space or click mic to talk..."
+                  ? handsFreeModeEnabled
+                    ? "Say \"Hey AO\" or hold space to talk..."
+                    : "Hold space or click mic to talk..."
                   : "Click the button to enable voice"}
               </p>
             ) : (
