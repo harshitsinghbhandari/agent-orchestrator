@@ -136,7 +136,8 @@ export function getPendingMergesForSession(sessionId: string): PendingMerge[] {
  */
 export function cleanupExpired(): void {
   const now = Date.now();
-  for (const [id, merge] of pendingMerges) {
+  const entries = Array.from(pendingMerges.entries());
+  for (const [id, merge] of entries) {
     if (now > merge.expiresAt) {
       pendingMerges.delete(id);
     }
