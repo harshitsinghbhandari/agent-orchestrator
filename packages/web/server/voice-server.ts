@@ -28,7 +28,7 @@ import {
   type ConversationContext,
 } from "../src/lib/voice-functions.js";
 import { requestMerge } from "../src/lib/pending-merges.js";
-import type { DashboardSession } from "../src/lib/types.js";
+import type { DashboardSession, DashboardOrchestratorLink } from "../src/lib/types.js";
 
 // V4 function declarations using proper SDK types
 const V4_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
@@ -109,14 +109,14 @@ const V4_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "send_message_to_session",
     description:
-      "Send a message or command to an agent session. Use this when the user wants to tell an agent to do something, like 'tell ao-25 to fix linting' or 'ask ao-94 to add tests'.",
+      "Send a message or command to an agent session. Use this when the user wants to tell an agent to do something, like 'tell ao-25 to fix linting', 'ask ao-94 to add tests', or 'tell the orchestrator to spawn an agent'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         sessionId: {
           type: Type.STRING,
           description:
-            "Session ID like 'ao-94'. If omitted, uses the focused or last-discussed session.",
+            "Session ID like 'ao-94' or 'orchestrator' for the orchestrator session. If omitted, uses the focused or last-discussed session.",
         },
         message: {
           type: Type.STRING,
@@ -209,6 +209,12 @@ Your role:
 - Use session IDs like "ao-94" consistently
 - When listing multiple sessions, group by urgency
 - If you don't know something, say so and suggest checking the dashboard
+
+Orchestrator sessions:
+- There's a special "orchestrator" session (e.g., "ao-orchestrator") that manages other agents
+- Users can send messages to the orchestrator using "tell the orchestrator to...", "orchestrator, spawn an agent", etc.
+- When the user says "orchestrator" without a prefix, match it to the session ending in "-orchestrator"
+- The orchestrator can spawn new agents, check status, and coordinate tasks
 
 Event announcements should be:
 - Clear and concise (under 15 seconds of speech)
@@ -427,13 +433,45 @@ function sendToBrowser(message: ServerMessage): void {
   }
 }
 
+/**
+ * Convert an orchestrator link to a minimal DashboardSession for voice functions.
+ * Orchestrators don't have PRs or the full session data, so we create a minimal representation.
+ */
+function orchestratorToSession(orchestrator: DashboardOrchestratorLink): DashboardSession {
+  return {
+    id: orchestrator.id,
+    projectId: orchestrator.projectId,
+    status: "working",
+    activity: "active",
+    branch: null,
+    issueId: null,
+    issueUrl: null,
+    issueLabel: orchestrator.projectName,
+    issueTitle: `${orchestrator.projectName} Orchestrator`,
+    summary: `Orchestrator session for ${orchestrator.projectName}`,
+    summaryIsFallback: true,
+    createdAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
+    pr: null,
+    metadata: { role: "orchestrator" },
+  };
+}
+
 async function fetchSessions(): Promise<DashboardSession[]> {
   try {
     const port = process.env["PORT"] || "3000";
     const res = await fetch(`http://localhost:${port}/api/sessions`);
     if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.status}`);
-    const data = (await res.json()) as { sessions?: DashboardSession[] };
-    return data.sessions || [];
+    const data = (await res.json()) as {
+      sessions?: DashboardSession[];
+      orchestrators?: DashboardOrchestratorLink[];
+    };
+
+    // Combine worker sessions with orchestrator sessions
+    const workerSessions = data.sessions || [];
+    const orchestratorSessions = (data.orchestrators || []).map(orchestratorToSession);
+
+    return [...workerSessions, ...orchestratorSessions];
   } catch (error) {
     console.error("[voice] Failed to fetch sessions:", error);
     return state.sessions; // Return cached sessions
