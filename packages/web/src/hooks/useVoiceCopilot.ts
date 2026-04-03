@@ -401,8 +401,12 @@ export function useVoiceCopilot(
 
   /**
    * V3: Start recording audio from microphone
-   * Uses AudioWorklet for efficient PCM capture at 16kHz
+   * Uses AudioWorklet for efficient PCM capture at 16kHz (with ScriptProcessor fallback)
    * V4: Clears audio queue on start (VAD interruption)
+   *
+   * Audio sample rates:
+   * - Input (microphone): 16kHz - optimized for voice, reduces bandwidth
+   * - Output (Gemini): 24kHz - Gemini's native output rate for high-quality speech
    */
   const startRecording = useCallback(async () => {
     if (isRecording) return;
@@ -416,7 +420,7 @@ export function useVoiceCopilot(
     clearAudioQueue();
 
     try {
-      // Request microphone access
+      // Request microphone access with 16kHz sample rate (optimized for voice)
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -427,44 +431,71 @@ export function useVoiceCopilot(
       });
       mediaStreamRef.current = stream;
 
-      // Create audio context for processing
+      // Create audio context for processing at 16kHz
       const audioContext = new AudioContext({ sampleRate: 16000 });
       micAudioContextRef.current = audioContext;
 
       // Create source from microphone
       const source = audioContext.createMediaStreamSource(stream);
 
-      // Use ScriptProcessorNode for audio capture (AudioWorklet requires module loading)
-      // Buffer size of 4096 gives ~256ms chunks at 16kHz
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      // V4: Try AudioWorklet first (modern, non-blocking), fall back to ScriptProcessor
+      try {
+        await audioContext.audioWorklet.addModule("/audio-worklet-processor.js");
 
-      processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        // Convert Float32 to Int16 PCM
-        const pcmData = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-        }
-        // Convert to base64
-        const uint8Array = new Uint8Array(pcmData.buffer);
-        let binary = "";
-        for (let i = 0; i < uint8Array.length; i++) {
-          binary += String.fromCharCode(uint8Array[i]);
-        }
-        const base64 = btoa(binary);
-        sendAudio(base64, "audio/pcm;rate=16000");
-      };
+        const workletNode = new AudioWorkletNode(audioContext, "pcm-processor");
 
-      source.connect(processor);
-      processor.connect(audioContext.destination);
+        workletNode.port.onmessage = (event) => {
+          // Convert ArrayBuffer to base64
+          const uint8Array = new Uint8Array(event.data.pcm);
+          let binary = "";
+          for (let i = 0; i < uint8Array.length; i++) {
+            binary += String.fromCharCode(uint8Array[i]);
+          }
+          const base64 = btoa(binary);
+          sendAudio(base64, "audio/pcm;rate=16000");
+        };
 
-      // Store processor for cleanup (using audioWorkletNodeRef for simplicity)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      audioWorkletNodeRef.current = processor as any;
+        source.connect(workletNode);
+        // Connect to destination to keep the audio graph active
+        workletNode.connect(audioContext.destination);
+
+        audioWorkletNodeRef.current = workletNode;
+        console.log("[voice] Started recording with AudioWorklet");
+      } catch (workletError) {
+        // Fallback to ScriptProcessorNode for older browsers
+        console.warn("[voice] AudioWorklet unavailable, using legacy ScriptProcessor:", workletError);
+
+        // Buffer size of 4096 gives ~256ms chunks at 16kHz
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e) => {
+          const inputData = e.inputBuffer.getChannelData(0);
+          // Convert Float32 to Int16 PCM
+          const pcmData = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            const s = Math.max(-1, Math.min(1, inputData[i]));
+            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          // Convert to base64
+          const uint8Array = new Uint8Array(pcmData.buffer);
+          let binary = "";
+          for (let i = 0; i < uint8Array.length; i++) {
+            binary += String.fromCharCode(uint8Array[i]);
+          }
+          const base64 = btoa(binary);
+          sendAudio(base64, "audio/pcm;rate=16000");
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        // Store processor for cleanup (using audioWorkletNodeRef for simplicity)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        audioWorkletNodeRef.current = processor as any;
+        console.log("[voice] Started recording with ScriptProcessor (fallback)");
+      }
 
       setIsRecording(true);
-      console.log("[voice] Started recording");
     } catch (err) {
       console.error("[voice] Failed to start recording:", err);
       setError("Failed to access microphone");

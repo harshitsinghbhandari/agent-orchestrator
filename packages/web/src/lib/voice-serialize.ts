@@ -12,8 +12,8 @@ import {
   type AttentionLevel,
   type CIStatus,
   type ReviewDecision,
-} from "./types";
-import type { SpeakableEventType } from "./voice-dedupe";
+} from "./types.js";
+import type { SpeakableEventType } from "./voice-dedupe.js";
 
 /**
  * VoiceEvent schema for the voice layer.

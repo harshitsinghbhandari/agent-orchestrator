@@ -16,7 +16,7 @@
  * - follow_session: Start following a session (sets focus + announces updates)
  */
 
-import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "./types";
+import { getAttentionLevel, type DashboardSession, type AttentionLevel, type DashboardCICheck } from "./types.js";
 
 // =============================================================================
 // CONVERSATION CONTEXT (V2)
@@ -26,6 +26,7 @@ import { getAttentionLevel, type DashboardSession, type AttentionLevel } from ".
  * Conversation context for session resolution.
  * Tracks the last-discussed session to enable follow-up queries without repeating session IDs.
  * V3: Adds focus/follow mode for targeted session interactions.
+ * V4: Adds notification control.
  */
 export interface ConversationContext {
   /** Last discussed session ID (set after each function that resolves a session) */
@@ -36,6 +37,8 @@ export interface ConversationContext {
   focusedSessionId: string | null;
   /** V3: Following session ID (actively tracking updates for this session) */
   followingSessionId: string | null;
+  /** V4: Whether automatic notifications are paused */
+  notificationsPaused: boolean;
 }
 
 /**
@@ -47,6 +50,7 @@ export function createConversationContext(): ConversationContext {
     lastUpdatedAt: Date.now(),
     focusedSessionId: null,
     followingSessionId: null,
+    notificationsPaused: false,
   };
 }
 
@@ -62,18 +66,29 @@ export interface FunctionResult {
   setFocusedSessionId?: string | null;
   /** V3: Set the following session (user said "follow X") */
   setFollowingSessionId?: string | null;
-  /** V3: Action to perform (send message to session) */
+  /** V4: Set whether notifications are paused */
+  setNotificationsPaused?: boolean;
+  /** V3/V4: Action to perform (send message to session or request merge) */
   action?: {
-    type: "send_message";
+    type: "send_message" | "request_merge";
     sessionId: string;
-    message: string;
+    message?: string;
+    /** V4: PR number for merge requests */
+    prNumber?: number;
+    /** V4: Pending merge ID for confirmation flow */
+    pendingId?: string;
   };
 }
 
 /**
- * Find a session by ID (supports exact, case-insensitive, and partial matching)
+ * Find a session by ID (supports exact, case-insensitive, and numeric suffix matching)
+ *
+ * Matching priority:
+ * 1. Exact match: "ao-94" -> "ao-94"
+ * 2. Case-insensitive: "AO-94" -> "ao-94"
+ * 3. Numeric suffix: "94" -> "ao-94" (but NOT "ao-194")
  */
-function findSessionById(sessionId: string, sessions: DashboardSession[]): DashboardSession | null {
+export function findSessionById(sessionId: string, sessions: DashboardSession[]): DashboardSession | null {
   // Try exact match first
   let session = sessions.find((s) => s.id === sessionId);
   if (session) return session;
@@ -82,8 +97,16 @@ function findSessionById(sessionId: string, sessions: DashboardSession[]): Dashb
   session = sessions.find((s) => s.id.toLowerCase() === sessionId.toLowerCase());
   if (session) return session;
 
-  // Try partial match (e.g., "94" matches "ao-94")
-  session = sessions.find((s) => s.id.endsWith(sessionId) || s.id.includes(sessionId));
+  // Try strict numeric suffix match (e.g., "94" matches "ao-94" but NOT "ao-194")
+  // Only match if the input is purely numeric
+  if (/^\d+$/.test(sessionId)) {
+    session = sessions.find((s) => {
+      // Match pattern like "prefix-<number>" where <number> exactly equals sessionId
+      const match = s.id.match(/-(\d+)$/);
+      return match?.[1] === sessionId;
+    });
+  }
+
   return session ?? null;
 }
 
@@ -276,6 +299,45 @@ export const MVP_TOOLS = [
         },
       },
       required: ["sessionId"],
+    },
+  },
+  // V4 functions
+  {
+    name: "merge_pr",
+    description:
+      "Merge a PR for a session. IMPORTANT: This is a destructive action. Always ask for confirmation first. Only proceed after explicit user confirmation.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        sessionId: {
+          type: "string" as const,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the focused or last-discussed session.",
+        },
+        confirmed: {
+          type: "boolean" as const,
+          description:
+            "Whether the user has confirmed the merge. Must be true to proceed. If false or omitted, ask for confirmation first.",
+        },
+      },
+    },
+  },
+  {
+    name: "pause_notifications",
+    description:
+      "Pause automatic voice notifications/announcements. Use this when the user says 'pause notifications', 'mute', 'be quiet', or 'stop announcing'. You can still respond to direct questions.",
+    parameters: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "resume_notifications",
+    description:
+      "Resume automatic voice notifications/announcements. Use this when the user says 'resume notifications', 'unmute', or 'start announcing again'.",
+    parameters: {
+      type: "object" as const,
+      properties: {},
     },
   },
 ];
@@ -512,7 +574,7 @@ export function handleGetCIFailures(
   }
 
   const pr = session.pr;
-  const failedChecks = pr.ciChecks.filter((c) => c.status === "failed");
+  const failedChecks = pr.ciChecks.filter((c: DashboardCICheck) => c.status === "failed");
 
   if (failedChecks.length === 0) {
     if (pr.ciStatus === "passing") {
@@ -544,8 +606,8 @@ export function handleGetCIFailures(
   }
 
   // Add summary
-  const passingCount = pr.ciChecks.filter((c) => c.status === "passed").length;
-  const pendingCount = pr.ciChecks.filter((c) => c.status === "pending" || c.status === "running").length;
+  const passingCount = pr.ciChecks.filter((c: DashboardCICheck) => c.status === "passed").length;
+  const pendingCount = pr.ciChecks.filter((c: DashboardCICheck) => c.status === "pending" || c.status === "running").length;
   lines.push(`\nSummary: ${failedChecks.length} failed, ${passingCount} passed, ${pendingCount} pending`);
 
   return { result: lines.join("\n"), sessionId: session.id };
@@ -832,8 +894,115 @@ export function handleFollowSession(
   };
 }
 
+// =============================================================================
+// V4 FUNCTIONS
+// =============================================================================
+
 /**
- * Execute a function call from Gemini (V3 - with context + focus/follow support)
+ * Handle merge_pr function call (V4)
+ *
+ * Creates a pending merge request instead of immediate merge for safety.
+ * The actual merge must be confirmed in the dashboard.
+ *
+ * @param args Function arguments from Gemini
+ * @param sessions Current session list
+ * @param context Conversation context for session resolution
+ * @returns Function result with merge action
+ */
+export function handleMergePR(
+  args: { sessionId?: string; confirmed?: boolean },
+  sessions: DashboardSession[],
+  context: ConversationContext,
+): FunctionResult {
+  const { session, error } = resolveSession(args.sessionId, sessions, context);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!session.pr) {
+    return {
+      result: `Session ${session.id} doesn't have a PR yet. Cannot merge.`,
+      sessionId: session.id,
+    };
+  }
+
+  const pr = session.pr;
+
+  // Check if PR is mergeable
+  if (!pr.mergeability?.mergeable) {
+    const blockers = pr.mergeability?.blockers || [];
+    const blockerText = blockers.length > 0 ? ` Blockers: ${blockers.join(", ")}` : "";
+    return {
+      result: `PR #${pr.number} for session ${session.id} is not ready to merge.${blockerText}`,
+      sessionId: session.id,
+    };
+  }
+
+  // Check CI status
+  if (pr.ciStatus !== "passing") {
+    return {
+      result: `PR #${pr.number} for session ${session.id} has CI status "${pr.ciStatus}". Please wait for CI to pass before merging.`,
+      sessionId: session.id,
+    };
+  }
+
+  // Check review status
+  if (pr.reviewDecision !== "approved") {
+    return {
+      result: `PR #${pr.number} for session ${session.id} has review status "${pr.reviewDecision}". It should be approved before merging.`,
+      sessionId: session.id,
+    };
+  }
+
+  // If not confirmed, ask for confirmation
+  if (!args.confirmed) {
+    return {
+      result: `PR #${pr.number} for session ${session.id} is ready to merge. It has ${pr.additions} additions and ${pr.deletions} deletions. Are you sure you want to merge? Say yes to confirm or no to cancel.`,
+      sessionId: session.id,
+    };
+  }
+
+  // Confirmed - create pending merge request
+  // Note: The actual merge ID is generated by the pending-merges module in voice-server
+  return {
+    result: `Merge request created for PR #${pr.number}. Please confirm in the dashboard within 5 minutes.`,
+    sessionId: session.id,
+    action: {
+      type: "request_merge",
+      sessionId: session.id,
+      prNumber: pr.number,
+    },
+  };
+}
+
+/**
+ * Handle pause_notifications function call (V4)
+ *
+ * @returns Function result with notification pause state
+ */
+export function handlePauseNotifications(): FunctionResult {
+  return {
+    result: "Notifications paused. I'll stop announcing events automatically but will still respond to your questions. Say 'resume notifications' when you want updates again.",
+    sessionId: null,
+    setNotificationsPaused: true,
+  };
+}
+
+/**
+ * Handle resume_notifications function call (V4)
+ *
+ * @returns Function result with notification resume state
+ */
+export function handleResumeNotifications(): FunctionResult {
+  return {
+    result: "Notifications resumed. I'll announce important events like CI failures, review comments, and merge-ready PRs.",
+    sessionId: null,
+    setNotificationsPaused: false,
+  };
+}
+
+/**
+ * Execute a function call from Gemini (V4 - with context + focus/follow/merge/notification support)
  *
  * @param name Function name
  * @param args Function arguments
@@ -888,13 +1057,23 @@ export function executeFunctionCall(
     case "follow_session":
       return handleFollowSession(args as { sessionId: string }, sessions);
 
+    // V4 functions
+    case "merge_pr":
+      return handleMergePR(args as { sessionId?: string; confirmed?: boolean }, sessions, context);
+
+    case "pause_notifications":
+      return handlePauseNotifications();
+
+    case "resume_notifications":
+      return handleResumeNotifications();
+
     default:
       return {
-        result: `Unknown function: ${name}. Available functions: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session.`,
+        result: `Unknown function: ${name}. Available functions: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session, merge_pr, pause_notifications, resume_notifications.`,
         sessionId: null,
       };
   }
 }
 
-// Re-export findSessionById for use in voice-server.ts
-export { findSessionById };
+// Export resolveSession for use in voice-server.ts
+export { resolveSession };

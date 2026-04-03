@@ -6,6 +6,56 @@ The Voice Copilot is a new feature that adds **spoken situational awareness** to
 
 ---
 
+## V4.1 — Refactoring + Security Hardening
+
+### Refactoring (Issue #19)
+
+**Code Deduplication:**
+- Moved function handlers from voice-server.ts to voice-functions.ts (~450 lines removed)
+- Consolidated ConversationContext, FunctionResult types in voice-functions.ts
+- Imported dedupe logic from voice-dedupe.ts
+- Imported token validation from voice-token.ts
+- Server now imports from library modules instead of duplicating code
+
+**Security Improvements:**
+- Removed `GEMINI_API_KEY` fallback from `VOICE_TOKEN_SECRET` (was insecure)
+- Token validation now requires `VOICE_TOKEN_SECRET` to be configured
+- Added origin checking for WebSocket connections (localhost only + `AO_ALLOWED_ORIGIN`)
+- Added WebSocket heartbeat (30s ping/pong) for stale connection detection
+- Added authentication to `/api/voice/token` endpoint via `AO_DASHBOARD_TOKEN`
+
+**Merge Safety:**
+- Created pending-merges.ts module for safe voice-initiated merges
+- Merge requests now create pending entries (5 minute expiry)
+- Dashboard must confirm merges instead of immediate voice-triggered execution
+- Better validation: checks CI passing, review approved, mergeable before allowing
+
+**Audio Improvements:**
+- Migrated from ScriptProcessorNode to AudioWorkletNode (with legacy fallback)
+- Added audio-worklet-processor.js for off-main-thread PCM conversion
+- Fixed sample rate handling (16kHz input, 24kHz output)
+- Added rate limiting for send_message (10/minute per session)
+
+**Code Quality:**
+- Fixed findSessionById to use strict numeric suffix matching ("94" matches "ao-94" not "ao-194")
+- Improved cost tracking with direction-aware sample rate defaults
+- Removed dead code after executeFunctionCall switch
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `packages/web/src/lib/voice-functions.ts` | Extended FunctionResult, added V4 handlers, exported findSessionById/resolveSession |
+| `packages/web/src/lib/voice-token.ts` | Removed GEMINI_API_KEY fallback |
+| `packages/web/src/lib/pending-merges.ts` | NEW: Pending merge store |
+| `packages/web/server/voice-server.ts` | Imports from libraries, WebSocket security, rate limiting |
+| `packages/web/src/app/api/voice/token/route.ts` | Added authentication |
+| `packages/web/src/hooks/useVoiceCopilot.ts` | AudioWorklet migration |
+| `packages/web/public/audio-worklet-processor.js` | NEW: AudioWorklet processor |
+| `docs/VOICE_COPILOT_CHANGELOG.md` | This changelog |
+
+---
+
 ## V4 — Action Commands + Hardening
 
 ### New Features
