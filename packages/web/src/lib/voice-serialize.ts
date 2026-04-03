@@ -5,8 +5,14 @@
  * sent to the Gemini Live API for spoken announcements.
  */
 
-import type { DashboardSession, DashboardPR, AttentionLevel, CIStatus, ReviewDecision } from "./types";
-import { getAttentionLevel, isPRMergeReady } from "./types";
+import {
+  getAttentionLevel,
+  isPRMergeReady,
+  type DashboardSession,
+  type AttentionLevel,
+  type CIStatus,
+  type ReviewDecision,
+} from "./types";
 import type { SpeakableEventType } from "./voice-dedupe";
 
 /**

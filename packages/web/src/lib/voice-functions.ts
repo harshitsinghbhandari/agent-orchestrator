@@ -6,8 +6,7 @@
  * - get_session_summary: Get summary of what a specific agent session is working on
  */
 
-import type { DashboardSession, AttentionLevel } from "./types";
-import { getAttentionLevel } from "./types";
+import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "./types";
 
 /**
  * Function declarations for Gemini Live API
