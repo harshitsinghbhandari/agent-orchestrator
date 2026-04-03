@@ -104,16 +104,44 @@ interface VoicePanelProps {
 }
 
 /**
- * V3: Get display label for focused/following session
+ * V4: Get display label for focused/following session + paused state
  */
 function getContextLabel(context: VoiceContext): string | null {
+  const parts: string[] = [];
+
+  if (context.notificationsPaused) {
+    parts.push("Notifications paused");
+  }
   if (context.followingSessionId) {
-    return `Following ${context.followingSessionId}`;
+    parts.push(`Following ${context.followingSessionId}`);
+  } else if (context.focusedSessionId) {
+    parts.push(`Focused on ${context.focusedSessionId}`);
   }
-  if (context.focusedSessionId) {
-    return `Focused on ${context.focusedSessionId}`;
-  }
-  return null;
+
+  return parts.length > 0 ? parts.join(" • ") : null;
+}
+
+/**
+ * V4: Mute icon SVG
+ */
+function MuteIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <line x1="23" y1="9" x2="17" y2="15" />
+      <line x1="17" y1="9" x2="23" y2="15" />
+    </svg>
+  );
 }
 
 /**
@@ -126,6 +154,7 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   const [voiceContext, setVoiceContext] = useState<VoiceContext>({
     focusedSessionId: null,
     followingSessionId: null,
+    notificationsPaused: false,
   });
 
   const {
@@ -151,6 +180,11 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
         const msg = action.success
           ? `✓ Message sent to ${action.sessionId}`
           : `✗ Failed to send: ${action.error}`;
+        setTranscript((prev) => [...prev.slice(-4), msg]);
+      } else if (action.type === "merge_pr") {
+        const msg = action.success
+          ? `✓ PR #${action.prNumber} merged for ${action.sessionId}`
+          : `✗ Failed to merge PR #${action.prNumber}: ${action.error}`;
         setTranscript((prev) => [...prev.slice(-4), msg]);
       }
     },
@@ -264,6 +298,20 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
               >
                 {getStatusLabel(status)}
               </span>
+              {/* V4: Paused indicator */}
+              {voiceContext.notificationsPaused && (
+                <div
+                  className="flex items-center gap-1 rounded px-2 py-0.5 text-xs"
+                  style={{
+                    backgroundColor: "var(--color-status-review)",
+                    color: "white",
+                  }}
+                  title="Notifications are paused"
+                >
+                  <MuteIcon />
+                  <span>Muted</span>
+                </div>
+              )}
             </div>
             <button
               onClick={() => setIsExpanded(false)}

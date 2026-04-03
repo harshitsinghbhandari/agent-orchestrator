@@ -10,6 +10,7 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
+import { createHmac } from "crypto";
 import {
   GoogleGenAI,
   Modality,
@@ -19,8 +20,8 @@ import {
   type FunctionDeclaration,
 } from "@google/genai";
 
-// V3 function declarations using proper SDK types
-const V3_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
+// V4 function declarations using proper SDK types
+const V4_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "list_sessions",
     description: "List active agent sessions with their current status",
@@ -146,6 +147,45 @@ const V3_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       required: ["sessionId"],
     },
   },
+  // V4 functions
+  {
+    name: "merge_pr",
+    description:
+      "Merge a PR for a session. IMPORTANT: This is a destructive action. Always ask for confirmation first by saying something like 'Are you sure you want to merge PR 15 for session ao-25? Say yes to confirm or no to cancel.' Only proceed after explicit user confirmation.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sessionId: {
+          type: Type.STRING,
+          description:
+            "Session ID like 'ao-94'. If omitted, uses the focused or last-discussed session.",
+        },
+        confirmed: {
+          type: Type.BOOLEAN,
+          description:
+            "Whether the user has confirmed the merge. Must be true to proceed. If false or omitted, ask for confirmation first.",
+        },
+      },
+    },
+  },
+  {
+    name: "pause_notifications",
+    description:
+      "Pause automatic voice notifications/announcements. Use this when the user says 'pause notifications', 'mute', 'be quiet', or 'stop announcing'. You can still respond to direct questions.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "resume_notifications",
+    description:
+      "Resume automatic voice notifications/announcements. Use this when the user says 'resume notifications', 'unmute', or 'start announcing again'.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 const SYSTEM_INSTRUCTION = `You are the voice interface for Agent Orchestrator (AO), a system that manages parallel AI coding agents.
@@ -154,6 +194,7 @@ Your role:
 - Announce important events concisely (CI failures, review requests, stuck sessions, merge-ready PRs)
 - Answer questions about session status and agent activity
 - Send commands to agents when the user asks (e.g., "tell ao-25 to fix linting")
+- Merge PRs when requested (with confirmation)
 - Keep responses brief and actionable — this is spoken audio, not text
 - Use session IDs like "ao-94" consistently
 - When listing multiple sessions, group by urgency
@@ -175,6 +216,18 @@ Focus and Follow modes:
 - The focused session becomes the default target for all commands until changed
 - When following a session, proactively announce important events for that session
 
+Merge PR workflow (V4):
+- When the user says "merge ao-25" or "merge PR 15", ALWAYS ask for confirmation first
+- Say something like: "Are you sure you want to merge PR 15 for session ao-25? Say yes to confirm or no to cancel."
+- Only call merge_pr with confirmed=true after the user explicitly says "yes", "confirm", or similar
+- If the user says "no" or "cancel", acknowledge and do not merge
+- Before merging, verify the PR is approved and CI is passing
+
+Notification control (V4):
+- Users can pause notifications with "pause notifications", "mute", "be quiet"
+- Users can resume with "resume notifications", "unmute", "start announcing"
+- When paused, you will not announce events automatically but will still respond to direct questions
+
 Available functions:
 - list_sessions: List sessions, optionally filtered by status
 - get_session_summary: Get detailed summary of a specific session
@@ -184,11 +237,15 @@ Available functions:
 - send_message_to_session: Send a message/command to an agent (e.g., "fix linting", "add tests")
 - focus_session: Set the focused session for subsequent commands
 - follow_session: Start/stop following a session for proactive updates
+- merge_pr: Merge a PR (requires confirmation)
+- pause_notifications: Pause automatic announcements
+- resume_notifications: Resume automatic announcements
 
 When using functions:
 - Always call the function first, then speak based on the results
 - For follow-up queries, you can omit the session ID to use the focused or previously discussed session
-- When sending messages to agents, confirm the action was taken`;
+- When sending messages to agents, confirm the action was taken
+- For merge_pr, ALWAYS ask for confirmation before calling with confirmed=true`;
 
 // Dedupe state
 const DEDUPE_WINDOW_MS = 30_000;
@@ -267,6 +324,10 @@ interface DashboardSession {
     reviewDecision: string;
     mergeability: {
       mergeable: boolean;
+      ciPassing?: boolean;
+      approved?: boolean;
+      noConflicts?: boolean;
+      blockers?: string[];
     };
     unresolvedThreads: number;
     unresolvedComments: DashboardUnresolvedComment[];
@@ -329,13 +390,23 @@ function generateEventMessage(eventType: string, session: DashboardSession): str
   }
 }
 
-// Conversation context for V3 session tracking
+// Conversation context for session tracking
 interface ConversationContext {
   lastSessionId: string | null;
   lastUpdatedAt: number;
   // V3: Focus and follow mode
   focusedSessionId: string | null;
   followingSessionId: string | null;
+  // V4: Notification control
+  notificationsPaused: boolean;
+}
+
+// V4: Cost tracking state
+interface CostTracking {
+  audioMinutesSent: number;
+  audioMinutesReceived: number;
+  sessionStartTime: number;
+  lastResetTime: number;
 }
 
 // Server state
@@ -347,6 +418,11 @@ interface VoiceServerState {
   sessions: DashboardSession[];
   context: ConversationContext;
   lastErrorSentAt?: number;
+  // V4: Cost tracking
+  costTracking: CostTracking;
+  // V4: Session resumption
+  geminiSessionHandle: string | null;
+  connectionAttempts: number;
 }
 
 const state: VoiceServerState = {
@@ -360,8 +436,17 @@ const state: VoiceServerState = {
     lastUpdatedAt: Date.now(),
     focusedSessionId: null,
     followingSessionId: null,
+    notificationsPaused: false,
   },
   lastErrorSentAt: 0,
+  costTracking: {
+    audioMinutesSent: 0,
+    audioMinutesReceived: 0,
+    sessionStartTime: Date.now(),
+    lastResetTime: Date.now(),
+  },
+  geminiSessionHandle: null,
+  connectionAttempts: 0,
 };
 
 // Browser → Server message types
@@ -371,26 +456,86 @@ interface BrowserMessage {
   // V3: Audio data for voice input
   data?: string; // Base64 encoded PCM audio
   mimeType?: string; // e.g., "audio/pcm;rate=16000"
+  // V4: Ephemeral token for authentication
+  token?: string;
+}
+
+// V4: Token validation for ephemeral token support
+const TOKEN_VALIDITY_MS_SERVER = 5 * 60 * 1000; // 5 minutes
+
+function validateVoiceToken(token: string): { valid: boolean; error?: string } {
+  const secret = process.env["VOICE_TOKEN_SECRET"] || process.env["GEMINI_API_KEY"];
+  if (!secret) {
+    // If no secret configured, allow connections (backwards compatibility)
+    console.log("[voice] No VOICE_TOKEN_SECRET configured, skipping token validation");
+    return { valid: true };
+  }
+
+  if (!token) {
+    return { valid: false, error: "Token required" };
+  }
+
+  try {
+    const decoded = Buffer.from(token, "base64").toString("utf-8");
+    const parts = decoded.split(":");
+
+    if (parts.length !== 3) {
+      return { valid: false, error: "Invalid token format" };
+    }
+
+    const [timestampStr, nonce, providedHmac] = parts;
+    const timestamp = parseInt(timestampStr, 10);
+
+    if (isNaN(timestamp)) {
+      return { valid: false, error: "Invalid timestamp" };
+    }
+
+    // Check expiration
+    const now = Date.now();
+    if (now - timestamp > TOKEN_VALIDITY_MS_SERVER) {
+      return { valid: false, error: "Token expired" };
+    }
+
+    // Verify HMAC
+    const data = `${timestamp}:${nonce}`;
+    const expectedHmac = createHmac("sha256", secret).update(data).digest("hex");
+
+    if (providedHmac !== expectedHmac) {
+      return { valid: false, error: "Invalid signature" };
+    }
+
+    return { valid: true };
+  } catch {
+    return { valid: false, error: "Token validation failed" };
+  }
 }
 
 // Server → Browser message types
 interface ServerMessage {
-  type: "status" | "audio" | "error" | "text" | "action";
+  type: "status" | "audio" | "error" | "text" | "action" | "interrupt";
   status?: "connecting" | "connected" | "disconnected" | "error";
   data?: string; // Base64 audio or text content
   mimeType?: string;
   error?: string;
   // V3: Action result (e.g., message sent to session)
   action?: {
-    type: "send_message";
+    type: "send_message" | "merge_pr";
     sessionId: string;
     success: boolean;
     error?: string;
+    prNumber?: number;
   };
-  // V3: Context updates for the browser
+  // V4: Context updates for the browser
   context?: {
     focusedSessionId?: string | null;
     followingSessionId?: string | null;
+    notificationsPaused?: boolean;
+  };
+  // V4: Cost tracking for the browser
+  costTracking?: {
+    audioMinutesSent: number;
+    audioMinutesReceived: number;
+    sessionDurationMinutes: number;
   };
 }
 
@@ -551,7 +696,7 @@ function resolveSession(sessionId: string | undefined): { session: DashboardSess
 /**
  * Handle get_ci_failures function (V2)
  */
-function handleGetCIFailures(args: { sessionId?: string }): V3FunctionResult {
+function handleGetCIFailures(args: { sessionId?: string }): V4FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -590,7 +735,7 @@ function handleGetCIFailures(args: { sessionId?: string }): V3FunctionResult {
 /**
  * Handle get_review_comments function (V2)
  */
-function handleGetReviewComments(args: { sessionId?: string }): V3FunctionResult {
+function handleGetReviewComments(args: { sessionId?: string }): V4FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -628,7 +773,7 @@ function handleGetReviewComments(args: { sessionId?: string }): V3FunctionResult
 /**
  * Handle get_session_changes function (V2)
  */
-function handleGetSessionChanges(args: { sessionId?: string }): V3FunctionResult {
+function handleGetSessionChanges(args: { sessionId?: string }): V4FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -658,24 +803,26 @@ function handleGetSessionChanges(args: { sessionId?: string }): V3FunctionResult
 }
 
 /**
- * V3 function result type with context and action support
+ * V4 function result type with context and action support
  */
-interface V3FunctionResult {
+interface V4FunctionResult {
   result: string;
   sessionId: string | null;
   setFocusedSessionId?: string | null;
   setFollowingSessionId?: string | null;
+  setNotificationsPaused?: boolean;
   action?: {
-    type: "send_message";
+    type: "send_message" | "merge_pr";
     sessionId: string;
-    message: string;
+    message?: string;
+    prNumber?: number;
   };
 }
 
 /**
  * V3: Handle send_message_to_session
  */
-function handleSendMessageToSession(args: { sessionId?: string; message: string }): V3FunctionResult {
+function handleSendMessageToSession(args: { sessionId?: string; message: string }): V4FunctionResult {
   const { session, error } = resolveSession(args.sessionId);
   if (error || !session) {
     return { result: error ?? "Session not found.", sessionId: null };
@@ -704,7 +851,7 @@ function handleSendMessageToSession(args: { sessionId?: string; message: string 
 /**
  * V3: Handle focus_session
  */
-function handleFocusSession(args: { sessionId: string }): V3FunctionResult {
+function handleFocusSession(args: { sessionId: string }): V4FunctionResult {
   const session = findSessionById(args.sessionId);
   if (!session) {
     return {
@@ -728,7 +875,7 @@ function handleFocusSession(args: { sessionId: string }): V3FunctionResult {
 /**
  * V3: Handle follow_session
  */
-function handleFollowSession(args: { sessionId: string }): V3FunctionResult {
+function handleFollowSession(args: { sessionId: string }): V4FunctionResult {
   // Handle "none" or "null" to stop following
   if (!args.sessionId || args.sessionId.toLowerCase() === "none" || args.sessionId.toLowerCase() === "null") {
     return {
@@ -761,9 +908,95 @@ function handleFollowSession(args: { sessionId: string }): V3FunctionResult {
 }
 
 /**
- * Execute a function call (V3 with context + focus/follow support)
+ * V4: Handle merge_pr with confirmation flow
  */
-function executeFunctionCall(name: string, args: Record<string, unknown>): V3FunctionResult {
+function handleMergePR(args: { sessionId?: string; confirmed?: boolean }): V4FunctionResult {
+  const { session, error } = resolveSession(args.sessionId);
+  if (error || !session) {
+    return { result: error ?? "Session not found.", sessionId: null };
+  }
+
+  if (!session.pr) {
+    return {
+      result: `Session ${session.id} doesn't have a PR yet. Cannot merge.`,
+      sessionId: session.id,
+    };
+  }
+
+  const pr = session.pr;
+
+  // Check if PR is mergeable
+  if (!pr.mergeability?.mergeable) {
+    const blockers = pr.mergeability?.blockers || [];
+    const blockerText = blockers.length > 0 ? ` Blockers: ${blockers.join(", ")}` : "";
+    return {
+      result: `PR #${pr.number} for session ${session.id} is not ready to merge.${blockerText}`,
+      sessionId: session.id,
+    };
+  }
+
+  // Check CI status
+  if (pr.ciStatus !== "passing") {
+    return {
+      result: `PR #${pr.number} for session ${session.id} has CI status "${pr.ciStatus}". Please wait for CI to pass before merging.`,
+      sessionId: session.id,
+    };
+  }
+
+  // Check review status
+  if (pr.reviewDecision !== "approved") {
+    return {
+      result: `PR #${pr.number} for session ${session.id} has review status "${pr.reviewDecision}". It should be approved before merging.`,
+      sessionId: session.id,
+    };
+  }
+
+  // If not confirmed, ask for confirmation
+  if (!args.confirmed) {
+    return {
+      result: `PR #${pr.number} for session ${session.id} is ready to merge. It has ${pr.additions} additions and ${pr.deletions} deletions. Are you sure you want to merge? Say yes to confirm or no to cancel.`,
+      sessionId: session.id,
+    };
+  }
+
+  // Confirmed - proceed with merge
+  return {
+    result: `Merging PR #${pr.number} for session ${session.id}...`,
+    sessionId: session.id,
+    action: {
+      type: "merge_pr",
+      sessionId: session.id,
+      prNumber: pr.number,
+    },
+  };
+}
+
+/**
+ * V4: Handle pause_notifications
+ */
+function handlePauseNotifications(): V4FunctionResult {
+  return {
+    result: "Notifications paused. I'll stop announcing events automatically but will still respond to your questions. Say 'resume notifications' when you want updates again.",
+    sessionId: null,
+    setNotificationsPaused: true,
+  };
+}
+
+/**
+ * V4: Handle resume_notifications
+ */
+function handleResumeNotifications(): V4FunctionResult {
+  return {
+    result: "Notifications resumed. I'll announce important events like CI failures, review comments, and merge-ready PRs.",
+    sessionId: null,
+    setNotificationsPaused: false,
+  };
+}
+
+/**
+ * Execute a function call (V4 with context + focus/follow/merge support)
+ */
+function executeFunctionCall(name: string, args: Record<string, unknown>): V4FunctionResult {
   console.log(`[voice] Executing function: ${name}`, args);
   let result: string;
   switch (name) {
@@ -795,8 +1028,18 @@ function executeFunctionCall(name: string, args: Record<string, unknown>): V3Fun
     case "follow_session":
       return handleFollowSession(args as { sessionId: string });
 
+    // V4 functions
+    case "merge_pr":
+      return handleMergePR(args as { sessionId?: string; confirmed?: boolean });
+
+    case "pause_notifications":
+      return handlePauseNotifications();
+
+    case "resume_notifications":
+      return handleResumeNotifications();
+
     default:
-      result = `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session.`;
+      result = `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes, send_message_to_session, focus_session, follow_session, merge_pr, pause_notifications, resume_notifications.`;
   }
   console.log(`[voice] Function ${name} result:`, result.slice(0, 100) + (result.length > 100 ? "..." : ""));
   return { result, sessionId: null };
@@ -808,6 +1051,10 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
     console.log(`[voice] Gemini model turn received with ${message.serverContent.modelTurn.parts.length} parts`);
     for (const part of message.serverContent.modelTurn.parts) {
       if (part.inlineData?.data && part.inlineData?.mimeType) {
+        // V4: Track received audio cost
+        const durationMs = calculateAudioDurationMs(part.inlineData.data, part.inlineData.mimeType);
+        trackAudioCost("received", durationMs);
+
         sendToBrowser({
           type: "audio",
           data: part.inlineData.data,
@@ -839,7 +1086,7 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
       // Refresh sessions before function call
       state.sessions = await fetchSessions();
       const funcResult = executeFunctionCall(fc.name, (fc.args as Record<string, unknown>) ?? {});
-      const { result, sessionId, setFocusedSessionId, setFollowingSessionId, action } = funcResult;
+      const { result, sessionId, setFocusedSessionId, setFollowingSessionId, setNotificationsPaused, action } = funcResult;
 
       // Update conversation context if a session was resolved
       if (sessionId) {
@@ -856,20 +1103,35 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
       if (setFollowingSessionId !== undefined) {
         state.context.followingSessionId = setFollowingSessionId;
         console.log(`[voice] Context updated: followingSessionId = ${setFollowingSessionId}`);
-        // Notify browser of context change
+      }
+
+      // V4: Update notifications paused state
+      if (setNotificationsPaused !== undefined) {
+        state.context.notificationsPaused = setNotificationsPaused;
+        console.log(`[voice] Context updated: notificationsPaused = ${setNotificationsPaused}`);
+      }
+
+      // Send context update to browser if any context changed
+      if (setFocusedSessionId !== undefined || setFollowingSessionId !== undefined || setNotificationsPaused !== undefined) {
         sendToBrowser({
           type: "status",
           status: "connected",
           context: {
             focusedSessionId: state.context.focusedSessionId,
             followingSessionId: state.context.followingSessionId,
+            notificationsPaused: state.context.notificationsPaused,
           },
         });
       }
 
       // V3: Handle actions (send message to session)
-      if (action?.type === "send_message") {
+      if (action?.type === "send_message" && action.message) {
         await handleSendMessageAction(action.sessionId, action.message);
+      }
+
+      // V4: Handle merge action
+      if (action?.type === "merge_pr" && action.prNumber) {
+        await handleMergePRAction(action.sessionId, action.prNumber);
       }
 
       if (state.geminiSession) {
@@ -939,6 +1201,166 @@ async function handleSendMessageAction(sessionId: string, message: string): Prom
   }
 }
 
+/**
+ * V4: Merge a PR via the dashboard API
+ */
+async function handleMergePRAction(sessionId: string, prNumber: number): Promise<void> {
+  const port = process.env["PORT"] || "3000";
+  try {
+    console.log(`[voice] Merging PR #${prNumber} for session ${sessionId}`);
+    const res = await fetch(`http://localhost:${port}/api/prs/${prNumber}/merge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({ error: "Failed to merge PR" }));
+      console.error(`[voice] Failed to merge PR #${prNumber}:`, errorData);
+      sendToBrowser({
+        type: "action",
+        action: {
+          type: "merge_pr",
+          sessionId,
+          prNumber,
+          success: false,
+          error: errorData.error || "Failed to merge PR",
+        },
+      });
+      return;
+    }
+
+    console.log(`[voice] PR #${prNumber} merged successfully`);
+    sendToBrowser({
+      type: "action",
+      action: {
+        type: "merge_pr",
+        sessionId,
+        prNumber,
+        success: true,
+      },
+    });
+  } catch (error) {
+    console.error(`[voice] Error merging PR #${prNumber}:`, error);
+    sendToBrowser({
+      type: "action",
+      action: {
+        type: "merge_pr",
+        sessionId,
+        prNumber,
+        success: false,
+        error: String(error),
+      },
+    });
+  }
+}
+
+// V4: Constants for reconnection
+const MAX_RECONNECTION_ATTEMPTS = 3;
+const RECONNECTION_BASE_DELAY_MS = 1000;
+
+// V4: Constants for context window compression / session management
+const GEMINI_SESSION_LIMIT_MS = 15 * 60 * 1000; // 15 minutes
+const PROACTIVE_RECONNECT_THRESHOLD_MS = 14 * 60 * 1000; // Reconnect at 14 minutes
+let sessionLimitCheckInterval: NodeJS.Timeout | null = null;
+
+/**
+ * V4: Calculate audio duration from PCM data
+ * PCM format: 16-bit samples, mono channel
+ * Duration = (bytes / 2) / sampleRate
+ */
+function calculateAudioDurationMs(base64Data: string, mimeType: string): number {
+  try {
+    const bytes = Buffer.from(base64Data, "base64").length;
+    // Extract sample rate from mimeType (e.g., "audio/pcm;rate=16000")
+    const rateMatch = mimeType.match(/rate=(\d+)/);
+    const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 16000;
+    const samples = bytes / 2; // 16-bit = 2 bytes per sample
+    return (samples / sampleRate) * 1000;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * V4: Track audio cost and send updates to browser
+ */
+function trackAudioCost(type: "sent" | "received", durationMs: number): void {
+  const durationMinutes = durationMs / 60000;
+
+  if (type === "sent") {
+    state.costTracking.audioMinutesSent += durationMinutes;
+  } else {
+    state.costTracking.audioMinutesReceived += durationMinutes;
+  }
+
+  // Send cost update every 10 seconds of audio or when significant
+  const totalMinutes = state.costTracking.audioMinutesSent + state.costTracking.audioMinutesReceived;
+  if (totalMinutes > 0 && Math.floor(totalMinutes * 6) !== Math.floor((totalMinutes - durationMinutes) * 6)) {
+    sendCostUpdate();
+  }
+}
+
+/**
+ * V4: Send cost update to browser
+ */
+function sendCostUpdate(): void {
+  const sessionDurationMinutes = (Date.now() - state.costTracking.sessionStartTime) / 60000;
+  sendToBrowser({
+    type: "status",
+    status: "connected",
+    costTracking: {
+      audioMinutesSent: Math.round(state.costTracking.audioMinutesSent * 100) / 100,
+      audioMinutesReceived: Math.round(state.costTracking.audioMinutesReceived * 100) / 100,
+      sessionDurationMinutes: Math.round(sessionDurationMinutes * 100) / 100,
+    },
+  });
+}
+
+/**
+ * V4: Check if session is approaching limit and reconnect proactively
+ */
+function checkSessionLimit(): void {
+  if (!state.isConnected || !state.costTracking.sessionStartTime) return;
+
+  const sessionDuration = Date.now() - state.costTracking.sessionStartTime;
+  if (sessionDuration >= PROACTIVE_RECONNECT_THRESHOLD_MS) {
+    console.log(
+      `[voice] Session approaching 15-min limit (${Math.round(sessionDuration / 60000)}min), reconnecting proactively`,
+    );
+
+    // Reset cost tracking for new session
+    state.costTracking.sessionStartTime = Date.now();
+
+    // Disconnect and reconnect
+    disconnectFromGemini().then(() => {
+      if (state.browserClient?.readyState === WebSocket.OPEN) {
+        connectToGemini();
+      }
+    });
+  }
+}
+
+/**
+ * V4: Start session limit check interval
+ */
+function startSessionLimitCheck(): void {
+  if (sessionLimitCheckInterval) {
+    clearInterval(sessionLimitCheckInterval);
+  }
+  // Check every minute
+  sessionLimitCheckInterval = setInterval(checkSessionLimit, 60000);
+}
+
+/**
+ * V4: Stop session limit check interval
+ */
+function stopSessionLimitCheck(): void {
+  if (sessionLimitCheckInterval) {
+    clearInterval(sessionLimitCheckInterval);
+    sessionLimitCheckInterval = null;
+  }
+}
+
 async function connectToGemini(): Promise<void> {
   const apiKey = process.env["GEMINI_API_KEY"];
   if (!apiKey) {
@@ -947,6 +1369,8 @@ async function connectToGemini(): Promise<void> {
   }
 
   sendToBrowser({ type: "status", status: "connecting" });
+  state.connectionAttempts++;
+  state.costTracking.sessionStartTime = Date.now();
 
   try {
     const ai = new GoogleGenAI({ apiKey });
@@ -959,11 +1383,14 @@ async function connectToGemini(): Promise<void> {
         systemInstruction: {
           parts: [{ text: SYSTEM_INSTRUCTION }],
         },
-        tools: [{ functionDeclarations: V3_FUNCTION_DECLARATIONS }],
+        tools: [{ functionDeclarations: V4_FUNCTION_DECLARATIONS }],
       },
       callbacks: {
         onopen: () => {
           state.isConnected = true;
+          state.connectionAttempts = 0; // Reset on successful connection
+          // V4: Start session limit check
+          startSessionLimitCheck();
           sendToBrowser({ type: "status", status: "connected" });
           console.log("[voice] Connected to Gemini Live API (3.1 Flash)");
         },
@@ -975,18 +1402,72 @@ async function connectToGemini(): Promise<void> {
         onclose: () => {
           state.isConnected = false;
           state.geminiSession = null;
-          sendToBrowser({ type: "status", status: "disconnected" });
           console.log("[voice] Disconnected from Gemini Live API");
+
+          // V4: Attempt to reconnect if browser is still connected
+          if (state.browserClient?.readyState === WebSocket.OPEN) {
+            attemptReconnection();
+          } else {
+            sendToBrowser({ type: "status", status: "disconnected" });
+          }
         },
       },
     });
   } catch (error) {
     console.error("[voice] Failed to connect to Gemini:", error);
     sendToBrowser({ type: "error", error: String(error) });
+
+    // V4: Attempt to reconnect on connection failure
+    if (state.browserClient?.readyState === WebSocket.OPEN) {
+      attemptReconnection();
+    }
+  }
+}
+
+/**
+ * V4: Attempt to reconnect to Gemini with exponential backoff
+ * Preserves context across reconnections
+ */
+async function attemptReconnection(): Promise<void> {
+  if (state.connectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
+    console.log(`[voice] Max reconnection attempts (${MAX_RECONNECTION_ATTEMPTS}) reached`);
+    sendToBrowser({ type: "status", status: "disconnected" });
+    sendToBrowser({
+      type: "error",
+      error: "Connection lost. Please reconnect manually.",
+    });
+    state.connectionAttempts = 0;
+    return;
+  }
+
+  const delay = RECONNECTION_BASE_DELAY_MS * Math.pow(2, state.connectionAttempts);
+  console.log(
+    `[voice] Attempting reconnection ${state.connectionAttempts + 1}/${MAX_RECONNECTION_ATTEMPTS} in ${delay}ms`,
+  );
+
+  sendToBrowser({
+    type: "status",
+    status: "connecting",
+    context: {
+      focusedSessionId: state.context.focusedSessionId,
+      followingSessionId: state.context.followingSessionId,
+      notificationsPaused: state.context.notificationsPaused,
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, delay));
+
+  // Check if browser is still connected before attempting reconnection
+  if (state.browserClient?.readyState === WebSocket.OPEN) {
+    await connectToGemini();
   }
 }
 
 async function disconnectFromGemini(): Promise<void> {
+  // V4: Reset connection attempts on explicit disconnect
+  state.connectionAttempts = MAX_RECONNECTION_ATTEMPTS; // Prevent auto-reconnect
+  // V4: Stop session limit check
+  stopSessionLimitCheck();
   if (state.geminiSession) {
     try {
       await state.geminiSession.close();
@@ -996,6 +1477,7 @@ async function disconnectFromGemini(): Promise<void> {
     state.geminiSession = null;
   }
   state.isConnected = false;
+  state.connectionAttempts = 0; // Reset for next manual connect
   sendToBrowser({ type: "status", status: "disconnected" });
 }
 
@@ -1026,6 +1508,10 @@ async function sendAudioToGemini(audioData: string, mimeType: string): Promise<v
     return;
   }
 
+  // V4: Track audio cost
+  const durationMs = calculateAudioDurationMs(audioData, mimeType);
+  trackAudioCost("sent", durationMs);
+
   // Send audio as realtime input
   // The SDK expects it in { audio: { data, mimeType } } format, NOT { media: ... }
   // data should be base64 string
@@ -1040,6 +1526,12 @@ async function sendAudioToGemini(audioData: string, mimeType: string): Promise<v
 async function injectEvent(message: string): Promise<void> {
   if (!state.geminiSession || !state.isConnected) {
     console.log(`[voice] Skipping event injection (Gemini not connected): ${message}`);
+    return;
+  }
+
+  // V4: Check if notifications are paused
+  if (state.context.notificationsPaused) {
+    console.log(`[voice] Skipping event injection (notifications paused): ${message}`);
     return;
   }
 
@@ -1147,10 +1639,24 @@ async function handleBrowserMessage(data: string): Promise<void> {
     }
 
     switch (message.type) {
-      case "connect":
+      case "connect": {
+        // V4: Validate token if VOICE_TOKEN_SECRET is configured
+        if (process.env["VOICE_TOKEN_SECRET"]) {
+          const validation = validateVoiceToken(message.token || "");
+          if (!validation.valid) {
+            console.log(`[voice] Token validation failed: ${validation.error}`);
+            sendToBrowser({
+              type: "error",
+              error: `Authentication failed: ${validation.error}`,
+            });
+            return;
+          }
+          console.log("[voice] Token validated successfully");
+        }
         await connectToGemini();
         startSSESubscription();
         break;
+      }
 
       case "disconnect":
         console.log("[voice] Browser requested disconnect");
@@ -1206,11 +1712,12 @@ wss.on("connection", async (ws) => {
       state.browserClient = null;
       stopSSESubscription();
       disconnectFromGemini().catch(console.error);
-      // Reset conversation context (V3)
+      // Reset conversation context (V4)
       state.context.lastSessionId = null;
       state.context.lastUpdatedAt = Date.now();
       state.context.focusedSessionId = null;
       state.context.followingSessionId = null;
+      state.context.notificationsPaused = false;
     }
   });
 

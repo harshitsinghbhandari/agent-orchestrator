@@ -6,6 +6,119 @@ The Voice Copilot is a new feature that adds **spoken situational awareness** to
 
 ---
 
+## V4 — Action Commands + Hardening
+
+### New Features
+
+**Action Commands:**
+
+| Function | Description | Example Commands |
+|----------|-------------|------------------|
+| `merge_pr` | Merge a PR with confirmation flow | "Merge ao-25" "Merge PR 15" |
+| `pause_notifications` | Pause automatic announcements | "Pause notifications" "Mute" "Be quiet" |
+| `resume_notifications` | Resume automatic announcements | "Resume notifications" "Unmute" |
+
+**Merge PR Confirmation Flow:**
+- When user says "merge ao-25", the voice assistant asks for confirmation
+- "Are you sure you want to merge PR 15 for session ao-25? Say yes to confirm or no to cancel."
+- Only merges if PR is approved + CI green
+- User must explicitly confirm with "yes" or "confirm"
+
+**Notification Control:**
+- Users can pause automatic event announcements while still being able to ask questions
+- Visual indicator in VoicePanel shows when notifications are muted
+- State persists until explicitly resumed or session disconnects
+
+**VAD-Based Interruption Handling:**
+- Detects when user starts speaking during playback
+- Immediately clears audio queue and stops playback
+- Allows natural conversation flow without waiting for responses to finish
+
+**Session Resumption for Connection Drops:**
+- Auto-reconnection with exponential backoff (up to 3 attempts)
+- Preserves focus/follow/notification state across reconnections
+- Graceful fallback to manual reconnect after max attempts
+
+**Ephemeral Token Support:**
+- New endpoint: `GET /api/voice/token` generates short-lived access tokens
+- Tokens valid for 5 minutes, HMAC-SHA256 signed
+- Optional: set `VOICE_TOKEN_SECRET` to enable token validation
+- Keeps Gemini API key server-side only
+
+**Context Window Compression:**
+- Proactive reconnection before 15-minute Gemini session limit
+- Reconnects at 14 minutes to avoid mid-conversation disconnects
+- Context (focus, follow, notifications) preserved across reconnections
+
+**Cost Tracking:**
+- Tracks audio minutes sent and received
+- Sends periodic cost updates to browser
+- Session duration tracking
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `packages/web/server/voice-server.ts` | V4 function declarations, merge/pause/resume handlers, token validation, session resumption, cost tracking, session limit checks |
+| `packages/web/src/hooks/useVoiceCopilot.ts` | Added `clearAudioQueue` for VAD interruption, updated context interface |
+| `packages/web/src/components/VoicePanel.tsx` | Muted indicator, merge action display |
+| `packages/web/src/app/api/voice/token/route.ts` | New ephemeral token endpoint |
+| `docs/VOICE_COPILOT_CHANGELOG.md` | V4 documentation |
+
+### Technical Details
+
+**Merge Confirmation:**
+- `merge_pr` function checks CI status, review status, and mergeability
+- Returns error with blockers if PR is not ready
+- Only calls `/api/prs/[id]/merge` after explicit confirmation
+
+**Token Format:**
+```
+base64(timestamp:nonce:hmac)
+```
+- timestamp: Unix epoch when created
+- nonce: 16 random bytes (hex)
+- hmac: HMAC-SHA256 of `timestamp:nonce` using secret
+
+**Session Limit Management:**
+- `GEMINI_SESSION_LIMIT_MS = 15 * 60 * 1000` (15 minutes)
+- `PROACTIVE_RECONNECT_THRESHOLD_MS = 14 * 60 * 1000` (14 minutes)
+- Check interval: every minute
+
+---
+
+## V3 — Voice Input + Basic Commands
+
+### New Features
+
+**Voice Input (Push-to-Talk):**
+- Microphone capture using ScriptProcessorNode (16kHz PCM)
+- Push-to-talk UI button and spacebar shortcut
+- Streams audio to Gemini Live API in real-time
+
+**New Functions:**
+
+| Function | Description | Example Commands |
+|----------|-------------|------------------|
+| `send_message_to_session` | Send a message to an agent | "Tell ao-25 to fix linting" |
+| `focus_session` | Set the focused session | "Focus on ao-25" |
+| `follow_session` | Start following a session | "Follow ao-94" |
+
+**Focus/Follow Mode:**
+- Focused session becomes default target for commands
+- Following a session triggers proactive updates for that session
+- Context displayed in VoicePanel header
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `packages/web/server/voice-server.ts` | V3 function declarations, send/focus/follow handlers, audio input handling |
+| `packages/web/src/hooks/useVoiceCopilot.ts` | Microphone capture, recording state, audio streaming |
+| `packages/web/src/components/VoicePanel.tsx` | Push-to-talk button, spacebar shortcut, context display |
+
+---
+
 ## V2 — Full Query Support + Context Retention
 
 ### New Features
@@ -241,9 +354,9 @@ The voice server maintains previous session states to detect transitions:
 
 ## Known Limitations
 
-1. **No microphone input (MVP)** — Text queries only, voice input planned for V3
+1. ~~**No microphone input (MVP)** — Text queries only, voice input planned for V3~~ ✅ **Fixed in V3** — Push-to-talk voice input now available
 2. **Single client** — Only one browser can connect to voice at a time
-3. **No action execution** — Cannot merge PRs or send messages via voice (planned for V4)
+3. ~~**No action execution** — Cannot merge PRs or send messages via voice (planned for V4)~~ ✅ **Fixed in V4** — Can merge PRs and send messages via voice
 4. **Local network only** — Voice server runs on localhost
 5. ~~**No conversation memory** — Each query is independent~~ ✅ **Fixed in V2** — Context retention now remembers last-discussed session
 
@@ -255,11 +368,20 @@ The voice server maintains previous session states to detect transitions:
 - ~~`get_session_changes` — PR diff summary~~ ✅
 - ~~Conversation context retention~~ ✅
 
-### V3 — Voice Input + Basic Commands
-- Microphone capture (browser MediaRecorder)
-- `send_message_to_session` — Voice-to-agent messaging
-- Session focus / follow mode
-- Push-to-talk UI
+### ~~V3 — Voice Input + Basic Commands~~ ✅ COMPLETE
+- ~~Microphone capture (browser MediaRecorder)~~ ✅
+- ~~`send_message_to_session` — Voice-to-agent messaging~~ ✅
+- ~~Session focus / follow mode~~ ✅
+- ~~Push-to-talk UI~~ ✅
+
+### ~~V4 — Action Commands + Hardening~~ ✅ COMPLETE
+- ~~`merge_pr` with confirmation flow~~ ✅
+- ~~Pause/resume notifications~~ ✅
+- ~~VAD-based interruption handling~~ ✅
+- ~~Session resumption for connection drops~~ ✅
+- ~~Ephemeral token support~~ ✅
+- ~~Context window compression~~ ✅
+- ~~Cost tracking~~ ✅
 
 ### Sprint: Stability & Performance (April 2026)
 - **Gapless Playback:** Removed 50ms gaps between chunks; implemented precise `nextPlayTime` scheduling.
