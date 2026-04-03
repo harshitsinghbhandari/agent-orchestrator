@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { createHmac, randomBytes } from "crypto";
-import { GET, POST, validateToken } from "../route";
+import { GET, POST } from "../route";
+import { validateToken } from "@/lib/voice-token";
 
 describe("Voice Token API", () => {
   const originalEnv = process.env;
