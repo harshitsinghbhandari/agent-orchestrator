@@ -29,7 +29,7 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(
     fetch(event.request).catch((err) => {
-      console.warn("[SW] Navigation fetch failed:", err.message);
+      console.warn("[SW] Navigation fetch failed:", err.message); // eslint-disable-line no-console
       return caches.match(OFFLINE_URL).then((r) =>
         r || new Response("Offline", { status: 503, headers: { "Content-Type": "text/plain" } })
       );

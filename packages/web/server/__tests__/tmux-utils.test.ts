@@ -147,6 +147,7 @@ describe("validateSessionId", () => {
 
     it("rejects dollar signs", () => {
       expect(validateSessionId("$HOME")).toBe(false);
+      // eslint-disable-next-line no-template-curly-in-string
       expect(validateSessionId("ao-${15}")).toBe(false);
     });
 

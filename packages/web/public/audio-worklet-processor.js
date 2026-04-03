@@ -1,3 +1,4 @@
+/* global AudioWorkletProcessor, registerProcessor */
 /**
  * PCM Audio Worklet Processor
  *

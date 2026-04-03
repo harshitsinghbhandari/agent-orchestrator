@@ -20,13 +20,11 @@ import {
 } from "@google/genai";
 
 // Import from library modules instead of duplicating code
-import { shouldSpeak, cleanupDedupeCache, DEDUPE_WINDOW_MS } from "../src/lib/voice-dedupe.js";
+import { shouldSpeak, cleanupDedupeCache } from "../src/lib/voice-dedupe.js";
 import { validateToken } from "../src/lib/voice-token.js";
 import {
-  findSessionById,
   executeFunctionCall,
   createConversationContext,
-  type FunctionResult,
   type ConversationContext,
 } from "../src/lib/voice-functions.js";
 import { requestMerge } from "../src/lib/pending-merges.js";
@@ -442,20 +440,6 @@ async function fetchSessions(): Promise<DashboardSession[]> {
   }
 }
 
-function getAttentionLevel(session: DashboardSession): string {
-  if (["merged", "killed", "cleanup", "done", "terminated"].includes(session.status)) {
-    return "done";
-  }
-  if (session.pr?.mergeability?.mergeable) return "merge";
-  if (["stuck", "needs_input", "errored"].includes(session.status)) return "respond";
-  if (session.activity === "waiting_input" || session.activity === "blocked") return "respond";
-  if (session.pr?.ciStatus === "failing" || session.pr?.reviewDecision === "changes_requested") {
-    return "review";
-  }
-  if (session.status === "review_pending") return "pending";
-  return "working";
-}
-
 // Note: Handler functions are imported from ../src/lib/voice-functions
 // The imported executeFunctionCall handles all function routing
 
@@ -665,67 +649,13 @@ async function handleSendMessageAction(sessionId: string, message: string): Prom
   }
 }
 
-/**
- * V4: Merge a PR via the dashboard API
- */
-async function handleMergePRAction(sessionId: string, prNumber: number): Promise<void> {
-  const port = process.env["PORT"] || "3000";
-  try {
-    console.log(`[voice] Merging PR #${prNumber} for session ${sessionId}`);
-    const res = await fetch(`http://localhost:${port}/api/prs/${prNumber}/merge`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
-
-    if (!res.ok) {
-      const errorData = (await res.json().catch(() => ({ error: "Failed to merge PR" }))) as {
-        error?: string;
-      };
-      console.error(`[voice] Failed to merge PR #${prNumber}:`, errorData);
-      sendToBrowser({
-        type: "action",
-        action: {
-          type: "merge_pr",
-          sessionId,
-          prNumber,
-          success: false,
-          error: errorData.error || "Failed to merge PR",
-        },
-      });
-      return;
-    }
-
-    console.log(`[voice] PR #${prNumber} merged successfully`);
-    sendToBrowser({
-      type: "action",
-      action: {
-        type: "merge_pr",
-        sessionId,
-        prNumber,
-        success: true,
-      },
-    });
-  } catch (error) {
-    console.error(`[voice] Error merging PR #${prNumber}:`, error);
-    sendToBrowser({
-      type: "action",
-      action: {
-        type: "merge_pr",
-        sessionId,
-        prNumber,
-        success: false,
-        error: String(error),
-      },
-    });
-  }
-}
+// Note: handleSendMessageAction is called by executeFunctionCall output
 
 // V4: Constants for reconnection
 const MAX_RECONNECTION_ATTEMPTS = 3;
 const RECONNECTION_BASE_DELAY_MS = 1000;
 
 // V4: Constants for context window compression / session management
-const GEMINI_SESSION_LIMIT_MS = 15 * 60 * 1000; // 15 minutes
 const PROACTIVE_RECONNECT_THRESHOLD_MS = 14 * 60 * 1000; // Reconnect at 14 minutes
 let sessionLimitCheckInterval: NodeJS.Timeout | null = null;
 
