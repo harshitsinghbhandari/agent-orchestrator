@@ -15,10 +15,10 @@ import { createHmac, randomBytes } from "crypto";
 const TOKEN_VALIDITY_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Get the token secret (VOICE_TOKEN_SECRET or GEMINI_API_KEY)
+ * Get the token secret (VOICE_TOKEN_SECRET only - no fallback for security)
  */
 function getSecret(): string | undefined {
-  return process.env["VOICE_TOKEN_SECRET"] || process.env["GEMINI_API_KEY"];
+  return process.env["VOICE_TOKEN_SECRET"];
 }
 
 /**
@@ -47,7 +47,7 @@ export function generateToken(): { token: string; expiresAt: number } {
 export function validateToken(token: string): { valid: boolean; error?: string } {
   const secret = getSecret();
   if (!secret) {
-    return { valid: false, error: "No secret configured" };
+    return { valid: false, error: "Voice authentication not configured (VOICE_TOKEN_SECRET required)" };
   }
 
   try {

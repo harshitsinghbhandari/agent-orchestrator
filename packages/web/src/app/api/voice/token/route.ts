@@ -12,7 +12,7 @@ import { generateToken, validateToken, TOKEN_VALIDITY } from "@/lib/voice-token"
 /**
  * GET /api/voice/token - Generate a new ephemeral voice access token
  */
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
   // Check if voice is enabled
   const voiceEnabled =
     process.env["AO_VOICE_ENABLED"] === "true" ||
@@ -25,6 +25,21 @@ export async function GET(_request: NextRequest) {
   // Check if Gemini API key is configured
   if (!process.env["GEMINI_API_KEY"]) {
     return NextResponse.json({ error: "Voice service not configured" }, { status: 503 });
+  }
+
+  // Require authentication via dashboard token if configured
+  const expectedToken = process.env["AO_DASHBOARD_TOKEN"];
+  if (expectedToken) {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader !== `Bearer ${expectedToken}`) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
+  // Require VOICE_TOKEN_SECRET for secure token generation
+  const secret = process.env["VOICE_TOKEN_SECRET"];
+  if (!secret) {
+    return NextResponse.json({ error: "Voice auth not configured (VOICE_TOKEN_SECRET required)" }, { status: 500 });
   }
 
   try {

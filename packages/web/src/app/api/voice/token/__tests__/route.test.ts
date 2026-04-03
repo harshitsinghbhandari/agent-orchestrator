@@ -42,9 +42,23 @@ describe("Voice Token API", () => {
       expect(data.error).toBe("Voice service not configured");
     });
 
+    it("returns 500 when VOICE_TOKEN_SECRET is not configured", async () => {
+      process.env["AO_VOICE_ENABLED"] = "true";
+      process.env["GEMINI_API_KEY"] = "test-key";
+      delete process.env["VOICE_TOKEN_SECRET"];
+
+      const request = new NextRequest("http://localhost/api/voice/token");
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(500);
+      expect(data.error).toBe("Voice auth not configured (VOICE_TOKEN_SECRET required)");
+    });
+
     it("returns a valid token when configured correctly", async () => {
       process.env["AO_VOICE_ENABLED"] = "true";
       process.env["GEMINI_API_KEY"] = "test-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret";
 
       const request = new NextRequest("http://localhost/api/voice/token");
       const response = await GET(request);
@@ -61,6 +75,7 @@ describe("Voice Token API", () => {
     it("generates tokens that can be validated", async () => {
       process.env["AO_VOICE_ENABLED"] = "true";
       process.env["GEMINI_API_KEY"] = "test-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret";
 
       const request = new NextRequest("http://localhost/api/voice/token");
       const response = await GET(request);
@@ -75,6 +90,7 @@ describe("Voice Token API", () => {
   describe("POST /api/voice/token (validation)", () => {
     it("returns valid for a freshly generated token", async () => {
       process.env["GEMINI_API_KEY"] = "test-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret";
 
       // Generate a token first
       process.env["AO_VOICE_ENABLED"] = "true";
@@ -96,6 +112,7 @@ describe("Voice Token API", () => {
 
     it("returns invalid for tampered tokens", async () => {
       process.env["GEMINI_API_KEY"] = "test-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret";
 
       const postRequest = new NextRequest("http://localhost/api/voice/token", {
         method: "POST",
@@ -124,8 +141,9 @@ describe("Voice Token API", () => {
 
   describe("validateToken function", () => {
     it("returns valid for a properly signed token", async () => {
-      process.env["GEMINI_API_KEY"] = "test-secret-key";
       process.env["AO_VOICE_ENABLED"] = "true";
+      process.env["GEMINI_API_KEY"] = "test-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret-key";
 
       const getRequest = new NextRequest("http://localhost/api/voice/token");
       const getResponse = await GET(getRequest);
@@ -136,7 +154,7 @@ describe("Voice Token API", () => {
     });
 
     it("returns invalid for expired tokens", () => {
-      process.env["GEMINI_API_KEY"] = "test-secret-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret-key";
 
       // Create a token with an old timestamp
       const oldTimestamp = Date.now() - 10 * 60 * 1000; // 10 minutes ago
@@ -153,7 +171,7 @@ describe("Voice Token API", () => {
     });
 
     it("returns invalid for tokens with wrong signature", () => {
-      process.env["GEMINI_API_KEY"] = "test-secret-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret-key";
 
       const timestamp = Date.now();
       const nonce = "fake-nonce";
@@ -166,10 +184,18 @@ describe("Voice Token API", () => {
     });
 
     it("returns invalid for malformed tokens", () => {
-      process.env["GEMINI_API_KEY"] = "test-secret-key";
+      process.env["VOICE_TOKEN_SECRET"] = "test-secret-key";
 
       const result = validateToken("not-valid-base64-!@#$");
       expect(result.valid).toBe(false);
+    });
+
+    it("returns error when VOICE_TOKEN_SECRET is not configured", () => {
+      delete process.env["VOICE_TOKEN_SECRET"];
+
+      const result = validateToken("any-token");
+      expect(result.valid).toBe(false);
+      expect(result.error).toBe("Voice authentication not configured (VOICE_TOKEN_SECRET required)");
     });
   });
 });
