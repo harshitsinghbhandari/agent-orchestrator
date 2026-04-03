@@ -103,11 +103,11 @@ This is the **MVP implementation** that focuses on:
 └─────────────────────────────────────────────────────────────────────┘
                                │
                                ▼
-                    ┌─────────────────────┐
-                    │  Gemini Live API    │
-                    │  gemini-2.0-flash-  │
-                    │  live-001           │
-                    └─────────────────────┘
+                     ┌─────────────────────┐
+                     │  Gemini Live API    │
+                     │  gemini-3.1-flash-  │
+                     │  live-preview       │
+                     └─────────────────────┘
 ```
 
 ## Files Created
@@ -215,7 +215,8 @@ These events trigger automatic voice announcements:
 ### Audio Format
 
 - **Output from Gemini:** PCM, 16-bit, mono, 24kHz
-- **Browser playback:** Base64 → ArrayBuffer → Float32 → AudioContext
+- **Browser playback:** Gapless streaming using `audioContext.currentTime` scheduling.
+- **Scheduling:** Precise back-to-back buffer playback with a 100ms initial jitter buffer to prevent stuttering.
 
 ### Dedupe Logic
 
@@ -233,10 +234,10 @@ The voice server maintains previous session states to detect transitions:
 
 ### Connection Management
 
-- Gemini Live API has 15-minute connection limit
-- Voice server monitors connection age and proactively reconnects
-- Browser WebSocket auto-reconnects on disconnect
-- Only one browser client allowed at a time
+- **Gemini Live API:** Now using `gemini-3.1-flash-live-preview` (lower latency, improved tool use).
+- **Session Isolation:** Only one browser client allowed. Server explicitly disconnects existing Gemini sessions and stops SSE subscriptions when a new client connects to prevent overlapping voices.
+- **Automatic Resume:** Hook automatically resumes `AudioContext` if suspended by browser autoplay policies.
+- **Graceful Cleanup:** WebSocket cleanup logic handles `CONNECTING` states to avoid browser console errors.
 
 ## Known Limitations
 
@@ -260,14 +261,13 @@ The voice server maintains previous session states to detect transitions:
 - Session focus / follow mode
 - Push-to-talk UI
 
-### V4 — Action Commands + Hardening
-- `merge_pr` with confirmation flow
-- Pause/resume notifications
-- VAD-based interruption handling
-- Session resumption for connection drops
-- Ephemeral token support (no API key in browser)
-- Context window compression
-- Cost tracking
+### Sprint: Stability & Performance (April 2026)
+- **Gapless Playback:** Removed 50ms gaps between chunks; implemented precise `nextPlayTime` scheduling.
+- **Gemini 3.1 Migration:** Upgraded model to `gemini-3.1-flash-live-preview`.
+- **API Optimization:** Migrated text queries and event injections from `sendClientContent` to `sendRealtimeInput` (per Live API best practices).
+- **Interruption Support:** Implemented server-side detection of Gemini interruption signals to clear browser audio queues immediately.
+- **SSE Reliability:** Fixed `AbortError` logging loops during intentional disconnections.
+- **Detailed Observability:** Added deep logging for message flows (Browser ↔ Server ↔ Gemini) and function call execution.
 
 ## Troubleshooting
 

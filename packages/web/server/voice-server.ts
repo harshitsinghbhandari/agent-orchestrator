@@ -311,6 +311,12 @@ interface ServerMessage {
 
 function sendToBrowser(message: ServerMessage): void {
   if (state.browserClient?.readyState === WebSocket.OPEN) {
+    if (message.type === "audio") {
+      // Don't log full audio data, just size
+      console.log(`[voice] Sending audio to browser (${message.data?.length ?? 0} bytes)`);
+    } else {
+      console.log(`[voice] Sending to browser:`, JSON.stringify(message));
+    }
     state.browserClient.send(JSON.stringify(message));
   }
 }
@@ -560,6 +566,8 @@ function handleGetSessionChanges(args: { sessionId?: string }): { result: string
  * Execute a function call (V2 with context support)
  */
 function executeFunctionCall(name: string, args: Record<string, unknown>): { result: string; sessionId: string | null } {
+  console.log(`[voice] Executing function: ${name}`, args);
+  let result: string;
   switch (name) {
     case "list_sessions":
       return { result: handleListSessions(args as { status?: string }), sessionId: null };
@@ -580,13 +588,16 @@ function executeFunctionCall(name: string, args: Record<string, unknown>): { res
       return handleGetSessionChanges(args as { sessionId?: string });
 
     default:
-      return { result: `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`, sessionId: null };
+      result = { result: `Unknown function: ${name}. Available: list_sessions, get_session_summary, get_ci_failures, get_review_comments, get_session_changes.`, sessionId: null };
   }
+  console.log(`[voice] Function ${name} result:`, result.slice(0, 100) + (result.length > 100 ? "..." : ""));
+  return result;
 }
 
 async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
-  // Handle audio output
+  // Handle audio/text output
   if (message.serverContent?.modelTurn?.parts) {
+    console.log(`[voice] Gemini model turn received with ${message.serverContent.modelTurn.parts.length} parts`);
     for (const part of message.serverContent.modelTurn.parts) {
       if (part.inlineData?.data && part.inlineData?.mimeType) {
         sendToBrowser({
@@ -596,6 +607,7 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
         });
       }
       if (part.text) {
+        console.log(`[voice] Gemini text: ${part.text}`);
         sendToBrowser({
           type: "text",
           data: part.text,
@@ -604,8 +616,15 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
     }
   }
 
+  // Handle interruptions
+  if (message.serverContent?.interrupted) {
+    console.log("[voice] Gemini interrupted - clearing browser queue");
+    sendToBrowser({ type: "status", status: "error", error: "Interrupted" }); // Hook can interpret status "error" as clear queue
+  }
+
   // Handle function calls
   if (message.toolCall?.functionCalls) {
+    console.log(`[voice] Gemini requested ${message.toolCall.functionCalls.length} function calls`);
     for (const fc of message.toolCall.functionCalls) {
       if (!fc.name || !fc.id) continue;
 
@@ -621,6 +640,7 @@ async function handleGeminiMessage(message: LiveServerMessage): Promise<void> {
       }
 
       if (state.geminiSession) {
+        console.log(`[voice] Sending tool response for ${fc.name} (${fc.id})`);
         await state.geminiSession.sendToolResponse({
           functionResponses: [
             {
@@ -647,8 +667,9 @@ async function connectToGemini(): Promise<void> {
   try {
     const ai = new GoogleGenAI({ apiKey });
 
+    // Using gemini-3.1-flash-live-preview as recommended by SKILL.md
     state.geminiSession = await ai.live.connect({
-      model: "gemini-2.0-flash-live-001",
+      model: "gemini-3.1-flash-live-preview",
       config: {
         responseModalities: [Modality.AUDIO],
         systemInstruction: {
@@ -660,7 +681,7 @@ async function connectToGemini(): Promise<void> {
         onopen: () => {
           state.isConnected = true;
           sendToBrowser({ type: "status", status: "connected" });
-          console.log("[voice] Connected to Gemini Live API");
+          console.log("[voice] Connected to Gemini Live API (3.1 Flash)");
         },
         onmessage: handleGeminiMessage,
         onerror: (error) => {
@@ -700,19 +721,20 @@ async function sendTextToGemini(text: string): Promise<void> {
     return;
   }
 
-  await state.geminiSession.sendClientContent({
-    turns: [{ role: "user", parts: [{ text }] }],
-    turnComplete: true,
-  });
+  console.log(`[voice] Sending query to Gemini via sendRealtimeInput: ${text}`);
+  // Using sendRealtimeInput for live text as recommended by SKILL.md
+  await state.geminiSession.sendRealtimeInput({ text });
 }
 
 async function injectEvent(message: string): Promise<void> {
-  if (!state.geminiSession || !state.isConnected) return;
+  if (!state.geminiSession || !state.isConnected) {
+    console.log(`[voice] Skipping event injection (Gemini not connected): ${message}`);
+    return;
+  }
 
-  await state.geminiSession.sendClientContent({
-    turns: [{ role: "user", parts: [{ text: `[AO Event] ${message}` }] }],
-    turnComplete: true,
-  });
+  console.log(`[voice] Injecting AO event into Gemini via sendRealtimeInput: ${message}`);
+  // Using sendRealtimeInput for live text as recommended by SKILL.md
+  await state.geminiSession.sendRealtimeInput({ text: `[AO Event] ${message}` });
 }
 
 function startSSESubscription(): void {
@@ -756,16 +778,18 @@ function startSSESubscription(): void {
               const data = line.slice(6);
               try {
                 const event = JSON.parse(data) as { type?: string; sessions?: DashboardSession[] };
+                console.log(`[voice] SSE event received: ${event.type ?? "unknown"}`);
                 if (event.type === "snapshot" && event.sessions) {
                   await handleSSESnapshot(event.sessions);
                 }
-              } catch {
-                // Skip malformed JSON
+              } catch (err) {
+                console.error("[voice] Failed to parse SSE JSON:", err);
               }
             }
           }
         }
-      } catch (error) {
+      } catch (error: any) {
+        if (error.name === "AbortError") break;
         if (state.sseAbortController?.signal.aborted) break;
         console.error("[voice] SSE error:", error);
         // Wait before retry
@@ -806,6 +830,7 @@ function stopSSESubscription(): void {
 async function handleBrowserMessage(data: string): Promise<void> {
   try {
     const message = JSON.parse(data) as BrowserMessage;
+    console.log(`[voice] Received from browser:`, message.type);
 
     switch (message.type) {
       case "connect":
@@ -814,6 +839,7 @@ async function handleBrowserMessage(data: string): Promise<void> {
         break;
 
       case "disconnect":
+        console.log("[voice] Browser requested disconnect");
         stopSSESubscription();
         await disconnectFromGemini();
         break;
@@ -835,13 +861,18 @@ const VOICE_PORT = parseInt(process.env["VOICE_PORT"] || "3002", 10);
 
 const wss = new WebSocketServer({ port: VOICE_PORT });
 
-wss.on("connection", (ws) => {
+wss.on("connection", async (ws) => {
   console.log("[voice] Browser connected");
 
-  // Only allow one browser client at a time
+  // Only allow one browser client at a time - must disconnect old session
   if (state.browserClient) {
+    console.log("[voice] Closing existing browser connection");
     state.browserClient.close();
+    state.browserClient = null;
+    stopSSESubscription();
+    await disconnectFromGemini();
   }
+  
   state.browserClient = ws;
 
   ws.on("message", (data) => {
