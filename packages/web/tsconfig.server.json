@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist-server",
-    "rootDir": "server",
+    "rootDir": ".",
     "module": "Node16",
     "moduleResolution": "Node16",
     "declaration": false,
@@ -10,6 +10,15 @@
     "sourceMap": false,
     "verbatimModuleSyntax": false
   },
-  "include": ["server"],
+  "include": [
+    "server",
+    "src/lib/voice-dedupe.ts",
+    "src/lib/voice-token.ts",
+    "src/lib/voice-functions.ts",
+    "src/lib/voice-serialize.ts",
+    "src/lib/pending-merges.ts",
+    "src/lib/types.ts",
+    "src/lib/global-pause.ts"
+  ],
   "exclude": ["server/__tests__"]
 }

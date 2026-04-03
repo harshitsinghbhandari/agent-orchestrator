@@ -12,10 +12,11 @@
     "next.config.js"
   ],
   "scripts": {
-    "dev": "concurrently \"npm:dev:next\" \"npm:dev:terminal\" \"npm:dev:direct-terminal\"",
+    "dev": "concurrently \"npm:dev:next\" \"npm:dev:terminal\" \"npm:dev:direct-terminal\" \"npm:dev:voice\"",
     "dev:next": "next dev -p ${PORT:-3000}",
     "dev:terminal": "tsx watch server/terminal-websocket.ts",
     "dev:direct-terminal": "tsx watch server/direct-terminal-ws.ts",
+    "dev:voice": "tsx watch server/voice-server.ts",
     "build": "next build && tsc -p tsconfig.server.json",
     "start": "next start",
     "start:all": "node dist-server/start-all.js",
@@ -27,6 +28,7 @@
     "screenshot:install": "npx playwright install chromium"
   },
   "dependencies": {
+    "@google/genai": "^0.14.0",
     "@composio/ao-core": "workspace:*",
     "@composio/ao-plugin-agent-claude-code": "workspace:*",
     "@composio/ao-plugin-agent-opencode": "workspace:*",
