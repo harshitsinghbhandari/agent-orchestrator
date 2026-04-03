@@ -22,31 +22,34 @@ export type VoiceStatus = "disconnected" | "connecting" | "connected" | "error";
  * Server → Browser message types
  */
 interface ServerMessage {
-  type: "status" | "audio" | "error" | "text" | "action";
+  type: "status" | "audio" | "error" | "text" | "action" | "interrupt";
   status?: VoiceStatus;
   data?: string;
   mimeType?: string;
   error?: string;
-  // V3: Action result
+  // V4: Action result
   action?: {
-    type: "send_message";
+    type: "send_message" | "merge_pr";
     sessionId: string;
     success: boolean;
     error?: string;
+    prNumber?: number;
   };
-  // V3: Context updates
+  // V4: Context updates
   context?: {
     focusedSessionId?: string | null;
     followingSessionId?: string | null;
+    notificationsPaused?: boolean;
   };
 }
 
 /**
- * V3: Voice context for focus/follow mode
+ * V4: Voice context for focus/follow mode and notification control
  */
 export interface VoiceContext {
   focusedSessionId: string | null;
   followingSessionId: string | null;
+  notificationsPaused: boolean;
 }
 
 /**
@@ -61,8 +64,14 @@ interface UseVoiceCopilotOptions {
   onText?: (text: string) => void;
   /** Callback when error occurs */
   onError?: (error: string) => void;
-  /** V3: Callback when action result is received */
-  onAction?: (action: { type: "send_message"; sessionId: string; success: boolean; error?: string }) => void;
+  /** V4: Callback when action result is received */
+  onAction?: (action: {
+    type: "send_message" | "merge_pr";
+    sessionId: string;
+    success: boolean;
+    error?: string;
+    prNumber?: number;
+  }) => void;
   /** V3: Callback when context changes */
   onContextChange?: (context: VoiceContext) => void;
 }
@@ -87,9 +96,11 @@ interface UseVoiceCopilotReturn {
   startRecording: () => Promise<void>;
   /** V3: Stop recording and send final audio */
   stopRecording: () => void;
+  /** V4: Clear audio queue (for VAD interruption) */
+  clearAudioQueue: () => void;
   /** Last error message */
   error: string | null;
-  /** V3: Current voice context (focus/follow state) */
+  /** V4: Current voice context (focus/follow state + notifications paused) */
   context: VoiceContext;
 }
 
@@ -117,6 +128,7 @@ export function useVoiceCopilot(
   const [context, setContext] = useState<VoiceContext>({
     focusedSessionId: null,
     followingSessionId: null,
+    notificationsPaused: false,
   });
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -238,11 +250,12 @@ export function useVoiceCopilot(
                 }
               }
             }
-            // V3: Handle context updates in status messages
+            // V4: Handle context updates in status messages
             if (message.context) {
               const newContext: VoiceContext = {
                 focusedSessionId: message.context.focusedSessionId ?? null,
                 followingSessionId: message.context.followingSessionId ?? null,
+                notificationsPaused: message.context.notificationsPaused ?? false,
               };
               setContext(newContext);
               onContextChangeRef.current?.(newContext);
@@ -375,8 +388,21 @@ export function useVoiceCopilot(
   }, []);
 
   /**
+   * V4: Clear audio queue and stop playback (for VAD interruption)
+   */
+  const clearAudioQueue = useCallback(() => {
+    console.log("[voice] Clearing audio queue (VAD interruption)");
+    audioQueueRef.current = [];
+    isProcessingRef.current = false;
+    setIsPlaying(false);
+    // Reset the next play time to allow immediate playback of new audio
+    nextPlayTimeRef.current = 0;
+  }, []);
+
+  /**
    * V3: Start recording audio from microphone
    * Uses AudioWorklet for efficient PCM capture at 16kHz
+   * V4: Clears audio queue on start (VAD interruption)
    */
   const startRecording = useCallback(async () => {
     if (isRecording) return;
@@ -384,6 +410,10 @@ export function useVoiceCopilot(
       setError("Must be connected to start recording");
       return;
     }
+
+    // V4: Clear audio queue when starting to record (VAD interruption)
+    // This stops any ongoing playback when the user starts speaking
+    clearAudioQueue();
 
     try {
       // Request microphone access
@@ -439,7 +469,7 @@ export function useVoiceCopilot(
       console.error("[voice] Failed to start recording:", err);
       setError("Failed to access microphone");
     }
-  }, [isRecording, status, sendAudio]);
+  }, [isRecording, status, sendAudio, clearAudioQueue]);
 
   /**
    * V3: Stop recording audio
@@ -514,6 +544,7 @@ export function useVoiceCopilot(
     sendQuery,
     startRecording,
     stopRecording,
+    clearAudioQueue,
     error,
     context,
   };
