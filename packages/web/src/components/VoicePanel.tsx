@@ -201,20 +201,29 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   // Memory leak fix: Track flash timeout for cleanup
   const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // V5: Ref to track hands-free mode for use in callbacks without stale closures
+  const handsFreeModeEnabledRef = useRef(handsFreeModeEnabled);
+  useEffect(() => {
+    handsFreeModeEnabledRef.current = handsFreeModeEnabled;
+  }, [handsFreeModeEnabled]);
+
+  // V5: Ref to track resumeWakeWord for use in callbacks
+  const resumeWakeWordRef = useRef<(() => void) | null>(null);
+
   // V5: Callback to resume wake word listening after playback
-  // Memory leak fix: Clear existing timeout before creating new one
+  // Uses refs to avoid stale closures
   const handlePlaybackComplete = useCallback(() => {
-    if (handsFreeModeEnabled) {
+    if (handsFreeModeEnabledRef.current) {
       // Clear any existing resume timeout to prevent duplicates
       if (resumeTimeoutRef.current) {
         clearTimeout(resumeTimeoutRef.current);
       }
       resumeTimeoutRef.current = setTimeout(() => {
         resumeTimeoutRef.current = null;
-        resumeWakeWord();
+        resumeWakeWordRef.current?.();
       }, RESUME_DELAY);
     }
-  }, [handsFreeModeEnabled]);
+  }, []);
 
   const {
     status,
@@ -294,6 +303,11 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
       setTranscript((prev) => [...prev.slice(-4), `Wake word error: ${err}`]);
     },
   });
+
+  // V5: Keep resumeWakeWord ref updated for use in callbacks
+  useEffect(() => {
+    resumeWakeWordRef.current = resumeWakeWord;
+  }, [resumeWakeWord]);
 
   // Keep voiceContext in sync with hook context
   useEffect(() => {
@@ -399,15 +413,37 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     }
   }, [handsFreeModeEnabled, startWakeWord, stopWakeWord]);
 
-  // V5: Pause wake word during recording or playback
+  // V5: Pause wake word during recording or playback, resume when done
+  // Track previous state to detect transitions
+  const wasRecordingRef = useRef(false);
+  const wasPlayingRef = useRef(false);
+
   useEffect(() => {
     if (!handsFreeModeEnabled) return;
 
     if (isRecording || isPlaying) {
       // Pause wake word while recording or playing
       pauseWakeWord();
+    } else if (wasRecordingRef.current && !isRecording && !isPlaying) {
+      // Recording just stopped and not playing - resume wake word after a delay
+      // This handles the case where Gemini doesn't respond (error, timeout, etc.)
+      // Clear any existing resume timeout
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+      }
+      resumeTimeoutRef.current = setTimeout(() => {
+        resumeTimeoutRef.current = null;
+        // Only resume if still in hands-free mode and not playing
+        if (handsFreeModeEnabledRef.current && !isPlaying) {
+          resumeWakeWord();
+        }
+      }, RESUME_DELAY);
     }
-  }, [handsFreeModeEnabled, isRecording, isPlaying, pauseWakeWord]);
+
+    // Track previous state
+    wasRecordingRef.current = isRecording;
+    wasPlayingRef.current = isPlaying;
+  }, [handsFreeModeEnabled, isRecording, isPlaying, pauseWakeWord, resumeWakeWord]);
 
   // V5: Stop wake word when disconnecting
   useEffect(() => {
