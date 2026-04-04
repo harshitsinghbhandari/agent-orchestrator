@@ -150,6 +150,10 @@ export function useVoiceCopilot(
   const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const micAudioContextRef = useRef<AudioContext | null>(null);
 
+  // Memory leak fix: Track active audio sources and timeouts for cleanup
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const playbackTimeoutsRef = useRef<Set<NodeJS.Timeout>>(new Set());
+
   useEffect(() => {
     onTextRef.current = onText;
     onErrorRef.current = onError;
@@ -209,6 +213,13 @@ export function useVoiceCopilot(
           source.buffer = audioBuffer;
           source.connect(audioContextRef.current.destination);
 
+          // Memory leak fix: Track source and clean up when done
+          activeSourcesRef.current.add(source);
+          source.onended = () => {
+            source.disconnect();
+            activeSourcesRef.current.delete(source);
+          };
+
           // Schedule at the precise end of the previous chunk
           const startTime = nextPlayTimeRef.current;
           source.start(startTime);
@@ -231,11 +242,14 @@ export function useVoiceCopilot(
     // in the buffers we scheduled. But for simple UI, this is okay for now.
     // Better: set timeout until nextPlayTimeRef.current
     const finalDelay = (nextPlayTimeRef.current - (audioContextRef.current?.currentTime || 0)) * 1000;
-    setTimeout(() => {
+    // Memory leak fix: Track timeout for cleanup
+    const timeoutId = setTimeout(() => {
+      playbackTimeoutsRef.current.delete(timeoutId);
       setIsPlaying(false);
       // V5: Fire playback complete callback
       onPlaybackCompleteRef.current?.();
     }, Math.max(0, finalDelay));
+    playbackTimeoutsRef.current.add(timeoutId);
   }, []);
 
   /**
@@ -373,6 +387,7 @@ export function useVoiceCopilot(
 
   /**
    * Disconnect from voice server
+   * Memory leak fix: Also cleans up audio resources to prevent accumulation
    */
   const disconnect = useCallback(() => {
     if (wsRef.current) {
@@ -385,14 +400,41 @@ export function useVoiceCopilot(
           console.error("[voice] Error sending disconnect:", err);
         }
       }
-      
+
       // Close only if not already closed/closing
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close();
       }
       wsRef.current = null;
     }
+
+    // Memory leak fix: Clear audio queue and stop playback
+    audioQueueRef.current = [];
+    isProcessingRef.current = false;
+
+    // Memory leak fix: Stop and disconnect all active audio sources
+    activeSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch {
+        // Ignore errors from already stopped sources
+      }
+    });
+    activeSourcesRef.current.clear();
+
+    // Memory leak fix: Clear pending playback timeouts
+    playbackTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+    playbackTimeoutsRef.current.clear();
+
+    // Memory leak fix: Close playback AudioContext on disconnect to prevent accumulation
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
     setStatus("disconnected");
+    setIsPlaying(false);
   }, []);
 
   /**
@@ -415,6 +457,7 @@ export function useVoiceCopilot(
 
   /**
    * V4: Clear audio queue and stop playback (for VAD interruption)
+   * Memory leak fix: Also stops and disconnects all active audio sources
    */
   const clearAudioQueue = useCallback(() => {
     console.log("[voice] Clearing audio queue (VAD interruption)");
@@ -423,6 +466,21 @@ export function useVoiceCopilot(
     setIsPlaying(false);
     // Reset the next play time to allow immediate playback of new audio
     nextPlayTimeRef.current = 0;
+
+    // Memory leak fix: Stop and disconnect all active audio sources
+    activeSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch {
+        // Ignore errors from already stopped sources
+      }
+    });
+    activeSourcesRef.current.clear();
+
+    // Memory leak fix: Clear pending playback timeouts
+    playbackTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+    playbackTimeoutsRef.current.clear();
   }, []);
 
   /**
@@ -575,6 +633,21 @@ export function useVoiceCopilot(
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Memory leak fix: Stop and disconnect all active audio sources
+      activeSourcesRef.current.forEach((source) => {
+        try {
+          source.stop();
+          source.disconnect();
+        } catch {
+          // Ignore errors from already stopped sources
+        }
+      });
+      activeSourcesRef.current.clear();
+
+      // Memory leak fix: Clear pending playback timeouts
+      playbackTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+      playbackTimeoutsRef.current.clear();
+
       // Cleanup playback audio context
       if (audioContextRef.current) {
         audioContextRef.current.close();
