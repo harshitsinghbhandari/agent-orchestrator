@@ -461,4 +461,96 @@ describe("useWakeWord", () => {
 
     expect(onWakeWord).toHaveBeenCalledWith("HEY AO", "hey ao");
   });
+
+  describe("memory leak fixes", () => {
+    it("clears restart timeout when stop() is called", async () => {
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useWakeWord());
+
+      await act(async () => {
+        result.current.start();
+        mockRecognition._fireStart();
+      });
+
+      // Trigger onend which schedules a restart timeout
+      await act(async () => {
+        mockRecognition._fireEnd();
+      });
+
+      // Stop before the timeout fires
+      await act(async () => {
+        result.current.stop();
+      });
+
+      // Advance timers - the restart should not happen because we called stop()
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      // Recognition.start should only have been called once (initial start)
+      expect(mockRecognition.start).toHaveBeenCalledTimes(1);
+      expect(result.current.state).toBe("idle");
+
+      vi.useRealTimers();
+    });
+
+    it("clears restart timeout when pause() is called", async () => {
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useWakeWord());
+
+      await act(async () => {
+        result.current.start();
+        mockRecognition._fireStart();
+      });
+
+      // Trigger onend which schedules a restart timeout
+      await act(async () => {
+        mockRecognition._fireEnd();
+      });
+
+      // Pause before the timeout fires
+      await act(async () => {
+        result.current.pause();
+      });
+
+      // Advance timers - the restart should not happen because we called pause()
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      // Recognition.start should only have been called once (initial start)
+      expect(mockRecognition.start).toHaveBeenCalledTimes(1);
+      expect(result.current.state).toBe("paused");
+
+      vi.useRealTimers();
+    });
+
+    it("clears restart timeout on unmount", async () => {
+      vi.useFakeTimers();
+      const { result, unmount } = renderHook(() => useWakeWord());
+
+      await act(async () => {
+        result.current.start();
+        mockRecognition._fireStart();
+      });
+
+      // Trigger onend which schedules a restart timeout
+      await act(async () => {
+        mockRecognition._fireEnd();
+      });
+
+      // Unmount before the timeout fires
+      unmount();
+
+      // Advance timers - no errors should occur (timeout was cleared)
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+
+      // Recognition.start should only have been called once (initial start)
+      expect(mockRecognition.start).toHaveBeenCalledTimes(1);
+
+      vi.useRealTimers();
+    });
+  });
 });
