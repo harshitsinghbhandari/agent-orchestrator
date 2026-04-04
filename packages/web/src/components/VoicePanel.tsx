@@ -198,10 +198,17 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   const [handsFreeModeEnabled, setHandsFreeModeEnabled] = useState(false);
   const [wakeWordFlash, setWakeWordFlash] = useState(false);
   const resumeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Memory leak fix: Track flash timeout for cleanup
+  const flashTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // V5: Callback to resume wake word listening after playback
+  // Memory leak fix: Clear existing timeout before creating new one
   const handlePlaybackComplete = useCallback(() => {
-    if (handsFreeModeEnabled && !resumeTimeoutRef.current) {
+    if (handsFreeModeEnabled) {
+      // Clear any existing resume timeout to prevent duplicates
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+      }
       resumeTimeoutRef.current = setTimeout(() => {
         resumeTimeoutRef.current = null;
         resumeWakeWord();
@@ -246,6 +253,9 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     onPlaybackComplete: handlePlaybackComplete,
   });
 
+  // Memory leak fix: Track mic handoff timeout for cleanup
+  const micHandoffTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // V5: Wake word detection hook
   const {
     state: wakeWordState,
@@ -258,13 +268,25 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   } = useWakeWord({
     onWakeWord: (wakeTranscript, matchedWord) => {
       console.log(`[voice-panel] Wake word detected: "${matchedWord}"`);
-      // Flash animation
+      // Flash animation with tracked timeout
       setWakeWordFlash(true);
-      setTimeout(() => setWakeWordFlash(false), 300);
+      // Memory leak fix: Clear existing flash timeout before creating new one
+      if (flashTimeoutRef.current) {
+        clearTimeout(flashTimeoutRef.current);
+      }
+      flashTimeoutRef.current = setTimeout(() => {
+        flashTimeoutRef.current = null;
+        setWakeWordFlash(false);
+      }, 300);
 
       // Pause wake word listening and start recording after mic handoff delay
       pauseWakeWord();
-      setTimeout(() => {
+      // Memory leak fix: Clear existing handoff timeout before creating new one
+      if (micHandoffTimeoutRef.current) {
+        clearTimeout(micHandoffTimeoutRef.current);
+      }
+      micHandoffTimeoutRef.current = setTimeout(() => {
+        micHandoffTimeoutRef.current = null;
         startRecording();
       }, MIC_HANDOFF_DELAY);
     },
@@ -350,6 +372,7 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   }, [isConnected, isRecording, startRecording, stopRecording]);
 
   // V5: Handle hands-free mode toggle
+  // Memory leak fix: Clear all related timeouts when disabling
   const handleHandsFreeToggle = useCallback(() => {
     const newEnabled = !handsFreeModeEnabled;
     setHandsFreeModeEnabled(newEnabled);
@@ -360,10 +383,18 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
     } else {
       // Stop wake word listening when disabled
       stopWakeWord();
-      // Clear any pending resume timeout
+      // Memory leak fix: Clear all pending timeouts
       if (resumeTimeoutRef.current) {
         clearTimeout(resumeTimeoutRef.current);
         resumeTimeoutRef.current = null;
+      }
+      if (flashTimeoutRef.current) {
+        clearTimeout(flashTimeoutRef.current);
+        flashTimeoutRef.current = null;
+      }
+      if (micHandoffTimeoutRef.current) {
+        clearTimeout(micHandoffTimeoutRef.current);
+        micHandoffTimeoutRef.current = null;
       }
     }
   }, [handsFreeModeEnabled, startWakeWord, stopWakeWord]);
@@ -387,10 +418,20 @@ export function VoicePanel({ defaultExpanded = false }: VoicePanelProps) {
   }, [isConnected, handsFreeModeEnabled, stopWakeWord]);
 
   // V5: Cleanup on unmount
+  // Memory leak fix: Clear all tracked timeouts
   useEffect(() => {
     return () => {
       if (resumeTimeoutRef.current) {
         clearTimeout(resumeTimeoutRef.current);
+        resumeTimeoutRef.current = null;
+      }
+      if (flashTimeoutRef.current) {
+        clearTimeout(flashTimeoutRef.current);
+        flashTimeoutRef.current = null;
+      }
+      if (micHandoffTimeoutRef.current) {
+        clearTimeout(micHandoffTimeoutRef.current);
+        micHandoffTimeoutRef.current = null;
       }
     };
   }, []);

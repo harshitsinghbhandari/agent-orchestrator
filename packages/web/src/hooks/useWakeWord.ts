@@ -123,6 +123,8 @@ export function useWakeWord(options: UseWakeWordOptions = {}): UseWakeWordReturn
   const onWakeWordRef = useRef(onWakeWord);
   const onErrorRef = useRef(onError);
   const stateRef = useRef(state);
+  // Memory leak fix: Track restart timeout for cleanup
+  const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Keep refs updated
   useEffect(() => {
@@ -221,8 +223,13 @@ export function useWakeWord(options: UseWakeWordOptions = {}): UseWakeWordReturn
       // Auto-restart if we should still be listening
       if (shouldRestartRef.current && stateRef.current === "listening") {
         try {
+          // Memory leak fix: Clear any existing restart timeout before creating new one
+          if (restartTimeoutRef.current) {
+            clearTimeout(restartTimeoutRef.current);
+          }
           // Small delay to prevent rapid restart loops
-          setTimeout(() => {
+          restartTimeoutRef.current = setTimeout(() => {
+            restartTimeoutRef.current = null;
             if (shouldRestartRef.current && recognitionRef.current) {
               recognitionRef.current.start();
             }
@@ -265,9 +272,15 @@ export function useWakeWord(options: UseWakeWordOptions = {}): UseWakeWordReturn
 
   /**
    * Stop listening for wake word
+   * Memory leak fix: Also clears restart timeout
    */
   const stop = useCallback(() => {
     shouldRestartRef.current = false;
+    // Memory leak fix: Clear restart timeout
+    if (restartTimeoutRef.current) {
+      clearTimeout(restartTimeoutRef.current);
+      restartTimeoutRef.current = null;
+    }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -280,9 +293,15 @@ export function useWakeWord(options: UseWakeWordOptions = {}): UseWakeWordReturn
 
   /**
    * Pause listening (for mic handoff to Gemini)
+   * Memory leak fix: Also clears restart timeout
    */
   const pause = useCallback(() => {
     shouldRestartRef.current = false;
+    // Memory leak fix: Clear restart timeout
+    if (restartTimeoutRef.current) {
+      clearTimeout(restartTimeoutRef.current);
+      restartTimeoutRef.current = null;
+    }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -349,6 +368,11 @@ export function useWakeWord(options: UseWakeWordOptions = {}): UseWakeWordReturn
   useEffect(() => {
     return () => {
       shouldRestartRef.current = false;
+      // Memory leak fix: Clear restart timeout
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+        restartTimeoutRef.current = null;
+      }
       if (recognitionRef.current) {
         recognitionRef.current.stop();
         recognitionRef.current = null;
