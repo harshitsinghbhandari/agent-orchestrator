@@ -82,6 +82,11 @@ function getSpeechRecognition(): SpeechRecognitionConstructor | null {
 /**
  * Check if any wake word is present in the transcript
  * Returns the longest matching wake word to avoid partial matches
+ *
+ * Matches wake word at:
+ * - Exact match: "hey ao"
+ * - Start of phrase: "hey ao what's the status" (for commands following wake word)
+ * - End of phrase: "um hey ao" (for hesitation before wake word)
  */
 function findWakeWord(transcript: string, wakeWords: string[]): string | null {
   const normalizedTranscript = transcript.toLowerCase().trim();
@@ -90,10 +95,14 @@ function findWakeWord(transcript: string, wakeWords: string[]): string | null {
   const sortedWakeWords = [...wakeWords].sort((a, b) => b.length - a.length);
 
   for (const word of sortedWakeWords) {
-    // Check if wake word appears at the end of transcript (most recent speech)
-    // or if the transcript is just the wake word
+    // Check if wake word appears:
+    // 1. Exact match
+    // 2. At the start (for "hey ao, do something")
+    // 3. At the end (for "um hey ao")
     if (
       normalizedTranscript === word ||
+      normalizedTranscript.startsWith(`${word} `) ||
+      normalizedTranscript.startsWith(word) ||
       normalizedTranscript.endsWith(word) ||
       normalizedTranscript.endsWith(` ${word}`)
     ) {

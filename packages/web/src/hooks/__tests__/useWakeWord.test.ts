@@ -286,6 +286,39 @@ describe("useWakeWord", () => {
     expect(onWakeWord).toHaveBeenCalledWith("something something hey ao", "hey ao");
   });
 
+  it("detects wake word at start of phrase (command following wake word)", async () => {
+    const onWakeWord = vi.fn();
+    const { result } = renderHook(() => useWakeWord({ onWakeWord }));
+
+    await act(async () => {
+      result.current.start();
+      mockRecognition._fireStart();
+    });
+
+    await act(async () => {
+      mockRecognition._fireResult("hey ao what is the status", true);
+    });
+
+    expect(onWakeWord).toHaveBeenCalledWith("hey ao what is the status", "hey ao");
+    expect(result.current.state).toBe("detected");
+  });
+
+  it("detects 'ao' at start of phrase", async () => {
+    const onWakeWord = vi.fn();
+    const { result } = renderHook(() => useWakeWord({ onWakeWord }));
+
+    await act(async () => {
+      result.current.start();
+      mockRecognition._fireStart();
+    });
+
+    await act(async () => {
+      mockRecognition._fireResult("ao check the ci status", true);
+    });
+
+    expect(onWakeWord).toHaveBeenCalledWith("ao check the ci status", "ao");
+  });
+
   it("does not trigger on partial wake word", async () => {
     const onWakeWord = vi.fn();
     const { result } = renderHook(() => useWakeWord({ onWakeWord }));
