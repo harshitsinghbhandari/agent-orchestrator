@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useReducer, useRef } from "react";
-import type {
-  AttentionLevel,
-  DashboardSession,
-  GlobalPauseState,
-  SSESnapshotEvent,
+import {
+  getAttentionLevel,
+  type AttentionLevel,
+  type DashboardSession,
+  type GlobalPauseState,
+  type SSESnapshotEvent,
 } from "@/lib/types";
 
 /** Debounce before fetching full session list after membership change. */
@@ -176,10 +177,14 @@ export function useSessionEvents(
               if (disposed || refreshController.signal.aborted || !updated?.sessions) return;
 
               lastRefreshAtRef.current = Date.now();
+              const sseAttentionLevels = Object.fromEntries(
+                updated.sessions.map((s) => [s.id, getAttentionLevel(s)]),
+              ) as SSEAttentionMap;
               dispatch({
                 type: "reset",
                 sessions: updated.sessions,
                 globalPause: updated.globalPause ?? null,
+                sseAttentionLevels,
               });
             },
           )
