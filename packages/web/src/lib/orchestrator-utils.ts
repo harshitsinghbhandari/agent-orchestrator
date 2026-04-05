@@ -10,9 +10,10 @@ export function mapSessionsToOrchestrators(
   sessions: Session[],
   sessionPrefix: string,
   projectName: string,
+  allSessionPrefixes?: string[],
 ): Orchestrator[] {
   return sessions
-    .filter((s) => isOrchestratorSession(s, sessionPrefix))
+    .filter((s) => isOrchestratorSession(s, sessionPrefix, allSessionPrefixes))
     .map((s) => ({
       id: s.id,
       projectId: s.projectId,

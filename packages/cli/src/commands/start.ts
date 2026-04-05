@@ -29,6 +29,7 @@ import {
   configToYaml,
   normalizeOrchestratorSessionStrategy,
   isOrchestratorSession,
+  isTerminalSession,
   ConfigNotFoundError,
   type OrchestratorConfig,
   type ProjectConfig,
@@ -1010,8 +1011,13 @@ async function runStartup(
         { cause: err },
       );
     }
-    const existingOrchestrators = allSessions.filter((s) =>
-      isOrchestratorSession(s, project.sessionPrefix ?? projectId),
+    const allSessionPrefixes = Object.entries(config.projects).map(
+      ([, p]) => p.sessionPrefix ?? generateSessionPrefix(p.name ?? ""),
+    );
+    const existingOrchestrators = allSessions.filter(
+      (s) =>
+        isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes) &&
+        !isTerminalSession(s),
     );
 
     if (existingOrchestrators.length > 0) {
@@ -1019,7 +1025,7 @@ async function runStartup(
       if (opts?.dashboard === false) {
         // No dashboard — auto-select the most recently active orchestrator
         const sortedOrchestrators = [...existingOrchestrators].sort(
-          (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime(),
+          (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
         );
         const selected = sortedOrchestrators[0];
         selectedOrchestratorId = selected.id;
