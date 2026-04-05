@@ -677,6 +677,36 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@25.2.3)(jsdom@25.0.1)(lightningcss@1.30.2)
 
+  test-plugins/notifier-mock:
+    dependencies:
+      '@composio/ao-core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
+  test-plugins/scm-mock:
+    dependencies:
+      '@composio/ao-core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
+  test-plugins/tracker-mock:
+    dependencies:
+      '@composio/ao-core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
 packages:
 
   '@adobe/css-tools@4.4.4':
