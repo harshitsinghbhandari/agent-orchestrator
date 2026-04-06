@@ -16,6 +16,7 @@ import {
   type AgentLaunchConfig,
   type ActivityState,
   type ActivityDetection,
+  computeCost,
   type CostEstimate,
   type PluginModule,
   type ProjectConfig,
@@ -562,15 +563,15 @@ function createCodexAgent(): Agent {
 
       const agentSessionId = basename(sessionFile, ".jsonl");
 
-      const cost: CostEstimate | undefined =
-        data.inputTokens === 0 && data.outputTokens === 0
-          ? undefined
-          : {
-              inputTokens: data.inputTokens,
-              outputTokens: data.outputTokens,
-              estimatedCostUsd:
-                (data.inputTokens / 1_000_000) * 2.5 + (data.outputTokens / 1_000_000) * 10.0,
-            };
+      let cost: CostEstimate | undefined;
+      if (data.inputTokens > 0 || data.outputTokens > 0) {
+        cost = computeCost({
+          inputTokens: data.inputTokens,
+          outputTokens: data.outputTokens,
+          provider: "openai",
+          model: data.model ?? "codex",
+        });
+      }
 
       return {
         summary: data.model ? `Codex session (${data.model})` : null,

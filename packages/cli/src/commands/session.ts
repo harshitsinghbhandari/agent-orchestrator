@@ -1,7 +1,13 @@
 import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { loadConfig, SessionNotRestorableError, WorkspaceMissingError } from "@composio/ao-core";
+import {
+  loadConfig,
+  SessionNotRestorableError,
+  WorkspaceMissingError,
+  formatCost,
+  type CostEstimate,
+} from "@composio/ao-core";
 import { git, getTmuxActivity, tmux } from "../lib/shell.js";
 import { formatAge } from "../lib/format.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
@@ -80,6 +86,14 @@ export function registerSession(program: Command): void {
           const parts = [chalk.green(s.id), chalk.dim(`(${age})`)];
           if (branchStr) parts.push(chalk.cyan(branchStr));
           if (s.status) parts.push(chalk.dim(`[${s.status}]`));
+
+          if (
+            s.agentInfo?.cost &&
+            (s.agentInfo.cost.inputTokens > 0 || s.agentInfo.cost.estimatedCostUsd > 0)
+          ) {
+            parts.push(chalk.yellow(formatCost(s.agentInfo.cost)));
+          }
+
           const prUrl = s.metadata["pr"];
           if (prUrl) parts.push(chalk.blue(prUrl));
 

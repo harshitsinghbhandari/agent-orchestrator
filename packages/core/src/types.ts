@@ -453,6 +453,20 @@ export interface CostEstimate {
   inputTokens: number;
   outputTokens: number;
   estimatedCostUsd: number;
+  /** Tokens read from provider cache (e.g. Claude Prompt Caching) */
+  cachedReadTokens?: number;
+  /** Tokens added to provider cache (e.g. Claude Prompt Caching) */
+  cacheCreationTokens?: number;
+  /** Tokens used for model reasoning/thinking (e.g. o1/o3/Claude 3.7) */
+  reasoningTokens?: number;
+  /** Model name used for this estimate */
+  model?: string;
+  /** Provider name used for this estimate */
+  provider?: string;
+  /** ISO date when this pricing was effective */
+  pricingDate?: string;
+  /** ISO timestamp of last enrichment */
+  lastUpdatedAt?: string;
 }
 
 // =============================================================================

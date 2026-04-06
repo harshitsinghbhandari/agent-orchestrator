@@ -93,6 +93,27 @@ export {
   parsePauseUntil,
 } from "./global-pause.js";
 
+// Model registry — context windows + capabilities
+export { modelRegistry, ModelRegistry } from "./model-registry.js";
+export type { ModelSpec } from "./model-registry.js";
+
+// Pricing registry — historical and current pricing data
+export { pricingRegistry, PricingRegistry } from "./pricing-registry.js";
+export type { PricingSpec } from "./pricing-registry.js";
+
+// Cost utilities — shared cost computation and merging
+export { computeCost, mergeCosts, aggregateCosts, formatCost } from "./cost-utils.js";
+export type { ComputeCostParams } from "./cost-utils.js";
+
+// Token utilities — simple estimation and section rollups
+export {
+  estimateTokens,
+  estimateTokensForSection,
+  totalTokens,
+} from "./token-utils.js";
+export type { SectionInput, SectionOutput } from "./token-utils.js";
+
+
 // Shared utilities
 export {
   shellEscape,

@@ -9,6 +9,7 @@ import {
   type AgentLaunchConfig,
   type ActivityDetection,
   type ActivityState,
+  computeCost,
   type CostEstimate,
   type PluginModule,
   type ProjectConfig,
@@ -264,6 +265,7 @@ interface JsonlLine {
   inputTokens?: number;
   outputTokens?: number;
   estimatedCostUsd?: number;
+  model?: string;
 }
 
 /**
@@ -358,9 +360,17 @@ function extractSummary(
 function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedReadTokens = 0;
+  let cacheCreationTokens = 0;
   let totalCost = 0;
+  let selectedModel: string | undefined;
 
   for (const line of lines) {
+    // Determine the model being used
+    if (line.model) {
+      selectedModel = line.model;
+    }
+
     // Handle direct cost fields — prefer costUSD; only use estimatedCostUsd
     // as fallback to avoid double-counting when both are present.
     if (typeof line.costUSD === "number") {
@@ -373,8 +383,8 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
     // double-counting if a line contains both.
     if (line.usage) {
       inputTokens += line.usage.input_tokens ?? 0;
-      inputTokens += line.usage.cache_read_input_tokens ?? 0;
-      inputTokens += line.usage.cache_creation_input_tokens ?? 0;
+      cachedReadTokens += line.usage.cache_read_input_tokens ?? 0;
+      cacheCreationTokens += line.usage.cache_creation_input_tokens ?? 0;
       outputTokens += line.usage.output_tokens ?? 0;
     } else {
       if (typeof line.inputTokens === "number") {
@@ -386,19 +396,25 @@ function extractCost(lines: JsonlLine[]): CostEstimate | undefined {
     }
   }
 
-  if (inputTokens === 0 && outputTokens === 0 && totalCost === 0) {
+  if (
+    inputTokens === 0 &&
+    outputTokens === 0 &&
+    totalCost === 0 &&
+    cachedReadTokens === 0 &&
+    cacheCreationTokens === 0
+  ) {
     return undefined;
   }
 
-  // Rough estimate when no direct cost data — uses Sonnet 4.5 pricing as a
-  // baseline. Will be inaccurate for other models (Opus, Haiku) but provides
-  // a useful order-of-magnitude signal. TODO: make pricing configurable or
-  // infer from model field in JSONL.
-  if (totalCost === 0 && (inputTokens > 0 || outputTokens > 0)) {
-    totalCost = (inputTokens / 1_000_000) * 3.0 + (outputTokens / 1_000_000) * 15.0;
-  }
-
-  return { inputTokens, outputTokens, estimatedCostUsd: totalCost };
+  return computeCost({
+    inputTokens,
+    outputTokens,
+    cachedReadTokens,
+    cacheCreationTokens,
+    provider: "anthropic",
+    model: selectedModel ?? "claude-3-5-sonnet-latest",
+    directCostUsd: totalCost > 0 ? totalCost : undefined,
+  });
 }
 
 // =============================================================================

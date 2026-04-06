@@ -12,6 +12,7 @@
  */
 
 import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync, utimesSync, unlinkSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -72,6 +73,7 @@ import {
 import { sessionFromMetadata } from "./utils/session-from-metadata.js";
 import { safeJsonParse } from "./utils/validation.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
+import { mergeCosts } from "./cost-utils.js";
 
 const execFileAsync = promisify(execFile);
 const OPENCODE_DISCOVERY_TIMEOUT_MS = 10_000;
@@ -968,6 +970,33 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         const info = await plugins.agent.getSessionInfo(session);
         if (info) {
           session.agentInfo = info;
+
+          // PERSISTENCE: Merge and store cost in cost.json
+          if (info.cost) {
+            const project = config.projects[session.projectId];
+            if (project) {
+              const sessionsDir = getProjectSessionsDir(project);
+              const costFilePath = join(sessionsDir, session.id + ".cost.json");
+
+              try {
+                let persistedCost: any = null;
+                try {
+                  const existing = await readFile(costFilePath, "utf8");
+                  persistedCost = JSON.parse(existing);
+                } catch {
+                  /* First write or missing file */
+                }
+
+                const merged = mergeCosts(persistedCost || undefined, info.cost);
+                await writeFile(costFilePath, JSON.stringify(merged, null, 2));
+
+                // Reflect merged cost in agentInfo for UI/API
+                info.cost = merged;
+              } catch (err) {
+                console.error(`[session-manager] Failed to persist cost for ${session.id}:`, err);
+              }
+            }
+          }
         }
       } catch {
         // Can't get session info — keep existing values
