@@ -345,9 +345,18 @@ export function SessionDetail({
     ? `/exit\nopencode --session ${opencodeSessionId}\n`
     : undefined;
   const dashboardHref = session.projectId ? `/?project=${encodeURIComponent(session.projectId)}` : "/";
-  const prsHref = session.projectId ? `/prs?project=${encodeURIComponent(session.projectId)}` : "/prs";
+  const prsHref = session.projectId ? `/prs?project=${encodeURIComponent(session.projectId)}` : `/prs`;
   const crumbHref = dashboardHref;
   const crumbLabel = isOrchestrator ? "Orchestrator" : "Dashboard";
+
+  const truncationReportStr = session.metadata["promptTruncationReport"];
+  let truncationReport = null;
+  if (truncationReportStr) {
+    try {
+      truncationReport = JSON.parse(truncationReportStr);
+    } catch {}
+  }
+
   const orchestratorHref = useMemo(() => {
     if (isOrchestrator) return `/sessions/${encodeURIComponent(session.id)}`;
     if (!projectOrchestratorId) return null;
@@ -384,6 +393,26 @@ export function SessionDetail({
               crumbLabel={crumbLabel}
               mobileSimple={isMobile}
             />
+          )}
+
+          {truncationReport && (
+            <div className="mt-4 flex items-start gap-3 rounded border border-yellow-500/30 bg-yellow-500/10 p-3.5 text-[13px] text-yellow-700 dark:text-yellow-400">
+              <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div>
+                <p className="font-semibold">Prompt Truncated</p>
+                <p className="mt-0.5 leading-relaxed opacity-90">
+                  Context size was automatically reduced from {truncationReport.originalTokens} to {truncationReport.finalTokens} tokens to fit within the safety budget.
+                </p>
+                {(truncationReport.droppedSections?.length > 0) && (
+                  <p className="mt-1 opacity-80">Dropped: {truncationReport.droppedSections.join(", ")}</p>
+                )}
+                {(truncationReport.truncatedSections?.length > 0) && (
+                  <p className="mt-1 opacity-80">Truncated: {truncationReport.truncatedSections.map((ts: { name: string; originalTokens: number; finalTokens: number }) => `${ts.name} (${ts.originalTokens} → ${ts.finalTokens})`).join(', ')}</p>
+                )}
+              </div>
+            </div>
           )}
 
           <section className="mt-5">

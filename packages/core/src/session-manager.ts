@@ -54,7 +54,7 @@ import {
   listMetadata,
   reserveSessionId,
 } from "./metadata.js";
-import { buildPrompt } from "./prompt-builder.js";
+import { buildPromptWithMetadata, truncatePrompt } from "./prompt-builder.js";
 import {
   getSessionsDir,
   getWorktreesDir,
@@ -1134,15 +1134,32 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       }
     }
 
-    const composedPrompt = buildPrompt({
-      project,
-      projectId: spawnConfig.projectId,
-      issueId: spawnConfig.issueId,
-      issueContext,
-      userPrompt: spawnConfig.prompt,
-      lineage: spawnConfig.lineage,
-      siblings: spawnConfig.siblings,
-    });
+    let provider = "unknown";
+    if (selection.agentName === "claude-code") provider = "anthropic";
+    else if (selection.agentName === "codex" || selection.agentName === "opencode") provider = "openai";
+
+    const promptResult = buildPromptWithMetadata(
+      {
+        project,
+        projectId: spawnConfig.projectId,
+        issueId: spawnConfig.issueId,
+        issueContext,
+        userPrompt: spawnConfig.prompt,
+        lineage: spawnConfig.lineage,
+        siblings: spawnConfig.siblings,
+      },
+      selection.model ? { provider, model: selection.model } : undefined
+    );
+
+    let composedPrompt = promptResult.prompt;
+    let truncationReport = promptResult.truncationReport;
+
+    const finalBudget = spawnConfig.maxPromptTokens ?? promptResult.promptBudget;
+    if (finalBudget && promptResult.totalTokens > finalBudget) {
+      const truncated = truncatePrompt(promptResult, finalBudget);
+      composedPrompt = truncated.prompt;
+      truncationReport = truncated.truncationReport;
+    }
 
     // Get agent launch config and create runtime — clean up workspace on failure
     const opencodeIssueSessionStrategy = project.opencodeIssueSessionStrategy ?? "reuse";
@@ -1228,6 +1245,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       lastActivityAt: new Date(),
       metadata: {
         ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
+        ...(truncationReport ? { promptTruncationReport: JSON.stringify(truncationReport) } : {}),
       },
     };
 

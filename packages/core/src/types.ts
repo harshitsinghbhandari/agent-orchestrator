@@ -236,6 +236,8 @@ export interface SessionSpawnConfig {
   lineage?: string[];
   /** Decomposition context — sibling task descriptions (passed to prompt builder) */
   siblings?: string[];
+  /** Override the default prompt budget for this spawn */
+  maxPromptTokens?: number;
 }
 
 /** Config for creating an orchestrator session */

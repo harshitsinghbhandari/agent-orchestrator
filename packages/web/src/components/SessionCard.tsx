@@ -729,6 +729,16 @@ function getAlerts(session: DashboardSession): Alert[] {
   const meta = session.metadata;
   const alerts: Alert[] = [];
 
+  if (meta["promptTruncationReport"]) {
+    alerts.push({
+      key: "truncation",
+      label: "prompt truncated",
+      className: "border-yellow-500/40 bg-yellow-500/10",
+      color: "var(--color-status-attention)",
+      url: `/sessions/${encodeURIComponent(session.id)}`,
+    });
+  }
+
   // The lifecycle manager's status is the most up-to-date source of truth.
   // PR enrichment data can be stale (5-min cache) or unavailable (rate limit/timeout).
   // Use lifecycle status as fallback when PR data hasn't caught up yet.
