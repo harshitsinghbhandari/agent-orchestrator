@@ -554,7 +554,7 @@ function DashboardInner({
                   </a>
                 ) : null}
                 {!allProjectsView && !isMobile ? (
-                  <OrchestratorControl orchestrators={activeOrchestrators} />
+                  <OrchestratorControl orchestrators={activeOrchestrators} projectId={projectId} />
                 ) : null}
                 <ThemeToggle />
               </div>
@@ -762,8 +762,39 @@ export function Dashboard(props: DashboardProps) {
   );
 }
 
-function OrchestratorControl({ orchestrators }: { orchestrators: DashboardOrchestratorLink[] }) {
-  if (orchestrators.length === 0) return null;
+function OrchestratorControl({
+  orchestrators,
+  projectId,
+}: {
+  orchestrators: DashboardOrchestratorLink[];
+  projectId?: string;
+}) {
+  // Build the orchestrators picker URL
+  const orchestratorsHref = projectId
+    ? `/orchestrators?project=${encodeURIComponent(projectId)}`
+    : "/orchestrators";
+
+  if (orchestrators.length === 0) {
+    // Show "Orchestrators" button that links to picker even when no orchestrators running
+    return (
+      <a
+        href={orchestratorsHref}
+        className="orchestrator-btn flex items-center gap-2 px-4 py-2 text-[12px] font-semibold hover:no-underline"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] opacity-80" />
+        orchestrators
+        <svg
+          className="h-3 w-3 opacity-70"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          viewBox="0 0 24 24"
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+      </a>
+    );
+  }
 
   if (orchestrators.length === 1) {
     const orchestrator = orchestrators[0];
@@ -787,6 +818,7 @@ function OrchestratorControl({ orchestrators }: { orchestrators: DashboardOrches
     );
   }
 
+  // Multiple orchestrators: show dropdown with link to picker page
   return (
     <details className="group relative">
       <summary className="orchestrator-btn flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-[12px] font-semibold hover:no-underline">
@@ -826,6 +858,12 @@ function OrchestratorControl({ orchestrators }: { orchestrators: DashboardOrches
             </svg>
           </a>
         ))}
+        <a
+          href={orchestratorsHref}
+          className="flex items-center justify-center gap-2 border-t border-[var(--color-border-subtle)] px-4 py-3 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:no-underline"
+        >
+          Manage all orchestrators
+        </a>
       </div>
     </details>
   );
