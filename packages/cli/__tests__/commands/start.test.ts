@@ -909,7 +909,7 @@ describe("start command — orchestrator session strategy display", () => {
     expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
   });
 
-  it("shows dashboard selection message when existing orchestrators found with dashboard enabled", async () => {
+  it("navigates directly to session page when one existing orchestrator found with dashboard enabled", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
     // Mock findWebDir
@@ -924,21 +924,68 @@ describe("start command — orchestrator session strategy display", () => {
     };
     mockSpawn.mockReturnValue(fakeDashboard);
 
-    // Return an existing orchestrator session
+    // Return a single existing orchestrator session
     mockSessionManager.list.mockResolvedValue([
       {
         id: "app-orchestrator",
         projectId: "my-app",
         metadata: { role: "orchestrator" },
         lastActivityAt: new Date(),
+        runtimeHandle: { id: "tmux-session-existing" },
       },
     ]);
 
     await program.parseAsync(["node", "test", "start"]);
 
     const output = getLoggedOutput();
-    // When dashboard is enabled, shows selection message
-    expect(output).toContain("existing sessions found — select one in the dashboard");
+    // With one orchestrator, goes directly to the session page — shows tmux attach, no selection message
+    expect(output).toContain("tmux attach -t tmux-session-existing");
+    expect(output).not.toContain("multiple sessions found");
+    expect(output).not.toContain("select one in the dashboard");
+
+    // Should NOT spawn a new orchestrator when existing one exists
+    expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
+  });
+
+  it("opens orchestrator selection page when multiple existing orchestrators found with dashboard enabled", async () => {
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
+
+    // Mock findWebDir
+    const { findWebDir } = await import("../../src/lib/web-dir.js");
+    vi.mocked(findWebDir).mockReturnValue(tmpDir);
+    writeFileSync(join(tmpDir, "package.json"), "{}");
+
+    const fakeDashboard = {
+      on: vi.fn(),
+      kill: vi.fn(),
+      emit: vi.fn(),
+    };
+    mockSpawn.mockReturnValue(fakeDashboard);
+
+    const now = new Date();
+    // Return two existing orchestrator sessions
+    mockSessionManager.list.mockResolvedValue([
+      {
+        id: "app-orchestrator-1",
+        projectId: "my-app",
+        metadata: { role: "orchestrator" },
+        lastActivityAt: new Date(now.getTime() - 1000),
+        runtimeHandle: { id: "tmux-session-1" },
+      },
+      {
+        id: "app-orchestrator-2",
+        projectId: "my-app",
+        metadata: { role: "orchestrator" },
+        lastActivityAt: now,
+        runtimeHandle: { id: "tmux-session-2" },
+      },
+    ]);
+
+    await program.parseAsync(["node", "test", "start"]);
+
+    const output = getLoggedOutput();
+    // With multiple orchestrators, shows selection message so user can choose or spawn a new one
+    expect(output).toContain("multiple sessions found — select one in the dashboard");
 
     // Should NOT spawn a new orchestrator when existing ones exist
     expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
