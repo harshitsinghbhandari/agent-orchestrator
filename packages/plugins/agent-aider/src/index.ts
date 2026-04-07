@@ -111,6 +111,7 @@ function createAiderAgent(): Agent {
   return {
     name: "aider",
     processName: "aider",
+    provider: "unknown", // Aider supports multiple providers
 
     getLaunchCommand(config: AgentLaunchConfig): string {
       const parts: string[] = ["aider"];

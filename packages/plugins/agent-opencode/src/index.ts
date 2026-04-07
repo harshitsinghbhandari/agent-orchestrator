@@ -206,6 +206,7 @@ function createOpenCodeAgent(): Agent {
   return {
     name: "opencode",
     processName: "opencode",
+    provider: "unknown", // OpenCode supports multiple providers
 
     getLaunchCommand(config: AgentLaunchConfig): string {
       const options: string[] = [];

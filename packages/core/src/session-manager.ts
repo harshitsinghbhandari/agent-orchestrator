@@ -42,6 +42,7 @@ import {
   type PluginRegistry,
   type RuntimeHandle,
   type Issue,
+  type CostEstimate,
   PR_STATE,
 } from "./types.js";
 import {
@@ -931,10 +932,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
               const costFilePath = join(sessionsDir, session.id + ".cost.json");
 
               try {
-                let persistedCost: any = null;
+                let persistedCost: CostEstimate | null = null;
                 try {
                   const existing = await readFile(costFilePath, "utf8");
-                  persistedCost = JSON.parse(existing);
+                  persistedCost = JSON.parse(existing) as CostEstimate;
                 } catch {
                   /* First write or missing file */
                 }

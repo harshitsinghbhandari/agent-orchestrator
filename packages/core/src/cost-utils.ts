@@ -17,19 +17,28 @@ export interface ComputeCostParams {
 
 /**
  * Computes LLM cost based on token counts and model pricing.
+ * Validates that token counts are non-negative to prevent buggy agents
+ * from producing invalid cost estimates.
  */
 export function computeCost(params: ComputeCostParams): CostEstimate {
   const {
-    inputTokens,
-    outputTokens,
-    cachedReadTokens = 0,
-    cacheCreationTokens = 0,
-    reasoningTokens = 0,
+    inputTokens: rawInput,
+    outputTokens: rawOutput,
+    cachedReadTokens: rawCacheRead = 0,
+    cacheCreationTokens: rawCacheCreate = 0,
+    reasoningTokens: rawReasoning = 0,
     provider,
     model,
     directCostUsd,
     date,
   } = params;
+
+  // Ensure non-negative token counts (buggy agents may report negative values)
+  const inputTokens = Math.max(0, rawInput);
+  const outputTokens = Math.max(0, rawOutput);
+  const cachedReadTokens = Math.max(0, rawCacheRead);
+  const cacheCreationTokens = Math.max(0, rawCacheCreate);
+  const reasoningTokens = Math.max(0, rawReasoning);
 
   if (directCostUsd !== undefined) {
     return {

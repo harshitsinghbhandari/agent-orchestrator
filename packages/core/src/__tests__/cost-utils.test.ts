@@ -61,4 +61,41 @@ describe("Cost Utils", () => {
     const merged = mergeCosts(undefined, incoming);
     expect(merged).toEqual(incoming);
   });
+
+  it("should handle negative token counts from buggy agents", () => {
+    const cost = computeCost({
+      inputTokens: -100,
+      outputTokens: -50,
+      cachedReadTokens: -10,
+      cacheCreationTokens: -5,
+      reasoningTokens: -20,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-latest",
+    });
+
+    // All token counts should be clamped to 0
+    expect(cost.inputTokens).toBe(0);
+    expect(cost.outputTokens).toBe(0);
+    expect(cost.cachedReadTokens).toBe(0);
+    expect(cost.cacheCreationTokens).toBe(0);
+    expect(cost.reasoningTokens).toBe(0);
+    // Cost should be 0 since all tokens are 0
+    expect(cost.estimatedCostUsd).toBe(0);
+  });
+
+  it("should handle mixed positive and negative token counts", () => {
+    const cost = computeCost({
+      inputTokens: 1000,
+      outputTokens: -50, // Negative should become 0
+      cachedReadTokens: 500,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-latest",
+    });
+
+    expect(cost.inputTokens).toBe(1000);
+    expect(cost.outputTokens).toBe(0); // Clamped from -50
+    expect(cost.cachedReadTokens).toBe(500);
+    // Cost should only include input and cache read
+    expect(cost.estimatedCostUsd).toBeGreaterThan(0);
+  });
 });

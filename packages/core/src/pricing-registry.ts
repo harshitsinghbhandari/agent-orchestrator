@@ -76,6 +76,21 @@ export class PricingRegistry {
     return [...this.pricingData];
   }
 
+  /**
+   * Reset to default pricing (for testing).
+   */
+  public reset(): void {
+    this.pricingData = [];
+    this.registerDefaults();
+  }
+
+  /**
+   * Reset the singleton instance (for testing isolation).
+   */
+  public static resetInstance(): void {
+    PricingRegistry.instance = new PricingRegistry();
+  }
+
   private registerDefaults(): void {
     for (const spec of DEFAULT_PRICING) {
       this.register(spec);

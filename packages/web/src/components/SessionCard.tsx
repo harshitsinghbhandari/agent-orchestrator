@@ -472,7 +472,7 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
           </p>
         </div>
 
-        {/* Meta row: branch + PR# + diff size (simplified for merge-ready) */}
+        {/* Meta row: branch + PR# + diff size + cost (simplified for merge-ready) */}
         <div className="session-card__meta flex flex-wrap items-center gap-1.5 px-4 pb-2">
           {session.branch && (
             <span className="font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]">
@@ -497,6 +497,14 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
               +{pr.additions} -{pr.deletions} {getSizeLabel(pr.additions, pr.deletions)}
             </span>
           ))}
+          {session.cost && session.cost.estimatedCostUsd > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-[var(--color-chip-bg)] px-2 py-0.5 font-[var(--font-mono)] text-[10px] text-[var(--color-text-muted)]"
+              title={`${session.cost.inputTokens.toLocaleString()} in / ${session.cost.outputTokens.toLocaleString()} out`}
+            >
+              ${session.cost.estimatedCostUsd.toFixed(2)}
+            </span>
+          )}
         </div>
 
         {secondaryText && (

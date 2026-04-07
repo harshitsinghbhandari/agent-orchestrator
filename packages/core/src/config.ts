@@ -273,17 +273,12 @@ const OrchestratorConfigSchema = z.object({
     .optional(),
   models: z
     .object({
-      defaults: z
-        .object({
-          promptBudgetRatio: z.number(),
-        })
-        .optional(),
       overrides: z
         .array(
           z.object({
             provider: z.string(),
             model: z.string(),
-            safePromptBudget: z.number(),
+            safePromptBudget: z.number().int().positive(),
           }),
         )
         .optional(),

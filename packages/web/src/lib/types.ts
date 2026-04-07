@@ -72,6 +72,18 @@ export interface DashboardSession {
   lastActivityAt: string;
   pr: DashboardPR | null;
   metadata: Record<string, string>;
+  /** Estimated cost for this session (from agent JSONL) */
+  cost?: {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number;
+    cachedReadTokens?: number;
+    cacheCreationTokens?: number;
+    reasoningTokens?: number;
+    model?: string;
+    provider?: string;
+    lastUpdatedAt?: string;
+  };
 }
 
 /**

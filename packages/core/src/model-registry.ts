@@ -75,6 +75,21 @@ export class ModelRegistry {
     return `${provider.toLowerCase()}/${model.toLowerCase()}`;
   }
 
+  /**
+   * Reset to default models (for testing).
+   */
+  public reset(): void {
+    this.registry.clear();
+    this.registerDefaults();
+  }
+
+  /**
+   * Reset the singleton instance (for testing isolation).
+   */
+  public static resetInstance(): void {
+    ModelRegistry.instance = new ModelRegistry();
+  }
+
   private registerDefaults(): void {
     const defaults: ModelSpec[] = [
       {
@@ -107,6 +122,24 @@ export class ModelRegistry {
       {
         provider: "anthropic",
         model: "claude-3-7-sonnet-latest",
+        maxContextTokens: 200000,
+        safePromptBudget: 160000,
+        supportsCacheRead: true,
+        supportsCacheWrite: true,
+        supportsReasoning: true,
+      },
+      {
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        maxContextTokens: 200000,
+        safePromptBudget: 160000,
+        supportsCacheRead: true,
+        supportsCacheWrite: true,
+        supportsReasoning: true,
+      },
+      {
+        provider: "anthropic",
+        model: "claude-opus-4-20250514",
         maxContextTokens: 200000,
         safePromptBudget: 160000,
         supportsCacheRead: true,
@@ -157,7 +190,16 @@ export class ModelRegistry {
         supportsCacheRead: false,
         supportsCacheWrite: false,
         supportsReasoning: false,
-      }
+      },
+      {
+        provider: "openai",
+        model: "gpt-4.1",
+        maxContextTokens: 128000,
+        safePromptBudget: 100000,
+        supportsCacheRead: true,
+        supportsCacheWrite: false,
+        supportsReasoning: false,
+      },
     ];
 
     for (const spec of defaults) {

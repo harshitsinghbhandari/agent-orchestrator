@@ -160,35 +160,11 @@ function applyModelOverrides(
 }
 
 /**
- * Apply default prompt budget ratio to models without explicit overrides.
- * This modifies the default estimate returned for unknown models.
- *
- * Note: The ModelRegistry's getDefaultEstimate() returns a fixed value.
- * To apply a ratio, we'd need to either:
- * 1. Modify ModelRegistry to accept a configurable default
- * 2. Pre-register common models with the adjusted budget
- *
- * For now, this logs a warning that the feature requires model-specific overrides.
- */
-function applyDefaultPromptBudgetRatio(
-  defaults: NonNullable<OrchestratorConfig["models"]>["defaults"],
-): void {
-  if (!defaults?.promptBudgetRatio) return;
-
-  // TODO: Enhance ModelRegistry to support a configurable default ratio
-  console.log(
-    `[registry-initializer] promptBudgetRatio=${defaults.promptBudgetRatio} is set. ` +
-      `To apply this to specific models, add them to models.overrides with calculated safePromptBudget.`,
-  );
-}
-
-/**
  * Initialize the pricing and model registries from config.
  *
  * Call this after loadConfig() to apply:
  * - Custom pricing from config.pricing.file
  * - Model overrides from config.models.overrides
- * - Default prompt budget ratio from config.models.defaults
  *
  * @param config - The validated OrchestratorConfig
  */
@@ -200,9 +176,8 @@ export function initializeRegistriesFromConfig(config: OrchestratorConfig): void
     loadPricingFile(config.pricing.file, configDir);
   }
 
-  // Apply model configuration
-  if (config.models) {
-    applyDefaultPromptBudgetRatio(config.models.defaults);
+  // Apply model overrides
+  if (config.models?.overrides) {
     applyModelOverrides(config.models.overrides);
   }
 }

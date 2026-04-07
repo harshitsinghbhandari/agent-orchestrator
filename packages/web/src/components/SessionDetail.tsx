@@ -447,6 +447,35 @@ export function SessionDetail({
             </div>
           )}
 
+          {session.cost && session.cost.estimatedCostUsd > 0 && (
+            <div className="mt-4 flex items-center gap-3 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)] p-3.5 text-[13px]">
+              <svg
+                className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                <span className="font-semibold text-[var(--color-text-primary)]">
+                  ${session.cost.estimatedCostUsd.toFixed(4)}
+                </span>
+                <span className="text-[11px] text-[var(--color-text-muted)]">
+                  {session.cost.inputTokens.toLocaleString()} in / {session.cost.outputTokens.toLocaleString()} out
+                  {session.cost.cachedReadTokens ? ` / ${session.cost.cachedReadTokens.toLocaleString()} cached` : ""}
+                  {session.cost.reasoningTokens ? ` / ${session.cost.reasoningTokens.toLocaleString()} reasoning` : ""}
+                </span>
+                {session.cost.model && (
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                    {session.cost.model}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           <section className="mt-5">
             <div id="session-terminal-section" aria-hidden="true" />
             <div className="mb-3 flex items-center gap-2">

@@ -663,6 +663,7 @@ function createClaudeCodeAgent(): Agent {
   return {
     name: "claude-code",
     processName: "claude",
+    provider: "anthropic",
     promptDelivery: "post-launch",
 
     getLaunchCommand(config: AgentLaunchConfig): string {

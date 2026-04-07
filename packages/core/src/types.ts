@@ -321,6 +321,9 @@ export interface Agent {
   /** Process name to look for (e.g. "claude", "codex", "aider") */
   readonly processName: string;
 
+  /** The LLM provider this agent uses (for cost estimation fallback) */
+  readonly provider?: "anthropic" | "openai" | "unknown";
+
   /**
    * How the initial prompt should be delivered to the agent.
    * - "inline" (default): prompt is included in the launch command (e.g. -p flag)
@@ -1064,9 +1067,6 @@ export interface OrchestratorConfig {
 
   /** Optional model overrides */
   models?: {
-    defaults?: {
-      promptBudgetRatio: number;
-    };
     overrides?: Array<{
       provider: string;
       model: string;

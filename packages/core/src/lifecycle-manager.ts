@@ -1278,8 +1278,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       if (trimmed.length >= 5) {
         try {
           updateSessionMetadata(session, { pinnedSummary: trimmed });
-        } catch {
+        } catch (err) {
           // Non-critical: title just won't be pinned this cycle
+          console.warn(`[lifecycle-manager] Failed to pin summary for ${session.id}:`, err);
         }
       }
     }

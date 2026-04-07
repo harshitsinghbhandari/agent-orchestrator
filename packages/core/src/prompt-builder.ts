@@ -148,6 +148,16 @@ export function buildPromptWithMetadata(
   config: PromptBuildConfig,
   modelInfo?: { provider: string; model: string }
 ): PromptBuildResult {
+  /**
+   * Section priorities (higher = more important, kept during truncation):
+   *   10: Additional Instructions — explicit user prompt, never dropped
+   *    9: Issue Details — the task context
+   *    8: Task Hierarchy — decomposition chain
+   *    7: Config Context — project name, repo, branch
+   *    6: Base Agent Prompt — AO lifecycle guidance
+   *    5: User Rules — project-specific agent rules
+   *    4: Parallel Work — sibling task descriptions, first to drop
+   */
   const sections: PromptSection[] = [];
 
   sections.push({
@@ -266,8 +276,8 @@ export function truncatePrompt(result: PromptBuildResult, budget: number): Promp
     truncatedSections: [],
   };
 
-  // Sort a copy of the sections by priority ascending (so we truncate lowest priority first)
-  const sortedSections = [...result.sections].sort((a, b) => a.priority - b.priority);
+  // Deep-clone sections so we don't mutate the original PromptBuildResult
+  const sortedSections = result.sections.map(s => ({ ...s })).sort((a, b) => a.priority - b.priority);
   
   let currentTokens = result.totalTokens;
 
@@ -293,30 +303,39 @@ export function truncatePrompt(result: PromptBuildResult, budget: number): Promp
       section.tokens = 0;
       section.content = "";
     } else {
-      // Truncate required section
+      // Truncate required section (prefer cutting at a newline to avoid mid-word breaks)
       const keepTokens = Math.max(0, oldTokens - deficit);
       const keepChars = keepTokens * 4;
 
       if (keepChars < 40) {
         section.content = `${section.content.slice(0, 40)}\n\n[... truncated, ${oldTokens} tokens omitted]`;
       } else {
-        section.content = `${section.content.slice(0, keepChars)}\n\n[... truncated, ${oldTokens - keepTokens} tokens omitted]`;
+        // Find the last newline before the cut point (at least halfway to preserve context)
+        const truncated = section.content.substring(0, keepChars);
+        const lastNewline = truncated.lastIndexOf("\n");
+        const safeCut = lastNewline > keepChars * 0.5 ? lastNewline : keepChars;
+        section.content = `${section.content.substring(0, safeCut)}\n\n[... truncated, ${oldTokens - keepTokens} tokens omitted]`;
       }
-      
+
       section.tokens = estimateTokens(section.content);
       currentTokens = currentTokens - oldTokens + section.tokens;
-      report.truncatedSections.push({ 
-        name: section.name, 
-        originalTokens: oldTokens, 
-        finalTokens: section.tokens 
+      report.truncatedSections.push({
+        name: section.name,
+        originalTokens: oldTokens,
+        finalTokens: section.tokens,
       });
     }
   }
 
   report.finalTokens = currentTokens;
-  
-  // Re-join prompt in original section order
-  const finalPrompt = result.sections.filter(s => s.tokens > 0).map(s => s.content).join("\n\n");
+
+  // Re-join prompt in original section order (use cloned sections by priority, re-sort by original index)
+  // Since sections have unique names, map by name to get updated content from sortedSections
+  const updatedByName = new Map(sortedSections.map(s => [s.name, s]));
+  const finalSections = result.sections
+    .map(s => updatedByName.get(s.name) ?? s)
+    .filter(s => s.tokens > 0);
+  const finalPrompt = finalSections.map(s => s.content).join("\n\n");
   
   console.warn(
     `⚠ Prompt truncated: ${report.originalTokens} → ${report.finalTokens} tokens ` +
@@ -327,6 +346,7 @@ export function truncatePrompt(result: PromptBuildResult, budget: number): Promp
   return {
     ...result,
     prompt: finalPrompt,
+    sections: finalSections,
     totalTokens: report.finalTokens,
     truncationReport: report,
   };
