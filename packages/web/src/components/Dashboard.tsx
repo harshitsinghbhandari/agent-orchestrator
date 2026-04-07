@@ -526,7 +526,7 @@ function DashboardInner({
                     {projectName ?? "Orchestrator"}
                   </h1>
                   <p className="dashboard-subtitle">
-                    Live sessions, review pressure, and merge readiness.
+                    Live agent sessions, pull requests, and merge status.
                   </p>
                 </div>
               </div>
@@ -553,7 +553,7 @@ function DashboardInner({
                     PRs
                   </a>
                 ) : null}
-                {!allProjectsView && !isMobile ? (
+                {!allProjectsView && !isMobile && projectId ? (
                   <OrchestratorControl orchestrators={activeOrchestrators} projectId={projectId} />
                 ) : null}
                 <ThemeToggle />
@@ -637,7 +637,7 @@ function DashboardInner({
               <div>
                 <h2 className="board-section-head__title">Attention Board</h2>
                 <p className="board-section-head__subtitle">
-                  Triage by required intervention, not by chronology.
+                  Sessions sorted by what needs your attention.
                 </p>
               </div>
               <div className="board-section-head__legend">
@@ -767,12 +767,10 @@ function OrchestratorControl({
   projectId,
 }: {
   orchestrators: DashboardOrchestratorLink[];
-  projectId?: string;
+  projectId: string;
 }) {
   // Build the orchestrators picker URL
-  const orchestratorsHref = projectId
-    ? `/orchestrators?project=${encodeURIComponent(projectId)}`
-    : "/orchestrators";
+  const orchestratorsHref = `/orchestrators?project=${encodeURIComponent(projectId)}`;
 
   if (orchestrators.length === 0) {
     // Show "Orchestrators" button that links to picker even when no orchestrators running

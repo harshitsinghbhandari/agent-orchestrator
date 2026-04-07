@@ -63,8 +63,8 @@ export async function GET(request: Request) {
           projectName: link.projectName,
           activity: session?.activity ?? null,
           status: session?.status ?? null,
-          createdAt: session?.createdAt.toISOString() ?? null,
-          lastActivityAt: session?.lastActivityAt.toISOString() ?? null,
+          createdAt: session ? session.createdAt.toISOString() : null,
+          lastActivityAt: session ? session.lastActivityAt.toISOString() : null,
         };
       });
 

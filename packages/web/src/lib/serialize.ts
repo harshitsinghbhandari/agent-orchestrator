@@ -1,3 +1,5 @@
+import "server-only";
+
 /**
  * Core Session → DashboardSession serialization.
  *
@@ -6,7 +8,6 @@
  */
 
 import {
-  isOrchestratorSession,
   type Session,
   type Agent,
   type SCM,
@@ -15,6 +16,8 @@ import {
   type ProjectConfig,
   type OrchestratorConfig,
   type PluginRegistry,
+  isOrchestratorSession,
+  isTerminalSession,
 } from "@composio/ao-core";
 import type {
   DashboardSession,
@@ -77,12 +80,13 @@ export function listDashboardOrchestrators(
     ([projectId, p]) => p.sessionPrefix ?? projectId,
   );
   return sessions
-    .filter((session) =>
-      isOrchestratorSession(
-        session,
-        projects[session.projectId]?.sessionPrefix ?? session.projectId,
-        allSessionPrefixes,
-      ),
+    .filter(
+      (session) =>
+        isOrchestratorSession(
+          session,
+          projects[session.projectId]?.sessionPrefix ?? session.projectId,
+          allSessionPrefixes,
+        ) && !isTerminalSession(session),
     )
     .map((session) => ({
       id: session.id,
