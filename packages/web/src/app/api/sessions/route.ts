@@ -8,6 +8,7 @@ import {
   computeStats,
   listDashboardOrchestrators,
 } from "@/lib/serialize";
+import type { EnrichedOrchestratorLink } from "@/lib/types";
 import { getCorrelationId, jsonWithCorrelation, recordApiObservation } from "@/lib/observability";
 import { filterProjectSessions } from "@/lib/project-utils";
 import { settlesWithin } from "@/lib/async-utils";
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
           .map((s) => [s.id, s] as const),
       );
 
-      const enrichedOrchestrators = orchestrators.map((link) => {
+      const enrichedOrchestrators: EnrichedOrchestratorLink[] = orchestrators.map((link) => {
         const session = orchestratorSessionsById.get(link.id);
         return {
           id: link.id,
