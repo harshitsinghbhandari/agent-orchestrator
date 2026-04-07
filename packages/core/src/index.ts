@@ -93,6 +93,9 @@ export type { ModelSpec } from "./model-registry.js";
 export { pricingRegistry, PricingRegistry } from "./pricing-registry.js";
 export type { PricingSpec } from "./pricing-registry.js";
 
+// Registry initializer — applies config-driven pricing and model overrides
+export { initializeRegistriesFromConfig } from "./registry-initializer.js";
+
 // Cost utilities — shared cost computation and merging
 export { computeCost, mergeCosts, aggregateCosts, formatCost } from "./cost-utils.js";
 export type { ComputeCostParams } from "./cost-utils.js";

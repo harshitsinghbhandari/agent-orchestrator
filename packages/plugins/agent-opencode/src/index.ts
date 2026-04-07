@@ -21,7 +21,6 @@ import {
   type Session,
   type WorkspaceHooksConfig,
   type OpenCodeAgentConfig,
-  computeCost,
 } from "@composio/ao-core";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -418,18 +417,11 @@ function createOpenCodeAgent(): Agent {
       const targetSession = await findOpenCodeSession(session);
       if (!targetSession) return null;
 
-      const model = session.metadata?.["model"] || "opencode-unknown";
-
       return {
         summary: targetSession.title ?? null,
         summaryIsFallback: true,
         agentSessionId: targetSession.id,
-        cost: computeCost({
-          inputTokens: 0,
-          outputTokens: 0,
-          provider: "unknown",
-          model,
-        }),
+        // OpenCode doesn't expose token/cost data in session list — omit cost field rather than return zeros
       };
     },
 

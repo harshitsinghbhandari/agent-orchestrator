@@ -6,7 +6,6 @@ import {
   SessionNotRestorableError,
   WorkspaceMissingError,
   formatCost,
-  type CostEstimate,
 } from "@composio/ao-core";
 import { git, getTmuxActivity, tmux } from "../lib/shell.js";
 import { formatAge } from "../lib/format.js";
