@@ -318,79 +318,60 @@ describe("API Routes", () => {
       expect(mockSessionManager.list).toHaveBeenCalledWith("docs-app");
     });
 
-    it("keeps global pause sourced from all projects even for project-scoped requests", async () => {
-      const pausedUntil = new Date(Date.now() + 60_000).toISOString();
-      const pausedSessions = [
+    it("returns enriched orchestrators when orchestratorOnly=true", async () => {
+      const orchestratorSessions: Session[] = [
         makeSession({
-          id: "docs-orchestrator",
-          projectId: "docs-app",
-          metadata: {
-            role: "orchestrator",
-            globalPauseUntil: pausedUntil,
-            globalPauseReason: "Rate limit hit",
-            globalPauseSource: "docs-orchestrator",
-          },
-        }),
-        makeSession({ id: "docs-1", projectId: "docs-app", status: "working", activity: "active" }),
-        makeSession({
-          id: "backend-3",
+          id: "my-app-orchestrator",
           projectId: "my-app",
           status: "working",
           activity: "active",
-        }),
-      ];
-      (mockSessionManager.list as ReturnType<typeof vi.fn>).mockImplementation(
-        async (projectId?: string) =>
-          projectId
-            ? pausedSessions.filter((session) => session.projectId === projectId)
-            : pausedSessions,
-      );
-
-      const res = await sessionsGET(
-        makeRequest("http://localhost:3000/api/sessions?project=my-app"),
-      );
-      expect(res.status).toBe(200);
-      const data = await res.json();
-
-      expect(data.globalPause).toMatchObject({
-        pausedUntil,
-        reason: "Rate limit hit",
-        sourceSessionId: "docs-orchestrator",
-      });
-      expect(mockSessionManager.list).toHaveBeenNthCalledWith(1, "my-app");
-      expect(mockSessionManager.list).toHaveBeenNthCalledWith(2);
-    });
-
-    it("finds active global pause even when a metadata-role orchestrator appears first", async () => {
-      const pausedUntil = new Date(Date.now() + 60_000).toISOString();
-      const sessions = [
-        makeSession({
-          id: "control-session",
-          projectId: "docs-app",
           metadata: { role: "orchestrator" },
         }),
         makeSession({
           id: "docs-orchestrator",
           projectId: "docs-app",
-          metadata: {
-            role: "orchestrator",
-            globalPauseUntil: pausedUntil,
-            globalPauseReason: "Rate limit hit",
-            globalPauseSource: "docs-orchestrator",
-          },
+          status: "pr_open",
+          activity: "idle",
+          metadata: { role: "orchestrator" },
         }),
       ];
-      (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce(sessions);
+      (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        orchestratorSessions,
+      );
 
-      const res = await sessionsGET(makeRequest("http://localhost:3000/api/sessions"));
+      const res = await sessionsGET(
+        makeRequest("http://localhost:3000/api/sessions?orchestratorOnly=true"),
+      );
       expect(res.status).toBe(200);
       const data = await res.json();
 
-      expect(data.globalPause).toMatchObject({
-        pausedUntil,
-        reason: "Rate limit hit",
-        sourceSessionId: "docs-orchestrator",
+      // orchestratorOnly returns empty sessions array
+      expect(data.sessions).toEqual([]);
+
+      // Enriched orchestrators should include activity/status fields
+      expect(data.orchestrators).toHaveLength(2);
+      expect(data.orchestrators[0]).toMatchObject({
+        id: expect.any(String),
+        projectId: expect.any(String),
+        projectName: expect.any(String),
+        activity: expect.any(String),
+        status: expect.any(String),
+        createdAt: expect.any(String),
+        lastActivityAt: expect.any(String),
       });
+
+      // Verify activity state from sessions is included
+      const myAppOrchestrator = data.orchestrators.find(
+        (o: { projectId: string }) => o.projectId === "my-app",
+      );
+      expect(myAppOrchestrator.activity).toBe("active");
+      expect(myAppOrchestrator.status).toBe("working");
+
+      const docsOrchestrator = data.orchestrators.find(
+        (o: { projectId: string }) => o.projectId === "docs-app",
+      );
+      expect(docsOrchestrator.activity).toBe("idle");
+      expect(docsOrchestrator.status).toBe("pr_open");
     });
 
     it("enriches all PRs concurrently, not sequentially", async () => {

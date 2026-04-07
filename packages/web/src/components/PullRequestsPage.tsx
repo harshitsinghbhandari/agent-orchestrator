@@ -43,7 +43,7 @@ export function PullRequestsPage({
     }
     return levels;
   }, [initialSessions]);
-  const { sessions, sseAttentionLevels } = useSessionEvents(initialSessions, null, projectId, initialAttentionLevels);
+  const { sessions, sseAttentionLevels } = useSessionEvents(initialSessions, projectId, initialAttentionLevels);
   const searchParams = useSearchParams();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -117,7 +117,7 @@ export function PullRequestsPage({
                 <div>
                   <h1 className="dashboard-title">{projectName ? `${projectName} PRs` : "Pull Requests"}</h1>
                   <p className="dashboard-subtitle">
-                    Review active pull requests without the dashboard board chrome.
+                    Open pull requests created by agents{allProjectsView ? " across all projects" : " in this project"}.
                   </p>
                 </div>
               </div>

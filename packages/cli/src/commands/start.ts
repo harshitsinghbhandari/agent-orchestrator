@@ -582,7 +582,7 @@ async function autoCreateConfig(workingDir: string): Promise<OrchestratorConfig>
       runtime: "tmux",
       agent,
       workspace: "worktree",
-      notifiers: ["desktop"],
+      notifiers: [],
     },
     projects: {
       [projectId]: {
@@ -1021,30 +1021,26 @@ async function runStartup(
     );
 
     if (existingOrchestrators.length > 0) {
-      // Existing orchestrators found
-      if (opts?.dashboard === false) {
-        // No dashboard — auto-select the most recently active orchestrator
-        const sortedOrchestrators = [...existingOrchestrators].sort(
-          (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
-        );
-        const selected = sortedOrchestrators[0];
-        selectedOrchestratorId = selected.id;
-        // Use runtimeHandle.id if available, otherwise fall back to the session ID
-        tmuxTarget = selected.runtimeHandle?.id ?? selected.id;
-        spinner.succeed(
-          `Using existing orchestrator session: ${selected.id}` +
-            (existingOrchestrators.length > 1
-              ? ` (${existingOrchestrators.length - 1} other session(s) available)`
-              : ""),
-        );
-      } else {
-        // Dashboard available — let the user select
+      // Existing orchestrators found — always auto-select the most recently active one.
+      // With a single orchestrator, navigate directly to its session page.
+      // With multiple orchestrators, keep the selection page so the user can choose or spawn a
+      // new one — the dashboard only links to one orchestrator per project, so the selection page
+      // is the only startup path for multi-orchestrator projects.
+      const sortedOrchestrators = [...existingOrchestrators].sort(
+        (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
+      );
+      const selected = sortedOrchestrators[0];
+      selectedOrchestratorId = selected.id;
+      // Use runtimeHandle.id if available, otherwise fall back to the session ID
+      tmuxTarget = selected.runtimeHandle?.id ?? selected.id;
+      if (opts?.dashboard !== false && existingOrchestrators.length > 1) {
         hasExistingOrchestrators = true;
-        spinner.info(
-          `Found ${existingOrchestrators.length} existing orchestrator session(s). ` +
-            `Open the dashboard to select or start a new one.`,
-        );
       }
+      spinner.succeed(
+        `Using existing orchestrator session: ${selected.id}` +
+          (existingOrchestrators.length > 1
+            ? ` (${existingOrchestrators.length - 1} other session(s) available)` : ""),
+      );
     } else {
       // No existing orchestrators — spawn a new one
       try {
@@ -1090,7 +1086,7 @@ async function runStartup(
   if (hasExistingOrchestrators) {
     console.log(
       chalk.cyan("Orchestrator:"),
-      "existing sessions found — select one in the dashboard",
+      "multiple sessions found — select one in the dashboard",
     );
   } else if (opts?.orchestrator !== false && !reused) {
     console.log(chalk.cyan("Orchestrator:"), `tmux attach -t ${tmuxTarget}`);
@@ -1110,13 +1106,15 @@ async function runStartup(
     }
   }
 
-  // Auto-open browser to orchestrator session page (or selection page) once the server is ready.
+  // Auto-open browser once the server is ready.
+  // With a single orchestrator (or a newly created one), navigate directly to the session page.
+  // With multiple existing orchestrators, open the selection page so the user can choose or
+  // spawn a new one — the dashboard only links one orchestrator per project.
   // Polls the port instead of using a fixed delay — deterministic and works regardless of
   // how long Next.js takes to compile. AbortController cancels polling on early exit.
   let openAbort: AbortController | undefined;
   if (opts?.dashboard !== false) {
     openAbort = new AbortController();
-    // If existing orchestrators found, open the selection page; otherwise open the session page
     const orchestratorUrl = hasExistingOrchestrators
       ? `http://localhost:${port}/orchestrators?project=${projectId}`
       : `http://localhost:${port}/sessions/${selectedOrchestratorId ?? sessionId}`;
@@ -1387,13 +1385,12 @@ export function registerStop(program: Command): void {
   program
     .command("stop [project]")
     .description("Stop orchestrator agent and dashboard")
-    .option("--keep-session", "Keep mapped OpenCode session after stopping")
     .option("--purge-session", "Delete mapped OpenCode session when stopping")
     .option("--all", "Stop all running AO instances")
     .action(
       async (
         projectArg?: string,
-        opts: { keepSession?: boolean; purgeSession?: boolean; all?: boolean } = {},
+        opts: { purgeSession?: boolean; all?: boolean } = {},
       ) => {
         try {
           // Check running.json first
@@ -1431,7 +1428,7 @@ export function registerStop(program: Command): void {
 
           if (existing) {
             const spinner = ora("Stopping orchestrator session").start();
-            const purgeOpenCode = opts.purgeSession === true ? true : opts.keepSession !== true;
+            const purgeOpenCode = opts?.purgeSession === true;
             await sm.kill(sessionId, { purgeOpenCode });
             spinner.succeed("Orchestrator session stopped");
           } else {
@@ -1472,6 +1469,5 @@ export function registerStop(program: Command): void {
           }
           process.exit(1);
         }
-      },
-    );
+      });
 }
