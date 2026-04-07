@@ -784,6 +784,7 @@ function OrchestratorControl({
         <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] opacity-80" />
         orchestrators
         <svg
+          aria-hidden="true"
           className="h-3 w-3 opacity-70"
           fill="none"
           stroke="currentColor"
@@ -806,6 +807,7 @@ function OrchestratorControl({
         <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] opacity-80" />
         orchestrator
         <svg
+          aria-hidden="true"
           className="h-3 w-3 opacity-70"
           fill="none"
           stroke="currentColor"
@@ -825,6 +827,7 @@ function OrchestratorControl({
         <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] opacity-80" />
         {orchestrators.length} orchestrators
         <svg
+          aria-hidden="true"
           className="h-3 w-3 opacity-70 transition-transform group-open:rotate-90"
           fill="none"
           stroke="currentColor"
@@ -848,6 +851,7 @@ function OrchestratorControl({
               <span className="truncate">{orchestrator.projectName}</span>
             </span>
             <svg
+              aria-hidden="true"
               className="h-3 w-3 shrink-0 opacity-60"
               fill="none"
               stroke="currentColor"

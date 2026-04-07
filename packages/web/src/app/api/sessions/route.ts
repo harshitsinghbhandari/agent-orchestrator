@@ -35,29 +35,35 @@ export async function GET(request: Request) {
     const orchestrators = listDashboardOrchestrators(visibleSessions, config.projects);
     const orchestratorId = orchestrators.length === 1 ? (orchestrators[0]?.id ?? null) : null;
 
+    // Compute session prefixes once (used by both branches)
+    const allSessionPrefixes = Object.entries(config.projects).map(
+      ([projectId, p]) => p.sessionPrefix ?? projectId,
+    );
+
     if (orchestratorOnly) {
-      // Enrich orchestrator info with activity state
-      const allSessionPrefixes = Object.entries(config.projects).map(
-        ([projectId, p]) => p.sessionPrefix ?? projectId,
-      );
-      const enrichedOrchestrators = orchestrators.map((link) => {
-        const session = visibleSessions.find(
-          (s) =>
-            s.id === link.id &&
+      // Build a Map for O(1) session lookups
+      const orchestratorSessionsById = new Map(
+        visibleSessions
+          .filter((s) =>
             isOrchestratorSession(
               s,
               config.projects[s.projectId]?.sessionPrefix ?? s.projectId,
               allSessionPrefixes,
             ),
-        );
+          )
+          .map((s) => [s.id, s] as const),
+      );
+
+      const enrichedOrchestrators = orchestrators.map((link) => {
+        const session = orchestratorSessionsById.get(link.id);
         return {
           id: link.id,
           projectId: link.projectId,
           projectName: link.projectName,
           activity: session?.activity ?? null,
-          status: session?.status ?? "unknown",
-          createdAt: session?.createdAt.toISOString() ?? new Date().toISOString(),
-          lastActivityAt: session?.lastActivityAt.toISOString() ?? new Date().toISOString(),
+          status: session?.status ?? null,
+          createdAt: session?.createdAt.toISOString() ?? null,
+          lastActivityAt: session?.lastActivityAt.toISOString() ?? null,
         };
       });
 
@@ -83,9 +89,6 @@ export async function GET(request: Request) {
       );
     }
 
-    const allSessionPrefixes = Object.entries(config.projects).map(
-      ([projectId, p]) => p.sessionPrefix ?? projectId,
-    );
     let workerSessions = visibleSessions.filter(
       (session) =>
         !isOrchestratorSession(
