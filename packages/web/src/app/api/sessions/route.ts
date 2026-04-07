@@ -36,6 +36,31 @@ export async function GET(request: Request) {
     const orchestratorId = orchestrators.length === 1 ? (orchestrators[0]?.id ?? null) : null;
 
     if (orchestratorOnly) {
+      // Enrich orchestrator info with activity state
+      const allSessionPrefixes = Object.entries(config.projects).map(
+        ([projectId, p]) => p.sessionPrefix ?? projectId,
+      );
+      const enrichedOrchestrators = orchestrators.map((link) => {
+        const session = visibleSessions.find(
+          (s) =>
+            s.id === link.id &&
+            isOrchestratorSession(
+              s,
+              config.projects[s.projectId]?.sessionPrefix ?? s.projectId,
+              allSessionPrefixes,
+            ),
+        );
+        return {
+          id: link.id,
+          projectId: link.projectId,
+          projectName: link.projectName,
+          activity: session?.activity ?? null,
+          status: session?.status ?? "unknown",
+          createdAt: session?.createdAt.toISOString() ?? new Date().toISOString(),
+          lastActivityAt: session?.lastActivityAt.toISOString() ?? new Date().toISOString(),
+        };
+      });
+
       recordApiObservation({
         config,
         method: "GET",
@@ -50,7 +75,7 @@ export async function GET(request: Request) {
       return jsonWithCorrelation(
         {
           orchestratorId,
-          orchestrators,
+          orchestrators: enrichedOrchestrators,
           sessions: [],
         },
         { status: 200 },
