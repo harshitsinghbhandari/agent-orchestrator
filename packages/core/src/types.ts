@@ -210,11 +210,7 @@ export function isOrchestratorSession(
   if (allSessionPrefixes) {
     for (const prefix of allSessionPrefixes) {
       if (prefix === sessionPrefix) continue;
-      if (
-        new RegExp(
-          `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`,
-        ).test(session.id)
-      ) {
+      if (new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`).test(session.id)) {
         return false;
       }
     }
@@ -678,7 +674,10 @@ export interface SCM {
    * @param observer - Optional observer for batch operation metrics
    * @returns Map keyed by "${owner}/${repo}#${number}" containing enrichment data
    */
-  enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver): Promise<Map<string, PREnrichmentData>>;
+  enrichSessionsPRBatch?(
+    prs: PRInfo[],
+    observer?: BatchObserver,
+  ): Promise<Map<string, PREnrichmentData>>;
 }
 
 // --- PR Types ---
@@ -1057,6 +1056,23 @@ export interface OrchestratorConfig {
 
   /** Default reaction configs */
   reactions: Record<string, ReactionConfig>;
+
+  /** Optional pricing overrides file */
+  pricing?: {
+    file: string;
+  };
+
+  /** Optional model overrides */
+  models?: {
+    defaults?: {
+      promptBudgetRatio: number;
+    };
+    overrides?: Array<{
+      provider: string;
+      model: string;
+      safePromptBudget: number;
+    }>;
+  };
 
   /**
    * Internal: External plugin entries collected from inline tracker/scm/notifier configs.

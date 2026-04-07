@@ -19,6 +19,7 @@ import {
   type RuntimeHandle,
   type Session,
   type WorkspaceHooksConfig,
+  computeCost,
 } from "@composio/ao-core";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -281,11 +282,18 @@ function createAiderAgent(): Agent {
       const summary = await extractAiderSummary(session.workspacePath);
       if (!summary) return null;
 
+      const model = session.metadata?.["model"] || "aider-unknown";
+
       return {
         summary,
         summaryIsFallback: true,
         agentSessionId: null,
-        // Aider doesn't expose token/cost data
+        cost: computeCost({
+          inputTokens: 0,
+          outputTokens: 0,
+          provider: "unknown",
+          model,
+        }),
       };
     },
 
