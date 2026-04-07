@@ -136,6 +136,14 @@ export interface DashboardOrchestratorLink {
   projectName: string;
 }
 
+/** Enriched orchestrator data returned by /api/sessions?orchestratorOnly=true */
+export interface EnrichedOrchestratorLink extends DashboardOrchestratorLink {
+  activity: ActivityState | null;
+  status: SessionStatus | null;
+  createdAt: string | null;
+  lastActivityAt: string | null;
+}
+
 /** SSE snapshot event from /api/events */
 export interface SSESnapshotEvent {
   type: "snapshot";

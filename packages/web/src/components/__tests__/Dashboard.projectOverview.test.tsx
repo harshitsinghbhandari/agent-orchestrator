@@ -193,6 +193,20 @@ describe("Dashboard OrchestratorControl in single-project view", () => {
     expect(orchestratorsLink).toHaveAttribute("href", "/orchestrators?project=my-app");
   });
 
+  it("shows direct link to session for single orchestrator", () => {
+    render(
+      <Dashboard
+        initialSessions={[makeSession({ projectId: "my-app" })]}
+        projectId="my-app"
+        projectName="My App"
+        orchestrators={[{ id: "my-app-orchestrator", projectId: "my-app", projectName: "My App" }]}
+      />,
+    );
+
+    const orchestratorLink = screen.getByRole("link", { name: /orchestrator/i });
+    expect(orchestratorLink).toHaveAttribute("href", "/sessions/my-app-orchestrator");
+  });
+
   it("shows dropdown with Manage all orchestrators link for multiple orchestrators", () => {
     // Need orchestrators from different projects to avoid mergeOrchestrators deduplication
     render(
