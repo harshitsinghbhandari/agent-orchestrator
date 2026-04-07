@@ -8,28 +8,14 @@ import {
   computeStats,
   listDashboardOrchestrators,
 } from "@/lib/serialize";
+import type { EnrichedOrchestratorLink } from "@/lib/types";
 import { getCorrelationId, jsonWithCorrelation, recordApiObservation } from "@/lib/observability";
-import { resolveGlobalPause } from "@/lib/global-pause";
 import { filterProjectSessions } from "@/lib/project-utils";
+import { settlesWithin } from "@/lib/async-utils";
 
 const METADATA_ENRICH_TIMEOUT_MS = 3_000;
 const PR_ENRICH_TIMEOUT_MS = 4_000;
 const PER_PR_ENRICH_TIMEOUT_MS = 1_500;
-
-async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  const timeoutPromise = new Promise<boolean>((resolve) => {
-    timeoutId = setTimeout(() => resolve(false), timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise.then(() => true).catch(() => true), timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-}
 
 export async function GET(request: Request) {
   const correlationId = getCorrelationId(request);
@@ -50,7 +36,38 @@ export async function GET(request: Request) {
     const orchestrators = listDashboardOrchestrators(visibleSessions, config.projects);
     const orchestratorId = orchestrators.length === 1 ? (orchestrators[0]?.id ?? null) : null;
 
+    // Compute session prefixes once (used by both branches)
+    const allSessionPrefixes = Object.entries(config.projects).map(
+      ([projectId, p]) => p.sessionPrefix ?? projectId,
+    );
+
     if (orchestratorOnly) {
+      // Build a Map for O(1) session lookups
+      const orchestratorSessionsById = new Map(
+        visibleSessions
+          .filter((s) =>
+            isOrchestratorSession(
+              s,
+              config.projects[s.projectId]?.sessionPrefix ?? s.projectId,
+              allSessionPrefixes,
+            ),
+          )
+          .map((s) => [s.id, s] as const),
+      );
+
+      const enrichedOrchestrators: EnrichedOrchestratorLink[] = orchestrators.map((link) => {
+        const session = orchestratorSessionsById.get(link.id);
+        return {
+          id: link.id,
+          projectId: link.projectId,
+          projectName: link.projectName,
+          activity: session?.activity ?? null,
+          status: session?.status ?? null,
+          createdAt: session?.createdAt.toISOString() ?? null,
+          lastActivityAt: session?.lastActivityAt.toISOString() ?? null,
+        };
+      });
+
       recordApiObservation({
         config,
         method: "GET",
@@ -65,7 +82,7 @@ export async function GET(request: Request) {
       return jsonWithCorrelation(
         {
           orchestratorId,
-          orchestrators,
+          orchestrators: enrichedOrchestrators,
           sessions: [],
         },
         { status: 200 },
@@ -73,11 +90,6 @@ export async function GET(request: Request) {
       );
     }
 
-    const allSessions = requestedProjectId ? await sessionManager.list() : coreSessions;
-
-    const allSessionPrefixes = Object.entries(config.projects).map(
-      ([projectId, p]) => p.sessionPrefix ?? projectId,
-    );
     let workerSessions = visibleSessions.filter(
       (session) =>
         !isOrchestratorSession(
@@ -144,7 +156,6 @@ export async function GET(request: Request) {
         stats: computeStats(dashboardSessions),
         orchestratorId,
         orchestrators,
-        globalPause: resolveGlobalPause(allSessions, config.projects),
       },
       { status: 200 },
       correlationId,
