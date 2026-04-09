@@ -1459,6 +1459,58 @@ describe("pollAll terminal status accounting", () => {
 
     lm.stop();
   });
+
+  it("does not fire spurious 'killed' notification on startup for sessions already dead", async () => {
+    // Regression test for issue #41: empty states Map causes false killed notifications
+    // When lifecycle manager starts, sessions that were already dead (stale metadata shows
+    // "working" but runtime is not alive) should not trigger "session.killed" notifications.
+
+    const notifier = createMockNotifier();
+    const registryWithNotifier: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    // Session with status "killed" (runtime already marked it dead via list())
+    // but metadata might still show "working" from before the crash
+    const session = makeSession({
+      id: "s-dead",
+      status: "killed" as SessionStatus,
+      metadata: { status: "working" }, // stale metadata from before crash
+    });
+
+    vi.mocked(mockSessionManager.list).mockResolvedValue([session]);
+
+    // Route info-priority notifications to desktop so we can observe them
+    config.notificationRouting.info = ["desktop"];
+    config.notificationRouting.urgent = ["desktop"];
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithNotifier,
+      sessionManager: mockSessionManager,
+    });
+
+    lm.start(60_000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should NOT have fired a "session.killed" notification on startup
+    // because the session was already dead — we're not detecting a real transition
+    const killedNotifications = vi.mocked(notifier.notify).mock.calls.filter(
+      (call: unknown[]) => {
+        const event = call[0] as Record<string, unknown> | undefined;
+        return event?.type === "session.killed";
+      },
+    );
+    expect(killedNotifications).toHaveLength(0);
+
+    lm.stop();
+  });
 });
 
 describe("getStates", () => {

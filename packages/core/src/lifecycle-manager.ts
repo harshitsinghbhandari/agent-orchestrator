@@ -200,6 +200,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let polling = false; // re-entrancy guard
   let allCompleteEmitted = false; // guard against repeated all_complete
+  let firstPoll = true; // track first poll to pre-populate states without transitions
 
   /**
    * Cache for PR enrichment data within a single poll cycle.
@@ -1302,6 +1303,19 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     try {
       const sessions = await sessionManager.list(scopedProjectId);
+
+      // On first poll, pre-populate states Map to prevent false transition detection.
+      // Without this, sessions that were already dead would trigger spurious "killed"
+      // notifications because oldStatus comes from stale metadata while newStatus
+      // reflects the current (dead) runtime state. By pre-populating before checkSession()
+      // runs, the `tracked` lookup succeeds and oldStatus equals the current status,
+      // preventing false transitions.
+      if (firstPoll) {
+        for (const session of sessions) {
+          states.set(session.id, session.status);
+        }
+        firstPoll = false;
+      }
 
       // Include sessions that are active OR whose status changed from what we last saw
       // (e.g., list() detected a dead runtime and marked it "killed" — we need to
