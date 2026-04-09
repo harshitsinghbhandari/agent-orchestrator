@@ -13,8 +13,8 @@ import { createRequire } from "node:module";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Resolve paths relative to the package root (one level up from dist-server/)
-const pkgRoot = resolve(__dirname, "..");
+// Resolve paths relative to the package root (two levels up from dist-server/server/)
+const pkgRoot = resolve(__dirname, "..", "..");
 
 const children: ChildProcess[] = [];
 
