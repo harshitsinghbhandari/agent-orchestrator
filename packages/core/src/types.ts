@@ -1451,6 +1451,7 @@ export interface SessionMetadata {
   opencodeSessionId?: string;
   pinnedSummary?: string; // First quality summary, pinned for display stability
   promptDelivered?: string; // "pending" | "true" | "false" — tracks post-launch prompt delivery
+  customPrompt?: string; // Custom prompt from --prompt flag, stored for reference
 }
 
 // =============================================================================

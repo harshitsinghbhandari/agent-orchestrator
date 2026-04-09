@@ -369,6 +369,75 @@ describe("spawn command", () => {
     });
   });
 
+  it("passes --prompt flag to sessionManager.spawn()", async () => {
+    const fakeSession: Session = {
+      id: "app-1",
+      projectId: "my-app",
+      status: "spawning",
+      activity: null,
+      branch: null,
+      issueId: null,
+      pr: null,
+      workspacePath: "/tmp/wt",
+      runtimeHandle: { id: "hash-app-1", runtimeName: "tmux", data: {} },
+      agentInfo: null,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      metadata: {},
+    };
+
+    mockSessionManager.spawn.mockResolvedValue(fakeSession);
+
+    await program.parseAsync([
+      "node",
+      "test",
+      "spawn",
+      "--prompt",
+      "Focus on fixing the API layer only.",
+    ]);
+
+    expect(mockSessionManager.spawn).toHaveBeenCalledWith({
+      projectId: "my-app",
+      issueId: undefined,
+      prompt: "Focus on fixing the API layer only.",
+    });
+  });
+
+  it("passes --prompt flag with issue ID", async () => {
+    const fakeSession: Session = {
+      id: "app-1",
+      projectId: "my-app",
+      status: "spawning",
+      activity: null,
+      branch: "feat/INT-42",
+      issueId: "INT-42",
+      pr: null,
+      workspacePath: "/tmp/wt",
+      runtimeHandle: { id: "hash-app-1", runtimeName: "tmux", data: {} },
+      agentInfo: null,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      metadata: {},
+    };
+
+    mockSessionManager.spawn.mockResolvedValue(fakeSession);
+
+    await program.parseAsync([
+      "node",
+      "test",
+      "spawn",
+      "INT-42",
+      "--prompt",
+      "Use TypeScript strict mode.",
+    ]);
+
+    expect(mockSessionManager.spawn).toHaveBeenCalledWith({
+      projectId: "my-app",
+      issueId: "INT-42",
+      prompt: "Use TypeScript strict mode.",
+    });
+  });
+
   it("warns and exits when two positional args given (old syntax)", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
