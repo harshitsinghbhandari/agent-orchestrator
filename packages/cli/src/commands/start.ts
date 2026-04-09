@@ -785,7 +785,7 @@ async function startDashboard(
       console.log(chalk.dim("  Mode: optimized (production bundles)"));
       console.log(chalk.dim("  Tip: use --dev for hot reload when editing dashboard UI\n"));
     }
-    const startScript = resolve(webDir, "dist-server", "start-all.js");
+    const startScript = resolve(webDir, "dist-server", "server", "start-all.js");
     child = spawn("node", [startScript], {
       cwd: webDir,
       stdio: "inherit",
@@ -796,7 +796,7 @@ async function startDashboard(
 
   child.on("error", (err) => {
     const cmd = useDevServer ? "pnpm" : "node";
-    const args = useDevServer ? ["run", "dev"] : [resolve(webDir, "dist-server", "start-all.js")];
+    const args = useDevServer ? ["run", "dev"] : [resolve(webDir, "dist-server", "server", "start-all.js")];
     const formatted = formatCommandError(err, {
       cmd,
       args,

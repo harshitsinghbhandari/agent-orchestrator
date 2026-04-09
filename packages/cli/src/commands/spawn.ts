@@ -91,6 +91,7 @@ async function spawnSession(
   agent?: string,
   claimOptions?: SpawnClaimOptions,
   maxPromptTokens?: number,
+  baseBranch?: string,
 ): Promise<string> {
   const spinner = ora("Creating session").start();
 
@@ -103,6 +104,7 @@ async function spawnSession(
       issueId,
       agent,
       maxPromptTokens,
+      baseBranch,
     });
 
     let claimedPrUrl: string | null = null;
@@ -173,6 +175,7 @@ export function registerSpawn(program: Command): void {
     .option("--decompose", "Decompose issue into subtasks before spawning")
     .option("--max-depth <n>", "Max decomposition depth (default: 3)")
     .option("--max-prompt-tokens <n>", "Override the default prompt budget for this spawn")
+    .option("--base-branch <branch>", "Base branch to create the new branch from (defaults to project's configured default branch)")
     .action(
       async (
         first: string | undefined,
@@ -185,6 +188,7 @@ export function registerSpawn(program: Command): void {
           decompose?: boolean;
           maxDepth?: string;
           maxPromptTokens?: string;
+          baseBranch?: string;
         },
       ) => {
         // Catch old two-arg usage: ao spawn <project> <issue>
@@ -260,7 +264,7 @@ export function registerSpawn(program: Command): void {
 
             if (leaves.length <= 1) {
               console.log(chalk.yellow("Task is atomic — spawning directly."));
-              await spawnSession(config, projectId, issueId, opts.open, opts.agent, claimOptions, opts.maxPromptTokens ? parseInt(opts.maxPromptTokens, 10) : undefined);
+              await spawnSession(config, projectId, issueId, opts.open, opts.agent, claimOptions, opts.maxPromptTokens ? parseInt(opts.maxPromptTokens, 10) : undefined, opts.baseBranch);
             } else {
               // Create child issues and spawn sessions with lineage context
               const sm = await getSessionManager(config);
@@ -277,6 +281,7 @@ export function registerSpawn(program: Command): void {
                     siblings,
                     agent: opts.agent,
                     maxPromptTokens: opts.maxPromptTokens ? parseInt(opts.maxPromptTokens, 10) : undefined,
+                    baseBranch: opts.baseBranch,
                   });
                   console.log(`  ${chalk.green("✓")} ${session.id} — ${leaf.description}`);
                 } catch (err) {
@@ -288,7 +293,7 @@ export function registerSpawn(program: Command): void {
               }
             }
           } else {
-            await spawnSession(config, projectId, issueId, opts.open, opts.agent, claimOptions, opts.maxPromptTokens ? parseInt(opts.maxPromptTokens, 10) : undefined);
+            await spawnSession(config, projectId, issueId, opts.open, opts.agent, claimOptions, opts.maxPromptTokens ? parseInt(opts.maxPromptTokens, 10) : undefined, opts.baseBranch);
           }
         } catch (err) {
           console.error(chalk.red(`✗ ${err instanceof Error ? err.message : String(err)}`));

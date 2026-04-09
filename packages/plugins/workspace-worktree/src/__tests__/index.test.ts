@@ -446,6 +446,163 @@ describe("workspace.create()", () => {
       { cwd: "/repo/path" },
     );
   });
+
+  describe("baseBranch option", () => {
+    it("uses origin/baseBranch when baseBranch is specified and origin exists", async () => {
+      const ws = create();
+
+      mockOriginRemote();
+      mockGitSuccess(""); // git rev-parse --verify --quiet origin/develop
+      mockGitSuccess(""); // worktree add
+
+      await ws.create(makeCreateConfig({ baseBranch: "develop" }));
+
+      // Should check for origin/develop
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        ["rev-parse", "--verify", "--quiet", "origin/develop"],
+        { cwd: "/repo/path" },
+      );
+
+      // Should use origin/develop as base ref
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        [
+          "worktree",
+          "add",
+          "-b",
+          "feat/TEST-1",
+          "/mock-home/.worktrees/myproject/session-1",
+          "origin/develop",
+        ],
+        { cwd: "/repo/path" },
+      );
+    });
+
+    it("falls back to local baseBranch when origin exists but remote branch doesn't (strict mode)", async () => {
+      const ws = create();
+
+      mockOriginRemote();
+      mockGitError("fatal: invalid reference"); // origin/develop doesn't exist
+      mockGitSuccess(""); // refs/heads/develop exists locally
+      mockGitSuccess(""); // worktree add
+
+      await ws.create(makeCreateConfig({ baseBranch: "develop" }));
+
+      // Should check for local refs/heads/develop (in strict mode)
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        ["rev-parse", "--verify", "--quiet", "refs/heads/develop"],
+        { cwd: "/repo/path" },
+      );
+
+      // Should use refs/heads/develop as base ref
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        [
+          "worktree",
+          "add",
+          "-b",
+          "feat/TEST-1",
+          "/mock-home/.worktrees/myproject/session-1",
+          "refs/heads/develop",
+        ],
+        { cwd: "/repo/path" },
+      );
+    });
+
+    it("uses local baseBranch when no origin remote exists (strict mode)", async () => {
+      const ws = create();
+
+      mockGitError("fatal: not a git repository"); // no origin
+      mockGitSuccess(""); // refs/heads/develop exists locally
+      mockGitSuccess(""); // worktree add
+
+      await ws.create(makeCreateConfig({ baseBranch: "develop" }));
+
+      // Should check for local refs/heads/develop (in strict mode)
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        ["rev-parse", "--verify", "--quiet", "refs/heads/develop"],
+        { cwd: "/repo/path" },
+      );
+
+      // Should use refs/heads/develop as base ref
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        [
+          "worktree",
+          "add",
+          "-b",
+          "feat/TEST-1",
+          "/mock-home/.worktrees/myproject/session-1",
+          "refs/heads/develop",
+        ],
+        { cwd: "/repo/path" },
+      );
+    });
+
+    it("throws clear error when baseBranch is specified but cannot be resolved (strict mode)", async () => {
+      const ws = create();
+
+      mockOriginRemote();
+      mockGitError("fatal: invalid reference"); // origin/nonexistent doesn't exist
+      mockGitError("fatal: invalid reference"); // refs/heads/nonexistent doesn't exist
+
+      await expect(ws.create(makeCreateConfig({ baseBranch: "nonexistent" }))).rejects.toThrow(
+        'Unable to resolve base branch "nonexistent"',
+      );
+    });
+
+    it("throws clear error with checked refs when baseBranch cannot be resolved (no origin)", async () => {
+      const ws = create();
+
+      mockGitError("fatal: not a git repository"); // no origin
+      mockGitError("fatal: invalid reference"); // refs/heads/nonexistent doesn't exist
+
+      await expect(ws.create(makeCreateConfig({ baseBranch: "nonexistent" }))).rejects.toThrow(
+        'Unable to resolve base branch "nonexistent". Checked: refs/heads/nonexistent',
+      );
+    });
+
+    it("throws clear error with checked refs when baseBranch cannot be resolved (with origin)", async () => {
+      const ws = create();
+
+      mockOriginRemote();
+      mockGitError("fatal: invalid reference"); // origin/nonexistent doesn't exist
+      mockGitError("fatal: invalid reference"); // refs/heads/nonexistent doesn't exist
+
+      await expect(ws.create(makeCreateConfig({ baseBranch: "nonexistent" }))).rejects.toThrow(
+        'Unable to resolve base branch "nonexistent". Checked: origin/nonexistent, refs/heads/nonexistent',
+      );
+    });
+
+    it("does not throw error when baseBranch is not specified and branch hint fails (non-strict mode)", async () => {
+      // This tests the restore() behavior where branch hint is used but not required
+      const ws = create();
+
+      mockGitError("fatal: not a git repository"); // no origin
+      mockGitSuccess(""); // refs/heads/main exists (default branch)
+      mockGitSuccess(""); // worktree add
+
+      // When baseBranch is not set, resolveBaseRef should fall back to default branch
+      await ws.create(makeCreateConfig({ baseBranch: undefined }));
+
+      // Should use refs/heads/main as base ref (default branch fallback)
+      expect(mockExecFileAsync).toHaveBeenCalledWith(
+        "git",
+        [
+          "worktree",
+          "add",
+          "-b",
+          "feat/TEST-1",
+          "/mock-home/.worktrees/myproject/session-1",
+          "refs/heads/main",
+        ],
+        { cwd: "/repo/path" },
+      );
+    });
+  });
 });
 
 describe("workspace.restore()", () => {

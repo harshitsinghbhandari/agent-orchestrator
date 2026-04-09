@@ -50,7 +50,7 @@ async function checkBuilt(webDir: string): Promise<void> {
   }
 
   const webBuildId = resolve(webDir, ".next", "BUILD_ID");
-  const startAllEntry = resolve(webDir, "dist-server", "start-all.js");
+  const startAllEntry = resolve(webDir, "dist-server", "server", "start-all.js");
   if (!existsSync(webBuildId) || !existsSync(startAllEntry)) {
     const hint = isNpmInstall
       ? "Run: npm install -g @composio/ao@latest"

@@ -67,7 +67,7 @@ export function registerDashboard(program: Command): void {
         config.directTerminalPort,
       );
 
-      const startScript = resolve(webDir, "dist-server", "start-all.js");
+      const startScript = resolve(webDir, "dist-server", "server", "start-all.js");
       const child = spawn("node", [startScript], {
         cwd: webDir,
         stdio: ["inherit", "inherit", "pipe"],

@@ -63,7 +63,7 @@ describe("preflight.checkBuilt", () => {
     // /web/node_modules/@composio/ao-core     — miss
     // /node_modules/@composio/ao-core         — hit
     // /node_modules/@composio/ao-core/dist/index.js — exists
-    // /web/.next/BUILD_ID and /web/dist-server/start-all.js — exist
+    // /web/.next/BUILD_ID and /web/dist-server/server/start-all.js — exist
     mockExistsSync
       .mockReturnValueOnce(false)
       .mockReturnValueOnce(true)

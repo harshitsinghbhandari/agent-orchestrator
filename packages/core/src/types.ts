@@ -259,6 +259,8 @@ export interface SessionSpawnConfig {
   siblings?: string[];
   /** Override the default prompt budget for this spawn */
   maxPromptTokens?: number;
+  /** Base branch to create the new branch from (defaults to project.defaultBranch) */
+  baseBranch?: string;
 }
 
 /** Config for creating an orchestrator session */
@@ -529,6 +531,8 @@ export interface WorkspaceCreateConfig {
   project: ProjectConfig;
   sessionId: SessionId;
   branch: string;
+  /** Base branch to create the new branch from (defaults to project.defaultBranch) */
+  baseBranch?: string;
 }
 
 export interface WorkspaceInfo {
