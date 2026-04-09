@@ -30,6 +30,7 @@ import {
   normalizeOrchestratorSessionStrategy,
   isOrchestratorSession,
   isTerminalSession,
+  isRestorable,
   ConfigNotFoundError,
   type OrchestratorConfig,
   type ProjectConfig,
@@ -1033,56 +1034,149 @@ async function runStartup(
     const allSessionPrefixes = Object.entries(config.projects).map(
       ([, p]) => p.sessionPrefix ?? generateSessionPrefix(p.name ?? ""),
     );
-    const existingOrchestrators = allSessions.filter(
-      (s) =>
-        isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes) &&
-        !isTerminalSession(s),
+    // Separate running orchestrators from restorable (killed) ones
+    const allOrchestrators = allSessions.filter(
+      (s) => isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes),
+    );
+    const runningOrchestrators = allOrchestrators.filter((s) => !isTerminalSession(s));
+    const restorableOrchestrators = allOrchestrators.filter(
+      (s) => isTerminalSession(s) && isRestorable(s),
     );
 
-    if (existingOrchestrators.length > 0) {
-      // Existing orchestrators found — always auto-select the most recently active one.
+    if (runningOrchestrators.length > 0) {
+      // Running orchestrators found — always auto-select the most recently active one.
       // With a single orchestrator, navigate directly to its session page.
       // With multiple orchestrators, keep the selection page so the user can choose or spawn a
       // new one — the dashboard only links to one orchestrator per project, so the selection page
       // is the only startup path for multi-orchestrator projects.
-      const sortedOrchestrators = [...existingOrchestrators].sort(
+      const sortedOrchestrators = [...runningOrchestrators].sort(
         (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
       );
       const selected = sortedOrchestrators[0];
       selectedOrchestratorId = selected.id;
       // Use runtimeHandle.id if available, otherwise fall back to the session ID
       tmuxTarget = selected.runtimeHandle?.id ?? selected.id;
-      if (opts?.dashboard !== false && existingOrchestrators.length > 1) {
+      if (opts?.dashboard !== false && runningOrchestrators.length > 1) {
         hasExistingOrchestrators = true;
       }
       spinner.succeed(
         `Using existing orchestrator session: ${selected.id}` +
-          (existingOrchestrators.length > 1
-            ? ` (${existingOrchestrators.length - 1} other session(s) available)` : ""),
+          (runningOrchestrators.length > 1
+            ? ` (${runningOrchestrators.length - 1} other session(s) available)` : ""),
       );
-    } else {
-      // No existing orchestrators — spawn a new one
-      try {
-        spinner.start("Creating orchestrator session");
-        const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
-        const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
-        selectedOrchestratorId = session.id;
-        if (session.runtimeHandle?.id) {
-          tmuxTarget = session.runtimeHandle.id;
-        }
-        reused =
-          orchestratorSessionStrategy === "reuse" &&
-          session.metadata?.["orchestratorSessionReused"] === "true";
-        spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
-      } catch (err) {
-        spinner.fail("Orchestrator setup failed");
-        if (dashboardProcess) {
-          dashboardProcess.kill();
-        }
-        throw new Error(
-          `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
+    } else if (restorableOrchestrators.length > 0) {
+      // No running orchestrators, but found restorable (killed) ones — prompt to resume
+      const sortedRestorable = [...restorableOrchestrators].sort(
+        (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
+      );
+      const lastSession = sortedRestorable[0];
+
+      if (!isHumanCaller()) {
+        // Non-interactive context — inform user about restorable session
+        console.log(chalk.yellow(`Found last orchestrator session: ${lastSession.id}`));
+        console.log(chalk.dim("  Run 'ao start' interactively to resume it."));
+      } else {
+        // Interactive context — prompt user to resume the last session
+        const shouldResume = await promptConfirm(
+          `Found last orchestrator session: ${lastSession.id}. Resume it?`,
+          true,
         );
+
+        if (shouldResume) {
+          try {
+            spinner.start(`Resuming orchestrator session: ${lastSession.id}`);
+            const restored = await sm.restore(lastSession.id);
+            selectedOrchestratorId = restored.id;
+            if (restored.runtimeHandle?.id) {
+              tmuxTarget = restored.runtimeHandle.id;
+            }
+            spinner.succeed(`Orchestrator session resumed: ${restored.id}`);
+          } catch (err) {
+            spinner.fail("Failed to resume orchestrator session");
+            if (dashboardProcess) {
+              dashboardProcess.kill();
+            }
+            throw new Error(
+              `Failed to resume orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
+            );
+          }
+        } else {
+          // User declined to resume — prompt to create new
+          const shouldSpawn = await promptConfirm(
+            "Create a new orchestrator session instead?",
+            true,
+          );
+
+          if (shouldSpawn) {
+            try {
+              spinner.start("Creating orchestrator session");
+              const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
+              const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
+              selectedOrchestratorId = session.id;
+              if (session.runtimeHandle?.id) {
+                tmuxTarget = session.runtimeHandle.id;
+              }
+              reused =
+                orchestratorSessionStrategy === "reuse" &&
+                session.metadata?.["orchestratorSessionReused"] === "true";
+              spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
+            } catch (err) {
+              spinner.fail("Orchestrator setup failed");
+              if (dashboardProcess) {
+                dashboardProcess.kill();
+              }
+              throw new Error(
+                `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+                { cause: err },
+              );
+            }
+          } else {
+            console.log(chalk.yellow("Skipped orchestrator session."));
+            console.log(chalk.dim("  You can create or resume one via the dashboard."));
+          }
+        }
+      }
+    } else {
+      // No orchestrators at all — prompt user before spawning (never auto-spawn)
+      if (!isHumanCaller()) {
+        // Non-interactive context — inform user and skip orchestrator spawn
+        console.log(chalk.yellow("No orchestrator session found."));
+        console.log(chalk.dim("  Run 'ao start' interactively to create one."));
+      } else {
+        // Interactive context — prompt user to confirm spawning
+        const shouldSpawn = await promptConfirm(
+          "No orchestrator session found. Create a new orchestrator session?",
+          true,
+        );
+
+        if (shouldSpawn) {
+          try {
+            spinner.start("Creating orchestrator session");
+            const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
+            const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
+            selectedOrchestratorId = session.id;
+            if (session.runtimeHandle?.id) {
+              tmuxTarget = session.runtimeHandle.id;
+            }
+            reused =
+              orchestratorSessionStrategy === "reuse" &&
+              session.metadata?.["orchestratorSessionReused"] === "true";
+            spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
+          } catch (err) {
+            spinner.fail("Orchestrator setup failed");
+            if (dashboardProcess) {
+              dashboardProcess.kill();
+            }
+            throw new Error(
+              `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
+            );
+          }
+        } else {
+          console.log(chalk.yellow("Skipped orchestrator session creation."));
+          console.log(chalk.dim("  You can create one later via the dashboard."));
+        }
       }
     }
   }
