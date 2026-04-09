@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import {
   validateUrl,
   type PluginModule,
@@ -6,6 +9,7 @@ import {
   type NotifyAction,
   type NotifyContext,
   type EventPriority,
+  type Session,
   CI_STATUS,
 } from "@composio/ao-core";
 import { isRetryableHttpStatus, normalizeRetryConfig } from "@composio/ao-core/utils";
@@ -13,7 +17,7 @@ import { isRetryableHttpStatus, normalizeRetryConfig } from "@composio/ao-core/u
 export const manifest = {
   name: "discord",
   slot: "notifier" as const,
-  description: "Notifier plugin: Discord webhook notifications with rich embeds",
+  description: "Notifier plugin: Discord webhook notifications with rich embeds and thread support",
   version: "0.1.0",
 };
 
@@ -36,6 +40,56 @@ const DISCORD_WEBHOOK_URL_RE =
   /^https:\/\/(?:discord\.com|discordapp\.com)\/api\/webhooks\//;
 
 const EMBED_DESCRIPTION_MAX = 4096;
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** Shared thread map file path for bot integration */
+export function getThreadMapPath(): string {
+  return join(homedir(), ".ao", "discord-thread-map.json");
+}
+
+interface ThreadMapEntry {
+  sessionId: string;
+  threadId: string;
+  projectId: string;
+  createdAt: string;
+}
+
+/** Persist thread map to disk for bot consumption */
+function persistThreadMap(entries: Map<string, string>, projectIdMap: Map<string, string>): void {
+  try {
+    const aoDir = join(homedir(), ".ao");
+    mkdirSync(aoDir, { recursive: true });
+
+    const data: ThreadMapEntry[] = Array.from(entries.entries()).map(([sessionId, threadId]) => ({
+      sessionId,
+      threadId,
+      projectId: projectIdMap.get(sessionId) ?? "unknown",
+      createdAt: new Date().toISOString(),
+    }));
+
+    writeFileSync(getThreadMapPath(), JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[notifier-discord] Failed to persist thread map:", err);
+  }
+}
+
+/** Load thread map from disk */
+function loadThreadMap(): { threads: Map<string, string>; projects: Map<string, string> } {
+  const threads = new Map<string, string>();
+  const projects = new Map<string, string>();
+
+  try {
+    const data = JSON.parse(readFileSync(getThreadMapPath(), "utf-8")) as ThreadMapEntry[];
+    for (const entry of data) {
+      threads.set(entry.sessionId, entry.threadId);
+      projects.set(entry.sessionId, entry.projectId);
+    }
+  } catch {
+    // File doesn't exist or is invalid — start fresh
+  }
+
+  return { threads, projects };
+}
 
 interface DiscordEmbed {
   title: string;
@@ -88,8 +142,6 @@ function buildEmbed(event: OrchestratorEvent, actions?: NotifyAction[]): Discord
 
   return embed;
 }
-
-const DEFAULT_TIMEOUT_MS = 10_000;
 
 async function postWithRetry(
   webhookUrl: string,
@@ -160,8 +212,13 @@ export function create(config?: Record<string, unknown>): Notifier {
   const username = (config?.username as string) ?? "Agent Orchestrator";
   const avatarUrl = config?.avatarUrl as string | undefined;
   const threadId = config?.threadId as string | undefined;
+  const botToken = config?.botToken as string | undefined;
+  const channelId = config?.channelId as string | undefined;
 
   const { retries, retryDelayMs } = normalizeRetryConfig(config);
+
+  // Thread management (session ID → thread ID) — load existing map from disk
+  const { threads: threadMap, projects: projectIdMap } = loadThreadMap();
 
   if (!webhookUrl) {
     console.warn(
@@ -179,6 +236,17 @@ export function create(config?: Record<string, unknown>): Notifier {
     }
   }
 
+  // If botToken + channelId are configured, enable per-session threads
+  if (botToken && channelId) {
+    console.log("[notifier-discord] Thread support enabled (botToken + channelId configured)");
+  } else if (botToken || channelId) {
+    console.warn(
+      "[notifier-discord] Partial thread config detected.\n" +
+      "  Thread support requires BOTH botToken and channelId.\n" +
+      "  Current: botToken=" + (botToken ? "set" : "missing") + ", channelId=" + (channelId ? "set" : "missing"),
+    );
+  }
+
   // Discord requires thread_id as a URL query param, not in the JSON body
   const effectiveUrl = webhookUrl && threadId
     ? `${webhookUrl}${webhookUrl.includes("?") ? "&" : "?"}thread_id=${encodeURIComponent(threadId)}`
@@ -190,28 +258,126 @@ export function create(config?: Record<string, unknown>): Notifier {
     return payload;
   }
 
+  /** Get webhook URL for a specific session (with thread if available) */
+  function getWebhookUrlForSession(sessionId: string): string | undefined {
+    if (!webhookUrl) return undefined;
+    const threadForSession = threadMap.get(sessionId);
+    if (threadForSession) {
+      return `${webhookUrl}${webhookUrl.includes("?") ? "&" : "?"}thread_id=${encodeURIComponent(threadForSession)}`;
+    }
+    return effectiveUrl;
+  }
+
+  /** Create a Discord thread via REST API */
+  async function createThread(session: Session): Promise<string | null> {
+    if (!botToken || !channelId) return null;
+
+    const threadName = session.issueId
+      ? `${session.id}: ${session.issueId}`
+      : `${session.id}`;
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+      const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/threads`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bot ${botToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: threadName,
+          auto_archive_duration: 1440, // 24 hours
+          type: 11, // PUBLIC_THREAD
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`Discord thread creation failed (${response.status}): ${body}`);
+      }
+
+      const data = (await response.json()) as { id?: string };
+      return data.id ?? null;
+    } catch (err) {
+      console.error(`[notifier-discord] Failed to create thread for session ${session.id}:`, err);
+      return null;
+    }
+  }
+
+  /** Archive a Discord thread via REST API */
+  async function archiveThread(threadId: string): Promise<void> {
+    if (!botToken) return;
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+      await fetch(`https://discord.com/api/v10/channels/${threadId}`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bot ${botToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          archived: true,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+    } catch (err) {
+      console.error(`[notifier-discord] Failed to archive thread ${threadId}:`, err);
+    }
+  }
+
   return {
     name: "discord",
 
     async notify(event: OrchestratorEvent): Promise<void> {
-      if (!effectiveUrl) return;
+      const url = getWebhookUrlForSession(event.sessionId);
+      if (!url) return;
       const payload = buildPayload([buildEmbed(event)]);
-      await postWithRetry(effectiveUrl, payload, retries, retryDelayMs);
+      await postWithRetry(url, payload, retries, retryDelayMs);
     },
 
     async notifyWithActions(event: OrchestratorEvent, actions: NotifyAction[]): Promise<void> {
-      if (!effectiveUrl) return;
+      const url = getWebhookUrlForSession(event.sessionId);
+      if (!url) return;
       const payload = buildPayload([buildEmbed(event, actions)]);
-      await postWithRetry(effectiveUrl, payload, retries, retryDelayMs);
+      await postWithRetry(url, payload, retries, retryDelayMs);
     },
 
-    async post(message: string, _context?: NotifyContext): Promise<string | null> {
-      if (!effectiveUrl) return null;
+    async post(message: string, context?: NotifyContext): Promise<string | null> {
+      const url = context?.sessionId
+        ? getWebhookUrlForSession(context.sessionId)
+        : effectiveUrl;
+      if (!url) return null;
       const payload: Record<string, unknown> = { username, content: message };
       if (avatarUrl) payload.avatar_url = avatarUrl;
-      // thread_id is already passed as a URL query param via effectiveUrl
-      await postWithRetry(effectiveUrl, payload, retries, retryDelayMs);
+      await postWithRetry(url, payload, retries, retryDelayMs);
       return null;
+    },
+
+    async onSessionSpawned(session: Session): Promise<void> {
+      const threadIdCreated = await createThread(session);
+      if (threadIdCreated) {
+        threadMap.set(session.id, threadIdCreated);
+        projectIdMap.set(session.id, session.projectId);
+        persistThreadMap(threadMap, projectIdMap);
+        console.log(`[notifier-discord] Created thread ${threadIdCreated} for session ${session.id}`);
+      }
+    },
+
+    async onSessionTerminated(session: Session): Promise<void> {
+      const threadIdToArchive = threadMap.get(session.id);
+      if (threadIdToArchive) {
+        await archiveThread(threadIdToArchive);
+        threadMap.delete(session.id);
+        projectIdMap.delete(session.id);
+        persistThreadMap(threadMap, projectIdMap);
+        console.log(`[notifier-discord] Archived thread ${threadIdToArchive} for session ${session.id}`);
+      }
     },
   };
 }

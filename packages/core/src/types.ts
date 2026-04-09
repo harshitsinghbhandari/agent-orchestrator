@@ -865,6 +865,12 @@ export interface Notifier {
 
   /** Post a message to a channel (for team-visible notifiers like Slack) */
   post?(message: string, context?: NotifyContext): Promise<string | null>;
+
+  /** Called when a session is spawned — for thread/conversation creation */
+  onSessionSpawned?(session: Session): Promise<void>;
+
+  /** Called when a session terminates — for cleanup and archival */
+  onSessionTerminated?(session: Session): Promise<void>;
 }
 
 export interface NotifyAction {

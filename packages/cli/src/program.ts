@@ -9,6 +9,7 @@ import { registerDashboard } from "./commands/dashboard.js";
 import { registerOpen } from "./commands/open.js";
 import { registerStart, registerStop } from "./commands/start.js";
 import { registerLifecycleWorker } from "./commands/lifecycle-worker.js";
+import { registerDiscordBot } from "./commands/discord-bot.js";
 import { registerVerify } from "./commands/verify.js";
 import { registerDoctor } from "./commands/doctor.js";
 import { registerUpdate } from "./commands/update.js";
@@ -37,6 +38,7 @@ export function createProgram(): Command {
   registerDashboard(program);
   registerOpen(program);
   registerLifecycleWorker(program);
+  registerDiscordBot(program);
   registerVerify(program);
   registerDoctor(program);
   registerUpdate(program);

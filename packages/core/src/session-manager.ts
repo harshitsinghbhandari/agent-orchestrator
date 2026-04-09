@@ -38,6 +38,7 @@ import {
   type Workspace,
   type Tracker,
   type SCM,
+  type Notifier,
   type PluginRegistry,
   type RuntimeHandle,
   type Issue,
@@ -739,6 +740,33 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     );
   }
 
+  /** Call a lifecycle hook on all configured notifiers for a project. */
+  async function callNotifierLifecycleHook(
+    project: ProjectConfig,
+    hook: "onSessionSpawned" | "onSessionTerminated",
+    session: Session,
+  ): Promise<void> {
+    // Get all notifier names from notification routing + defaults
+    const notifierNames = new Set<string>();
+    for (const names of Object.values(config.notificationRouting)) {
+      names.forEach((n) => notifierNames.add(n));
+    }
+    config.defaults.notifiers.forEach((n) => notifierNames.add(n));
+
+    // Call hook on each notifier that implements it
+    for (const name of notifierNames) {
+      const notifier = registry.get<Notifier>("notifier", name);
+      if (notifier?.[hook]) {
+        try {
+          await notifier[hook]!(session);
+        } catch (err) {
+          // Log but don't fail — notifier lifecycle hooks are best-effort
+          console.error(`[session-manager] ${hook} failed for notifier ${name}:`, err);
+        }
+      }
+    }
+  }
+
   /** Resolve which plugins to use for a project. */
   function resolvePlugins(project: ProjectConfig, agentName?: string) {
     const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
@@ -1254,6 +1282,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       updateMetadata(sessionsDir, sessionId, session.metadata);
     }
 
+    // Call onSessionSpawned lifecycle hook on all configured notifiers
+    await callNotifierLifecycleHook(project, "onSessionSpawned", session);
+
     return session;
   }
 
@@ -1509,6 +1540,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       throw err;
     }
 
+    // Call onSessionSpawned lifecycle hook on all configured notifiers
+    await callNotifierLifecycleHook(project, "onSessionSpawned", session);
+
     return session;
   }
 
@@ -1678,6 +1712,28 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         }
       }
     }
+
+    // Call onSessionTerminated lifecycle hook before archiving
+    const terminatedSession: Session = {
+      id: sessionId,
+      projectId,
+      status: "done",
+      activity: null,
+      branch: raw["branch"] ?? null,
+      issueId: raw["issue"] ?? null,
+      pr: null,
+      workspacePath: raw["worktree"] ?? null,
+      runtimeHandle: null,
+      agentInfo: null,
+      createdAt: new Date(raw["createdAt"] ?? Date.now()),
+      lastActivityAt: new Date(),
+      metadata: Object.fromEntries(
+        Object.entries(raw).filter(
+          ([k]) => !["worktree", "branch", "status", "issue", "project", "createdAt"].includes(k),
+        ),
+      ),
+    };
+    await callNotifierLifecycleHook(project, "onSessionTerminated", terminatedSession);
 
     // Archive metadata
     deleteMetadata(sessionsDir, sessionId, true);
