@@ -1233,6 +1233,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         worktree: workspacePath,
         branch,
         status: "spawning",
+        role: "worker", // Consistent with spawnOrchestrator writing role: "orchestrator"
         tmuxName, // Store tmux name for mapping
         issue: spawnConfig.issueId,
         project: spawnConfig.projectId,
@@ -2267,7 +2268,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       pr: pr.url,
       status: "pr_open",
       branch: pr.branch,
-      prAutoDetect: "",
+      prAutoDetect: "off", // Disable auto-detect since PR is explicitly claimed
     });
 
     for (const previousSessionId of takenOverFrom) {
@@ -2418,7 +2419,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         worktree: raw["worktree"] ?? "",
         branch: raw["branch"] ?? "",
         status: raw["status"] ?? "killed",
-        role: raw["role"],
+        role:
+          raw["role"] === "orchestrator"
+            ? "orchestrator"
+            : raw["role"] === "worker"
+              ? "worker"
+              : undefined,
         tmuxName: raw["tmuxName"],
         issue: raw["issue"],
         pr: raw["pr"],

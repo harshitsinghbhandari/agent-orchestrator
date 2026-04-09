@@ -86,7 +86,12 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
     createdAt: raw["createdAt"],
     runtimeHandle: raw["runtimeHandle"],
     restoredAt: raw["restoredAt"],
-    role: raw["role"],
+    role:
+      raw["role"] === "orchestrator"
+        ? "orchestrator"
+        : raw["role"] === "worker"
+          ? "worker"
+          : undefined,
     dashboardPort: raw["dashboardPort"] ? Number(raw["dashboardPort"]) : undefined,
     terminalWsPort: raw["terminalWsPort"] ? Number(raw["terminalWsPort"]) : undefined,
     directTerminalWsPort: raw["directTerminalWsPort"]

@@ -106,7 +106,7 @@ describe("claimPR", () => {
       status: "pr_open",
       pr: "https://github.com/org/my-app/pull/42",
     });
-    expect(raw!["prAutoDetect"]).toBeUndefined();
+    expect(raw!["prAutoDetect"]).toBe("off"); // PR explicitly claimed, auto-detect disabled
   });
 
   it("consolidates ownership by disabling PR auto-detect on the previous session", async () => {
