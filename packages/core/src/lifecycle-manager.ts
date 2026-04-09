@@ -1304,19 +1304,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     try {
       const sessions = await sessionManager.list(scopedProjectId);
 
-      // On first poll, pre-populate states Map to prevent false transition detection.
-      // Without this, sessions that were already dead would trigger spurious "killed"
-      // notifications because oldStatus comes from stale metadata while newStatus
-      // reflects the current (dead) runtime state. By pre-populating before checkSession()
-      // runs, the `tracked` lookup succeeds and oldStatus equals the current status,
-      // preventing false transitions.
-      if (firstPoll) {
-        for (const session of sessions) {
-          states.set(session.id, session.status);
-        }
-        firstPoll = false;
-      }
-
       // Include sessions that are active OR whose status changed from what we last saw
       // (e.g., list() detected a dead runtime and marked it "killed" — we need to
       // process that transition even though the new status is terminal)
@@ -1329,6 +1316,42 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       // Populate PR enrichment cache using batch GraphQL queries
       // This reduces API calls from N×3 to 1 per poll cycle
       await populatePREnrichmentCache(sessionsToCheck);
+
+      // On first poll, pre-populate states Map to prevent false TERMINAL state transitions.
+      // Issue #41: when list() returns stale non-terminal status but runtime is dead,
+      // determineStatus() returns "killed", causing a false "working → killed" notification.
+      //
+      // Fix: Only pre-populate sessions where computed status is TERMINAL but list() status
+      // is NON-TERMINAL. This prevents false terminal notifications while still allowing
+      // legitimate non-terminal transitions (e.g., pr_open → ci_failed) to be detected.
+      //
+      // This runs AFTER batch enrichment cache is populated so determineStatus() can
+      // use cached PR data and avoid redundant API calls.
+      if (firstPoll) {
+        // Pre-populate terminal sessions with their list() status (they won't be polled)
+        for (const session of sessions) {
+          if (TERMINAL_STATUSES.has(session.status)) {
+            states.set(session.id, session.status);
+          }
+        }
+        // For non-terminal sessions, check if computed status is terminal (dead runtime)
+        // Only pre-populate those to prevent false terminal notifications
+        const computedStatuses = await Promise.all(
+          sessionsToCheck.map(async (session) => ({
+            id: session.id,
+            listStatus: session.status,
+            computedStatus: await determineStatus(session),
+          })),
+        );
+        for (const { id, listStatus, computedStatus } of computedStatuses) {
+          // Only pre-populate if transitioning TO a terminal state from non-terminal
+          // This prevents false "working → killed" notifications on startup
+          if (!TERMINAL_STATUSES.has(listStatus) && TERMINAL_STATUSES.has(computedStatus)) {
+            states.set(id, computedStatus);
+          }
+        }
+        firstPoll = false;
+      }
 
       // Poll all sessions concurrently
       await Promise.allSettled(sessionsToCheck.map((s) => checkSession(s)));
