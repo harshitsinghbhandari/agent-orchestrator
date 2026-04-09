@@ -1303,17 +1303,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     try {
       const sessions = await sessionManager.list(scopedProjectId);
 
-      // Pre-populate states map on first poll to establish baseline for each session.
-      // This prevents false "session killed" notifications for sessions that were
-      // already dead before the lifecycle manager started. Using session.status
-      // (which list() computes from current runtime state) rather than stale metadata
-      // ensures we don't detect false transitions on startup.
-      for (const s of sessions) {
-        if (!states.has(s.id)) {
-          states.set(s.id, s.status);
-        }
-      }
-
       // Include sessions that are active OR whose status changed from what we last saw
       // (e.g., list() detected a dead runtime and marked it "killed" — we need to
       // process that transition even though the new status is terminal)
