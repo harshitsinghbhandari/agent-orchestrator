@@ -44,6 +44,7 @@ import {
   type Issue,
   type CostEstimate,
   PR_STATE,
+  TERMINAL_STATUSES,
 } from "./types.js";
 import {
   readMetadataRaw,
@@ -871,15 +872,13 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
    * Enrich session with live runtime state (alive/exited) and activity detection.
    * Mutates the session object in place.
    */
-  const TERMINAL_SESSION_STATUSES = new Set(["killed", "done", "merged", "terminated", "cleanup"]);
-
   async function enrichSessionWithRuntimeState(
     session: Session,
     plugins: ReturnType<typeof resolvePlugins>,
     handleFromMetadata: boolean,
   ): Promise<void> {
     // Skip all subprocess/IO work for sessions already known to be terminal.
-    if (TERMINAL_SESSION_STATUSES.has(session.status)) {
+    if (TERMINAL_STATUSES.has(session.status)) {
       session.activity = "exited";
       return;
     }
