@@ -1420,7 +1420,7 @@ export interface SessionMetadata {
   createdAt?: string;
   runtimeHandle?: string;
   restoredAt?: string;
-  role?: string; // "orchestrator" for orchestrator sessions
+  role?: "orchestrator" | "worker"; // Session role: "orchestrator" or "worker"
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;

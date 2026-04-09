@@ -2265,7 +2265,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       pr: pr.url,
       status: "pr_open",
       branch: pr.branch,
-      prAutoDetect: "",
+      prAutoDetect: "off", // Disable auto-detect since PR is explicitly claimed
     });
 
     for (const previousSessionId of takenOverFrom) {
