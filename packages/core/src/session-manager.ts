@@ -851,20 +851,49 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const tmuxNameFromMetadata = session.metadata["tmuxName"]?.trim();
     const hasTmuxNameFromMetadata =
       typeof tmuxNameFromMetadata === "string" && tmuxNameFromMetadata.length > 0;
-    const handleFromMetadata = session.runtimeHandle !== null || hasTmuxNameFromMetadata;
-    if (!handleFromMetadata) {
+
+    // Determine if we have a reliable handle for isAlive() checks.
+    // The tmuxName field (when present) is the authoritative tmux session name.
+    // The runtimeHandle.id should match it; if not, correct it.
+    //
+    // Cases:
+    // 1. tmuxName exists, runtimeHandle.id mismatches → correct handle with tmuxName
+    // 2. tmuxName exists, runtimeHandle matches → trust it
+    // 3. tmuxName missing, runtimeHandle exists → trust it (backward compatible)
+    // 4. Neither exists → fabricate with sessionName, skip isAlive (external session)
+    const hasRuntimeHandle = session.runtimeHandle !== null;
+    let handleFromMetadata: boolean;
+
+    if (!hasRuntimeHandle && !hasTmuxNameFromMetadata) {
+      // External session: no metadata at all - fabricate with user-facing sessionName
       session.runtimeHandle = {
         id: sessionName,
         runtimeName: project.runtime ?? config.defaults.runtime,
         data: {},
       };
-    } else if (!session.runtimeHandle && hasTmuxNameFromMetadata) {
+      handleFromMetadata = false;
+    } else if (!hasRuntimeHandle && hasTmuxNameFromMetadata) {
+      // runtimeHandle JSON corrupt/missing but tmuxName exists - reconstruct from tmuxName
       session.runtimeHandle = {
         id: tmuxNameFromMetadata,
         runtimeName: project.runtime ?? config.defaults.runtime,
         data: {},
       };
+      handleFromMetadata = true;
+    } else if (hasRuntimeHandle && hasTmuxNameFromMetadata) {
+      // Both exist - ensure runtimeHandle.id matches tmuxName (fix old/corrupt handles)
+      if (session.runtimeHandle!.id !== tmuxNameFromMetadata) {
+        session.runtimeHandle = {
+          ...session.runtimeHandle!,
+          id: tmuxNameFromMetadata,
+        };
+      }
+      handleFromMetadata = true;
+    } else {
+      // runtimeHandle exists but no tmuxName - trust existing handle (backward compatible)
+      handleFromMetadata = true;
     }
+
     await enrichSessionWithRuntimeState(session, plugins, handleFromMetadata);
   }
 
@@ -2351,9 +2380,20 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     //    metadataToSession sets activity: null, so without enrichment a crashed
     //    session (status "working", agent exited) would not be detected as terminal
     //    and isRestorable would reject it.
+    //    Use ensureHandleAndEnrich to properly reconstruct handles from tmuxName.
     const session = metadataToSession(sessionId, raw, projectId);
     const plugins = resolvePlugins(project, selection.agentName);
-    await enrichSessionWithRuntimeState(session, plugins, true);
+    const sessionListPromise =
+      selectedAgent === "opencode" ? fetchOpenCodeSessionList() : undefined;
+    await ensureHandleAndEnrich(
+      session,
+      sessionId,
+      sessionsDir,
+      project,
+      selectedAgent,
+      plugins,
+      sessionListPromise,
+    );
 
     // 3. Validate restorability
     if (!isRestorable(session)) {

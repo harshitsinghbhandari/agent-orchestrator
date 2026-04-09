@@ -288,6 +288,51 @@ describe("list", () => {
     expect(agentWithSpy.getActivityState).not.toHaveBeenCalled();
   });
 
+  it("corrects runtimeHandle.id when it mismatches tmuxName", async () => {
+    // Bug fix: When runtimeHandle.id doesn't match tmuxName, the handle should be
+    // corrected to use tmuxName. This prevents false isAlive() failures when old
+    // metadata stored the wrong id (e.g., "app-1" instead of "hash-app-1").
+    const correctTmuxName = "hash-app-1";
+    const wrongHandleId = "app-1"; // Old/wrong id stored in runtimeHandle
+    const deadRuntimeForWrongId: Runtime = {
+      ...mockRuntime,
+      isAlive: vi.fn().mockImplementation(async (handle: RuntimeHandle) => {
+        // Only alive if checked with the correct tmuxName
+        return handle.id === correctTmuxName;
+      }),
+    };
+    const registryWithCorrectingRuntime: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return deadRuntimeForWrongId;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    // Store runtimeHandle with WRONG id, but correct tmuxName
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "a",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle(wrongHandleId)),
+      tmuxName: correctTmuxName,
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithCorrectingRuntime });
+    const sessions = await sm.list("my-app");
+
+    expect(sessions).toHaveLength(1);
+    // The handle should have been corrected to use tmuxName
+    expect(sessions[0].runtimeHandle?.id).toBe(correctTmuxName);
+    // isAlive should have been called with the corrected handle, returning true
+    expect(deadRuntimeForWrongId.isAlive).toHaveBeenCalled();
+    // Session should be alive (not killed) because the correct id was used
+    expect(sessions[0].status).toBe("working");
+  });
+
   it("keeps existing activity when getActivityState throws", async () => {
     const agentWithError: Agent = {
       ...mockAgent,
