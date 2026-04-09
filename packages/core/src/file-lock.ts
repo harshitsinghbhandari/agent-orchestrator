@@ -8,7 +8,7 @@
 import {
   openSync,
   closeSync,
-  writeFileSync,
+  writeSync,
   readFileSync,
   unlinkSync,
   existsSync,
@@ -56,7 +56,30 @@ function parseLockContent(content: string): { pid: number; timestamp: number } |
 }
 
 /**
- * Check if a lock file is stale (older than expiration threshold).
+ * Check if a process is still alive.
+ * Uses signal 0 which doesn't actually send a signal but checks if the process exists.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    // Signal 0 checks if process exists without sending an actual signal
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // ESRCH = process not found (dead)
+    // EPERM = process exists but we don't have permission (still alive)
+    return code === "EPERM";
+  }
+}
+
+/**
+ * Check if a lock file is stale.
+ * A lock is considered stale if:
+ * 1. Content is invalid/unparseable, OR
+ * 2. Lock is older than expiration threshold AND owning process is dead
+ *
+ * This prevents prematurely stealing locks from long-running operations
+ * while still allowing recovery from crashed processes.
  */
 function isLockStale(lockPath: string, expirationMs: number): boolean {
   try {
@@ -66,8 +89,16 @@ function isLockStale(lockPath: string, expirationMs: number): boolean {
       // Invalid content - treat as stale
       return true;
     }
+
     const age = Date.now() - parsed.timestamp;
-    return age > expirationMs;
+    if (age <= expirationMs) {
+      // Lock is fresh - not stale regardless of process state
+      return false;
+    }
+
+    // Lock is old - only consider stale if owning process is dead
+    // This prevents stealing locks from long-running critical sections
+    return !isProcessAlive(parsed.pid);
   } catch {
     // Can't read file - treat as not stale (may have been released)
     return false;
@@ -90,16 +121,32 @@ function isOwnedByUs(lockPath: string): boolean {
 /**
  * Try to acquire the lock file atomically using O_EXCL.
  * Returns true if lock was acquired, false otherwise.
+ *
+ * IMPORTANT: We write directly to the fd returned by openSync to ensure
+ * the lock content is written atomically with the file creation. Using
+ * writeFileSync(lockPath, ...) would re-open the file by path, leaving a
+ * window where the lock file exists but is empty.
  */
 function tryAcquireLock(lockPath: string): boolean {
+  let fd: number | undefined;
   try {
     // O_EXCL fails if file exists - atomic create
-    const fd = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+    fd = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
     const content = formatLockContent();
-    writeFileSync(lockPath, content, "utf-8");
+    // Write directly to the fd to ensure atomicity - no window with empty file
+    writeSync(fd, content, 0, "utf-8");
     closeSync(fd);
+    fd = undefined; // Mark as closed
     return true;
   } catch (err) {
+    // Clean up fd if open but write failed
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EEXIST") {
       return false;

@@ -103,12 +103,17 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
   };
 }
 
-/** Threshold for considering an empty file orphaned (60 seconds) */
-const ORPHANED_FILE_THRESHOLD_MS = 60_000;
-
 /**
  * Read raw metadata as a string record (for arbitrary keys).
- * Returns null if file doesn't exist, is empty, or is an orphaned empty file.
+ * Returns null if file doesn't exist or is empty/whitespace-only.
+ *
+ * Empty files may result from:
+ * - Orphaned reservations (process crashed between reserveSessionId and writeMetadata)
+ * - Corrupted writes
+ *
+ * Callers should use reserveSessionIdWithData() instead of reserveSessionId()
+ * to prevent orphaned empty files. Cleanup of existing empty files should be
+ * handled by a separate garbage collection process.
  */
 export function readMetadataRaw(
   dataDir: string,
@@ -119,22 +124,9 @@ export function readMetadataRaw(
 
   const content = readFileSync(path, "utf-8");
 
-  // Handle empty files (orphaned from failed reservations)
+  // Treat empty/whitespace-only files as non-existent
+  // This handles orphaned reservations from crashed processes
   if (content.trim() === "") {
-    try {
-      const stats = statSync(path);
-      const ageMs = Date.now() - stats.mtimeMs;
-      if (ageMs > ORPHANED_FILE_THRESHOLD_MS) {
-        // Orphaned empty file - treat as non-existent
-        // Note: We don't delete it here to avoid race conditions;
-        // cleanup should be done separately
-        return null;
-      }
-    } catch {
-      // Can't stat file - treat as non-existent
-      return null;
-    }
-    // Recently created empty file - likely still being written
     return null;
   }
 
