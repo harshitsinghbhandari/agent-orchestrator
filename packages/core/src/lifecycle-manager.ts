@@ -103,8 +103,24 @@ function createEvent(
   };
 }
 
-/** Determine which event type corresponds to a status transition. */
-function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus): EventType | null {
+/**
+ * Determine which event type corresponds to a status transition.
+ *
+ * Most events are based on the target status (`to`), but some transitions
+ * are identified by the source status (`from`):
+ * - `spawning → *` emits `session.spawned` (session just became active)
+ *
+ * Note: `determineStatus()` never returns "spawning" or "idle" directly,
+ * so those target-based mappings are included for completeness if external
+ * code sets these statuses explicitly.
+ */
+function statusToEventType(from: SessionStatus | undefined, to: SessionStatus): EventType | null {
+  // Emit session.spawned when transitioning OUT of spawning state
+  // (determineStatus() converts spawning → working, so we detect via `from`)
+  if (from === "spawning" && to !== "spawning") {
+    return "session.spawned";
+  }
+
   switch (to) {
     case "working":
       return "session.working";
@@ -122,6 +138,12 @@ function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus):
       return "merge.ready";
     case "merged":
       return "merge.completed";
+    case "cleanup":
+    case "done":
+    case "terminated":
+      return "session.exited";
+    case "idle":
+      return "session.idle";
     case "needs_input":
       return "session.needs_input";
     case "stuck":
