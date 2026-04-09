@@ -87,9 +87,23 @@ describe("start / stop", () => {
 });
 
 describe("check (single session)", () => {
-  it("detects transition from spawning to working", async () => {
+  it("detects transition from spawning to working and emits session.spawned", async () => {
+    const notifier = createMockNotifier();
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    config.notificationRouting.info = ["desktop"];
+
     const lm = setupCheck("app-1", {
       session: makeSession({ status: "spawning" }),
+      registry,
     });
 
     await lm.check("app-1");
@@ -97,6 +111,10 @@ describe("check (single session)", () => {
     expect(lm.getStates().get("app-1")).toBe("working");
     const meta = readMetadataRaw(env.sessionsDir, "app-1");
     expect(meta!["status"]).toBe("working");
+    // Verify session.spawned event is emitted when transitioning FROM spawning
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session.spawned" }),
+    );
   });
 
   it("uses worker-specific agent fallback when metadata does not persist an agent", async () => {
@@ -1330,7 +1348,12 @@ describe("reactions", () => {
     );
   });
 
-  it("emits session.exited event when session transitions to done status", async () => {
+  // Table-driven tests for terminal status transitions that emit session.exited
+  it.each([
+    { status: "done" as SessionStatus, description: "done" },
+    { status: "terminated" as SessionStatus, description: "terminated" },
+    { status: "cleanup" as SessionStatus, description: "cleanup" },
+  ])("emits session.exited event when session transitions to $description status", async ({ status }) => {
     const notifier = createMockNotifier();
     const registry: PluginRegistry = {
       ...mockRegistry,
@@ -1344,9 +1367,9 @@ describe("reactions", () => {
 
     config.notificationRouting.info = ["desktop"];
 
-    // Session has status "done" but metadata has "working" to trigger a transition
+    // Session has terminal status but metadata has "working" to trigger a transition
     vi.mocked(mockSessionManager.get).mockResolvedValue(
-      makeSession({ status: "done" as SessionStatus, metadata: { status: "working" } }),
+      makeSession({ status, metadata: { status: "working" } }),
     );
 
     writeMetadata(env.sessionsDir, "app-1", {
@@ -1364,87 +1387,7 @@ describe("reactions", () => {
 
     await lm.check("app-1");
 
-    expect(lm.getStates().get("app-1")).toBe("done");
-    expect(notifier.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "session.exited" }),
-    );
-  });
-
-  it("emits session.exited event when session transitions to terminated status", async () => {
-    const notifier = createMockNotifier();
-    const registry: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string, name: string) => {
-        if (slot === "runtime") return plugins.runtime;
-        if (slot === "agent") return plugins.agent;
-        if (slot === "notifier" && name === "desktop") return notifier;
-        return null;
-      }),
-    };
-
-    config.notificationRouting.info = ["desktop"];
-
-    // Session has status "terminated" but metadata has "working" to trigger a transition
-    vi.mocked(mockSessionManager.get).mockResolvedValue(
-      makeSession({ status: "terminated" as SessionStatus, metadata: { status: "working" } }),
-    );
-
-    writeMetadata(env.sessionsDir, "app-1", {
-      worktree: "/tmp",
-      branch: "main",
-      status: "working",
-      project: "my-app",
-    });
-
-    const lm = createLifecycleManager({
-      config,
-      registry,
-      sessionManager: mockSessionManager,
-    });
-
-    await lm.check("app-1");
-
-    expect(lm.getStates().get("app-1")).toBe("terminated");
-    expect(notifier.notify).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "session.exited" }),
-    );
-  });
-
-  it("emits session.exited event when session transitions to cleanup status", async () => {
-    const notifier = createMockNotifier();
-    const registry: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string, name: string) => {
-        if (slot === "runtime") return plugins.runtime;
-        if (slot === "agent") return plugins.agent;
-        if (slot === "notifier" && name === "desktop") return notifier;
-        return null;
-      }),
-    };
-
-    config.notificationRouting.info = ["desktop"];
-
-    // Session has status "cleanup" but metadata has "working" to trigger a transition
-    vi.mocked(mockSessionManager.get).mockResolvedValue(
-      makeSession({ status: "cleanup" as SessionStatus, metadata: { status: "working" } }),
-    );
-
-    writeMetadata(env.sessionsDir, "app-1", {
-      worktree: "/tmp",
-      branch: "main",
-      status: "working",
-      project: "my-app",
-    });
-
-    const lm = createLifecycleManager({
-      config,
-      registry,
-      sessionManager: mockSessionManager,
-    });
-
-    await lm.check("app-1");
-
-    expect(lm.getStates().get("app-1")).toBe("cleanup");
+    expect(lm.getStates().get("app-1")).toBe(status);
     expect(notifier.notify).toHaveBeenCalledWith(
       expect.objectContaining({ type: "session.exited" }),
     );
