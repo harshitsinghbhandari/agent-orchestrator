@@ -1233,6 +1233,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         worktree: workspacePath,
         branch,
         status: "spawning",
+        role: "worker", // Consistent with spawnOrchestrator writing role: "orchestrator"
         tmuxName, // Store tmux name for mapping
         issue: spawnConfig.issueId,
         project: spawnConfig.projectId,
@@ -2415,7 +2416,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         worktree: raw["worktree"] ?? "",
         branch: raw["branch"] ?? "",
         status: raw["status"] ?? "killed",
-        role: raw["role"],
+        role:
+          raw["role"] === "orchestrator"
+            ? "orchestrator"
+            : raw["role"] === "worker"
+              ? "worker"
+              : undefined,
         tmuxName: raw["tmuxName"],
         issue: raw["issue"],
         pr: raw["pr"],
