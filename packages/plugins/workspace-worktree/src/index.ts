@@ -116,7 +116,10 @@ export function create(config?: Record<string, unknown>): Workspace {
         }
       }
 
-      const baseRef = await resolveBaseRef(repoPath, cfg.project.defaultBranch, { hasOrigin });
+      const baseRef = await resolveBaseRef(repoPath, cfg.project.defaultBranch, {
+        branch: cfg.baseBranch,
+        hasOrigin,
+      });
 
       // Create worktree with a new branch
       try {

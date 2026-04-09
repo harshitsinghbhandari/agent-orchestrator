@@ -1194,6 +1194,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           project,
           sessionId,
           branch,
+          baseBranch: spawnConfig.baseBranch,
         });
         workspacePath = wsInfo.path;
 
