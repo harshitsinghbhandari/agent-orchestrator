@@ -1535,7 +1535,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       createdAt: new Date(),
       lastActivityAt: new Date(),
       metadata: {
-        ...(reusableOpenCodeSessionId ? { opencodeSessionId: reusableOpenCodeSessionId } : {}),
+        ...(reusableOpenCodeSessionId
+          ? { opencodeSessionId: reusableOpenCodeSessionId, orchestratorSessionReused: "true" }
+          : {}),
       },
     };
 
@@ -1568,6 +1570,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         );
         if (discovered) {
           session.metadata["opencodeSessionId"] = discovered;
+          session.metadata["orchestratorSessionReused"] = "true";
         }
       }
 

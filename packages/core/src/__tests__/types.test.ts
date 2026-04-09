@@ -59,6 +59,21 @@ describe("isOrchestratorSession", () => {
       isOrchestratorSession({ id: "app-worker-1", metadata: {} }, "app", allPrefixes),
     ).toBe(false);
   });
+
+  it("detects numbered orchestrators without sessionPrefix", () => {
+    // When sessionPrefix is unavailable (e.g., during lifecycle checks), the function
+    // should still detect IDs ending with "-orchestrator-N" pattern
+    expect(isOrchestratorSession({ id: "app-orchestrator-1", metadata: {} })).toBe(true);
+    expect(isOrchestratorSession({ id: "myproject-orchestrator-42", metadata: {} })).toBe(true);
+    // Should not match regular numbered workers
+    expect(isOrchestratorSession({ id: "app-7", metadata: {} })).toBe(false);
+    expect(isOrchestratorSession({ id: "app-worker-1", metadata: {} })).toBe(false);
+    // Should still detect role metadata and legacy suffix without prefix
+    expect(
+      isOrchestratorSession({ id: "app-control", metadata: { role: "orchestrator" } }),
+    ).toBe(true);
+    expect(isOrchestratorSession({ id: "app-orchestrator", metadata: {} })).toBe(true);
+  });
 });
 
 describe("isIssueNotFoundError", () => {

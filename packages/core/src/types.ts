@@ -197,8 +197,12 @@ export function isOrchestratorSession(
   if (session.metadata?.["role"] === "orchestrator" || session.id.endsWith("-orchestrator")) {
     return true;
   }
+  // When no prefix is provided, check for generic orchestrator patterns.
+  // This catches numbered orchestrator IDs like "app-orchestrator-1" when the
+  // prefix is unavailable (e.g., during lifecycle checks on individual sessions).
   if (!sessionPrefix) {
-    return false;
+    // Match any ID ending with "-orchestrator-N" pattern
+    return /-orchestrator-\d+$/.test(session.id);
   }
   const escaped = sessionPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (!new RegExp(`^${escaped}-orchestrator-\\d+$`).test(session.id)) {
