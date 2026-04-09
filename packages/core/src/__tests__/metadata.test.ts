@@ -11,6 +11,7 @@ import {
   updateMetadata,
   deleteMetadata,
   listMetadata,
+  reserveSessionIdWithData,
 } from "../metadata.js";
 
 let dataDir: string;
@@ -472,5 +473,107 @@ describe("listMetadata", () => {
     const list = listMetadata(emptyDir);
     expect(list).toEqual([]);
     // no cleanup needed since dir was never created
+  });
+});
+
+describe("reserveSessionIdWithData", () => {
+  it("creates metadata file with initial data atomically", () => {
+    const initialData = {
+      status: "reserving",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      role: "orchestrator",
+    };
+
+    const result = reserveSessionIdWithData(dataDir, "orch-1", initialData);
+
+    expect(result).toBe(true);
+    expect(existsSync(join(dataDir, "orch-1"))).toBe(true);
+
+    const raw = readMetadataRaw(dataDir, "orch-1");
+    expect(raw).not.toBeNull();
+    expect(raw!["status"]).toBe("reserving");
+    expect(raw!["createdAt"]).toBe("2025-01-01T00:00:00.000Z");
+    expect(raw!["role"]).toBe("orchestrator");
+  });
+
+  it("returns false if session ID already exists", () => {
+    // Create the session first
+    reserveSessionIdWithData(dataDir, "orch-2", { status: "first" });
+
+    // Try to reserve again
+    const result = reserveSessionIdWithData(dataDir, "orch-2", { status: "second" });
+
+    expect(result).toBe(false);
+
+    // Original data should be preserved
+    const raw = readMetadataRaw(dataDir, "orch-2");
+    expect(raw!["status"]).toBe("first");
+  });
+
+  it("prevents concurrent reservation", () => {
+    // This test verifies that two rapid calls don't both succeed
+    const results = [
+      reserveSessionIdWithData(dataDir, "orch-3", { status: "a" }),
+      reserveSessionIdWithData(dataDir, "orch-3", { status: "b" }),
+    ];
+
+    // Exactly one should succeed
+    expect(results.filter(Boolean).length).toBe(1);
+  });
+
+  it("leaves no temp files behind", () => {
+    reserveSessionIdWithData(dataDir, "orch-4", { status: "test" });
+
+    const files = readdirSync(dataDir);
+    const tmpFiles = files.filter((f) => f.includes(".tmp."));
+    expect(tmpFiles).toHaveLength(0);
+  });
+
+  it("creates parent directory if it does not exist", () => {
+    const nestedDir = join(dataDir, "nested", "sessions");
+
+    const result = reserveSessionIdWithData(nestedDir, "orch-5", { status: "test" });
+
+    expect(result).toBe(true);
+    expect(existsSync(join(nestedDir, "orch-5"))).toBe(true);
+  });
+});
+
+describe("readMetadataRaw with empty files", () => {
+  it("returns null for empty file (orphaned reservation)", () => {
+    // Create an empty file to simulate orphaned reservation
+    writeFileSync(join(dataDir, "orphan-1"), "", "utf-8");
+
+    const raw = readMetadataRaw(dataDir, "orphan-1");
+    expect(raw).toBeNull();
+  });
+
+  it("returns null for whitespace-only file", () => {
+    writeFileSync(join(dataDir, "orphan-2"), "  \n\t  \n", "utf-8");
+
+    const raw = readMetadataRaw(dataDir, "orphan-2");
+    expect(raw).toBeNull();
+  });
+
+  it("returns data for non-empty file", () => {
+    writeFileSync(join(dataDir, "valid-1"), "status=working\n", "utf-8");
+
+    const raw = readMetadataRaw(dataDir, "valid-1");
+    expect(raw).not.toBeNull();
+    expect(raw!["status"]).toBe("working");
+  });
+
+  it("handles the transition from empty to populated gracefully", () => {
+    // First write an empty file
+    writeFileSync(join(dataDir, "transition-1"), "", "utf-8");
+    expect(readMetadataRaw(dataDir, "transition-1")).toBeNull();
+
+    // Then update it with real data
+    updateMetadata(dataDir, "transition-1", { status: "working" });
+
+    // Now it should be readable
+    const raw = readMetadataRaw(dataDir, "transition-1");
+    expect(raw).not.toBeNull();
+    expect(raw!["status"]).toBe("working");
   });
 });

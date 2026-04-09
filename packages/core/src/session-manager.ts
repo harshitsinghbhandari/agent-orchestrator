@@ -55,7 +55,9 @@ import {
   deleteMetadata,
   listMetadata,
   reserveSessionId,
+  reserveSessionIdWithData,
 } from "./metadata.js";
+import { withFileLock } from "./file-lock.js";
 import { buildPromptWithMetadata, truncatePrompt } from "./prompt-builder.js";
 import {
   getSessionsDir,
@@ -435,10 +437,43 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return repaired;
   }
 
+  /**
+   * Generate a deterministic hash for a session name.
+   * Used for stable sorting when timestamps are unavailable.
+   */
+  function hashSessionName(name: string): number {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = ((hash << 5) - hash) + name.charCodeAt(i);
+      hash |= 0; // Convert to 32-bit integer
+    }
+    return Math.abs(hash);
+  }
+
+  /**
+   * Get a timestamp for sorting sessions, with deterministic fallback.
+   *
+   * Priority:
+   * 1. File modification time (most accurate for activity)
+   * 2. restoredAt metadata field
+   * 3. createdAt metadata field
+   * 4. Deterministic hash (negative to sort unknown timestamps last)
+   */
   function sessionMetadataTimestamp(record: ActiveSessionRecord): number {
-    const metadataTimestamp = Date.parse(record.raw["restoredAt"] ?? record.raw["createdAt"] ?? "");
+    // Prefer file mtime as it reflects actual activity
     if (record.modifiedAt) return record.modifiedAt.getTime();
-    return Number.isNaN(metadataTimestamp) ? 0 : metadataTimestamp;
+
+    // Try restoredAt first (more recent than createdAt for restored sessions)
+    const restoredAt = Date.parse(record.raw["restoredAt"] ?? "");
+    if (!Number.isNaN(restoredAt)) return restoredAt;
+
+    // Fall back to createdAt
+    const createdAt = Date.parse(record.raw["createdAt"] ?? "");
+    if (!Number.isNaN(createdAt)) return createdAt;
+
+    // Deterministic fallback: negative hash sorts unknown timestamps last
+    // but maintains stable ordering across runs
+    return -hashSessionName(record.sessionName);
   }
 
   function repairSessionMetadataOnRead(
@@ -640,6 +675,45 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     }
   }
 
+  /**
+   * List remote branch numbers for orchestrator sessions.
+   * Checks for branches matching orchestrator/{prefix}-orchestrator-N pattern.
+   */
+  async function listRemoteOrchestratorNumbers(
+    project: ProjectConfig,
+    orchestratorPrefix: string,
+  ): Promise<number[]> {
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["ls-remote", "--heads", "origin", `orchestrator/${orchestratorPrefix}-*`],
+        {
+          cwd: project.path,
+          timeout: 5_000,
+        },
+      );
+
+      return stdout
+        .split("\n")
+        .flatMap((line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed) return [];
+
+          const ref = trimmed.split(/\s+/)[1] ?? "";
+          const match = ref.match(
+            new RegExp(`refs/heads/orchestrator/${escapeRegex(orchestratorPrefix)}-(\\d+)$`),
+          );
+          if (!match) return [];
+
+          const parsed = Number.parseInt(match[1], 10);
+          return Number.isNaN(parsed) ? [] : [parsed];
+        })
+        .filter((num: number, index: number, values: number[]) => values.indexOf(num) === index);
+    } catch {
+      return [];
+    }
+  }
+
   async function reserveNextSessionIdentity(
     project: ProjectConfig,
     sessionsDir: string,
@@ -685,12 +759,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
   /**
    * Reserve a unique orchestrator identity ({prefix}-orchestrator-N) for a worktree-based orchestrator.
-   * Unlike worker sessions, orchestrator IDs are assigned locally without remote branch checks.
+   * Now async to support remote branch checking for collision avoidance.
    */
-  function reserveNextOrchestratorIdentity(
+  async function reserveNextOrchestratorIdentity(
     project: ProjectConfig,
     sessionsDir: string,
-  ): { num: number; sessionId: string; tmuxName: string | undefined } {
+  ): Promise<{ num: number; sessionId: string; tmuxName: string | undefined }> {
     const orchestratorPrefix = `${project.sessionPrefix}-orchestrator`;
     const usedNumbers = new Set<number>();
 
@@ -704,6 +778,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         const parsed = Number.parseInt(match[1], 10);
         if (!Number.isNaN(parsed)) usedNumbers.add(parsed);
       }
+    }
+
+    // Check remote branches for existing orchestrator worktrees
+    // This prevents collision when multiple instances spawn orchestrators concurrently
+    for (const num of await listRemoteOrchestratorNumbers(project, orchestratorPrefix)) {
+      usedNumbers.add(num);
     }
 
     // Build worker-ID patterns for all other projects. If another project has
@@ -731,7 +811,15 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         const tmuxName = config.configPath
           ? generateTmuxName(config.configPath, orchestratorPrefix, num)
           : undefined;
-        if (reserveSessionId(sessionsDir, sessionId)) {
+
+        // Use reserveSessionIdWithData to atomically create metadata with initial data,
+        // avoiding orphaned empty files if the process crashes between reservation and write
+        const initialData = {
+          status: "reserving",
+          createdAt: new Date().toISOString(),
+          role: "orchestrator",
+        };
+        if (reserveSessionIdWithData(sessionsDir, sessionId, initialData)) {
           return { num, sessionId, tmuxName };
         }
       }
@@ -1368,7 +1456,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     // Reserve a new unique orchestrator identity (e.g. {prefix}-orchestrator-1, -2, …).
     // Each spawnOrchestrator call gets its own numbered session and isolated worktree.
-    const identity = reserveNextOrchestratorIdentity(project, sessionsDir);
+    const identity = await reserveNextOrchestratorIdentity(project, sessionsDir);
     const sessionId = identity.sessionId;
     const tmuxName = identity.tmuxName;
 
@@ -2216,6 +2304,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const reference = prRef.trim();
     if (!reference) throw new Error("PR reference is required");
 
+    // Validation (no lock needed for these read-only checks)
     const { raw, sessionsDir, project, projectId } = requireSessionRecord(sessionId);
     if (isOrchestratorSessionRecord(sessionId, raw, project.sessionPrefix)) {
       throw new Error(`Session ${sessionId} is an orchestrator session and cannot claim PRs`);
@@ -2232,80 +2321,95 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       );
     }
 
+    // Save checkoutPR to preserve type narrowing inside the lock callback
+    const checkoutPR = scm.checkoutPR;
+
+    // Resolve PR and validate state (outside lock - these are remote API calls)
     const pr = await scm.resolvePR(reference, project);
     const prState = await scm.getPRState(pr);
     if (prState !== PR_STATE.OPEN) {
       throw new Error(`Cannot claim PR #${pr.number} because it is ${prState}`);
     }
 
-    const conflictingSessions = new Set<SessionId>();
-    const activeRecords = loadActiveSessionRecords(project).filter(
-      (record) => record.sessionName !== sessionId,
-    );
-
-    for (const { sessionName, raw: otherRaw } of activeRecords) {
-      if (!otherRaw || isOrchestratorSessionRecord(sessionName, otherRaw, project.sessionPrefix)) continue;
-
-      const samePr = otherRaw["pr"] === pr.url;
-      const sameBranch =
-        otherRaw["branch"] === pr.branch && (otherRaw["prAutoDetect"] ?? "on") !== "off";
-
-      if (samePr || sameBranch) {
-        conflictingSessions.add(sessionName);
-      }
-    }
-
-    const takenOverFrom = [...conflictingSessions];
-
     const workspacePath = raw["worktree"];
     if (!workspacePath) {
       throw new Error(`Session ${sessionId} has no workspace to check out PR #${pr.number}`);
     }
 
-    const branchChanged = await scm.checkoutPR(pr, workspacePath);
+    // Lock file per PR number to prevent concurrent claims of the same PR
+    const lockPath = join(sessionsDir, `.claim-pr-${pr.number}.lock`);
 
-    updateMetadata(sessionsDir, sessionId, {
-      pr: pr.url,
-      status: "pr_open",
-      branch: pr.branch,
-      prAutoDetect: "off", // Disable auto-detect since PR is explicitly claimed
-    });
+    return withFileLock(lockPath, async () => {
+      // Re-read active records under lock to get fresh state
+      const activeRecords = loadActiveSessionRecords(project).filter(
+        (record) => record.sessionName !== sessionId,
+      );
 
-    for (const previousSessionId of takenOverFrom) {
-      const previousRaw = readMetadataRaw(sessionsDir, previousSessionId);
-      if (!previousRaw) continue;
+      // Detect conflicting sessions
+      const conflictingSessions = new Set<SessionId>();
+      for (const { sessionName, raw: otherRaw } of activeRecords) {
+        if (!otherRaw || isOrchestratorSessionRecord(sessionName, otherRaw, project.sessionPrefix)) continue;
 
-      updateMetadata(sessionsDir, previousSessionId, {
-        pr: "",
-        prAutoDetect: "off",
-        ...(PR_TRACKING_STATUSES.has(previousRaw["status"] ?? "") ? { status: "working" } : {}),
-      });
-    }
+        const samePr = otherRaw["pr"] === pr.url;
+        const sameBranch =
+          otherRaw["branch"] === pr.branch && (otherRaw["prAutoDetect"] ?? "on") !== "off";
 
-    let githubAssigned = false;
-    let githubAssignmentError: string | undefined;
-    if (options?.assignOnGithub) {
-      if (!scm.assignPRToCurrentUser) {
-        githubAssignmentError = `SCM plugin "${scm.name}" does not support assigning PRs`;
-      } else {
-        try {
-          await scm.assignPRToCurrentUser(pr);
-          githubAssigned = true;
-        } catch (err) {
-          githubAssignmentError = err instanceof Error ? err.message : String(err);
+        if (samePr || sameBranch) {
+          conflictingSessions.add(sessionName);
         }
       }
-    }
 
-    return {
-      sessionId,
-      projectId,
-      pr,
-      branchChanged,
-      githubAssigned,
-      githubAssignmentError,
-      takenOverFrom,
-    };
+      const takenOverFrom = [...conflictingSessions];
+
+      // Perform checkout
+      const branchChanged = await checkoutPR(pr, workspacePath);
+
+      // Update metadata atomically within the lock
+      updateMetadata(sessionsDir, sessionId, {
+        pr: pr.url,
+        status: "pr_open",
+        branch: pr.branch,
+        prAutoDetect: "off", // Disable auto-detect since PR is explicitly claimed
+      });
+
+      // Clear previous owners
+      for (const previousSessionId of takenOverFrom) {
+        const previousRaw = readMetadataRaw(sessionsDir, previousSessionId);
+        if (!previousRaw) continue;
+
+        updateMetadata(sessionsDir, previousSessionId, {
+          pr: "",
+          prAutoDetect: "off",
+          ...(PR_TRACKING_STATUSES.has(previousRaw["status"] ?? "") ? { status: "working" } : {}),
+        });
+      }
+
+      // GitHub assignment (can be done inside or outside lock, keeping inside for simplicity)
+      let githubAssigned = false;
+      let githubAssignmentError: string | undefined;
+      if (options?.assignOnGithub) {
+        if (!scm.assignPRToCurrentUser) {
+          githubAssignmentError = `SCM plugin "${scm.name}" does not support assigning PRs`;
+        } else {
+          try {
+            await scm.assignPRToCurrentUser(pr);
+            githubAssigned = true;
+          } catch (err) {
+            githubAssignmentError = err instanceof Error ? err.message : String(err);
+          }
+        }
+      }
+
+      return {
+        sessionId,
+        projectId,
+        pr,
+        branchChanged,
+        githubAssigned,
+        githubAssignmentError,
+        takenOverFrom,
+      };
+    }, { lockTimeoutMs: 10_000 });
   }
 
   async function remap(sessionId: SessionId, force = false): Promise<string> {

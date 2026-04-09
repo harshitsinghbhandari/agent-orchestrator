@@ -29,6 +29,7 @@ import {
   statSync,
   openSync,
   closeSync,
+  linkSync,
   constants,
 } from "node:fs";
 import { join, dirname } from "node:path";
@@ -102,8 +103,12 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
   };
 }
 
+/** Threshold for considering an empty file orphaned (60 seconds) */
+const ORPHANED_FILE_THRESHOLD_MS = 60_000;
+
 /**
  * Read raw metadata as a string record (for arbitrary keys).
+ * Returns null if file doesn't exist, is empty, or is an orphaned empty file.
  */
 export function readMetadataRaw(
   dataDir: string,
@@ -111,7 +116,29 @@ export function readMetadataRaw(
 ): Record<string, string> | null {
   const path = metadataPath(dataDir, sessionId);
   if (!existsSync(path)) return null;
-  return parseKeyValueContent(readFileSync(path, "utf-8"));
+
+  const content = readFileSync(path, "utf-8");
+
+  // Handle empty files (orphaned from failed reservations)
+  if (content.trim() === "") {
+    try {
+      const stats = statSync(path);
+      const ageMs = Date.now() - stats.mtimeMs;
+      if (ageMs > ORPHANED_FILE_THRESHOLD_MS) {
+        // Orphaned empty file - treat as non-existent
+        // Note: We don't delete it here to avoid race conditions;
+        // cleanup should be done separately
+        return null;
+      }
+    } catch {
+      // Can't stat file - treat as non-existent
+      return null;
+    }
+    // Recently created empty file - likely still being written
+    return null;
+  }
+
+  return parseKeyValueContent(content);
 }
 
 /**
@@ -303,6 +330,9 @@ export function listMetadata(dataDir: string): SessionId[] {
 /**
  * Atomically reserve a session ID by creating its metadata file with O_EXCL.
  * Returns true if the ID was successfully reserved, false if it already exists.
+ *
+ * NOTE: This creates an empty file. Prefer reserveSessionIdWithData() for new code
+ * to avoid orphaned empty files on crash.
  */
 export function reserveSessionId(dataDir: string, sessionId: SessionId): boolean {
   const path = metadataPath(dataDir, sessionId);
@@ -313,5 +343,66 @@ export function reserveSessionId(dataDir: string, sessionId: SessionId): boolean
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Atomically reserve a session ID with initial data, using link() for atomic creation.
+ *
+ * This prevents orphaned empty files that can occur when a process crashes
+ * between reserveSessionId() and the subsequent writeMetadata() call.
+ *
+ * The implementation:
+ * 1. Writes initial data to a temp file
+ * 2. Uses link() to atomically create the target file (fails if exists)
+ * 3. Removes the temp file
+ *
+ * @param dataDir - Session data directory
+ * @param sessionId - Session ID to reserve
+ * @param initialData - Initial metadata to write (e.g., { status: "reserving", createdAt: ... })
+ * @returns true if successfully reserved, false if already exists
+ */
+export function reserveSessionIdWithData(
+  dataDir: string,
+  sessionId: SessionId,
+  initialData: Record<string, string>,
+): boolean {
+  const path = metadataPath(dataDir, sessionId);
+  mkdirSync(dirname(path), { recursive: true });
+
+  // Create a unique temp file name
+  const tmpPath = `${path}.tmp.${process.pid}.${Date.now()}`;
+
+  try {
+    // Write initial data to temp file
+    writeFileSync(tmpPath, serializeMetadata(initialData), "utf-8");
+
+    // link() fails atomically if target already exists (EEXIST)
+    linkSync(tmpPath, path);
+
+    // Remove temp file (no longer needed)
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Best effort - orphaned temp files are harmless
+    }
+
+    return true;
+  } catch (err) {
+    // Clean up temp file on any error
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      // Session ID already taken - return false
+      return false;
+    }
+
+    // Re-throw unexpected errors
+    throw err;
   }
 }
