@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { readFileSync } from "node:fs";
 import { Client, GatewayIntentBits, type Message } from "discord.js";
-import { loadConfig } from "@composio/ao-core";
+import { loadConfig, type SessionId, type SessionManager } from "@composio/ao-core";
 import { getSessionManager } from "../lib/create-session-manager.js";
 import { getThreadMapPath } from "@composio/ao-plugin-notifier-discord";
 
@@ -79,16 +79,88 @@ export function registerDiscordBot(program: Command): void {
 
       let shuttingDown = false;
 
-      const shutdown = (code: number): void => {
+      const shutdown = async (code: number): Promise<void> => {
         if (shuttingDown) return;
         shuttingDown = true;
+
         console.log(chalk.yellow("\nShutting down Discord bot..."));
+
+        // Flush stdout/stderr with 1s timeout
+        const flushPromise = new Promise<void>((resolve) => {
+          process.stdout.write("", () => {
+            process.stderr.write("", () => resolve());
+          });
+        });
+
+        const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, 1000));
+        await Promise.race([flushPromise, timeoutPromise]);
+
         client.destroy();
         process.exit(code);
       };
 
       process.on("SIGINT", () => shutdown(0));
       process.on("SIGTERM", () => shutdown(0));
+
+      process.on("uncaughtException", (err) => {
+        console.error(chalk.red("Uncaught exception:"), err);
+        shutdown(1);
+      });
+
+      process.on("unhandledRejection", (reason) => {
+        console.error(chalk.red("Unhandled rejection:"), reason);
+        shutdown(1);
+      });
+
+      // Create session manager once, reuse across all messages
+      let sessionManagerPromise: Promise<SessionManager> | null = null;
+      const getOrCreateSessionManager = async (): Promise<SessionManager> => {
+        if (!sessionManagerPromise) {
+          sessionManagerPromise = getSessionManager(config);
+        }
+        return sessionManagerPromise;
+      };
+
+      // Ensures serial processing per session (prevents concurrent message races)
+      const operationQueues = new Map<SessionId, Promise<void>>();
+
+      async function enqueueOperation<T>(sessionId: SessionId, fn: () => Promise<T>): Promise<T> {
+        const existingQueue = operationQueues.get(sessionId) ?? Promise.resolve();
+
+        const newQueue = existingQueue.then(
+          () => fn(),
+          () => fn(), // Run even if previous operation failed
+        );
+
+        operationQueues.set(sessionId, newQueue.then(() => {}, () => {}));
+
+        try {
+          return await newQueue;
+        } finally {
+          if (operationQueues.get(sessionId) === newQueue) {
+            operationQueues.delete(sessionId);
+          }
+        }
+      }
+
+      // Prevents spam from individual users (3s cooldown)
+      const userCooldowns = new Map<string, number>();
+      const COOLDOWN_MS = 3000;
+
+      function checkRateLimit(userId: string): { allowed: boolean; remainingMs?: number } {
+        const now = Date.now();
+        const lastMessage = userCooldowns.get(userId);
+
+        if (lastMessage) {
+          const elapsed = now - lastMessage;
+          if (elapsed < COOLDOWN_MS) {
+            return { allowed: false, remainingMs: COOLDOWN_MS - elapsed };
+          }
+        }
+
+        userCooldowns.set(userId, now);
+        return { allowed: true };
+      }
 
       client.on("ready", () => {
         console.log(chalk.green(`✓ Discord bot ready as ${client.user?.tag}`));
@@ -113,38 +185,49 @@ export function registerDiscordBot(program: Command): void {
           return;
         }
 
+        // Rate limiting check
+        const rateLimit = checkRateLimit(message.author.id);
+        if (!rateLimit.allowed) {
+          const waitSeconds = Math.ceil(rateLimit.remainingMs! / 1000);
+          await message.reply(`⏱️ Please wait ${waitSeconds}s before sending another message`);
+          return;
+        }
+
         console.log(chalk.dim(`[${sessionId}] Received: ${message.content}`));
 
-        const command = parseCommand(message.content);
-        const sessionManager = await getSessionManager(config);
+        // Enqueue operation to ensure serial processing per session
+        await enqueueOperation(sessionId, async () => {
+          const command = parseCommand(message.content);
+          const sessionManager = await getOrCreateSessionManager();
 
-        try {
-          if (command.type === "kill") {
-            // Kill session
-            await sessionManager.kill(sessionId);
-            await message.reply(`✅ Killed session ${sessionId}`);
-            console.log(chalk.yellow(`[${sessionId}] Killed`));
-          } else {
-            // Send input to session
-            await sessionManager.send(sessionId, command.text);
+          try {
+            if (command.type === "kill") {
+              // Kill session
+              await sessionManager.kill(sessionId);
+              await message.reply(`✅ Killed session ${sessionId}`);
+              console.log(chalk.yellow(`[${sessionId}] Killed`));
+            } else {
+              // Send input to session
+              await sessionManager.send(sessionId, command.text);
 
-            // Confirm with emoji based on command type
-            const emoji = command.type === "approve"
-              ? "✅"
-              : command.type === "reject"
-                ? "❌"
-                : command.type === "skip"
-                  ? "⏭️"
-                  : "📨";
+              // Confirm with emoji based on command type
+              const emoji = command.type === "approve"
+                ? "✅"
+                : command.type === "reject"
+                  ? "❌"
+                  : command.type === "skip"
+                    ? "⏭️"
+                    : "📨";
 
-            await message.react(emoji);
-            console.log(chalk.green(`[${sessionId}] Sent: ${command.text.replace("\n", "\\n")}`));
+              await message.react(emoji);
+              console.log(chalk.green(`[${sessionId}] Sent: ${command.text.replace("\n", "\\n")}`));
+            }
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            await message.reply(`❌ Error: ${errorMsg}`);
+            console.error(chalk.red(`[${sessionId}] Error: ${errorMsg}`));
           }
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          await message.reply(`❌ Error: ${errorMsg}`);
-          console.error(chalk.red(`[${sessionId}] Error: ${errorMsg}`));
-        }
+        });
       });
 
       client.on("error", (err) => {

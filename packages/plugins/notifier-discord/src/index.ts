@@ -1,8 +1,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, chmodSync } from "node:fs";
+import { z } from "zod";
 import {
   validateUrl,
+  atomicWriteFileSync,
   type PluginModule,
   type Notifier,
   type OrchestratorEvent,
@@ -54,8 +56,21 @@ interface ThreadMapEntry {
   createdAt: string;
 }
 
+const ThreadMapEntrySchema = z.object({
+  sessionId: z.string().min(1),
+  threadId: z.string().min(1),
+  projectId: z.string().min(1),
+  createdAt: z.string().datetime({ offset: true }),
+});
+
+const ThreadMapSchema = z.array(ThreadMapEntrySchema);
+
 /** Persist thread map to disk for bot consumption */
-function persistThreadMap(entries: Map<string, string>, projectIdMap: Map<string, string>): void {
+function persistThreadMap(
+  entries: Map<string, string>,
+  projectIdMap: Map<string, string>,
+  createdAtMap: Map<string, string>,
+): void {
   try {
     const aoDir = join(homedir(), ".ao");
     mkdirSync(aoDir, { recursive: true });
@@ -64,31 +79,51 @@ function persistThreadMap(entries: Map<string, string>, projectIdMap: Map<string
       sessionId,
       threadId,
       projectId: projectIdMap.get(sessionId) ?? "unknown",
-      createdAt: new Date().toISOString(),
+      createdAt: createdAtMap.get(sessionId) ?? new Date().toISOString(),
     }));
 
-    writeFileSync(getThreadMapPath(), JSON.stringify(data, null, 2), "utf-8");
+    const filePath = getThreadMapPath();
+    atomicWriteFileSync(filePath, JSON.stringify(data, null, 2));
+
+    // Set owner-only permissions (0o600) for security
+    if (process.platform !== "win32") {
+      chmodSync(filePath, 0o600);
+    }
   } catch (err) {
     console.error("[notifier-discord] Failed to persist thread map:", err);
   }
 }
 
 /** Load thread map from disk */
-function loadThreadMap(): { threads: Map<string, string>; projects: Map<string, string> } {
+function loadThreadMap(): {
+  threads: Map<string, string>;
+  projects: Map<string, string>;
+  createdAt: Map<string, string>;
+} {
   const threads = new Map<string, string>();
   const projects = new Map<string, string>();
+  const createdAt = new Map<string, string>();
 
   try {
-    const data = JSON.parse(readFileSync(getThreadMapPath(), "utf-8")) as ThreadMapEntry[];
+    const raw = JSON.parse(readFileSync(getThreadMapPath(), "utf-8"));
+    const data = ThreadMapSchema.parse(raw);
+
     for (const entry of data) {
       threads.set(entry.sessionId, entry.threadId);
       projects.set(entry.sessionId, entry.projectId);
+      createdAt.set(entry.sessionId, entry.createdAt);
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      console.warn(
+        "[notifier-discord] Thread map validation failed, starting fresh:",
+        err.errors,
+      );
+    }
     // File doesn't exist or is invalid — start fresh
   }
 
-  return { threads, projects };
+  return { threads, projects, createdAt };
 }
 
 interface DiscordEmbed {
@@ -218,7 +253,7 @@ export function create(config?: Record<string, unknown>): Notifier {
   const { retries, retryDelayMs } = normalizeRetryConfig(config);
 
   // Thread management (session ID → thread ID) — load existing map from disk
-  const { threads: threadMap, projects: projectIdMap } = loadThreadMap();
+  const { threads: threadMap, projects: projectIdMap, createdAt: createdAtMap } = loadThreadMap();
 
   if (!webhookUrl) {
     console.warn(
@@ -364,7 +399,8 @@ export function create(config?: Record<string, unknown>): Notifier {
       if (threadIdCreated) {
         threadMap.set(session.id, threadIdCreated);
         projectIdMap.set(session.id, session.projectId);
-        persistThreadMap(threadMap, projectIdMap);
+        createdAtMap.set(session.id, new Date().toISOString());
+        persistThreadMap(threadMap, projectIdMap, createdAtMap);
         console.log(`[notifier-discord] Created thread ${threadIdCreated} for session ${session.id}`);
       }
     },
@@ -375,7 +411,8 @@ export function create(config?: Record<string, unknown>): Notifier {
         await archiveThread(threadIdToArchive);
         threadMap.delete(session.id);
         projectIdMap.delete(session.id);
-        persistThreadMap(threadMap, projectIdMap);
+        createdAtMap.delete(session.id);
+        persistThreadMap(threadMap, projectIdMap, createdAtMap);
         console.log(`[notifier-discord] Archived thread ${threadIdToArchive} for session ${session.id}`);
       }
     },

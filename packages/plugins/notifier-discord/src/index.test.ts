@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { NotifyAction, OrchestratorEvent, Session } from "@composio/ao-core";
@@ -340,6 +340,11 @@ describe("notifier-discord", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ id: "thread-123" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ id: "thread-456" }),
         });
       vi.stubGlobal("fetch", fetchMock);
 
@@ -355,6 +360,12 @@ describe("notifier-discord", () => {
       // Verify thread map file exists
       expect(existsSync(threadMapPath)).toBe(true);
 
+      // Verify file permissions (0o600 on non-Windows)
+      if (process.platform !== "win32") {
+        const stats = statSync(threadMapPath);
+        expect(stats.mode & 0o777).toBe(0o600);
+      }
+
       // Verify content
       const content = JSON.parse(readFileSync(threadMapPath, "utf-8"));
       expect(content).toHaveLength(1);
@@ -364,6 +375,17 @@ describe("notifier-discord", () => {
         projectId: "test-proj",
       });
       expect(content[0].createdAt).toBeDefined();
+      const firstCreatedAt = content[0].createdAt;
+
+      // Spawn second session
+      const session2 = makeSession({ id: "ao-6", projectId: "test-proj" });
+      await notifier.onSessionSpawned!(session2);
+
+      // Verify createdAt preserved for first session
+      const content2 = JSON.parse(readFileSync(threadMapPath, "utf-8"));
+      expect(content2).toHaveLength(2);
+      const firstSessionEntry = content2.find((e: { sessionId: string }) => e.sessionId === "ao-5");
+      expect(firstSessionEntry.createdAt).toBe(firstCreatedAt);
     });
 
     it("routes notifications to session thread", async () => {
@@ -603,6 +625,34 @@ describe("notifier-discord", () => {
 
       expect(fetchMock).not.toHaveBeenCalled();
       expect(existsSync(threadMapPath)).toBe(false);
+    });
+
+    it("handles malformed thread map gracefully", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Write invalid JSON (sessionId as number instead of string)
+      const aoDir = join(homedir(), ".ao");
+      mkdirSync(aoDir, { recursive: true });
+      writeFileSync(threadMapPath, '[{"sessionId": 123, "threadId": "thread-1"}]', "utf-8");
+
+      const notifier = create({
+        webhookUrl: "https://discord.com/api/webhooks/123/abc",
+        botToken: "bot-token-123",
+        channelId: "channel-456",
+      });
+
+      // Should start with empty map, log validation warning
+      await notifier.notify(makeEvent({ sessionId: "ao-1" }));
+
+      const url = fetchMock.mock.calls[0][0];
+      expect(url).toBe("https://discord.com/api/webhooks/123/abc"); // No thread routing
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Thread map validation failed"),
+        expect.anything(),
+      );
     });
   });
 });

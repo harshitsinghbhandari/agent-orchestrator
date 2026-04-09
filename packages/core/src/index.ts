@@ -94,6 +94,7 @@ export {
   readLastJsonlEntry,
   resolveProjectIdForSessionId,
 } from "./utils.js";
+export { atomicWriteFileSync } from "./atomic-write.js";
 export {
   getWebhookHeader,
   parseWebhookJsonObject,
