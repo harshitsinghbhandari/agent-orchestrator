@@ -734,6 +734,23 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       usedNumbers.add(num);
     }
 
+    // Cross-project collision check: ensure worker IDs don't collide with other
+    // projects' orchestrator IDs. If another project has sessionPrefix + "-orchestrator"
+    // that equals our sessionPrefix, every worker ID we generate would collide with
+    // that project's orchestrators.
+    for (const [otherProjectId, otherProject] of Object.entries(config.projects)) {
+      const otherPrefix = otherProject.sessionPrefix ?? otherProjectId;
+      if (otherPrefix === project.sessionPrefix) continue;
+      const otherOrchestratorPrefix = `${otherPrefix}-orchestrator`;
+      if (otherOrchestratorPrefix === project.sessionPrefix) {
+        throw new Error(
+          `Cannot spawn worker for project "${project.sessionPrefix}": the session prefix ` +
+            `conflicts with the orchestrator prefix of project "${otherProjectId}" ("${otherOrchestratorPrefix}"). ` +
+            `Rename one of the project sessionPrefix values to avoid this overlap.`,
+        );
+      }
+    }
+
     let num = getNextSessionNumber(
       [...usedNumbers].map((value) => `${project.sessionPrefix}-${value}`),
       project.sessionPrefix,
@@ -745,6 +762,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         : undefined;
 
       if (!usedNumbers.has(num) && reserveSessionId(sessionsDir, sessionId)) {
+        // Explicit validation before returning — ensures sessionId is valid
+        if (!sessionId || typeof sessionId !== "string") {
+          throw new Error(
+            `Internal error: reserved session ID is invalid (${String(sessionId)})`,
+          );
+        }
         return { num, sessionId, tmuxName };
       }
 
@@ -820,6 +843,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           role: "orchestrator",
         };
         if (reserveSessionIdWithData(sessionsDir, sessionId, initialData)) {
+          // Explicit validation before returning — ensures sessionId is valid
+          if (!sessionId || typeof sessionId !== "string") {
+            throw new Error(
+              `Internal error: reserved session ID is invalid (${String(sessionId)})`,
+            );
+          }
           return { num, sessionId, tmuxName };
         }
       }
@@ -1268,7 +1297,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           AO_SESSION: sessionId,
           AO_DATA_DIR: sessionsDir, // Pass sessions directory (not root dataDir)
           AO_SESSION_NAME: sessionId, // User-facing session name
-          ...(tmuxName && { AO_TMUX_NAME: tmuxName }), // Tmux session name if using new arch
+          // Always set AO_TMUX_NAME for consistency — agents may rely on it
+          AO_TMUX_NAME: tmuxName ?? sessionId,
           AO_CALLER_TYPE: "agent",
           AO_PROJECT_ID: spawnConfig.projectId,
           AO_CONFIG_PATH: config.configPath,
@@ -1329,6 +1359,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         createdAt: new Date().toISOString(),
         runtimeHandle: JSON.stringify(handle),
         opencodeSessionId: reusedOpenCodeSessionId,
+        // Include promptDelivered placeholder — prevents incomplete metadata
+        // if crash occurs between initial write and post-launch prompt delivery
+        promptDelivered: agentLaunchConfig.prompt ? "pending" : undefined,
       });
 
       if (plugins.agent.postLaunchSetup) {
@@ -1597,7 +1630,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           AO_SESSION: sessionId,
           AO_DATA_DIR: sessionsDir,
           AO_SESSION_NAME: sessionId,
-          ...(tmuxName && { AO_TMUX_NAME: tmuxName }),
+          // Always set AO_TMUX_NAME for consistency — agents may rely on it
+          AO_TMUX_NAME: tmuxName ?? sessionId,
           AO_CALLER_TYPE: "orchestrator",
           AO_PROJECT_ID: orchestratorConfig.projectId,
           AO_CONFIG_PATH: config.configPath,

@@ -1045,8 +1045,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return;
     }
 
-    // Skip if we already dispatched this exact failure set
-    if (ciFingerprint === lastCIDispatchHash) return;
+    // Skip if we already dispatched this exact failure set, unless the dispatch
+    // is stale (>30 min). This prevents duplicate dispatches while allowing
+    // re-notification when the same failures recur after a significant gap.
+    if (ciFingerprint === lastCIDispatchHash) {
+      const lastDispatchAt = session.metadata["lastCIFailureDispatchAt"];
+      if (lastDispatchAt) {
+        const staleness = Date.now() - new Date(lastDispatchAt).getTime();
+        const CI_FINGERPRINT_STALENESS_MS = 30 * 60 * 1000; // 30 minutes
+        if (staleness < CI_FINGERPRINT_STALENESS_MS) {
+          return; // Recent dispatch — skip
+        }
+        // Stale dispatch — allow re-notification for same fingerprint
+      } else {
+        return; // No timestamp but hash matches — skip to be safe
+      }
+    }
 
     // Dispatch CI failure details directly via sessionManager.send() rather than
     // executeReaction() to avoid consuming the ci-failed reaction's retry budget.
@@ -1246,6 +1260,17 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       // Handle transition: notify humans and/or trigger reactions
       const eventType = statusToEventType(oldStatus, newStatus);
+
+      // Also clear the NEW status's reaction tracker so the transition dispatch
+      // starts fresh. This prevents stale retry counts from a previous visit to
+      // this status from affecting the new reaction.
+      if (eventType) {
+        const newReactionKey = eventToReactionKey(eventType);
+        const oldReactionKey = oldEventType ? eventToReactionKey(oldEventType) : null;
+        if (newReactionKey && newReactionKey !== oldReactionKey) {
+          clearReactionTracker(session.id, newReactionKey);
+        }
+      }
       if (eventType) {
         let reactionHandledNotify = false;
         const reactionKey = eventToReactionKey(eventType);
@@ -1387,7 +1412,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         }
       }
       for (const trackerKey of reactionTrackers.keys()) {
-        const sessionId = trackerKey.split(":")[0];
+        // Tracker key format is "sessionId:reactionKey". Use indexOf to safely
+        // extract sessionId even if it contains ":" (though unlikely in practice).
+        const colonIdx = trackerKey.indexOf(":");
+        const sessionId = colonIdx >= 0 ? trackerKey.slice(0, colonIdx) : trackerKey;
         if (sessionId && !currentSessionIds.has(sessionId)) {
           reactionTrackers.delete(trackerKey);
         }

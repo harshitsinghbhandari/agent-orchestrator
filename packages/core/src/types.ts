@@ -1446,6 +1446,7 @@ export interface SessionMetadata {
   directTerminalWsPort?: number;
   opencodeSessionId?: string;
   pinnedSummary?: string; // First quality summary, pinned for display stability
+  promptDelivered?: string; // "pending" | "true" | "false" — tracks post-launch prompt delivery
 }
 
 // =============================================================================
