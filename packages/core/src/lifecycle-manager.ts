@@ -106,6 +106,8 @@ function createEvent(
 /** Determine which event type corresponds to a status transition. */
 function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus): EventType | null {
   switch (to) {
+    case "spawning":
+      return "session.spawned";
     case "working":
       return "session.working";
     case "pr_open":
@@ -122,6 +124,12 @@ function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus):
       return "merge.ready";
     case "merged":
       return "merge.completed";
+    case "cleanup":
+    case "done":
+    case "terminated":
+      return "session.exited";
+    case "idle":
+      return "session.idle";
     case "needs_input":
       return "session.needs_input";
     case "stuck":

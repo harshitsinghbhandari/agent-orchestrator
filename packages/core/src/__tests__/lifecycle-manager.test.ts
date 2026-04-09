@@ -1329,6 +1329,126 @@ describe("reactions", () => {
       expect.objectContaining({ type: "merge.completed" }),
     );
   });
+
+  it("emits session.exited event when session transitions to done status", async () => {
+    const notifier = createMockNotifier();
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    config.notificationRouting.info = ["desktop"];
+
+    // Session has status "done" but metadata has "working" to trigger a transition
+    vi.mocked(mockSessionManager.get).mockResolvedValue(
+      makeSession({ status: "done" as SessionStatus, metadata: { status: "working" } }),
+    );
+
+    writeMetadata(env.sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("done");
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session.exited" }),
+    );
+  });
+
+  it("emits session.exited event when session transitions to terminated status", async () => {
+    const notifier = createMockNotifier();
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    config.notificationRouting.info = ["desktop"];
+
+    // Session has status "terminated" but metadata has "working" to trigger a transition
+    vi.mocked(mockSessionManager.get).mockResolvedValue(
+      makeSession({ status: "terminated" as SessionStatus, metadata: { status: "working" } }),
+    );
+
+    writeMetadata(env.sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("terminated");
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session.exited" }),
+    );
+  });
+
+  it("emits session.exited event when session transitions to cleanup status", async () => {
+    const notifier = createMockNotifier();
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    config.notificationRouting.info = ["desktop"];
+
+    // Session has status "cleanup" but metadata has "working" to trigger a transition
+    vi.mocked(mockSessionManager.get).mockResolvedValue(
+      makeSession({ status: "cleanup" as SessionStatus, metadata: { status: "working" } }),
+    );
+
+    writeMetadata(env.sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("cleanup");
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session.exited" }),
+    );
+  });
 });
 
 describe("pollAll terminal status accounting", () => {
