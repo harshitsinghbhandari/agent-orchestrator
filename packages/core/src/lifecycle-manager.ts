@@ -16,6 +16,7 @@ import {
   PR_STATE,
   CI_STATUS,
   TERMINAL_STATUSES,
+  isOrchestratorSession,
   type LifecycleManager,
   type SessionManager,
   type SessionId,
@@ -472,8 +473,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       scm &&
       session.branch &&
       session.metadata["prAutoDetect"] !== "off" &&
-      session.metadata["role"] !== "orchestrator" &&
-      !session.id.endsWith("-orchestrator")
+      !isOrchestratorSession(session, project.sessionPrefix)
     ) {
       try {
         const detectedPR = await scm.detectPR(session, project);

@@ -1299,6 +1299,8 @@ describe("spawn", () => {
       );
       const meta = readMetadataRaw(sessionsDir, "app-orchestrator-1");
       expect(meta?.["opencodeSessionId"]).toBe("ses_existing");
+      // Verify orchestratorSessionReused is set when session is reused upfront
+      expect(meta?.["orchestratorSessionReused"]).toBe("true");
     });
 
     it("discovers OpenCode mapping by title when no archived mapping exists for new session id", async () => {
@@ -1401,6 +1403,8 @@ describe("spawn", () => {
       );
       const meta = readMetadataRaw(sessionsDir, "app-orchestrator-1");
       expect(meta?.["opencodeSessionId"]).toBe("ses_title_match");
+      // Verify orchestratorSessionReused is set when session is reused
+      expect(meta?.["orchestratorSessionReused"]).toBe("true");
     });
 
     it("calls agent.setupWorkspaceHooks on worktree path", async () => {

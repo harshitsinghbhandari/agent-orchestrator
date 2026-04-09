@@ -197,8 +197,28 @@ export function isOrchestratorSession(
   if (session.metadata?.["role"] === "orchestrator" || session.id.endsWith("-orchestrator")) {
     return true;
   }
+  // When no prefix is provided, check for generic orchestrator patterns.
+  // This catches numbered orchestrator IDs like "app-orchestrator-1" when the
+  // prefix is unavailable (e.g., during lifecycle checks on individual sessions).
   if (!sessionPrefix) {
-    return false;
+    // Match any ID ending with "-orchestrator-N" pattern
+    if (!/-orchestrator-\d+$/.test(session.id)) {
+      return false;
+    }
+    // Guard against false positives: if allSessionPrefixes is provided, check
+    // if this ID is actually a worker for a prefix ending in "-orchestrator".
+    // E.g., "my-orchestrator-1" is a worker when prefix is "my-orchestrator".
+    if (allSessionPrefixes) {
+      for (const prefix of allSessionPrefixes) {
+        if (prefix.endsWith("-orchestrator")) {
+          const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (new RegExp(`^${escaped}-\\d+$`).test(session.id)) {
+            return false; // It's a worker for this prefix, not an orchestrator
+          }
+        }
+      }
+    }
+    return true;
   }
   const escaped = sessionPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (!new RegExp(`^${escaped}-orchestrator-\\d+$`).test(session.id)) {
