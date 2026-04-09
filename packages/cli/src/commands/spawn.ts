@@ -175,7 +175,7 @@ export function registerSpawn(program: Command): void {
     .option("--decompose", "Decompose issue into subtasks before spawning")
     .option("--max-depth <n>", "Max decomposition depth (default: 3)")
     .option("--max-prompt-tokens <n>", "Override the default prompt budget for this spawn")
-    .option("--base-branch <branch>", "Base branch to create the new branch from (defaults to main/master)")
+    .option("--base-branch <branch>", "Base branch to create the new branch from (defaults to project's configured default branch)")
     .action(
       async (
         first: string | undefined,

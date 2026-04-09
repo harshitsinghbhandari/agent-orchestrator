@@ -50,16 +50,36 @@ async function refExists(cwd: string, ref: string): Promise<boolean> {
 async function resolveBaseRef(
   repoPath: string,
   defaultBranch: string,
-  options?: { branch?: string; hasOrigin?: boolean },
+  options?: { branch?: string; hasOrigin?: boolean; strict?: boolean },
 ): Promise<string> {
   const hasOrigin = options?.hasOrigin ?? (await hasOriginRemote(repoPath));
+  const requestedBranch = options?.branch;
+  const strict = options?.strict ?? false;
 
-  if (hasOrigin) {
-    if (options?.branch) {
-      const remoteBranch = `origin/${options.branch}`;
+  // If a specific base branch was requested, try to resolve it first
+  if (requestedBranch) {
+    // Check remote branch if origin exists
+    if (hasOrigin) {
+      const remoteBranch = `origin/${requestedBranch}`;
       if (await refExists(repoPath, remoteBranch)) return remoteBranch;
     }
 
+    // In strict mode (explicit --base-branch override), also check local branch
+    // and fail if it can't be resolved at all
+    if (strict) {
+      const localBranch = `refs/heads/${requestedBranch}`;
+      if (await refExists(repoPath, localBranch)) return localBranch;
+
+      throw new Error(
+        `Unable to resolve base branch "${requestedBranch}". ` +
+          `Checked: ${hasOrigin ? `origin/${requestedBranch}, ` : ""}refs/heads/${requestedBranch}`,
+      );
+    }
+    // Non-strict mode: fall through to default branch
+  }
+
+  // Fall back to default branch
+  if (hasOrigin) {
     const remoteDefaultBranch = `origin/${defaultBranch}`;
     if (await refExists(repoPath, remoteDefaultBranch)) return remoteDefaultBranch;
   }
@@ -119,6 +139,7 @@ export function create(config?: Record<string, unknown>): Workspace {
       const baseRef = await resolveBaseRef(repoPath, cfg.project.defaultBranch, {
         branch: cfg.baseBranch,
         hasOrigin,
+        strict: !!cfg.baseBranch, // Fail loudly if explicit baseBranch can't be resolved
       });
 
       // Create worktree with a new branch
