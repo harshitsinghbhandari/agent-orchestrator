@@ -887,6 +887,11 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           ...session.runtimeHandle!,
           id: tmuxNameFromMetadata,
         };
+        // Persist corrected handle to metadata so other code paths (kill/send/recovery)
+        // read the correct id. Use updateMetadata to preserve mtime where possible.
+        updateMetadata(sessionsDir, sessionName, {
+          runtimeHandle: JSON.stringify(session.runtimeHandle),
+        });
       }
       handleFromMetadata = true;
     } else {
@@ -2381,10 +2386,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     //    session (status "working", agent exited) would not be detected as terminal
     //    and isRestorable would reject it.
     //    Use ensureHandleAndEnrich to properly reconstruct handles from tmuxName.
+    //    Note: OpenCode session mapping is already ensured above (lines 2370-2382),
+    //    so we don't need to pass sessionListPromise here - it would be redundant.
     const session = metadataToSession(sessionId, raw, projectId);
     const plugins = resolvePlugins(project, selection.agentName);
-    const sessionListPromise =
-      selectedAgent === "opencode" ? fetchOpenCodeSessionList() : undefined;
+    // Track whether original metadata had runtime info (for safe destroy later)
+    const hadOriginalRuntimeMetadata = !!(raw["runtimeHandle"] || raw["tmuxName"]);
     await ensureHandleAndEnrich(
       session,
       sessionId,
@@ -2392,7 +2399,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       project,
       selectedAgent,
       plugins,
-      sessionListPromise,
+      undefined, // OpenCode mapping already ensured above
     );
 
     // 3. Validate restorability
@@ -2470,7 +2477,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     }
 
     // 6. Destroy old runtime if still alive (e.g. tmux session survives agent crash)
-    if (session.runtimeHandle) {
+    //    Only destroy if original metadata had runtime info. If the handle was fabricated
+    //    (no runtimeHandle or tmuxName in original metadata), we might destroy an unrelated
+    //    session that happens to match the fabricated sessionName.
+    if (session.runtimeHandle && hadOriginalRuntimeMetadata) {
       try {
         await plugins.runtime.destroy(session.runtimeHandle);
       } catch {
