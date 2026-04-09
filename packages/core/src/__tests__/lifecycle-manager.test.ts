@@ -18,6 +18,7 @@ import {
   createMockSCM,
   createMockNotifier,
   makeSession,
+  makeHandle,
   makePR,
   type TestEnvironment,
   type MockPlugins,
@@ -1456,6 +1457,72 @@ describe("pollAll terminal status accounting", () => {
 
     // Terminal sessions should not be polled — runtime.isAlive should not be called
     expect(plugins.runtime.isAlive).not.toHaveBeenCalled();
+
+    lm.stop();
+  });
+
+  it("does not fire spurious 'killed' notification on startup for sessions already dead", async () => {
+    // Regression test for issue #41: empty states Map causes false killed notifications
+    // When lifecycle manager starts, sessions that were already dead (stale metadata shows
+    // "working" but runtime is not alive) should not trigger "session.killed" notifications.
+    //
+    // Scenario: list() returns status "working" (stale), but runtime.isAlive returns false,
+    // so determineStatus() computes "killed". Without the fix, this would cause a false
+    // "working → killed" transition on first poll. With the fix, first poll pre-populates
+    // states with the computed status ("killed"), so no transition is detected.
+
+    const notifier = createMockNotifier();
+    const registryWithNotifier: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    // Session with status "working" (stale — list() hasn't detected dead runtime yet)
+    // but runtime is actually dead. This simulates the case where runtime handle metadata
+    // is fabricated/missing, so list() can't detect the dead runtime.
+    const session = makeSession({
+      id: "s-dead",
+      status: "working" as SessionStatus,
+      metadata: { status: "working" },
+      runtimeHandle: makeHandle("tmux-session-dead"),
+    });
+
+    vi.mocked(mockSessionManager.list).mockResolvedValue([session]);
+
+    // Mock runtime to report session as dead — this makes determineStatus() return "killed"
+    vi.mocked(plugins.runtime.isAlive).mockResolvedValue(false);
+
+    // Route notifications to desktop so we can observe them
+    config.notificationRouting.info = ["desktop"];
+    config.notificationRouting.urgent = ["desktop"];
+    config.notificationRouting.warning = ["desktop"];
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithNotifier,
+      sessionManager: mockSessionManager,
+    });
+
+    lm.start(60_000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should NOT have fired a "session.killed" notification on startup
+    // because the session was already dead — we're establishing baseline, not detecting transition
+    const killedNotifications = vi.mocked(notifier.notify).mock.calls.filter(
+      (call: unknown[]) => {
+        const event = call[0] as Record<string, unknown> | undefined;
+        return event?.type === "session.killed";
+      },
+    );
+    expect(killedNotifications).toHaveLength(0);
+
+    // Verify states Map was pre-populated with the computed status
+    expect(lm.getStates().get("s-dead")).toBe("killed");
 
     lm.stop();
   });
