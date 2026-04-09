@@ -281,3 +281,60 @@ describe("deleteSession retry loop", () => {
     expect(deleteCallCount).toBe(1);
   });
 });
+
+describe("terminal status handling", () => {
+  it("treats errored sessions as terminal - skips runtime/agent activity checks", async () => {
+    // Setup: Create a session with errored status
+    writeMetadata(sessionsDir, "app-errored", {
+      worktree: "/tmp/ws",
+      branch: "main",
+      status: "errored",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-errored")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const sessions = await sm.list();
+
+    // Find our errored session
+    const erroredSession = sessions.find((s) => s.id === "app-errored");
+    expect(erroredSession).toBeDefined();
+
+    // Verify the session was treated as terminal:
+    // 1. Activity should be set to "exited" without calling runtime/agent methods
+    expect(erroredSession!.activity).toBe("exited");
+
+    // 2. Runtime.isAlive should NOT have been called for this session
+    //    (terminal sessions skip subprocess/IO work)
+    const isAliveCalls = vi.mocked(ctx.mockRuntime.isAlive).mock.calls;
+
+    // Filter calls that would be for our errored session's handle
+    const callsForErroredSession = isAliveCalls.filter(
+      (call) => call[0]?.id === "rt-errored",
+    );
+    expect(callsForErroredSession).toHaveLength(0);
+  });
+
+  it("does not overwrite errored status to killed", async () => {
+    // Setup: Create a session with errored status
+    writeMetadata(sessionsDir, "app-errored-2", {
+      worktree: "/tmp/ws",
+      branch: "main",
+      status: "errored",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-errored-2")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const sessions = await sm.list();
+
+    // Find our errored session
+    const erroredSession = sessions.find((s) => s.id === "app-errored-2");
+    expect(erroredSession).toBeDefined();
+
+    // Status should remain "errored", not be changed to "killed"
+    expect(erroredSession!.status).toBe("errored");
+  });
+});
