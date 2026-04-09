@@ -35,7 +35,12 @@ export {
   updateMetadata,
   deleteMetadata,
   listMetadata,
+  reserveSessionIdWithData,
 } from "./metadata.js";
+
+// File locking — prevent race conditions in concurrent operations
+export { createFileLock, withFileLock } from "./file-lock.js";
+export type { FileLockOptions, FileLock } from "./file-lock.js";
 
 // tmux — command wrappers
 export {
