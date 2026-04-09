@@ -53,7 +53,8 @@ describe("isOrchestratorSession", () => {
     // app-worker-1 matches the worker pattern for prefix "app-worker"
     // so it should be filtered out when checking prefix "app"
     const allPrefixes = ["app", "app-worker"];
-    // Note: "app-worker-1" does not match "^app-orchestrator-\d+$" so it returns false at line 204
+    // Note: "app-worker-1" does not match the orchestrator pattern "^app-orchestrator-\d+$"
+    // so it fails the orchestrator format check before reaching the cross-project guard
     expect(
       isOrchestratorSession({ id: "app-worker-1", metadata: {} }, "app", allPrefixes),
     ).toBe(false);
