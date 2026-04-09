@@ -1013,6 +1013,7 @@ async function runStartup(
   let tmuxTarget = sessionId;
   let hasExistingOrchestrators = false;
   let selectedOrchestratorId: string | null = null;
+  let orchestratorSkipped = false;
 
   if (opts?.orchestrator !== false) {
     const sm = await getSessionManager(config);
@@ -1071,10 +1072,11 @@ async function runStartup(
       );
       const lastSession = sortedRestorable[0];
 
-      if (!isHumanCaller()) {
+      if (!canPromptForInstall()) {
         // Non-interactive context — inform user about restorable session
         console.log(chalk.yellow(`Found last orchestrator session: ${lastSession.id}`));
         console.log(chalk.dim("  Run 'ao start' interactively to resume it."));
+        orchestratorSkipped = true;
       } else {
         // Interactive context — prompt user to resume the last session
         const shouldResume = await promptConfirm(
@@ -1134,15 +1136,17 @@ async function runStartup(
           } else {
             console.log(chalk.yellow("Skipped orchestrator session."));
             console.log(chalk.dim("  You can create or resume one via the dashboard."));
+            orchestratorSkipped = true;
           }
         }
       }
     } else {
       // No orchestrators at all — prompt user before spawning (never auto-spawn)
-      if (!isHumanCaller()) {
+      if (!canPromptForInstall()) {
         // Non-interactive context — inform user and skip orchestrator spawn
         console.log(chalk.yellow("No orchestrator session found."));
         console.log(chalk.dim("  Run 'ao start' interactively to create one."));
+        orchestratorSkipped = true;
       } else {
         // Interactive context — prompt user to confirm spawning
         const shouldSpawn = await promptConfirm(
@@ -1176,6 +1180,7 @@ async function runStartup(
         } else {
           console.log(chalk.yellow("Skipped orchestrator session creation."));
           console.log(chalk.dim("  You can create one later via the dashboard."));
+          orchestratorSkipped = true;
         }
       }
     }
@@ -1196,7 +1201,12 @@ async function runStartup(
     console.log(chalk.cyan("Lifecycle:"), lifecycleTarget);
   }
 
-  if (hasExistingOrchestrators) {
+  if (orchestratorSkipped) {
+    console.log(
+      chalk.cyan("Orchestrator:"),
+      chalk.yellow("skipped — create or resume one via the dashboard"),
+    );
+  } else if (hasExistingOrchestrators) {
     console.log(
       chalk.cyan("Orchestrator:"),
       "multiple sessions found — select one in the dashboard",
@@ -1221,16 +1231,17 @@ async function runStartup(
 
   // Auto-open browser once the server is ready.
   // With a single orchestrator (or a newly created one), navigate directly to the session page.
-  // With multiple existing orchestrators, open the selection page so the user can choose or
-  // spawn a new one — the dashboard only links one orchestrator per project.
+  // With multiple existing orchestrators or when skipped, open the selection page so the user
+  // can choose or spawn a new one — the dashboard only links one orchestrator per project.
   // Polls the port instead of using a fixed delay — deterministic and works regardless of
   // how long Next.js takes to compile. AbortController cancels polling on early exit.
   let openAbort: AbortController | undefined;
   if (opts?.dashboard !== false) {
     openAbort = new AbortController();
-    const orchestratorUrl = hasExistingOrchestrators
-      ? `http://localhost:${port}/orchestrators?project=${projectId}`
-      : `http://localhost:${port}/sessions/${selectedOrchestratorId ?? sessionId}`;
+    const orchestratorUrl =
+      hasExistingOrchestrators || orchestratorSkipped
+        ? `http://localhost:${port}/orchestrators?project=${projectId}`
+        : `http://localhost:${port}/sessions/${selectedOrchestratorId ?? sessionId}`;
     void waitForPortAndOpen(port, orchestratorUrl, openAbort.signal);
   }
 
