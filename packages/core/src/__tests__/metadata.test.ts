@@ -109,6 +109,80 @@ describe("writeMetadata + readMetadata", () => {
     const content = readFileSync(join(dataDir, "app-5"), "utf-8");
     expect(content).toContain("pinnedSummary=First quality summary\n");
   });
+
+  it("writes and reads promptDelivered field", () => {
+    writeMetadata(dataDir, "app-6", {
+      worktree: "/tmp/w",
+      branch: "feat/test",
+      status: "spawning",
+      promptDelivered: "pending",
+    });
+
+    const meta = readMetadata(dataDir, "app-6");
+    expect(meta).not.toBeNull();
+    expect(meta!.promptDelivered).toBe("pending");
+  });
+
+  it("writes and reads customPrompt field", () => {
+    writeMetadata(dataDir, "app-7", {
+      worktree: "/tmp/w",
+      branch: "feat/test",
+      status: "working",
+      customPrompt: "Focus on the API layer only.",
+    });
+
+    const meta = readMetadata(dataDir, "app-7");
+    expect(meta).not.toBeNull();
+    expect(meta!.customPrompt).toBe("Focus on the API layer only.");
+  });
+
+  it("encodes and decodes newlines in customPrompt", () => {
+    const promptWithNewlines = "Line 1\nLine 2\nLine 3";
+    writeMetadata(dataDir, "app-8", {
+      worktree: "/tmp/w",
+      branch: "feat/test",
+      status: "working",
+      customPrompt: promptWithNewlines,
+    });
+
+    // Verify the raw file doesn't contain literal newlines in the value
+    const content = readFileSync(join(dataDir, "app-8"), "utf-8");
+    expect(content).toContain("customPrompt=Line 1\\nLine 2\\nLine 3\n");
+    expect(content.split("\n").filter((line) => line.startsWith("customPrompt="))).toHaveLength(1);
+
+    // Verify round-trip decodes correctly
+    const meta = readMetadata(dataDir, "app-8");
+    expect(meta).not.toBeNull();
+    expect(meta!.customPrompt).toBe(promptWithNewlines);
+  });
+
+  it("encodes and decodes backslashes in customPrompt", () => {
+    const promptWithBackslashes = "Use \\n for newlines and \\\\ for backslash";
+    writeMetadata(dataDir, "app-9", {
+      worktree: "/tmp/w",
+      branch: "feat/test",
+      status: "working",
+      customPrompt: promptWithBackslashes,
+    });
+
+    const meta = readMetadata(dataDir, "app-9");
+    expect(meta).not.toBeNull();
+    expect(meta!.customPrompt).toBe(promptWithBackslashes);
+  });
+
+  it("handles carriage returns in customPrompt", () => {
+    const promptWithCR = "Line 1\r\nLine 2";
+    writeMetadata(dataDir, "app-10", {
+      worktree: "/tmp/w",
+      branch: "feat/test",
+      status: "working",
+      customPrompt: promptWithCR,
+    });
+
+    const meta = readMetadata(dataDir, "app-10");
+    expect(meta).not.toBeNull();
+    expect(meta!.customPrompt).toBe(promptWithCR);
+  });
 });
 
 describe("readMetadataRaw", () => {

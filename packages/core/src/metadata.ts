@@ -37,6 +37,38 @@ import type { SessionId, SessionMetadata } from "./types.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
 import { parseKeyValueContent } from "./key-value.js";
 
+/** Encode newlines and carriage returns for safe storage in key=value format. */
+function encodeMetadataValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+}
+
+/** Decode escaped newlines and carriage returns from stored metadata. */
+function decodeMetadataValue(value: string): string {
+  let result = "";
+  let i = 0;
+  while (i < value.length) {
+    if (value[i] === "\\" && i + 1 < value.length) {
+      const next = value[i + 1];
+      if (next === "n") {
+        result += "\n";
+        i += 2;
+        continue;
+      } else if (next === "r") {
+        result += "\r";
+        i += 2;
+        continue;
+      } else if (next === "\\") {
+        result += "\\";
+        i += 2;
+        continue;
+      }
+    }
+    result += value[i];
+    i++;
+  }
+  return result;
+}
+
 /** Serialize a record back to key=value format. */
 function serializeMetadata(data: Record<string, string>): string {
   return (
@@ -100,6 +132,8 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
       : undefined,
     opencodeSessionId: raw["opencodeSessionId"],
     pinnedSummary: raw["pinnedSummary"],
+    promptDelivered: raw["promptDelivered"],
+    customPrompt: raw["customPrompt"] ? decodeMetadataValue(raw["customPrompt"]) : undefined,
   };
 }
 
@@ -168,6 +202,8 @@ export function writeMetadata(
     data["directTerminalWsPort"] = String(metadata.directTerminalWsPort);
   if (metadata.opencodeSessionId) data["opencodeSessionId"] = metadata.opencodeSessionId;
   if (metadata.pinnedSummary) data["pinnedSummary"] = metadata.pinnedSummary;
+  if (metadata.promptDelivered) data["promptDelivered"] = metadata.promptDelivered;
+  if (metadata.customPrompt) data["customPrompt"] = encodeMetadataValue(metadata.customPrompt);
 
   atomicWriteFileSync(path, serializeMetadata(data));
 }

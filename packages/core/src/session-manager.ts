@@ -1367,6 +1367,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         // Include promptDelivered placeholder — prevents incomplete metadata
         // if crash occurs between initial write and post-launch prompt delivery
         promptDelivered: agentLaunchConfig.prompt ? "pending" : undefined,
+        // Store custom prompt for reference (from --prompt flag)
+        customPrompt: spawnConfig.prompt,
       });
 
       if (plugins.agent.postLaunchSetup) {
