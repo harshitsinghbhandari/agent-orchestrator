@@ -34,6 +34,31 @@ describe("isOrchestratorSession", () => {
       ),
     ).toBe(true);
   });
+
+  it("does not filter out valid orchestrators when another project has orchestrator suffix as prefix", () => {
+    // Project A has prefix "app", Project B has prefix "app-orchestrator"
+    // app-orchestrator-1 is a valid orchestrator for Project A
+    // The cross-project check should NOT filter it out just because
+    // it matches the worker pattern for Project B
+    const allPrefixes = ["app", "app-orchestrator"];
+    expect(
+      isOrchestratorSession({ id: "app-orchestrator-1", metadata: {} }, "app", allPrefixes),
+    ).toBe(true);
+    expect(
+      isOrchestratorSession({ id: "app-orchestrator-42", metadata: {} }, "app", allPrefixes),
+    ).toBe(true);
+  });
+
+  it("still filters out workers that match another project's worker pattern", () => {
+    // app-worker-1 matches the worker pattern for prefix "app-worker"
+    // so it should be filtered out when checking prefix "app"
+    const allPrefixes = ["app", "app-worker"];
+    // Note: "app-worker-1" does not match the orchestrator pattern "^app-orchestrator-\d+$"
+    // so it fails the orchestrator format check before reaching the cross-project guard
+    expect(
+      isOrchestratorSession({ id: "app-worker-1", metadata: {} }, "app", allPrefixes),
+    ).toBe(false);
+  });
 });
 
 describe("isIssueNotFoundError", () => {

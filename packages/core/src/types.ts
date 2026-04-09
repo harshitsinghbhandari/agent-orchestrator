@@ -208,8 +208,13 @@ export function isOrchestratorSession(
   // numbered worker for any other known prefix (e.g. prefix "app-orchestrator"
   // matches "app-orchestrator-1" as a worker), it is not an orchestrator.
   if (allSessionPrefixes) {
+    const orchestratorSuffix = `${sessionPrefix}-orchestrator`;
     for (const prefix of allSessionPrefixes) {
       if (prefix === sessionPrefix) continue;
+      // Skip prefixes that would incorrectly filter out valid orchestrator IDs.
+      // E.g., if sessionPrefix is "app" and another prefix is "app-orchestrator",
+      // the pattern "app-orchestrator-\d+" would match our valid orchestrator ID.
+      if (prefix === orchestratorSuffix) continue;
       if (new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`).test(session.id)) {
         return false;
       }
