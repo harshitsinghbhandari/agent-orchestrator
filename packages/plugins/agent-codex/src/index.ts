@@ -16,6 +16,7 @@ import {
   type AgentLaunchConfig,
   type ActivityState,
   type ActivityDetection,
+  computeCost,
   type CostEstimate,
   type PluginModule,
   type ProjectConfig,
@@ -199,6 +200,8 @@ interface CodexSessionData {
   threadId: string | null;
   inputTokens: number;
   outputTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
 }
 
 /**
@@ -208,7 +211,14 @@ interface CodexSessionData {
  */
 async function streamCodexSessionData(filePath: string): Promise<CodexSessionData | null> {
   try {
-    const data: CodexSessionData = { model: null, threadId: null, inputTokens: 0, outputTokens: 0 };
+    const data: CodexSessionData = {
+      model: null,
+      threadId: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      reasoningTokens: 0,
+    };
     const rl = createInterface({
       input: createReadStream(filePath, { encoding: "utf-8" }),
       crlfDelay: Infinity,
@@ -231,6 +241,8 @@ async function streamCodexSessionData(filePath: string): Promise<CodexSessionDat
         if (entry.type === "event_msg" && entry.msg?.type === "token_count") {
           data.inputTokens += entry.msg.input_tokens ?? 0;
           data.outputTokens += entry.msg.output_tokens ?? 0;
+          data.cachedTokens += entry.msg.cached_tokens ?? 0;
+          data.reasoningTokens += entry.msg.reasoning_tokens ?? 0;
         }
       } catch {
         // Skip malformed lines
@@ -346,6 +358,7 @@ function createCodexAgent(): Agent {
   return {
     name: "codex",
     processName: "codex",
+    provider: "openai",
 
     getLaunchCommand(config: AgentLaunchConfig): string {
       const binary = resolvedBinary ?? "codex";
@@ -562,15 +575,17 @@ function createCodexAgent(): Agent {
 
       const agentSessionId = basename(sessionFile, ".jsonl");
 
-      const cost: CostEstimate | undefined =
-        data.inputTokens === 0 && data.outputTokens === 0
-          ? undefined
-          : {
-              inputTokens: data.inputTokens,
-              outputTokens: data.outputTokens,
-              estimatedCostUsd:
-                (data.inputTokens / 1_000_000) * 2.5 + (data.outputTokens / 1_000_000) * 10.0,
-            };
+      let cost: CostEstimate | undefined;
+      if (data.inputTokens > 0 || data.outputTokens > 0) {
+        cost = computeCost({
+          inputTokens: data.inputTokens,
+          outputTokens: data.outputTokens,
+          cachedReadTokens: data.cachedTokens > 0 ? data.cachedTokens : undefined,
+          reasoningTokens: data.reasoningTokens > 0 ? data.reasoningTokens : undefined,
+          provider: "openai",
+          model: data.model ?? "codex",
+        });
+      }
 
       return {
         summary: data.model ? `Codex session (${data.model})` : null,

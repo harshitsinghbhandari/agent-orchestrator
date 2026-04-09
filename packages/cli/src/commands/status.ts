@@ -42,6 +42,7 @@ interface SessionInfo {
   reviewDecision: ReviewDecision | null;
   pendingThreads: number | null;
   activity: ActivityState | null;
+  truncated: boolean;
 }
 
 interface StatusOptions {
@@ -162,6 +163,7 @@ async function gatherSessionInfo(
     reviewDecision,
     pendingThreads,
     activity,
+    truncated: !!session.metadata["promptTruncationReport"],
   };
 }
 
@@ -197,7 +199,7 @@ function printSessionRow(info: SessionInfo): void {
   const prStr = info.prNumber ? `#${info.prNumber}` : "-";
 
   const row =
-    padCol(chalk.green(info.name), COL.session) +
+    padCol(info.truncated ? chalk.yellow("⚠ ") + chalk.green(info.name) : chalk.green(info.name), COL.session) +
     padCol(info.branch ? chalk.cyan(info.branch) : chalk.dim("-"), COL.branch) +
     padCol(info.prNumber ? chalk.blue(prStr) : chalk.dim(prStr), COL.pr) +
     padCol(ciStatusIcon(info.ciStatus), COL.ci) +

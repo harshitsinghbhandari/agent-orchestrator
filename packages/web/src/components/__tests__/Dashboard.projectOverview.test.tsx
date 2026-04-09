@@ -179,6 +179,30 @@ describe("Dashboard OrchestratorControl in single-project view", () => {
     global.fetch = vi.fn();
   });
 
+  it("does not render OrchestratorControl when projectId is undefined (all-projects view)", () => {
+    render(
+      <Dashboard
+        initialSessions={[makeSession({ projectId: "my-app" })]}
+        projects={[
+          { id: "my-app", name: "My App" },
+          { id: "docs-app", name: "Docs App" },
+        ]}
+        orchestrators={[{ id: "my-app-orchestrator", projectId: "my-app", projectName: "My App" }]}
+      />,
+    );
+
+    // In all-projects view (no projectId), OrchestratorControl should not render
+    // OrchestratorControl shows links/buttons with text containing "orchestrator" (not "PRs")
+    // Check that no such element exists in the hero meta section
+    const heroMeta = document.querySelector(".dashboard-hero__meta");
+    expect(heroMeta).toBeInTheDocument();
+
+    // OrchestratorControl renders: "orchestrators" (empty), "orchestrator" (single), or "N orchestrators" (multiple)
+    // None of these should be present in all-projects view
+    const orchestratorTextInHero = heroMeta?.textContent?.match(/\borchestrator\b/i);
+    expect(orchestratorTextInHero).toBeNull();
+  });
+
   it("shows orchestrators link to picker when no orchestrators are running", () => {
     render(
       <Dashboard

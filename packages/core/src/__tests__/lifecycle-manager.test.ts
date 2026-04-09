@@ -18,6 +18,7 @@ import {
   createMockSCM,
   createMockNotifier,
   makeSession,
+  makeHandle,
   makePR,
   type TestEnvironment,
   type MockPlugins,
@@ -86,9 +87,23 @@ describe("start / stop", () => {
 });
 
 describe("check (single session)", () => {
-  it("detects transition from spawning to working", async () => {
+  it("detects transition from spawning to working and emits session.spawned", async () => {
+    const notifier = createMockNotifier();
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    config.notificationRouting.info = ["desktop"];
+
     const lm = setupCheck("app-1", {
       session: makeSession({ status: "spawning" }),
+      registry,
     });
 
     await lm.check("app-1");
@@ -96,6 +111,10 @@ describe("check (single session)", () => {
     expect(lm.getStates().get("app-1")).toBe("working");
     const meta = readMetadataRaw(env.sessionsDir, "app-1");
     expect(meta!["status"]).toBe("working");
+    // Verify session.spawned event is emitted when transitioning FROM spawning
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session.spawned" }),
+    );
   });
 
   it("uses worker-specific agent fallback when metadata does not persist an agent", async () => {
@@ -1328,6 +1347,51 @@ describe("reactions", () => {
       expect.objectContaining({ type: "merge.completed" }),
     );
   });
+
+  // Table-driven tests for terminal status transitions that emit session.exited
+  it.each([
+    { status: "done" as SessionStatus, description: "done" },
+    { status: "terminated" as SessionStatus, description: "terminated" },
+    { status: "cleanup" as SessionStatus, description: "cleanup" },
+  ])("emits session.exited event when session transitions to $description status", async ({ status }) => {
+    const notifier = createMockNotifier();
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    config.notificationRouting.info = ["desktop"];
+
+    // Session has terminal status but metadata has "working" to trigger a transition
+    vi.mocked(mockSessionManager.get).mockResolvedValue(
+      makeSession({ status, metadata: { status: "working" } }),
+    );
+
+    writeMetadata(env.sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config,
+      registry,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe(status);
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session.exited" }),
+    );
+  });
 });
 
 describe("pollAll terminal status accounting", () => {
@@ -1456,6 +1520,72 @@ describe("pollAll terminal status accounting", () => {
 
     // Terminal sessions should not be polled — runtime.isAlive should not be called
     expect(plugins.runtime.isAlive).not.toHaveBeenCalled();
+
+    lm.stop();
+  });
+
+  it("does not fire spurious 'killed' notification on startup for sessions already dead", async () => {
+    // Regression test for issue #41: empty states Map causes false killed notifications
+    // When lifecycle manager starts, sessions that were already dead (stale metadata shows
+    // "working" but runtime is not alive) should not trigger "session.killed" notifications.
+    //
+    // Scenario: list() returns status "working" (stale), but runtime.isAlive returns false,
+    // so determineStatus() computes "killed". Without the fix, this would cause a false
+    // "working → killed" transition on first poll. With the fix, first poll pre-populates
+    // states with the computed status ("killed"), so no transition is detected.
+
+    const notifier = createMockNotifier();
+    const registryWithNotifier: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return plugins.runtime;
+        if (slot === "agent") return plugins.agent;
+        if (slot === "notifier" && name === "desktop") return notifier;
+        return null;
+      }),
+    };
+
+    // Session with status "working" (stale — list() hasn't detected dead runtime yet)
+    // but runtime is actually dead. This simulates the case where runtime handle metadata
+    // is fabricated/missing, so list() can't detect the dead runtime.
+    const session = makeSession({
+      id: "s-dead",
+      status: "working" as SessionStatus,
+      metadata: { status: "working" },
+      runtimeHandle: makeHandle("tmux-session-dead"),
+    });
+
+    vi.mocked(mockSessionManager.list).mockResolvedValue([session]);
+
+    // Mock runtime to report session as dead — this makes determineStatus() return "killed"
+    vi.mocked(plugins.runtime.isAlive).mockResolvedValue(false);
+
+    // Route notifications to desktop so we can observe them
+    config.notificationRouting.info = ["desktop"];
+    config.notificationRouting.urgent = ["desktop"];
+    config.notificationRouting.warning = ["desktop"];
+
+    const lm = createLifecycleManager({
+      config,
+      registry: registryWithNotifier,
+      sessionManager: mockSessionManager,
+    });
+
+    lm.start(60_000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should NOT have fired a "session.killed" notification on startup
+    // because the session was already dead — we're establishing baseline, not detecting transition
+    const killedNotifications = vi.mocked(notifier.notify).mock.calls.filter(
+      (call: unknown[]) => {
+        const event = call[0] as Record<string, unknown> | undefined;
+        return event?.type === "session.killed";
+      },
+    );
+    expect(killedNotifications).toHaveLength(0);
+
+    // Verify states Map was pre-populated with the computed status
+    expect(lm.getStates().get("s-dead")).toBe("killed");
 
     lm.stop();
   });

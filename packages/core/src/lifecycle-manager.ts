@@ -16,6 +16,7 @@ import {
   PR_STATE,
   CI_STATUS,
   TERMINAL_STATUSES,
+  isOrchestratorSession,
   type LifecycleManager,
   type SessionManager,
   type SessionId,
@@ -103,8 +104,24 @@ function createEvent(
   };
 }
 
-/** Determine which event type corresponds to a status transition. */
-function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus): EventType | null {
+/**
+ * Determine which event type corresponds to a status transition.
+ *
+ * Most events are based on the target status (`to`), but some transitions
+ * are identified by the source status (`from`):
+ * - `spawning → *` emits `session.spawned` (session just became active)
+ *
+ * Note: `determineStatus()` never returns "spawning" or "idle" directly,
+ * so those target-based mappings are included for completeness if external
+ * code sets these statuses explicitly.
+ */
+function statusToEventType(from: SessionStatus | undefined, to: SessionStatus): EventType | null {
+  // Emit session.spawned when transitioning OUT of spawning state
+  // (determineStatus() converts spawning → working, so we detect via `from`)
+  if (from === "spawning" && to !== "spawning") {
+    return "session.spawned";
+  }
+
   switch (to) {
     case "working":
       return "session.working";
@@ -122,6 +139,12 @@ function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus):
       return "merge.ready";
     case "merged":
       return "merge.completed";
+    case "cleanup":
+    case "done":
+    case "terminated":
+      return "session.exited";
+    case "idle":
+      return "session.idle";
     case "needs_input":
       return "session.needs_input";
     case "stuck":
@@ -199,11 +222,13 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   const reactionTrackers = new Map<string, ReactionTracker>(); // "sessionId:reactionKey"
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let polling = false; // re-entrancy guard
-  let allCompleteEmitted = false; // guard against repeated all_complete
+  /** Per-project guard against repeated all_complete notifications. */
+  const allCompleteEmittedByProject = new Map<string, boolean>();
+  let firstPoll = true; // track first poll to pre-populate states without transitions
 
   /**
    * Cache for PR enrichment data within a single poll cycle.
-   * Cleared at the start of each pollAll() call.
+   * Cleared at the very start of pollAll() before any session processing.
    * Key format: "${owner}/${repo}#${number}"
    */
   const prEnrichmentCache = new Map<string, PREnrichmentData>();
@@ -221,10 +246,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   /**
    * Populate the PR enrichment cache using batch GraphQL queries.
    * This is called once per poll cycle to fetch data for all PRs efficiently.
+   * Note: Cache is cleared at the start of pollAll(), not here, to ensure
+   * stale data is removed even if this function exits early.
    */
   async function populatePREnrichmentCache(sessions: Session[]): Promise<void> {
-    // Clear previous cache
-    prEnrichmentCache.clear();
 
     // Collect all unique PRs
     const prs = sessions
@@ -449,8 +474,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       scm &&
       session.branch &&
       session.metadata["prAutoDetect"] !== "off" &&
-      session.metadata["role"] !== "orchestrator" &&
-      !session.id.endsWith("-orchestrator")
+      !isOrchestratorSession(session, project.sessionPrefix)
     ) {
       try {
         const detectedPR = await scm.detectPR(session, project);
@@ -539,7 +563,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
         return "pr_open";
       } catch {
-        // SCM check failed — keep current status
+        // SCM check failed — preserve current status to avoid downgrading
+        // stuck/needs_input to working via the default fallback below
+        return session.status;
       }
     }
 
@@ -1022,8 +1048,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return;
     }
 
-    // Skip if we already dispatched this exact failure set
-    if (ciFingerprint === lastCIDispatchHash) return;
+    // Skip if we already dispatched this exact failure set, unless the dispatch
+    // is stale (>30 min). This prevents duplicate dispatches while allowing
+    // re-notification when the same failures recur after a significant gap.
+    // Treat missing/invalid timestamp as stale to avoid locking upgraded sessions.
+    if (ciFingerprint === lastCIDispatchHash) {
+      const lastDispatchAt = session.metadata["lastCIFailureDispatchAt"];
+      const CI_FINGERPRINT_STALENESS_MS = 30 * 60 * 1000; // 30 minutes
+      if (lastDispatchAt) {
+        const staleness = Date.now() - new Date(lastDispatchAt).getTime();
+        if (!Number.isNaN(staleness) && staleness < CI_FINGERPRINT_STALENESS_MS) {
+          return; // Recent dispatch — skip
+        }
+        // Stale or invalid timestamp — allow re-notification for same fingerprint
+      }
+      // Missing timestamp treated as stale — allow re-notification
+    }
 
     // Dispatch CI failure details directly via sessionManager.send() rather than
     // executeReaction() to avoid consuming the ci-failed reaction's retry budget.
@@ -1207,9 +1247,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         level: transitionLogLevel(newStatus),
       });
 
-      // Reset allCompleteEmitted when any session becomes active again
+      // Reset allCompleteEmitted for this session's project when it becomes active again
       if (!TERMINAL_STATUSES.has(newStatus)) {
-        allCompleteEmitted = false;
+        allCompleteEmittedByProject.set(session.projectId, false);
       }
 
       // Clear reaction trackers for the old status so retries reset on state changes
@@ -1223,6 +1263,17 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       // Handle transition: notify humans and/or trigger reactions
       const eventType = statusToEventType(oldStatus, newStatus);
+
+      // Also clear the NEW status's reaction tracker so the transition dispatch
+      // starts fresh. This prevents stale retry counts from a previous visit to
+      // this status from affecting the new reaction.
+      if (eventType) {
+        const newReactionKey = eventToReactionKey(eventType);
+        const oldReactionKey = oldEventType ? eventToReactionKey(oldEventType) : null;
+        if (newReactionKey && newReactionKey !== oldReactionKey) {
+          clearReactionTracker(session.id, newReactionKey);
+        }
+      }
       if (eventType) {
         let reactionHandledNotify = false;
         const reactionKey = eventToReactionKey(eventType);
@@ -1278,8 +1329,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       if (trimmed.length >= 5) {
         try {
           updateSessionMetadata(session, { pinnedSummary: trimmed });
-        } catch {
+        } catch (err) {
           // Non-critical: title just won't be pinned this cycle
+          console.warn(`[lifecycle-manager] Failed to pin summary for ${session.id}:`, err);
         }
       }
     }
@@ -1299,6 +1351,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     if (polling) return;
     polling = true;
 
+    // Clear PR enrichment cache at the start of each poll cycle to ensure
+    // no stale data from previous cycles or dead sessions is used
+    prEnrichmentCache.clear();
+
     try {
       const sessions = await sessionManager.list(scopedProjectId);
 
@@ -1315,45 +1371,118 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       // This reduces API calls from N×3 to 1 per poll cycle
       await populatePREnrichmentCache(sessionsToCheck);
 
+      // On first poll, pre-populate states Map to prevent false TERMINAL state transitions.
+      // Issue #41: when list() returns stale non-terminal status but runtime is dead,
+      // determineStatus() returns "killed", causing a false "working → killed" notification.
+      //
+      // Fix: Only pre-populate sessions where computed status is TERMINAL but list() status
+      // is NON-TERMINAL. This prevents false terminal notifications while still allowing
+      // legitimate non-terminal transitions (e.g., pr_open → ci_failed) to be detected.
+      //
+      // This runs AFTER batch enrichment cache is populated so determineStatus() can
+      // use cached PR data and avoid redundant API calls.
+      if (firstPoll) {
+        // Pre-populate terminal sessions with their list() status (they won't be polled)
+        for (const session of sessions) {
+          if (TERMINAL_STATUSES.has(session.status)) {
+            states.set(session.id, session.status);
+          }
+        }
+        // For non-terminal sessions, check if computed status is terminal (dead runtime)
+        // Only pre-populate those to prevent false terminal notifications
+        const computedStatuses = await Promise.all(
+          sessionsToCheck.map(async (session) => ({
+            id: session.id,
+            listStatus: session.status,
+            computedStatus: await determineStatus(session),
+          })),
+        );
+        for (const { id, listStatus, computedStatus } of computedStatuses) {
+          // Only pre-populate if transitioning TO a terminal state from non-terminal
+          // This prevents false "working → killed" notifications on startup
+          if (!TERMINAL_STATUSES.has(listStatus) && TERMINAL_STATUSES.has(computedStatus)) {
+            states.set(id, computedStatus);
+          }
+        }
+        firstPoll = false;
+      }
+
       // Poll all sessions concurrently
       await Promise.allSettled(sessionsToCheck.map((s) => checkSession(s)));
 
       // Prune stale entries from states, reactionTrackers, and lastReviewBacklogCheckAt
       // for sessions that no longer appear in the session list (e.g., after kill/cleanup)
+      // Collect keys to delete first to avoid mutating during iteration
       const currentSessionIds = new Set(sessions.map((s) => s.id));
-      for (const trackedId of states.keys()) {
-        if (!currentSessionIds.has(trackedId)) {
-          states.delete(trackedId);
-        }
-      }
-      for (const trackerKey of reactionTrackers.keys()) {
-        const sessionId = trackerKey.split(":")[0];
-        if (sessionId && !currentSessionIds.has(sessionId)) {
-          reactionTrackers.delete(trackerKey);
-        }
-      }
-      for (const sessionId of lastReviewBacklogCheckAt.keys()) {
-        if (!currentSessionIds.has(sessionId)) {
-          lastReviewBacklogCheckAt.delete(sessionId);
-        }
+
+      const staleStateIds = [...states.keys()].filter((id) => !currentSessionIds.has(id));
+      for (const id of staleStateIds) {
+        states.delete(id);
       }
 
-      // Check if all sessions are complete (trigger reaction only once)
-      const activeSessions = sessions.filter((s) => !TERMINAL_STATUSES.has(s.status));
-      if (sessions.length > 0 && activeSessions.length === 0 && !allCompleteEmitted) {
-        allCompleteEmitted = true;
+      // Tracker key format is "sessionId:reactionKey". Use lastIndexOf since
+      // reactionKey never contains ":" (it's a fixed set like "ci-failed"),
+      // allowing sessionIds with ":" to be parsed correctly (though uncommon).
+      const staleTrackerKeys = [...reactionTrackers.keys()].filter((key) => {
+        const colonIdx = key.lastIndexOf(":");
+        const sessionId = colonIdx >= 0 ? key.slice(0, colonIdx) : key;
+        return sessionId && !currentSessionIds.has(sessionId);
+      });
+      for (const key of staleTrackerKeys) {
+        reactionTrackers.delete(key);
+      }
 
-        // Execute all-complete reaction if configured
-        const reactionKey = eventToReactionKey("summary.all_complete");
-        if (reactionKey) {
-          const reactionConfig = config.reactions[reactionKey];
-          if (reactionConfig && reactionConfig.action) {
-            if (reactionConfig.auto !== false || reactionConfig.action === "notify") {
-              await executeReaction("system", "all", reactionKey, reactionConfig as ReactionConfig);
+      const staleBacklogIds = [...lastReviewBacklogCheckAt.keys()].filter(
+        (id) => !currentSessionIds.has(id),
+      );
+      for (const id of staleBacklogIds) {
+        lastReviewBacklogCheckAt.delete(id);
+      }
+
+      // Check if all sessions are complete per-project (trigger reaction only once per project)
+      // Group sessions by project and check each project independently
+      const sessionsByProject = new Map<string, Session[]>();
+      for (const session of sessions) {
+        const projectSessions = sessionsByProject.get(session.projectId) ?? [];
+        projectSessions.push(session);
+        sessionsByProject.set(session.projectId, projectSessions);
+      }
+
+      // Prune allCompleteEmittedByProject for projects not in current sessions list
+      const currentProjectIds = new Set(sessionsByProject.keys());
+      const staleProjectIds = [...allCompleteEmittedByProject.keys()].filter(
+        (id) => !currentProjectIds.has(id),
+      );
+      for (const id of staleProjectIds) {
+        allCompleteEmittedByProject.delete(id);
+      }
+
+      for (const [projectId, projectSessions] of sessionsByProject) {
+        const activeInProject = projectSessions.filter((s) => !TERMINAL_STATUSES.has(s.status));
+        const alreadyEmitted = allCompleteEmittedByProject.get(projectId) ?? false;
+
+        // Reset the guard when any active sessions exist (handles new sessions appearing
+        // without a status transition, which wouldn't trigger the reset in checkSession)
+        if (activeInProject.length > 0) {
+          allCompleteEmittedByProject.set(projectId, false);
+        } else if (projectSessions.length > 0 && !alreadyEmitted) {
+          allCompleteEmittedByProject.set(projectId, true);
+
+          // Execute all-complete reaction if configured
+          // Use system:${projectId} as sessionId so retry/escalation tracking is isolated per project
+          const reactionKey = eventToReactionKey("summary.all_complete");
+          if (reactionKey) {
+            const reactionConfig = config.reactions[reactionKey];
+            if (reactionConfig && reactionConfig.action) {
+              if (reactionConfig.auto !== false || reactionConfig.action === "notify") {
+                await executeReaction(`system:${projectId}`, projectId, reactionKey, reactionConfig as ReactionConfig);
+              }
             }
           }
         }
       }
+
+      const activeSessions = sessions.filter((s) => !TERMINAL_STATUSES.has(s.status));
       if (scopedProjectId) {
         observer.recordOperation({
           metric: "lifecycle_poll",

@@ -197,8 +197,28 @@ export function isOrchestratorSession(
   if (session.metadata?.["role"] === "orchestrator" || session.id.endsWith("-orchestrator")) {
     return true;
   }
+  // When no prefix is provided, check for generic orchestrator patterns.
+  // This catches numbered orchestrator IDs like "app-orchestrator-1" when the
+  // prefix is unavailable (e.g., during lifecycle checks on individual sessions).
   if (!sessionPrefix) {
-    return false;
+    // Match any ID ending with "-orchestrator-N" pattern
+    if (!/-orchestrator-\d+$/.test(session.id)) {
+      return false;
+    }
+    // Guard against false positives: if allSessionPrefixes is provided, check
+    // if this ID is actually a worker for a prefix ending in "-orchestrator".
+    // E.g., "my-orchestrator-1" is a worker when prefix is "my-orchestrator".
+    if (allSessionPrefixes) {
+      for (const prefix of allSessionPrefixes) {
+        if (prefix.endsWith("-orchestrator")) {
+          const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (new RegExp(`^${escaped}-\\d+$`).test(session.id)) {
+            return false; // It's a worker for this prefix, not an orchestrator
+          }
+        }
+      }
+    }
+    return true;
   }
   const escaped = sessionPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (!new RegExp(`^${escaped}-orchestrator-\\d+$`).test(session.id)) {
@@ -208,13 +228,14 @@ export function isOrchestratorSession(
   // numbered worker for any other known prefix (e.g. prefix "app-orchestrator"
   // matches "app-orchestrator-1" as a worker), it is not an orchestrator.
   if (allSessionPrefixes) {
+    const orchestratorSuffix = `${sessionPrefix}-orchestrator`;
     for (const prefix of allSessionPrefixes) {
       if (prefix === sessionPrefix) continue;
-      if (
-        new RegExp(
-          `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`,
-        ).test(session.id)
-      ) {
+      // Skip prefixes that would incorrectly filter out valid orchestrator IDs.
+      // E.g., if sessionPrefix is "app" and another prefix is "app-orchestrator",
+      // the pattern "app-orchestrator-\d+" would match our valid orchestrator ID.
+      if (prefix === orchestratorSuffix) continue;
+      if (new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`).test(session.id)) {
         return false;
       }
     }
@@ -236,6 +257,8 @@ export interface SessionSpawnConfig {
   lineage?: string[];
   /** Decomposition context — sibling task descriptions (passed to prompt builder) */
   siblings?: string[];
+  /** Override the default prompt budget for this spawn */
+  maxPromptTokens?: number;
 }
 
 /** Config for creating an orchestrator session */
@@ -322,6 +345,9 @@ export interface Agent {
 
   /** Process name to look for (e.g. "claude", "codex", "aider") */
   readonly processName: string;
+
+  /** The LLM provider this agent uses (for cost estimation fallback) */
+  readonly provider?: "anthropic" | "openai" | "unknown";
 
   /**
    * How the initial prompt should be delivered to the agent.
@@ -453,6 +479,20 @@ export interface CostEstimate {
   inputTokens: number;
   outputTokens: number;
   estimatedCostUsd: number;
+  /** Tokens read from provider cache (e.g. Claude Prompt Caching) */
+  cachedReadTokens?: number;
+  /** Tokens added to provider cache (e.g. Claude Prompt Caching) */
+  cacheCreationTokens?: number;
+  /** Tokens used for model reasoning/thinking (e.g. o1/o3/Claude 3.7) */
+  reasoningTokens?: number;
+  /** Model name used for this estimate */
+  model?: string;
+  /** Provider name used for this estimate */
+  provider?: string;
+  /** ISO date when this pricing was effective */
+  pricingDate?: string;
+  /** ISO timestamp of last enrichment */
+  lastUpdatedAt?: string;
 }
 
 // =============================================================================
@@ -662,7 +702,10 @@ export interface SCM {
    * @param observer - Optional observer for batch operation metrics
    * @returns Map keyed by "${owner}/${repo}#${number}" containing enrichment data
    */
-  enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver): Promise<Map<string, PREnrichmentData>>;
+  enrichSessionsPRBatch?(
+    prs: PRInfo[],
+    observer?: BatchObserver,
+  ): Promise<Map<string, PREnrichmentData>>;
 }
 
 // --- PR Types ---
@@ -1042,6 +1085,20 @@ export interface OrchestratorConfig {
   /** Default reaction configs */
   reactions: Record<string, ReactionConfig>;
 
+  /** Optional pricing overrides file */
+  pricing?: {
+    file: string;
+  };
+
+  /** Optional model overrides */
+  models?: {
+    overrides?: Array<{
+      provider: string;
+      model: string;
+      safePromptBudget: number;
+    }>;
+  };
+
   /**
    * Internal: External plugin entries collected from inline tracker/scm/notifier configs.
    * Used by plugin-registry for manifest validation. Set automatically during config validation.
@@ -1383,12 +1440,13 @@ export interface SessionMetadata {
   createdAt?: string;
   runtimeHandle?: string;
   restoredAt?: string;
-  role?: string; // "orchestrator" for orchestrator sessions
+  role?: "orchestrator" | "worker"; // Session role: "orchestrator" or "worker"
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;
   opencodeSessionId?: string;
   pinnedSummary?: string; // First quality summary, pinned for display stability
+  promptDelivered?: string; // "pending" | "true" | "false" — tracks post-launch prompt delivery
 }
 
 // =============================================================================

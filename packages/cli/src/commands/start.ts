@@ -30,6 +30,7 @@ import {
   normalizeOrchestratorSessionStrategy,
   isOrchestratorSession,
   isTerminalSession,
+  isRestorable,
   ConfigNotFoundError,
   type OrchestratorConfig,
   type ProjectConfig,
@@ -48,7 +49,7 @@ import {
   findFreePort,
   MAX_PORT_SCAN,
 } from "../lib/web-dir.js";
-import { cleanNextCache } from "../lib/dashboard-rebuild.js";
+import { rebuildDashboardProductionArtifacts } from "../lib/dashboard-rebuild.js";
 import { preflight } from "../lib/preflight.js";
 import { register, unregister, isAlreadyRunning, getRunning, waitForExit } from "../lib/running-state.js";
 import { isHumanCaller } from "../lib/caller-context.js";
@@ -749,22 +750,29 @@ export async function createConfigOnly(): Promise<void> {
  * Start dashboard server in the background.
  * Returns the child process handle for cleanup.
  */
+/* c8 ignore start -- process-spawning startup code, tested via integration/onboarding */
 async function startDashboard(
   port: number,
   webDir: string,
   configPath: string | null,
   terminalPort?: number,
   directTerminalPort?: number,
+  devMode?: boolean,
 ): Promise<ChildProcess> {
   const env = await buildDashboardEnv(port, configPath, terminalPort, directTerminalPort);
 
-  // Detect dev vs production: the `server/` source directory only exists in the
-  // monorepo. Published npm packages only have `dist-server/`.
-  const isDevMode = existsSync(resolve(webDir, "server"));
+  // Detect monorepo vs npm install: the `server/` source directory only exists
+  // in the monorepo. Published npm packages only have `dist-server/`.
+  const isMonorepo = existsSync(resolve(webDir, "server"));
+
+  // In monorepo: use HMR dev server only when --dev is passed explicitly.
+  // Default is optimized production server for faster loading.
+  const useDevServer = isMonorepo && devMode === true;
 
   let child: ChildProcess;
-  if (isDevMode) {
-    // Monorepo development: use pnpm run dev (tsx, HMR, etc.)
+  if (useDevServer) {
+    // Monorepo with --dev: use pnpm run dev (tsx watch, HMR, etc.)
+    console.log(chalk.dim("  Mode: development (HMR enabled)"));
     child = spawn("pnpm", ["run", "dev"], {
       cwd: webDir,
       stdio: "inherit",
@@ -772,8 +780,13 @@ async function startDashboard(
       env,
     });
   } else {
-    // Production (installed from npm): use pre-built start-all script
-    child = spawn("node", [resolve(webDir, "dist-server", "start-all.js")], {
+    // Production: use pre-built start-all script.
+    if (isMonorepo) {
+      console.log(chalk.dim("  Mode: optimized (production bundles)"));
+      console.log(chalk.dim("  Tip: use --dev for hot reload when editing dashboard UI\n"));
+    }
+    const startScript = resolve(webDir, "dist-server", "start-all.js");
+    child = spawn("node", [startScript], {
       cwd: webDir,
       stdio: "inherit",
       detached: false,
@@ -782,8 +795,8 @@ async function startDashboard(
   }
 
   child.on("error", (err) => {
-    const cmd = isDevMode ? "pnpm" : "node";
-    const args = isDevMode ? ["run", "dev"] : [resolve(webDir, "dist-server", "start-all.js")];
+    const cmd = useDevServer ? "pnpm" : "node";
+    const args = useDevServer ? ["run", "dev"] : [resolve(webDir, "dist-server", "start-all.js")];
     const formatted = formatCommandError(err, {
       cmd,
       args,
@@ -797,6 +810,7 @@ async function startDashboard(
 
   return child;
 }
+/* c8 ignore stop */
 
 /**
  * Ensure tmux is available — interactive install with user consent if missing.
@@ -899,7 +913,7 @@ async function runStartup(
   config: OrchestratorConfig,
   projectId: string,
   project: ProjectConfig,
-  opts?: { dashboard?: boolean; orchestrator?: boolean; rebuild?: boolean },
+  opts?: { dashboard?: boolean; orchestrator?: boolean; rebuild?: boolean; dev?: boolean },
 ): Promise<number> {
   // Ensure tmux is available before doing anything — covers all entry paths
   // (normal start, URL start, retry with existing config)
@@ -950,10 +964,15 @@ async function runStartup(
       port = newPort;
     }
     const webDir = findWebDir(); // throws with install-specific guidance if not found
-    await preflight.checkBuilt(webDir);
-
+    // Dev mode (HMR) only works in the monorepo where `server/` source exists.
+    // For npm installs, --dev is silently ignored and production server runs,
+    // so preflight must still verify production artifacts exist.
+    const isMonorepo = existsSync(resolve(webDir, "server"));
+    const willUseDevServer = isMonorepo && opts?.dev === true;
     if (opts?.rebuild) {
-      await cleanNextCache(webDir);
+      await rebuildDashboardProductionArtifacts(webDir);
+    } else if (!willUseDevServer) {
+      await preflight.checkBuilt(webDir);
     }
 
     spinner.start("Starting dashboard");
@@ -963,6 +982,7 @@ async function runStartup(
       config.configPath,
       config.terminalPort,
       config.directTerminalPort,
+      opts?.dev,
     );
     spinner.succeed(`Dashboard starting on http://localhost:${port}`);
     console.log(chalk.dim("  (Dashboard will be ready in a few seconds)\n"));
@@ -993,6 +1013,7 @@ async function runStartup(
   let tmuxTarget = sessionId;
   let hasExistingOrchestrators = false;
   let selectedOrchestratorId: string | null = null;
+  let orchestratorSkipped = false;
 
   if (opts?.orchestrator !== false) {
     const sm = await getSessionManager(config);
@@ -1014,56 +1035,153 @@ async function runStartup(
     const allSessionPrefixes = Object.entries(config.projects).map(
       ([, p]) => p.sessionPrefix ?? generateSessionPrefix(p.name ?? ""),
     );
-    const existingOrchestrators = allSessions.filter(
-      (s) =>
-        isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes) &&
-        !isTerminalSession(s),
+    // Separate running orchestrators from restorable (killed) ones
+    const allOrchestrators = allSessions.filter(
+      (s) => isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes),
+    );
+    const runningOrchestrators = allOrchestrators.filter((s) => !isTerminalSession(s));
+    const restorableOrchestrators = allOrchestrators.filter(
+      (s) => isTerminalSession(s) && isRestorable(s),
     );
 
-    if (existingOrchestrators.length > 0) {
-      // Existing orchestrators found — always auto-select the most recently active one.
+    if (runningOrchestrators.length > 0) {
+      // Running orchestrators found — always auto-select the most recently active one.
       // With a single orchestrator, navigate directly to its session page.
       // With multiple orchestrators, keep the selection page so the user can choose or spawn a
       // new one — the dashboard only links to one orchestrator per project, so the selection page
       // is the only startup path for multi-orchestrator projects.
-      const sortedOrchestrators = [...existingOrchestrators].sort(
+      const sortedOrchestrators = [...runningOrchestrators].sort(
         (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
       );
       const selected = sortedOrchestrators[0];
       selectedOrchestratorId = selected.id;
       // Use runtimeHandle.id if available, otherwise fall back to the session ID
       tmuxTarget = selected.runtimeHandle?.id ?? selected.id;
-      if (opts?.dashboard !== false && existingOrchestrators.length > 1) {
+      if (opts?.dashboard !== false && runningOrchestrators.length > 1) {
         hasExistingOrchestrators = true;
       }
       spinner.succeed(
         `Using existing orchestrator session: ${selected.id}` +
-          (existingOrchestrators.length > 1
-            ? ` (${existingOrchestrators.length - 1} other session(s) available)` : ""),
+          (runningOrchestrators.length > 1
+            ? ` (${runningOrchestrators.length - 1} other session(s) available)` : ""),
       );
-    } else {
-      // No existing orchestrators — spawn a new one
-      try {
-        spinner.start("Creating orchestrator session");
-        const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
-        const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
-        selectedOrchestratorId = session.id;
-        if (session.runtimeHandle?.id) {
-          tmuxTarget = session.runtimeHandle.id;
-        }
-        reused =
-          orchestratorSessionStrategy === "reuse" &&
-          session.metadata?.["orchestratorSessionReused"] === "true";
-        spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
-      } catch (err) {
-        spinner.fail("Orchestrator setup failed");
-        if (dashboardProcess) {
-          dashboardProcess.kill();
-        }
-        throw new Error(
-          `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
+    } else if (restorableOrchestrators.length > 0) {
+      // No running orchestrators, but found restorable (killed) ones — prompt to resume
+      const sortedRestorable = [...restorableOrchestrators].sort(
+        (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
+      );
+      const lastSession = sortedRestorable[0];
+
+      if (!canPromptForInstall()) {
+        // Non-interactive context — inform user about restorable session
+        console.log(chalk.yellow(`Found last orchestrator session: ${lastSession.id}`));
+        console.log(chalk.dim("  Run 'ao start' interactively to resume it."));
+        orchestratorSkipped = true;
+      } else {
+        // Interactive context — prompt user to resume the last session
+        const shouldResume = await promptConfirm(
+          `Found last orchestrator session: ${lastSession.id}. Resume it?`,
+          true,
         );
+
+        if (shouldResume) {
+          try {
+            spinner.start(`Resuming orchestrator session: ${lastSession.id}`);
+            const restored = await sm.restore(lastSession.id);
+            selectedOrchestratorId = restored.id;
+            if (restored.runtimeHandle?.id) {
+              tmuxTarget = restored.runtimeHandle.id;
+            }
+            spinner.succeed(`Orchestrator session resumed: ${restored.id}`);
+          } catch (err) {
+            spinner.fail("Failed to resume orchestrator session");
+            if (dashboardProcess) {
+              dashboardProcess.kill();
+            }
+            throw new Error(
+              `Failed to resume orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
+            );
+          }
+        } else {
+          // User declined to resume — prompt to create new
+          const shouldSpawn = await promptConfirm(
+            "Create a new orchestrator session instead?",
+            true,
+          );
+
+          if (shouldSpawn) {
+            try {
+              spinner.start("Creating orchestrator session");
+              const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
+              const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
+              selectedOrchestratorId = session.id;
+              if (session.runtimeHandle?.id) {
+                tmuxTarget = session.runtimeHandle.id;
+              }
+              reused =
+                orchestratorSessionStrategy === "reuse" &&
+                session.metadata?.["orchestratorSessionReused"] === "true";
+              spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
+            } catch (err) {
+              spinner.fail("Orchestrator setup failed");
+              if (dashboardProcess) {
+                dashboardProcess.kill();
+              }
+              throw new Error(
+                `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+                { cause: err },
+              );
+            }
+          } else {
+            console.log(chalk.yellow("Skipped orchestrator session."));
+            console.log(chalk.dim("  You can create or resume one via the dashboard."));
+            orchestratorSkipped = true;
+          }
+        }
+      }
+    } else {
+      // No orchestrators at all — prompt user before spawning (never auto-spawn)
+      if (!canPromptForInstall()) {
+        // Non-interactive context — inform user and skip orchestrator spawn
+        console.log(chalk.yellow("No orchestrator session found."));
+        console.log(chalk.dim("  Run 'ao start' interactively to create one."));
+        orchestratorSkipped = true;
+      } else {
+        // Interactive context — prompt user to confirm spawning
+        const shouldSpawn = await promptConfirm(
+          "No orchestrator session found. Create a new orchestrator session?",
+          true,
+        );
+
+        if (shouldSpawn) {
+          try {
+            spinner.start("Creating orchestrator session");
+            const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
+            const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
+            selectedOrchestratorId = session.id;
+            if (session.runtimeHandle?.id) {
+              tmuxTarget = session.runtimeHandle.id;
+            }
+            reused =
+              orchestratorSessionStrategy === "reuse" &&
+              session.metadata?.["orchestratorSessionReused"] === "true";
+            spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
+          } catch (err) {
+            spinner.fail("Orchestrator setup failed");
+            if (dashboardProcess) {
+              dashboardProcess.kill();
+            }
+            throw new Error(
+              `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
+            );
+          }
+        } else {
+          console.log(chalk.yellow("Skipped orchestrator session creation."));
+          console.log(chalk.dim("  You can create one later via the dashboard."));
+          orchestratorSkipped = true;
+        }
       }
     }
   }
@@ -1083,7 +1201,12 @@ async function runStartup(
     console.log(chalk.cyan("Lifecycle:"), lifecycleTarget);
   }
 
-  if (hasExistingOrchestrators) {
+  if (orchestratorSkipped) {
+    console.log(
+      chalk.cyan("Orchestrator:"),
+      chalk.yellow("skipped — create or resume one via the dashboard"),
+    );
+  } else if (hasExistingOrchestrators) {
     console.log(
       chalk.cyan("Orchestrator:"),
       "multiple sessions found — select one in the dashboard",
@@ -1108,16 +1231,17 @@ async function runStartup(
 
   // Auto-open browser once the server is ready.
   // With a single orchestrator (or a newly created one), navigate directly to the session page.
-  // With multiple existing orchestrators, open the selection page so the user can choose or
-  // spawn a new one — the dashboard only links one orchestrator per project.
+  // With multiple existing orchestrators or when skipped, open the selection page so the user
+  // can choose or spawn a new one — the dashboard only links one orchestrator per project.
   // Polls the port instead of using a fixed delay — deterministic and works regardless of
   // how long Next.js takes to compile. AbortController cancels polling on early exit.
   let openAbort: AbortController | undefined;
   if (opts?.dashboard !== false) {
     openAbort = new AbortController();
-    const orchestratorUrl = hasExistingOrchestrators
-      ? `http://localhost:${port}/orchestrators?project=${projectId}`
-      : `http://localhost:${port}/sessions/${selectedOrchestratorId ?? sessionId}`;
+    const orchestratorUrl =
+      hasExistingOrchestrators || orchestratorSkipped
+        ? `http://localhost:${port}/orchestrators?project=${projectId}`
+        : `http://localhost:${port}/sessions/${selectedOrchestratorId ?? sessionId}`;
     void waitForPortAndOpen(port, orchestratorUrl, openAbort.signal);
   }
 
@@ -1174,6 +1298,7 @@ export function registerStart(program: Command): void {
     .option("--no-dashboard", "Skip starting the dashboard server")
     .option("--no-orchestrator", "Skip starting the orchestrator agent")
     .option("--rebuild", "Clean and rebuild dashboard before starting")
+    .option("--dev", "Use Next.js dev server with hot reload (for dashboard UI development)")
     .option("--interactive", "Prompt to configure config settings")
     .action(
       async (
@@ -1182,6 +1307,7 @@ export function registerStart(program: Command): void {
           dashboard?: boolean;
           orchestrator?: boolean;
           rebuild?: boolean;
+          dev?: boolean;
           interactive?: boolean;
         },
       ) => {

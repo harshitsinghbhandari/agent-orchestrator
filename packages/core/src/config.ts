@@ -15,7 +15,11 @@ import { resolve, join, basename } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { ConfigNotFoundError, type ExternalPluginEntryRef, type OrchestratorConfig } from "./types.js";
+import {
+  ConfigNotFoundError,
+  type ExternalPluginEntryRef,
+  type OrchestratorConfig,
+} from "./types.js";
 import { generateSessionPrefix } from "./paths.js";
 
 function inferScmPlugin(project: {
@@ -251,12 +255,35 @@ const OrchestratorConfigSchema = z.object({
   defaults: DefaultPluginsSchema.default({}),
   plugins: z.array(InstalledPluginConfigSchema).default([]),
   projects: z.record(
-    z.string().regex(/^[a-zA-Z0-9_-]+$/, "Project ID must match [a-zA-Z0-9_-]+ (no dots, slashes, or special characters)"),
+    z
+      .string()
+      .regex(
+        /^[a-zA-Z0-9_-]+$/,
+        "Project ID must match [a-zA-Z0-9_-]+ (no dots, slashes, or special characters)",
+      ),
     ProjectConfigSchema,
   ),
   notifiers: z.record(NotifierConfigSchema).default({}),
   notificationRouting: z.record(z.array(z.string())).default({}),
   reactions: z.record(ReactionConfigSchema).default({}),
+  pricing: z
+    .object({
+      file: z.string(),
+    })
+    .optional(),
+  models: z
+    .object({
+      overrides: z
+        .array(
+          z.object({
+            provider: z.string(),
+            model: z.string(),
+            safePromptBudget: z.number().int().positive(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
 });
 
 // =============================================================================
@@ -302,7 +329,9 @@ function generateTempPluginName(pkg?: string, path?: string): string {
     const packageName = slashParts[slashParts.length - 1] ?? pkg;
 
     // Extract plugin name after ao-plugin-{slot}- prefix, preserving multi-word names like "jira-cloud"
-    const prefixMatch = packageName.match(/^ao-plugin-(?:runtime|agent|workspace|tracker|scm|notifier|terminal)-(.+)$/);
+    const prefixMatch = packageName.match(
+      /^ao-plugin-(?:runtime|agent|workspace|tracker|scm|notifier|terminal)-(.+)$/,
+    );
     if (prefixMatch?.[1]) {
       return prefixMatch[1];
     }
@@ -436,8 +465,7 @@ function mergeExternalPlugins(
       // If the existing plugin is disabled but there's an inline reference, enable it
       const existingPlugin = plugins.find(
         (p) =>
-          (entry.package && p.package === entry.package) ||
-          (entry.path && p.path === entry.path),
+          (entry.package && p.package === entry.package) || (entry.path && p.path === entry.path),
       );
       if (existingPlugin && existingPlugin.enabled === false) {
         existingPlugin.enabled = true;

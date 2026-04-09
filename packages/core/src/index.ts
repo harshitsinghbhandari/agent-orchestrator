@@ -35,7 +35,12 @@ export {
   updateMetadata,
   deleteMetadata,
   listMetadata,
+  reserveSessionIdWithData,
 } from "./metadata.js";
+
+// File locking — prevent race conditions in concurrent operations
+export { createFileLock, withFileLock } from "./file-lock.js";
+export type { FileLockOptions, FileLock } from "./file-lock.js";
 
 // tmux — command wrappers
 export {
@@ -58,8 +63,8 @@ export { createLifecycleManager } from "./lifecycle-manager.js";
 export type { LifecycleManagerDeps } from "./lifecycle-manager.js";
 
 // Prompt builder — layered prompt composition
-export { buildPrompt, BASE_AGENT_PROMPT } from "./prompt-builder.js";
-export type { PromptBuildConfig } from "./prompt-builder.js";
+export { buildPrompt, buildPromptWithMetadata, truncatePrompt, BASE_AGENT_PROMPT } from "./prompt-builder.js";
+export type { PromptBuildConfig, PromptBuildResult, PromptSection, PromptTruncationReport } from "./prompt-builder.js";
 
 // Decomposer — LLM-driven task decomposition
 export {
@@ -83,6 +88,30 @@ export type {
 // Orchestrator prompt — generates orchestrator context for `ao start`
 export { generateOrchestratorPrompt } from "./orchestrator-prompt.js";
 export type { OrchestratorPromptConfig } from "./orchestrator-prompt.js";
+
+
+// Model registry — context windows + capabilities
+export { modelRegistry, ModelRegistry } from "./model-registry.js";
+export type { ModelSpec } from "./model-registry.js";
+
+// Pricing registry — historical and current pricing data
+export { pricingRegistry, PricingRegistry } from "./pricing-registry.js";
+export type { PricingSpec } from "./pricing-registry.js";
+
+// Registry initializer — applies config-driven pricing and model overrides
+export { initializeRegistriesFromConfig } from "./registry-initializer.js";
+
+// Cost utilities — shared cost computation and merging
+export { computeCost, mergeCosts, aggregateCosts, formatCost } from "./cost-utils.js";
+export type { ComputeCostParams } from "./cost-utils.js";
+
+// Token utilities — simple estimation and section rollups
+export {
+  estimateTokens,
+  estimateTokensForSection,
+  totalTokens,
+} from "./token-utils.js";
+export type { SectionInput, SectionOutput } from "./token-utils.js";
 
 // Shared utilities
 export {

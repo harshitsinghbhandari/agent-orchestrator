@@ -11,6 +11,7 @@ import {
   createPluginRegistry,
   createSessionManager,
   createLifecycleManager,
+  initializeRegistriesFromConfig,
   type OrchestratorConfig,
   type OpenCodeSessionManager,
   type PluginRegistry,
@@ -39,6 +40,8 @@ export async function getPluginRegistry(config: OrchestratorConfig): Promise<Plu
       // Prefer the AO-managed plugin store when a package is installed there,
       // but still fall back to the CLI/workspace dependency tree for built-ins.
       await registry.loadFromConfig(config, importPluginModuleFromSource);
+      // Initialize pricing and model registries from config (custom pricing file, model overrides)
+      initializeRegistriesFromConfig(config);
       return registry;
     })().catch((err) => {
       registryPromises.delete(cacheKey);

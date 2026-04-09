@@ -1,3 +1,5 @@
+import "server-only";
+
 /**
  * Core Session → DashboardSession serialization.
  *
@@ -6,7 +8,6 @@
  */
 
 import {
-  isOrchestratorSession,
   type Session,
   type Agent,
   type SCM,
@@ -15,6 +16,8 @@ import {
   type ProjectConfig,
   type OrchestratorConfig,
   type PluginRegistry,
+  isOrchestratorSession,
+  isTerminalSession,
 } from "@composio/ao-core";
 import type {
   DashboardSession,
@@ -49,6 +52,7 @@ export function resolveProject(
 export function sessionToDashboard(session: Session): DashboardSession {
   const agentSummary = session.agentInfo?.summary;
   const summary = agentSummary ?? session.metadata["summary"] ?? null;
+  const cost = session.agentInfo?.cost;
 
   return {
     id: session.id,
@@ -66,6 +70,19 @@ export function sessionToDashboard(session: Session): DashboardSession {
     lastActivityAt: session.lastActivityAt.toISOString(),
     pr: session.pr ? basicPRToDashboard(session.pr) : null,
     metadata: session.metadata,
+    cost: cost
+      ? {
+          inputTokens: cost.inputTokens,
+          outputTokens: cost.outputTokens,
+          estimatedCostUsd: cost.estimatedCostUsd,
+          cachedReadTokens: cost.cachedReadTokens,
+          cacheCreationTokens: cost.cacheCreationTokens,
+          reasoningTokens: cost.reasoningTokens,
+          model: cost.model,
+          provider: cost.provider,
+          lastUpdatedAt: cost.lastUpdatedAt,
+        }
+      : undefined,
   };
 }
 
@@ -77,12 +94,13 @@ export function listDashboardOrchestrators(
     ([projectId, p]) => p.sessionPrefix ?? projectId,
   );
   return sessions
-    .filter((session) =>
-      isOrchestratorSession(
-        session,
-        projects[session.projectId]?.sessionPrefix ?? session.projectId,
-        allSessionPrefixes,
-      ),
+    .filter(
+      (session) =>
+        isOrchestratorSession(
+          session,
+          projects[session.projectId]?.sessionPrefix ?? session.projectId,
+          allSessionPrefixes,
+        ) && !isTerminalSession(session),
     )
     .map((session) => ({
       id: session.id,

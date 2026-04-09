@@ -573,7 +573,9 @@ describe("getSessionInfo", () => {
       ].join("\n");
       mockJsonlFiles(jsonl);
       const result = await agent.getSessionInfo(makeSession());
-      expect(result?.cost?.inputTokens).toBe(800);
+      expect(result?.cost?.inputTokens).toBe(100);
+      expect(result?.cost?.cachedReadTokens).toBe(500);
+      expect(result?.cost?.cacheCreationTokens).toBe(200);
       expect(result?.cost?.outputTokens).toBe(50);
     });
 

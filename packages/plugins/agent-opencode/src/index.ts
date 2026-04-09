@@ -157,15 +157,11 @@ process.stdin.on('data', c => input += c).on('end', () => {
  * Query OpenCode's session list and find the matching session for this AO session.
  * Tries metadata `opencodeSessionId` first, then falls back to title matching.
  */
-async function findOpenCodeSession(
-  session: Session,
-): Promise<OpenCodeSessionListEntry | null> {
+async function findOpenCodeSession(session: Session): Promise<OpenCodeSessionListEntry | null> {
   try {
-    const { stdout } = await execFileAsync(
-      "opencode",
-      ["session", "list", "--format", "json"],
-      { timeout: 30_000 },
-    );
+    const { stdout } = await execFileAsync("opencode", ["session", "list", "--format", "json"], {
+      timeout: 30_000,
+    });
 
     const sessions = parseSessionList(stdout);
 
@@ -210,6 +206,7 @@ function createOpenCodeAgent(): Agent {
   return {
     name: "opencode",
     processName: "opencode",
+    provider: "unknown", // OpenCode supports multiple providers
 
     getLaunchCommand(config: AgentLaunchConfig): string {
       const options: string[] = [];
@@ -425,7 +422,7 @@ function createOpenCodeAgent(): Agent {
         summary: targetSession.title ?? null,
         summaryIsFallback: true,
         agentSessionId: targetSession.id,
-        // OpenCode doesn't expose token/cost data in session list
+        // OpenCode doesn't expose token/cost data in session list — omit cost field rather than return zeros
       };
     },
 

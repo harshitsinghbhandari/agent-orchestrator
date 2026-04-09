@@ -6,10 +6,18 @@ import { useMediaQuery, MOBILE_BREAKPOINT } from "@/hooks/useMediaQuery";
 import { type DashboardSession, type DashboardPR, isPRMergeReady } from "@/lib/types";
 import { CI_STATUS } from "@composio/ao-core/types";
 import { cn } from "@/lib/cn";
+import dynamic from "next/dynamic";
 import { getSessionTitle } from "@/lib/format";
 import { CICheckList } from "./CIBadge";
-import { DirectTerminal } from "./DirectTerminal";
 import { MobileBottomNav } from "./MobileBottomNav";
+
+const DirectTerminal = dynamic(
+  () => import("./DirectTerminal").then((m) => ({ default: m.DirectTerminal })),
+  {
+    ssr: false,
+    loading: () => <div className="h-[440px] animate-pulse rounded bg-[var(--color-bg-primary)]" />,
+  },
+);
 
 interface OrchestratorZones {
   merge: number;
@@ -341,10 +349,25 @@ export function SessionDetail({
   const reloadCommand = opencodeSessionId
     ? `/exit\nopencode --session ${opencodeSessionId}\n`
     : undefined;
-  const dashboardHref = session.projectId ? `/?project=${encodeURIComponent(session.projectId)}` : "/";
-  const prsHref = session.projectId ? `/prs?project=${encodeURIComponent(session.projectId)}` : "/prs";
+  const dashboardHref = session.projectId
+    ? `/?project=${encodeURIComponent(session.projectId)}`
+    : "/";
+  const prsHref = session.projectId
+    ? `/prs?project=${encodeURIComponent(session.projectId)}`
+    : `/prs`;
   const crumbHref = dashboardHref;
   const crumbLabel = isOrchestrator ? "Orchestrator" : "Dashboard";
+
+  const truncationReportStr = session.metadata["promptTruncationReport"];
+  let truncationReport = null;
+  if (truncationReportStr) {
+    try {
+      truncationReport = JSON.parse(truncationReportStr);
+    } catch {
+      // ignore parse errors for old or invalid reports
+    }
+  }
+
   const orchestratorHref = useMemo(() => {
     if (isOrchestrator) return `/sessions/${encodeURIComponent(session.id)}`;
     if (!projectOrchestratorId) return null;
@@ -381,6 +404,76 @@ export function SessionDetail({
               crumbLabel={crumbLabel}
               mobileSimple={isMobile}
             />
+          )}
+
+          {truncationReport && (
+            <div className="mt-4 flex items-start gap-3 rounded border border-yellow-500/30 bg-yellow-500/10 p-3.5 text-[13px] text-yellow-700 dark:text-yellow-400">
+              <svg
+                className="mt-0.5 h-4 w-4 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                />
+              </svg>
+              <div>
+                <p className="font-semibold">Prompt Truncated</p>
+                <p className="mt-0.5 leading-relaxed opacity-90">
+                  Context size was automatically reduced from {truncationReport.originalTokens} to{" "}
+                  {truncationReport.finalTokens} tokens to fit within the safety budget.
+                </p>
+                {truncationReport.droppedSections?.length > 0 && (
+                  <p className="mt-1 opacity-80">
+                    Dropped: {truncationReport.droppedSections.join(", ")}
+                  </p>
+                )}
+                {truncationReport.truncatedSections?.length > 0 && (
+                  <p className="mt-1 opacity-80">
+                    Truncated:{" "}
+                    {truncationReport.truncatedSections
+                      .map(
+                        (ts: { name: string; originalTokens: number; finalTokens: number }) =>
+                          `${ts.name} (${ts.originalTokens} → ${ts.finalTokens})`,
+                      )
+                      .join(", ")}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {session.cost && session.cost.estimatedCostUsd > 0 && (
+            <div className="mt-4 flex items-center gap-3 rounded border border-[var(--color-border-default)] bg-[var(--color-bg-subtle)] p-3.5 text-[13px]">
+              <svg
+                className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                <span className="font-semibold text-[var(--color-text-primary)]">
+                  ${session.cost.estimatedCostUsd.toFixed(4)}
+                </span>
+                <span className="text-[11px] text-[var(--color-text-muted)]">
+                  {session.cost.inputTokens.toLocaleString()} in / {session.cost.outputTokens.toLocaleString()} out
+                  {session.cost.cachedReadTokens ? ` / ${session.cost.cachedReadTokens.toLocaleString()} cached` : ""}
+                  {session.cost.reasoningTokens ? ` / ${session.cost.reasoningTokens.toLocaleString()} reasoning` : ""}
+                </span>
+                {session.cost.model && (
+                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                    {session.cost.model}
+                  </span>
+                )}
+              </div>
+            </div>
           )}
 
           <section className="mt-5">
@@ -427,7 +520,15 @@ export function SessionDetail({
 
 // ── Session detail PR card ────────────────────────────────────────────
 
-function SessionDetailPRCard({ pr, sessionId, metadata }: { pr: DashboardPR; sessionId: string; metadata: Record<string, string> }) {
+function SessionDetailPRCard({
+  pr,
+  sessionId,
+  metadata,
+}: {
+  pr: DashboardPR;
+  sessionId: string;
+  metadata: Record<string, string>;
+}) {
   const [sendingComments, setSendingComments] = useState<Set<string>>(new Set());
   const [sentComments, setSentComments] = useState<Set<string>>(new Set());
   const [errorComments, setErrorComments] = useState<Set<string>>(new Set());
@@ -747,9 +848,7 @@ function IssuesList({ pr, metadata }: { pr: DashboardPR; metadata: Record<string
           </span>
           <span className="text-[var(--color-text-secondary)]">{issue.text}</span>
           {issue.notified && (
-            <span className="text-[10px] text-[var(--color-text-tertiary)]">
-              · agent notified
-            </span>
+            <span className="text-[10px] text-[var(--color-text-tertiary)]">· agent notified</span>
           )}
         </div>
       ))}

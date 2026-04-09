@@ -113,9 +113,8 @@ vi.mock("../../src/lib/web-dir.js", () => ({
 }));
 
 vi.mock("../../src/lib/dashboard-rebuild.js", () => ({
-  cleanNextCache: vi.fn(),
   findRunningDashboardPid: vi.fn().mockResolvedValue(null),
-  findProcessWebDir: vi.fn().mockResolvedValue(null),
+  rebuildDashboardProductionArtifacts: vi.fn().mockResolvedValue(undefined),
   waitForPortFree: vi.fn(),
 }));
 

@@ -111,6 +111,7 @@ function createAiderAgent(): Agent {
   return {
     name: "aider",
     processName: "aider",
+    provider: "unknown", // Aider supports multiple providers
 
     getLaunchCommand(config: AgentLaunchConfig): string {
       const parts: string[] = ["aider"];
@@ -285,7 +286,7 @@ function createAiderAgent(): Agent {
         summary,
         summaryIsFallback: true,
         agentSessionId: null,
-        // Aider doesn't expose token/cost data
+        // Aider doesn't expose token/cost data — omit cost field rather than return zeros
       };
     },
 
