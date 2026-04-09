@@ -2675,7 +2675,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         AO_SESSION: sessionId,
         AO_DATA_DIR: sessionsDir,
         AO_SESSION_NAME: sessionId,
-        ...(tmuxName && { AO_TMUX_NAME: tmuxName }),
+        // Always set AO_TMUX_NAME for consistency — agents may rely on it
+        AO_TMUX_NAME: tmuxName ?? sessionId,
         AO_CALLER_TYPE: "agent",
         ...(projectId && { AO_PROJECT_ID: projectId }),
         AO_CONFIG_PATH: config.configPath,

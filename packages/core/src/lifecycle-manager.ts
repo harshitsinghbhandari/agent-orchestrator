@@ -1048,18 +1048,18 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // Skip if we already dispatched this exact failure set, unless the dispatch
     // is stale (>30 min). This prevents duplicate dispatches while allowing
     // re-notification when the same failures recur after a significant gap.
+    // Treat missing/invalid timestamp as stale to avoid locking upgraded sessions.
     if (ciFingerprint === lastCIDispatchHash) {
       const lastDispatchAt = session.metadata["lastCIFailureDispatchAt"];
+      const CI_FINGERPRINT_STALENESS_MS = 30 * 60 * 1000; // 30 minutes
       if (lastDispatchAt) {
         const staleness = Date.now() - new Date(lastDispatchAt).getTime();
-        const CI_FINGERPRINT_STALENESS_MS = 30 * 60 * 1000; // 30 minutes
-        if (staleness < CI_FINGERPRINT_STALENESS_MS) {
+        if (!Number.isNaN(staleness) && staleness < CI_FINGERPRINT_STALENESS_MS) {
           return; // Recent dispatch — skip
         }
-        // Stale dispatch — allow re-notification for same fingerprint
-      } else {
-        return; // No timestamp but hash matches — skip to be safe
+        // Stale or invalid timestamp — allow re-notification for same fingerprint
       }
+      // Missing timestamp treated as stale — allow re-notification
     }
 
     // Dispatch CI failure details directly via sessionManager.send() rather than
@@ -1412,9 +1412,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         }
       }
       for (const trackerKey of reactionTrackers.keys()) {
-        // Tracker key format is "sessionId:reactionKey". Use indexOf to safely
-        // extract sessionId even if it contains ":" (though unlikely in practice).
-        const colonIdx = trackerKey.indexOf(":");
+        // Tracker key format is "sessionId:reactionKey". Use lastIndexOf since
+        // reactionKey never contains ":" (it's a fixed set like "ci-failed"),
+        // allowing sessionIds with ":" to be parsed correctly (though uncommon).
+        const colonIdx = trackerKey.lastIndexOf(":");
         const sessionId = colonIdx >= 0 ? trackerKey.slice(0, colonIdx) : trackerKey;
         if (sessionId && !currentSessionIds.has(sessionId)) {
           reactionTrackers.delete(trackerKey);
