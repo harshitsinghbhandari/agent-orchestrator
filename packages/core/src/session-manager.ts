@@ -1428,15 +1428,64 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // should NOT destroy the session. The agent is running; user can retry with `ao send`.
     let promptDelivered = false;
     if (plugins.agent.promptDelivery === "post-launch" && agentLaunchConfig.prompt) {
+      // Wait for agent to be ready before sending the prompt.
+      // Poll until output is stable and agent is in foreground (matching waitForInteractiveReadiness).
+      const readyTimeoutMs = SEND_BOOTSTRAP_READY_TIMEOUT_MS;
+      const readyPollMs = SEND_RESTORE_READY_POLL_MS;
+      const requiredStablePolls = SEND_BOOTSTRAP_STABLE_POLLS;
+
+      const deadline = Date.now() + readyTimeoutMs;
+      let lastSettledOutput: string | null = null;
+      let stablePolls = 0;
+
+      while (Date.now() < deadline) {
+        try {
+          const [runtimeAlive, processRunning, output, foregroundCommand] = await Promise.all([
+            plugins.runtime.isAlive(handle).catch(() => false),
+            plugins.agent.isProcessRunning(handle).catch(() => false),
+            plugins.runtime.getOutput(handle, SEND_CONFIRMATION_OUTPUT_LINES).catch(() => ""),
+            handle.runtimeName === "tmux"
+              ? getTmuxForegroundCommand(handle.id)
+              : Promise.resolve(plugins.agent.processName),
+          ]);
+
+          // Agent is ready when: runtime is alive, process is running, agent is in foreground,
+          // and output is stable. This matches waitForInteractiveReadiness in send().
+          const outputReady = (output?.trim() ?? "").length > 0;
+          const foregroundReady =
+            foregroundCommand === null || foregroundCommand === plugins.agent.processName;
+          const settledOutput = outputReady ? (output?.trimEnd() ?? "") : null;
+          const isStable = settledOutput !== null && settledOutput === lastSettledOutput;
+
+          if (runtimeAlive && processRunning && foregroundReady && isStable) {
+            stablePolls += 1;
+            if (stablePolls >= requiredStablePolls) {
+              break;
+            }
+          } else {
+            stablePolls = 0;
+          }
+
+          lastSettledOutput = settledOutput;
+        } catch {
+          // Ignore polling errors and continue waiting
+        }
+
+        await sleep(readyPollMs);
+      }
+
+      // Send prompt with retries. Send immediately on first attempt (readiness loop
+      // already waited), only delay between subsequent retry attempts.
       const maxRetries = 3;
-      const baseDelayMs = 3_000;
+      const retryDelayMs = 2_000;
       let lastError: Error | undefined;
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          // Wait for agent to start and be ready for input
-          // Use exponential backoff: 3s, 6s, 9s between attempts
-          await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
+          // Only delay before retry attempts (not the first attempt)
+          if (attempt > 1) {
+            await sleep(retryDelayMs);
+          }
           await plugins.runtime.sendMessage(handle, agentLaunchConfig.prompt);
           promptDelivered = true;
           break;

@@ -937,16 +937,36 @@ describe("spawn", () => {
     vi.useRealTimers();
   }, 30_000);
 
-  it("waits before sending post-launch prompt", async () => {
+  it("waits for agent readiness before sending post-launch prompt", async () => {
     vi.useFakeTimers();
+
+    // Track call count to simulate agent starting up
+    let getOutputCallCount = 0;
+    const mockRuntimeWithStartup: Runtime = {
+      ...mockRuntime,
+      isAlive: vi.fn().mockResolvedValue(true),
+      // First few calls return empty output (agent starting), then stable output
+      getOutput: vi.fn().mockImplementation(async () => {
+        getOutputCallCount++;
+        if (getOutputCallCount <= 2) {
+          return ""; // Agent still starting
+        }
+        return "$ Ready for input"; // Agent ready
+      }),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    };
+
     const postLaunchAgent = {
       ...mockAgent,
       promptDelivery: "post-launch" as const,
+      processName: "mock", // For foreground command check
+      isProcessRunning: vi.fn().mockResolvedValue(true),
     };
+
     const registryWithPostLaunch: PluginRegistry = {
       ...mockRegistry,
       get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
+        if (slot === "runtime") return mockRuntimeWithStartup;
         if (slot === "agent") return postLaunchAgent;
         if (slot === "workspace") return mockWorkspace;
         return null;
@@ -956,16 +976,21 @@ describe("spawn", () => {
     const sm = createSessionManager({ config, registry: registryWithPostLaunch });
     const spawnPromise = sm.spawn({ projectId: "my-app", prompt: "Fix the bug" });
 
-    // Advance only 2s — not enough, message should not have been sent yet
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(mockRuntime.sendMessage).not.toHaveBeenCalled();
+    // First poll cycle: agent not ready yet (empty output)
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockRuntimeWithStartup.sendMessage).not.toHaveBeenCalled();
 
-    // Advance the remaining 1s — now the first attempt should fire (3s total = 3000 * 1)
-    await vi.advanceTimersByTimeAsync(1_000);
+    // Second poll cycle: still not ready
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockRuntimeWithStartup.sendMessage).not.toHaveBeenCalled();
+
+    // Third+ poll cycles: output becomes stable, agent is ready
+    // Need 2 stable polls (SEND_BOOTSTRAP_STABLE_POLLS), so advance enough time
+    await vi.advanceTimersByTimeAsync(2_000);
     await spawnPromise;
-    expect(mockRuntime.sendMessage).toHaveBeenCalled();
+    expect(mockRuntimeWithStartup.sendMessage).toHaveBeenCalled();
     vi.useRealTimers();
-  }, 20_000);
+  }, 30_000);
 
   describe("spawnOrchestrator", () => {
     it("throws when no workspace plugin is configured", async () => {
