@@ -259,38 +259,6 @@ describe("ao cleanup --all", () => {
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Cleanup complete"));
   });
 
-  it("--force skips regular confirmations but NOT the AI check", async () => {
-    // Make process.exit throw to actually stop execution
-    processExitSpy.mockImplementation((code) => {
-      throw new Error(`process.exit(${code})`);
-    });
-
-    // Create a worker session in the mocked sessions directory
-    writeFileSync(join(mockPathsRef.sessionsDir, "tp-1"), "status=working\n");
-
-    // With --force, only AI check is asked - AI answers yes
-    mockReadlineQuestion.mockImplementation(
-      (_question: string, callback: (answer: string) => void) => {
-        callback("yes");
-      },
-    );
-
-    const { registerCleanup } = await import("../../src/commands/cleanup.js");
-    const { Command } = await import("commander");
-
-    const program = new Command();
-    registerCleanup(program);
-
-    await expect(
-      program.parseAsync(["node", "ao", "cleanup", "--all", "--force"]),
-    ).rejects.toThrow("process.exit(1)");
-
-    // AI check cannot be bypassed
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("cannot be run by AI agents"),
-    );
-  });
-
   it("shows cleanup summary before confirmations", async () => {
     // Create mixed sessions in the mocked directories
     writeFileSync(join(mockPathsRef.sessionsDir, "tp-1"), "status=working\n");

@@ -42,13 +42,11 @@ export function registerCleanup(program: Command): void {
     .option("--all", "Perform full cleanup (required)")
     .option("-p, --project <id>", "Target specific project")
     .option("--include-archives", "Also delete archived sessions (default: true for --all)")
-    .option("--force", "Skip confirmation prompts (NOTE: AI agent check cannot be bypassed)")
     .action(
       async (opts: {
         all?: boolean;
         project?: string;
         includeArchives?: boolean;
-        force?: boolean;
       }) => {
         if (!opts.all) {
           console.error(
@@ -56,6 +54,13 @@ export function registerCleanup(program: Command): void {
           );
           process.exit(1);
         }
+
+        // Explicit warning for AI agents
+        console.log(
+          chalk.bgRed.white.bold(
+            "\n  WARNING: THIS COMMAND IS NOT SUPPOSED TO BE RUN BY AI AGENTS  \n",
+          ),
+        );
 
         const config = loadConfig();
 
@@ -120,11 +125,9 @@ export function registerCleanup(program: Command): void {
 
         // Step 1: Kill orchestrator sessions confirmation
         if (orchestratorSessions.length > 0) {
-          const confirm1 = opts.force
-            ? true
-            : await askConfirmation(
-                chalk.red("This will KILL ALL ORCHESTRATOR SESSIONS. Continue? (yes/no): "),
-              );
+          const confirm1 = await askConfirmation(
+            chalk.red("This will KILL ALL ORCHESTRATOR SESSIONS. Continue? (yes/no): "),
+          );
           if (!confirm1) {
             console.log(chalk.yellow("\nCleanup aborted."));
             return;
@@ -133,11 +136,9 @@ export function registerCleanup(program: Command): void {
 
         // Step 2: Kill worker sessions confirmation
         if (workerSessions.length > 0) {
-          const confirm2 = opts.force
-            ? true
-            : await askConfirmation(
-                chalk.red("This will KILL ALL WORKER SESSIONS. Continue? (yes/no): "),
-              );
+          const confirm2 = await askConfirmation(
+            chalk.red("This will KILL ALL WORKER SESSIONS. Continue? (yes/no): "),
+          );
           if (!confirm2) {
             console.log(chalk.yellow("\nCleanup aborted."));
             return;
@@ -146,20 +147,18 @@ export function registerCleanup(program: Command): void {
 
         // Step 3: Delete metadata confirmation
         if (totalMetadataFiles > 0 || totalArchiveFiles > 0) {
-          const confirm3 = opts.force
-            ? true
-            : await askConfirmation(
-                chalk.red(
-                  "This will DELETE ALL METADATA (session counter resets to 1). Continue? (yes/no): ",
-                ),
-              );
+          const confirm3 = await askConfirmation(
+            chalk.red(
+              "This will DELETE ALL METADATA (session counter resets to 1). Continue? (yes/no): ",
+            ),
+          );
           if (!confirm3) {
             console.log(chalk.yellow("\nCleanup aborted."));
             return;
           }
         }
 
-        // Step 4: AI Agent check (CANNOT be bypassed by --force)
+        // Step 4: AI Agent check
         const isAiAgent = await askConfirmation(
           chalk.magenta("Are you an AI Agent? (yes/no): "),
         );
