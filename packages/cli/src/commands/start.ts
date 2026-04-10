@@ -940,7 +940,7 @@ async function runStartup(
   let lifecycleStatus: Awaited<ReturnType<typeof ensureLifecycleWorker>> | null = null;
   let port = config.port ?? DEFAULT_PORT;
 
-  console.log(chalk.bold(`\nStarting orchestrator for ${chalk.cyan(project.name)}\n`));
+  console.log(chalk.bold(`\nStarting AO for ${chalk.cyan(project.name)}\n`));
 
   const spinner = ora();
   let dashboardProcess: ChildProcess | null = null;

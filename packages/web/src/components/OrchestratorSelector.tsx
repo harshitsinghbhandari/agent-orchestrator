@@ -172,6 +172,7 @@ export function OrchestratorSelector({
             <div className="text-center py-12">
               <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)]">
                 <svg
+                  aria-hidden="true"
                   className="h-8 w-8 text-[var(--color-text-tertiary)]"
                   fill="none"
                   stroke="currentColor"
@@ -200,6 +201,7 @@ export function OrchestratorSelector({
                 {isSpawning ? (
                   <span className="flex items-center justify-center gap-2">
                     <svg
+                      aria-hidden="true"
                       className="h-4 w-4 animate-spin"
                       viewBox="0 0 24 24"
                       fill="none"
@@ -305,6 +307,7 @@ export function OrchestratorSelector({
                   {isSpawning ? (
                     <span className="flex items-center justify-center gap-2">
                       <svg
+                        aria-hidden="true"
                         className="h-4 w-4 animate-spin"
                         viewBox="0 0 24 24"
                         fill="none"
