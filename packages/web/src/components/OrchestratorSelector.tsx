@@ -167,108 +167,178 @@ export function OrchestratorSelector({
       {/* Content */}
       <main className="flex-1 px-6 py-8">
         <div className="mx-auto max-w-3xl">
-          {/* Info banner */}
-          <div className="mb-6 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-4">
-            <p className="text-sm text-[var(--color-text-secondary)]">
-              Found{" "}
-              <span className="font-medium text-[var(--color-text-primary)]">
-                {orchestrators.length}
-              </span>{" "}
-              existing orchestrator session{orchestrators.length !== 1 ? "s" : ""}. You can resume
-              an existing session or start a new one.
-            </p>
-          </div>
-
-          {/* Existing orchestrators */}
-          <div className="mb-6">
-            <h2 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">
-              Existing Sessions
-            </h2>
-            <div className="space-y-2">
-              {orchestrators.map((orch) => (
-                <Link
-                  key={orch.id}
-                  href={`/sessions/${orch.id}`}
-                  className={cn(
-                    "flex items-center justify-between rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-4",
-                    "transition-all hover:border-[var(--color-border-default)] hover:shadow-sm",
-                  )}
+          {orchestrators.length === 0 ? (
+            /* Empty state - no orchestrators exist */
+            <div className="text-center py-12">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)]">
+                <svg
+                  aria-hidden="true"
+                  className="h-8 w-8 text-[var(--color-text-tertiary)]"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  viewBox="0 0 24 24"
                 >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="h-2.5 w-2.5 rounded-full"
-                      style={{ backgroundColor: getStatusColor(orch.status) }}
-                    />
-                    <div>
-                      <div className="font-medium text-[var(--color-text-primary)]">{orch.id}</div>
-                      <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
-                        <span className="capitalize">{orch.status.replace(/_/g, " ")}</span>
-                        {orch.activity && (
-                          <>
-                            <span className="text-[var(--color-text-tertiary)]">&middot;</span>
-                            <span>{getActivityLabel(orch.activity)}</span>
-                          </>
+                  <path d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+              </div>
+              <h2 className="text-lg font-semibold text-[var(--color-text-primary)] mb-2">
+                No Orchestrator Session
+              </h2>
+              <p className="text-sm text-[var(--color-text-secondary)] mb-8 max-w-md mx-auto">
+                An orchestrator manages your AI agents, coordinates tasks, and handles issue
+                assignments. Create one to get started.
+              </p>
+              <button
+                type="button"
+                onClick={handleSpawnNew}
+                disabled={isSpawning}
+                className={cn(
+                  "orchestrator-btn px-6 py-3 text-sm font-medium",
+                  "disabled:cursor-wait disabled:opacity-70",
+                )}
+              >
+                {isSpawning ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4 animate-spin"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    Creating orchestrator...
+                  </span>
+                ) : (
+                  "Create Orchestrator"
+                )}
+              </button>
+              {spawnError && (
+                <p className="mt-4 text-sm text-[var(--color-status-error)]">{spawnError}</p>
+              )}
+            </div>
+          ) : (
+            /* Has orchestrators - show list and option to create new */
+            <>
+              {/* Info banner */}
+              <div className="mb-6 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-4">
+                <p className="text-sm text-[var(--color-text-secondary)]">
+                  Found{" "}
+                  <span className="font-medium text-[var(--color-text-primary)]">
+                    {orchestrators.length}
+                  </span>{" "}
+                  existing orchestrator session{orchestrators.length !== 1 ? "s" : ""}. You can resume
+                  an existing session or start a new one.
+                </p>
+              </div>
+
+              {/* Existing orchestrators */}
+              <div className="mb-6">
+                <h2 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">
+                  Existing Sessions
+                </h2>
+                <div className="space-y-2">
+                  {orchestrators.map((orch) => (
+                    <Link
+                      key={orch.id}
+                      href={`/sessions/${orch.id}`}
+                      className={cn(
+                        "flex items-center justify-between rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-4",
+                        "transition-all hover:border-[var(--color-border-default)] hover:shadow-sm",
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: getStatusColor(orch.status) }}
+                        />
+                        <div>
+                          <div className="font-medium text-[var(--color-text-primary)]">{orch.id}</div>
+                          <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+                            <span className="capitalize">{orch.status.replace(/_/g, " ")}</span>
+                            {orch.activity && (
+                              <>
+                                <span className="text-[var(--color-text-tertiary)]">&middot;</span>
+                                <span>{getActivityLabel(orch.activity)}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right text-xs text-[var(--color-text-tertiary)]">
+                        <div>Created {formatRelativeTime(orch.createdAt)}</div>
+                        {orch.lastActivityAt && (
+                          <div>Active {formatRelativeTime(orch.lastActivityAt)}</div>
                         )}
                       </div>
-                    </div>
-                  </div>
-                  <div className="text-right text-xs text-[var(--color-text-tertiary)]">
-                    <div>Created {formatRelativeTime(orch.createdAt)}</div>
-                    {orch.lastActivityAt && (
-                      <div>Active {formatRelativeTime(orch.lastActivityAt)}</div>
-                    )}
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
 
-          {/* Start new section */}
-          <div className="border-t border-[var(--color-border-subtle)] pt-6">
-            <h2 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">
-              Or Start Fresh
-            </h2>
-            <button
-              type="button"
-              onClick={handleSpawnNew}
-              disabled={isSpawning}
-              className={cn(
-                "orchestrator-btn w-full px-4 py-3 text-sm font-medium",
-                "disabled:cursor-wait disabled:opacity-70",
-              )}
-            >
-              {isSpawning ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg
-                    className="h-4 w-4 animate-spin"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
-                  Creating new orchestrator...
-                </span>
-              ) : (
-                "Start New Orchestrator"
-              )}
-            </button>
-            {spawnError && (
-              <p className="mt-2 text-sm text-[var(--color-status-error)]">{spawnError}</p>
-            )}
-          </div>
+              {/* Start new section */}
+              <div className="border-t border-[var(--color-border-subtle)] pt-6">
+                <h2 className="mb-3 text-sm font-medium text-[var(--color-text-secondary)]">
+                  Or Start Fresh
+                </h2>
+                <button
+                  type="button"
+                  onClick={handleSpawnNew}
+                  disabled={isSpawning}
+                  className={cn(
+                    "orchestrator-btn w-full px-4 py-3 text-sm font-medium",
+                    "disabled:cursor-wait disabled:opacity-70",
+                  )}
+                >
+                  {isSpawning ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg
+                        aria-hidden="true"
+                        className="h-4 w-4 animate-spin"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        />
+                      </svg>
+                      Creating new orchestrator...
+                    </span>
+                  ) : (
+                    "Start New Orchestrator"
+                  )}
+                </button>
+                {spawnError && (
+                  <p className="mt-2 text-sm text-[var(--color-status-error)]">{spawnError}</p>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </main>
     </div>
