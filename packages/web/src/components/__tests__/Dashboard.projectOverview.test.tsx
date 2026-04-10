@@ -213,7 +213,8 @@ describe("Dashboard OrchestratorControl in single-project view", () => {
       />,
     );
 
-    const orchestratorsLink = screen.getByRole("link", { name: /orchestrators/i });
+    // Changed from "orchestrators" to "Create Orchestrator" to be more prominent
+    const orchestratorsLink = screen.getByRole("link", { name: /create orchestrator/i });
     expect(orchestratorsLink).toHaveAttribute("href", "/orchestrators?project=my-app");
   });
 

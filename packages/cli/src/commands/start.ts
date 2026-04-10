@@ -18,7 +18,6 @@ import ora from "ora";
 import type { Command } from "commander";
 import {
   loadConfig,
-  generateOrchestratorPrompt,
   generateSessionPrefix,
   findConfigFile,
   isRepoUrl,
@@ -27,7 +26,6 @@ import {
   isRepoAlreadyCloned,
   generateConfigFromUrl,
   configToYaml,
-  normalizeOrchestratorSessionStrategy,
   isOrchestratorSession,
   isTerminalSession,
   isRestorable,
@@ -941,15 +939,11 @@ async function runStartup(
   const shouldStartLifecycle = opts?.dashboard !== false || opts?.orchestrator !== false;
   let lifecycleStatus: Awaited<ReturnType<typeof ensureLifecycleWorker>> | null = null;
   let port = config.port ?? DEFAULT_PORT;
-  const orchestratorSessionStrategy = normalizeOrchestratorSessionStrategy(
-    project.orchestratorSessionStrategy,
-  );
 
   console.log(chalk.bold(`\nStarting orchestrator for ${chalk.cyan(project.name)}\n`));
 
   const spinner = ora();
   let dashboardProcess: ChildProcess | null = null;
-  let reused = false;
 
   // Start dashboard (unless --no-dashboard)
   if (opts?.dashboard !== false) {
@@ -1104,85 +1098,19 @@ async function runStartup(
             );
           }
         } else {
-          // User declined to resume — prompt to create new
-          const shouldSpawn = await promptConfirm(
-            "Create a new orchestrator session instead?",
-            true,
-          );
-
-          if (shouldSpawn) {
-            try {
-              spinner.start("Creating orchestrator session");
-              const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
-              const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
-              selectedOrchestratorId = session.id;
-              if (session.runtimeHandle?.id) {
-                tmuxTarget = session.runtimeHandle.id;
-              }
-              reused =
-                orchestratorSessionStrategy === "reuse" &&
-                session.metadata?.["orchestratorSessionReused"] === "true";
-              spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
-            } catch (err) {
-              spinner.fail("Orchestrator setup failed");
-              if (dashboardProcess) {
-                dashboardProcess.kill();
-              }
-              throw new Error(
-                `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
-                { cause: err },
-              );
-            }
-          } else {
-            console.log(chalk.yellow("Skipped orchestrator session."));
-            console.log(chalk.dim("  You can create or resume one via the dashboard."));
-            orchestratorSkipped = true;
-          }
-        }
-      }
-    } else {
-      // No orchestrators at all — prompt user before spawning (never auto-spawn)
-      if (!canPromptForInstall()) {
-        // Non-interactive context — inform user and skip orchestrator spawn
-        console.log(chalk.yellow("No orchestrator session found."));
-        console.log(chalk.dim("  Run 'ao start' interactively to create one."));
-        orchestratorSkipped = true;
-      } else {
-        // Interactive context — prompt user to confirm spawning
-        const shouldSpawn = await promptConfirm(
-          "No orchestrator session found. Create a new orchestrator session?",
-          true,
-        );
-
-        if (shouldSpawn) {
-          try {
-            spinner.start("Creating orchestrator session");
-            const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
-            const session = await sm.spawnOrchestrator({ projectId, systemPrompt });
-            selectedOrchestratorId = session.id;
-            if (session.runtimeHandle?.id) {
-              tmuxTarget = session.runtimeHandle.id;
-            }
-            reused =
-              orchestratorSessionStrategy === "reuse" &&
-              session.metadata?.["orchestratorSessionReused"] === "true";
-            spinner.succeed(reused ? "Orchestrator session reused" : "Orchestrator session created");
-          } catch (err) {
-            spinner.fail("Orchestrator setup failed");
-            if (dashboardProcess) {
-              dashboardProcess.kill();
-            }
-            throw new Error(
-              `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
-              { cause: err },
-            );
-          }
-        } else {
-          console.log(chalk.yellow("Skipped orchestrator session creation."));
-          console.log(chalk.dim("  You can create one later via the dashboard."));
+          // User declined to resume — skip orchestrator creation
+          // Users can create a new orchestrator via the dashboard
+          console.log(chalk.yellow("Skipped orchestrator session."));
+          console.log(chalk.dim("  You can create a new one via the dashboard."));
           orchestratorSkipped = true;
         }
       }
+    } else {
+      // No orchestrators at all — skip orchestrator creation
+      // Users can create one via the dashboard (deliberate UX decision)
+      console.log(chalk.yellow("No orchestrator session found."));
+      console.log(chalk.dim("  You can create one via the dashboard."));
+      orchestratorSkipped = true;
     }
   }
 
@@ -1211,10 +1139,8 @@ async function runStartup(
       chalk.cyan("Orchestrator:"),
       "multiple sessions found — select one in the dashboard",
     );
-  } else if (opts?.orchestrator !== false && !reused) {
+  } else if (opts?.orchestrator !== false) {
     console.log(chalk.cyan("Orchestrator:"), `tmux attach -t ${tmuxTarget}`);
-  } else if (reused) {
-    console.log(chalk.cyan("Orchestrator:"), `reused existing session (${sessionId})`);
   }
 
   console.log(chalk.dim(`Config: ${config.configPath}`));

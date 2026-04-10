@@ -776,14 +776,12 @@ function OrchestratorControl({
   const orchestratorsHref = `/orchestrators?project=${encodeURIComponent(projectId)}`;
 
   if (orchestrators.length === 0) {
-    // Show "Orchestrators" button that links to picker even when no orchestrators running
+    // Show prominent "Create Orchestrator" button when no orchestrators running
     return (
       <a
         href={orchestratorsHref}
         className="orchestrator-btn flex items-center gap-2 px-4 py-2 text-[12px] font-semibold hover:no-underline"
       >
-        <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-text-tertiary)] opacity-80" />
-        orchestrators
         <svg
           aria-hidden="true"
           className="h-3 w-3 opacity-70"
@@ -792,8 +790,9 @@ function OrchestratorControl({
           strokeWidth="2"
           viewBox="0 0 24 24"
         >
-          <path d="m9 18 6-6-6-6" />
+          <path d="M12 4.5v15m7.5-7.5h-15" />
         </svg>
+        Create Orchestrator
       </a>
     );
   }

@@ -757,7 +757,7 @@ describe("start command — non-interactive install safety", () => {
 // ---------------------------------------------------------------------------
 
 describe("start command — browser open waits for port", () => {
-  it("calls waitForPortAndOpen with orchestrator URL and AbortSignal", async () => {
+  it("calls waitForPortAndOpen with orchestrators URL when no orchestrators exist", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
     // Mock findWebDir to return tmpDir and create package.json for existsSync
@@ -765,15 +765,24 @@ describe("start command — browser open waits for port", () => {
     vi.mocked(findWebDir).mockReturnValue(tmpDir);
     writeFileSync(join(tmpDir, "package.json"), "{}");
 
+    const fakeDashboard = {
+      on: vi.fn(),
+      kill: vi.fn(),
+      emit: vi.fn(),
+    };
+    mockSpawn.mockReturnValue(fakeDashboard);
+
     mockSessionManager.get.mockResolvedValue(null);
-    mockSessionManager.spawnOrchestrator.mockResolvedValue({ id: "app-orchestrator" });
+    mockSessionManager.list.mockResolvedValue([]);
 
-    await program.parseAsync(["node", "test", "start", "--no-orchestrator"]);
+    // Run without --no-orchestrator to test the dashboard URL logic
+    await program.parseAsync(["node", "test", "start"]);
 
-    // waitForPortAndOpen should have been called with orchestrator URL and AbortSignal
+    // waitForPortAndOpen should have been called with orchestrators selection page URL
+    // since no orchestrator was created (creation moved to dashboard)
     expect(mockWaitForPortAndOpen).toHaveBeenCalledTimes(1);
     const args = mockWaitForPortAndOpen.mock.calls[0];
-    expect(args[1]).toContain("/sessions/app-orchestrator");
+    expect(args[1]).toContain("/orchestrators?project=my-app");
     expect(args[2]).toBeInstanceOf(AbortSignal);
     expect(mockEnsureLifecycleWorker).toHaveBeenCalledWith(
       expect.objectContaining({ configPath: expect.any(String) }),
@@ -794,7 +803,7 @@ describe("start command — browser open waits for port", () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
     mockSessionManager.get.mockResolvedValue(null);
-    mockSessionManager.spawnOrchestrator.mockResolvedValue({ id: "app-orchestrator" });
+    mockSessionManager.list.mockResolvedValue([]);
 
     await program.parseAsync(["node", "test", "start", "--no-dashboard"]);
 
@@ -803,10 +812,12 @@ describe("start command — browser open waits for port", () => {
       expect.objectContaining({ configPath: expect.any(String) }),
       "my-app",
     );
+    // No orchestrators exist and creation is now done via dashboard
+    expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
   });
 });
 
-describe("start command — orchestrator session strategy display", () => {
+describe("start command — orchestrator session behavior", () => {
   function getLoggedOutput(): string {
     return vi
       .mocked(console.log)
@@ -814,73 +825,19 @@ describe("start command — orchestrator session strategy display", () => {
       .join("\n");
   }
 
-  it("shows reused messaging when strategy is reuse and metadata marks the session reused", async () => {
-    mockConfigRef.current = makeConfig({
-      "my-app": makeProject({ orchestratorSessionStrategy: "reuse" }),
-    });
+  it("skips orchestrator creation when none exist and shows dashboard prompt", async () => {
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
-    mockSessionManager.get.mockResolvedValue({
-      id: "app-orchestrator",
-      runtimeHandle: { id: "tmux-session-1" },
-    });
-    mockSessionManager.spawnOrchestrator.mockResolvedValue({
-      id: "app-orchestrator",
-      runtimeHandle: { id: "tmux-session-1" },
-      metadata: { orchestratorSessionReused: "true" },
-    });
+    mockSessionManager.list.mockResolvedValue([]);
 
     await program.parseAsync(["node", "test", "start", "--no-dashboard"]);
 
     const output = getLoggedOutput();
-    expect(output).toContain("reused existing session (app-orchestrator)");
-    expect(output).not.toContain("tmux attach -t tmux-session-1");
+    // No orchestrators exist - orchestrator creation moved to dashboard
+    expect(output).toContain("No orchestrator session found");
+    expect(output).toContain("via the dashboard");
+    expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
   });
-
-  it("falls back to attach messaging when strategy is reuse but metadata is missing", async () => {
-    mockConfigRef.current = makeConfig({
-      "my-app": makeProject({ orchestratorSessionStrategy: "reuse" }),
-    });
-
-    mockSessionManager.get.mockResolvedValue({
-      id: "app-orchestrator",
-      runtimeHandle: { id: "tmux-session-1" },
-    });
-    mockSessionManager.spawnOrchestrator.mockResolvedValue({
-      id: "app-orchestrator",
-      runtimeHandle: { id: "tmux-session-1" },
-    });
-
-    await program.parseAsync(["node", "test", "start", "--no-dashboard"]);
-
-    const output = getLoggedOutput();
-    expect(output).toContain("ao session attach app-orchestrator");
-    expect(output).not.toContain("reused existing session");
-  });
-
-  it.each(["delete", "ignore", "delete-new", "ignore-new", "kill-previous"] as const)(
-    "uses ao session attach when strategy is %s and --no-dashboard",
-    async (orchestratorSessionStrategy) => {
-      mockConfigRef.current = makeConfig({
-        "my-app": makeProject({ orchestratorSessionStrategy }),
-      });
-
-      mockSessionManager.get.mockResolvedValue({
-        id: "app-orchestrator",
-        runtimeHandle: { id: "tmux-session-1" },
-      });
-      mockSessionManager.spawnOrchestrator.mockResolvedValue({
-        id: "app-orchestrator",
-        runtimeHandle: { id: "tmux-session-1" },
-        metadata: { orchestratorSessionReused: "true" },
-      });
-
-      await program.parseAsync(["node", "test", "start", "--no-dashboard"]);
-
-      const output = getLoggedOutput();
-      expect(output).toContain("ao session attach app-orchestrator");
-      expect(output).not.toContain("reused existing session");
-    },
-  );
 
   it("handles existing orchestrator sessions by auto-selecting when --no-dashboard", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
@@ -900,8 +857,8 @@ describe("start command — orchestrator session strategy display", () => {
 
     const output = getLoggedOutput();
     // When --no-dashboard is used, auto-selects the most recent orchestrator
-    // and shows ao session attach (not the dashboard selection message)
-    expect(output).toContain("ao session attach app-orchestrator");
+    // and shows tmux attach command (not the dashboard selection message)
+    expect(output).toContain("tmux attach -t tmux-session-existing");
     expect(output).not.toContain("existing sessions found — select one in the dashboard");
 
     // Should NOT spawn a new orchestrator when existing ones exist
@@ -938,11 +895,15 @@ describe("start command — orchestrator session strategy display", () => {
     await program.parseAsync(["node", "test", "start"]);
 
     const output = getLoggedOutput();
-    // With one orchestrator and dashboard enabled, shows the session URL instead of tmux attach
-    expect(output).toContain("http://localhost:3000/sessions/app-orchestrator");
-    expect(output).not.toContain("tmux attach");
+    // With one orchestrator and dashboard enabled, shows tmux attach command
+    expect(output).toContain("tmux attach -t tmux-session-existing");
     expect(output).not.toContain("multiple sessions found");
     expect(output).not.toContain("select one in the dashboard");
+
+    // waitForPortAndOpen should have been called with session URL for the existing orchestrator
+    expect(mockWaitForPortAndOpen).toHaveBeenCalledTimes(1);
+    const args = mockWaitForPortAndOpen.mock.calls[0];
+    expect(args[1]).toContain("/sessions/app-orchestrator");
 
     // Should NOT spawn a new orchestrator when existing one exists
     expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
@@ -992,7 +953,7 @@ describe("start command — orchestrator session strategy display", () => {
     expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
   });
 
-  it("fails and cleans up dashboard when orchestrator setup throws", async () => {
+  it("completes startup when no orchestrators exist and directs user to dashboard", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
     // Mock findWebDir
@@ -1008,18 +969,21 @@ describe("start command — orchestrator session strategy display", () => {
     mockSpawn.mockReturnValue(fakeDashboard);
 
     mockSessionManager.list.mockResolvedValue([]);
-    mockSessionManager.spawnOrchestrator.mockRejectedValue(new Error("Spawn failed"));
 
-    await expect(program.parseAsync(["node", "test", "start"])).rejects.toThrow("process.exit(1)");
+    // With no orchestrators, command should complete successfully
+    await program.parseAsync(["node", "test", "start"]);
 
-    const errors = vi
-      .mocked(console.error)
-      .mock.calls.map((c) => c.join(" "))
-      .join("\n");
-    expect(errors).toContain("Failed to setup orchestrator: Spawn failed");
+    const output = getLoggedOutput();
+    // Should indicate no orchestrator and direct user to dashboard
+    expect(output).toContain("No orchestrator session found");
+    expect(output).toContain("via the dashboard");
+    expect(output).toContain("Startup complete");
 
-    // Should have killed the dashboard
-    expect(fakeDashboard.kill).toHaveBeenCalled();
+    // Should NOT spawn an orchestrator - creation moved to dashboard
+    expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
+
+    // Dashboard should NOT be killed (command completed successfully)
+    expect(fakeDashboard.kill).not.toHaveBeenCalled();
   });
 });
 
