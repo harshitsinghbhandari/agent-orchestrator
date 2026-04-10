@@ -18,7 +18,7 @@ import {
   type PluginRegistry,
   isOrchestratorSession,
   isTerminalSession,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 import type {
   DashboardSession,
   DashboardPR,

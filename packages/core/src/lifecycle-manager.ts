@@ -40,6 +40,7 @@ import {
 import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
+import { resolveNotifierTarget } from "./notifier-resolution.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
@@ -380,7 +381,12 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     if (!project) return session.status;
 
     const agentName = resolveAgentSelection({
-      role: resolveSessionRole(session.id, session.metadata, project.sessionPrefix),
+      role: resolveSessionRole(
+        session.id,
+        session.metadata,
+        project.sessionPrefix,
+        Object.values(config.projects).map((p) => p.sessionPrefix),
+      ),
       project,
       defaults: config.defaults,
       persistedAgent: session.metadata["agent"],
@@ -1209,7 +1215,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const notifierNames = config.notificationRouting[priority] ?? config.defaults.notifiers;
 
     for (const name of notifierNames) {
-      const notifier = registry.get<Notifier>("notifier", name);
+      const target = resolveNotifierTarget(config, name);
+      const notifier =
+        registry.get<Notifier>("notifier", target.reference) ??
+        registry.get<Notifier>("notifier", target.pluginName);
       if (notifier) {
         try {
           await notifier.notify(eventWithPriority);
