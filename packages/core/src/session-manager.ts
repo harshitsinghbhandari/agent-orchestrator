@@ -1291,6 +1291,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       permissions: selection.permissions,
       model: selection.model,
       subagent: spawnConfig.subagent ?? selection.subagent,
+      isOrchestrator: false, // Worker sessions should not skip permissions
     };
 
     let handle: RuntimeHandle;
@@ -1674,6 +1675,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       model: selection.model,
       systemPromptFile,
       subagent: selection.subagent,
+      isOrchestrator: true, // Orchestrator sessions may skip permissions
     };
 
     const launchCommand = plugins.agent.getLaunchCommand(agentLaunchConfig);
@@ -2698,22 +2700,24 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     // 7. Get launch command — try restore command first, fall back to fresh launch
     let launchCommand: string;
+    const isOrchestratorRole = selection.role === "orchestrator";
     const agentLaunchConfig = {
       sessionId,
       projectConfig: {
         ...project,
         agentConfig: {
           ...selection.agentConfig,
-          ...(selection.role === "orchestrator" ? { permissions: "permissionless" as const } : {}),
+          ...(isOrchestratorRole ? { permissions: "permissionless" as const } : {}),
           ...(session.metadata?.opencodeSessionId
             ? { opencodeSessionId: session.metadata.opencodeSessionId }
             : {}),
         },
       },
       issueId: session.issueId ?? undefined,
-      permissions: selection.role === "orchestrator" ? "permissionless" : selection.permissions,
+      permissions: isOrchestratorRole ? "permissionless" : selection.permissions,
       model: selection.model,
       subagent: selection.subagent,
+      isOrchestrator: isOrchestratorRole, // Pass role for permission enforcement in agent plugins
     };
 
     if (plugins.agent.getRestoreCommand) {

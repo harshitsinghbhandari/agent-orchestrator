@@ -170,20 +170,34 @@ describe("getLaunchCommand", () => {
     expect(cmd).not.toContain("unset");
   });
 
-  it("includes --dangerously-skip-permissions when permissions=permissionless", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "permissionless" }));
-    expect(cmd).toContain("--dangerously-skip-permissions");
-  });
-
-  it("treats legacy permissions=skip as permissionless", () => {
+  it("includes --dangerously-skip-permissions when permissions=permissionless AND isOrchestrator=true", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "skip" as unknown as AgentLaunchConfig["permissions"] }),
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: true }),
     );
     expect(cmd).toContain("--dangerously-skip-permissions");
   });
 
-  it("maps permissions=auto-edit to no-prompt mode on Claude", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "auto-edit" }));
+  it("omits --dangerously-skip-permissions when permissions=permissionless but isOrchestrator=false (worker safety)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: false }),
+    );
+    expect(cmd).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("treats legacy permissions=skip as permissionless (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        permissions: "skip" as unknown as AgentLaunchConfig["permissions"],
+        isOrchestrator: true,
+      }),
+    );
+    expect(cmd).toContain("--dangerously-skip-permissions");
+  });
+
+  it("maps permissions=auto-edit to --dangerously-skip-permissions (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "auto-edit", isOrchestrator: true }),
+    );
     expect(cmd).toContain("--dangerously-skip-permissions");
   });
 
@@ -198,9 +212,14 @@ describe("getLaunchCommand", () => {
     expect(cmd).not.toContain("Fix the bug");
   });
 
-  it("combines all options without prompt", () => {
+  it("combines all options without prompt (orchestrator mode)", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "permissionless", model: "opus", prompt: "Hello" }),
+      makeLaunchConfig({
+        permissions: "permissionless",
+        model: "opus",
+        prompt: "Hello",
+        isOrchestrator: true,
+      }),
     );
     expect(cmd).toBe("claude --dangerously-skip-permissions --model 'opus'");
   });

@@ -300,12 +300,25 @@ export async function resolveCodexBinary(): Promise<string> {
 // Agent Implementation
 // =============================================================================
 
-/** Append approval-policy flags to a command parts array */
-function appendApprovalFlags(parts: string[], permissions: string | undefined): void {
+/**
+ * Append approval-policy flags to a command parts array.
+ * @param parts - Command parts array to append to
+ * @param permissions - Permission mode string
+ * @param isOrchestrator - Whether this is an orchestrator session
+ */
+function appendApprovalFlags(parts: string[], permissions: string | undefined, isOrchestrator: boolean): void {
   const mode = normalizeAgentPermissionMode(permissions);
+  // Only orchestrators may skip approvals entirely — workers should never use this flag
+  // even if `permissions: "permissionless"` is set in config (safety guardrail).
   if (mode === "permissionless") {
-    parts.push("--dangerously-bypass-approvals-and-sandbox");
+    if (isOrchestrator) {
+      parts.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      // Workers requesting permissionless get demoted to auto-edit (safer alternative)
+      parts.push("--ask-for-approval", "never");
+    }
   } else if (mode === "auto-edit") {
+    // auto-edit is safe for workers — it allows edits but prompts for bash commands
     parts.push("--ask-for-approval", "never");
   } else if (mode === "suggest") {
     parts.push("--ask-for-approval", "untrusted");
@@ -365,7 +378,7 @@ function createCodexAgent(): Agent {
       const parts: string[] = [shellEscape(binary)];
       appendNoUpdateCheckFlag(parts);
 
-      appendApprovalFlags(parts, config.permissions);
+      appendApprovalFlags(parts, config.permissions, config.isOrchestrator === true);
       appendModelFlags(parts, config.model);
 
       if (config.systemPromptFile) {
@@ -614,7 +627,9 @@ function createCodexAgent(): Agent {
       const parts: string[] = [shellEscape(binary), "resume"];
       appendNoUpdateCheckFlag(parts);
 
-      appendApprovalFlags(parts, project.agentConfig?.permissions);
+      // Only orchestrators may skip approvals — check session role from metadata
+      const isOrchestrator = session.metadata?.["role"] === "orchestrator";
+      appendApprovalFlags(parts, project.agentConfig?.permissions, isOrchestrator);
       const effectiveModel = (project.agentConfig?.model ?? data.model) as string | undefined;
       appendModelFlags(parts, effectiveModel ?? undefined);
 

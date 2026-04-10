@@ -2,6 +2,7 @@ import {
   DEFAULT_READY_THRESHOLD_MS,
   DEFAULT_ACTIVE_WINDOW_MS,
   shellEscape,
+  normalizeAgentPermissionMode,
   buildAgentPath,
   readLastActivityEntry,
   checkActivityLogState,
@@ -211,6 +212,16 @@ function createOpenCodeAgent(): Agent {
     getLaunchCommand(config: AgentLaunchConfig): string {
       const options: string[] = [];
       const sharedOptions: string[] = [];
+
+      // NOTE: OpenCode doesn't currently have permission flags like other agents.
+      // When OpenCode adds support (e.g., --auto-approve or similar), implement:
+      //   const permissionMode = normalizeAgentPermissionMode(config.permissions);
+      //   const canSkipPermissions = config.isOrchestrator === true;
+      //   if (canSkipPermissions && permissionMode === "permissionless") {
+      //     sharedOptions.push("--auto-approve"); // or equivalent flag
+      //   }
+      // The import and isOrchestrator field are already available for this.
+      void normalizeAgentPermissionMode; // Silence unused import warning until implemented
 
       const existingSessionId = asValidOpenCodeSessionId(
         (config.projectConfig.agentConfig as OpenCodeAgentConfig | undefined)?.opencodeSessionId,

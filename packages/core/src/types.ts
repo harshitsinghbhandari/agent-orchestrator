@@ -431,6 +431,17 @@ export interface AgentLaunchConfig {
   permissions?: AgentPermissionInput;
   model?: string;
   /**
+   * Whether this agent is running as an orchestrator (true) or worker (false).
+   *
+   * Agent plugins use this to enforce permission boundaries:
+   * - Orchestrators may use `--dangerously-skip-permissions` (or equivalent)
+   * - Workers should NOT skip permissions even if `permissions: "permissionless"` is set
+   *
+   * This is a safety measure: orchestrators coordinate workers and have limited blast radius,
+   * while workers write code, run tests, and create PRs — higher blast radius actions.
+   */
+  isOrchestrator?: boolean;
+  /**
    * System prompt to pass to the agent for orchestrator context.
    * - Claude Code: --append-system-prompt
    * - Codex: --system-prompt or AGENTS.md
