@@ -959,6 +959,7 @@ describe("spawn", () => {
     const postLaunchAgent = {
       ...mockAgent,
       promptDelivery: "post-launch" as const,
+      processName: "mock", // For foreground command check
       isProcessRunning: vi.fn().mockResolvedValue(true),
     };
 
