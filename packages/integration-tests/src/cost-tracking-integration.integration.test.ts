@@ -26,6 +26,7 @@ import {
   type Workspace,
   type WorkspaceInfo,
   type CostEstimate,
+  type Session,
   getSessionsDir,
   pricingRegistry,
   modelRegistry,
@@ -34,7 +35,7 @@ import {
   initializeRegistriesFromConfig,
   buildPromptWithMetadata,
   truncatePrompt,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 
 // =============================================================================
 // Test Helpers
@@ -506,7 +507,7 @@ describe("Cost Persistence to cost.json", () => {
 
     // List sessions to trigger enrichment
     const sessions = await sm.list("test-project");
-    const session = sessions.find((s) => s.id === sessionId);
+    const session = sessions.find((s: Session) => s.id === sessionId);
 
     if (session) {
       // Wait for async file operations

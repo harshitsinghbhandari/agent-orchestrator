@@ -34,16 +34,17 @@ import {
   DEFAULT_DECOMPOSER_CONFIG,
   isOrchestratorSession,
   TERMINAL_STATUSES,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 
 // Static plugin imports — webpack needs these to be string literals
-import pluginRuntimeTmux from "@composio/ao-plugin-runtime-tmux";
-import pluginAgentClaudeCode from "@composio/ao-plugin-agent-claude-code";
-import pluginAgentOpencode from "@composio/ao-plugin-agent-opencode";
-import pluginWorkspaceWorktree from "@composio/ao-plugin-workspace-worktree";
-import pluginScmGithub from "@composio/ao-plugin-scm-github";
-import pluginTrackerGithub from "@composio/ao-plugin-tracker-github";
-import pluginTrackerLinear from "@composio/ao-plugin-tracker-linear";
+import pluginRuntimeTmux from "@aoagents/ao-plugin-runtime-tmux";
+import pluginAgentClaudeCode from "@aoagents/ao-plugin-agent-claude-code";
+import pluginAgentCursor from "@aoagents/ao-plugin-agent-cursor";
+import pluginAgentOpencode from "@aoagents/ao-plugin-agent-opencode";
+import pluginWorkspaceWorktree from "@aoagents/ao-plugin-workspace-worktree";
+import pluginScmGithub from "@aoagents/ao-plugin-scm-github";
+import pluginTrackerGithub from "@aoagents/ao-plugin-tracker-github";
+import pluginTrackerLinear from "@aoagents/ao-plugin-tracker-linear";
 
 export interface Services {
   config: OrchestratorConfig;
@@ -81,6 +82,7 @@ async function initServices(): Promise<Services> {
   // Register plugins explicitly (webpack can't handle dynamic import() in core)
   registry.register(pluginRuntimeTmux);
   registry.register(pluginAgentClaudeCode);
+  registry.register(pluginAgentCursor);
   registry.register(pluginAgentOpencode);
   registry.register(pluginWorkspaceWorktree);
   registry.register(pluginScmGithub);
