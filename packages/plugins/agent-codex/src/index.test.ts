@@ -224,16 +224,30 @@ describe("getLaunchCommand", () => {
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe("'codex' -c check_for_update_on_startup=false");
   });
 
-  it("includes bypass flag when permissions=permissionless", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "permissionless" }));
+  it("includes bypass flag when permissions=permissionless AND isOrchestrator=true", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: true }),
+    );
     expect(cmd).toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(cmd).not.toContain("--ask-for-approval");
     expect(cmd).not.toContain("--full-auto");
   });
 
-  it("treats legacy permissions=skip as permissionless", () => {
+  it("omits bypass flag when permissions=permissionless but isOrchestrator=false (worker safety)", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "skip" as unknown as AgentLaunchConfig["permissions"] }),
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: false }),
+    );
+    expect(cmd).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    // auto-edit is safe for workers
+    expect(cmd).toContain("--ask-for-approval never");
+  });
+
+  it("treats legacy permissions=skip as permissionless (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        permissions: "skip" as unknown as AgentLaunchConfig["permissions"],
+        isOrchestrator: true,
+      }),
     );
     expect(cmd).toContain("--dangerously-bypass-approvals-and-sandbox");
   });
@@ -265,9 +279,14 @@ describe("getLaunchCommand", () => {
     expect(cmd).toContain("-- 'Fix it'");
   });
 
-  it("combines all options", () => {
+  it("combines all options (orchestrator mode)", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "permissionless", model: "o3", prompt: "Go" }),
+      makeLaunchConfig({
+        permissions: "permissionless",
+        model: "o3",
+        prompt: "Go",
+        isOrchestrator: true,
+      }),
     );
     expect(cmd).toBe("'codex' -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox --model 'o3' -c model_reasoning_effort=high -- 'Go'");
   });
@@ -1075,7 +1094,7 @@ describe("getRestoreCommand", () => {
     expect(cmd).toContain("thread-abc-123");
   });
 
-  it("includes bypass flag when project config permissions=permissionless", async () => {
+  it("includes bypass flag when project config permissions=permissionless AND session role=orchestrator", async () => {
     const content = jsonl(
       { type: "session_meta", cwd: "/workspace/test", model: "gpt-4o" },
       { threadId: "thread-1" },
@@ -1086,7 +1105,10 @@ describe("getRestoreCommand", () => {
     mockReadFile.mockResolvedValue(content);
     mockStat.mockResolvedValue({ mtimeMs: 1000 });
 
-    const session = makeSession({ workspacePath: "/workspace/test" });
+    const session = makeSession({
+      workspacePath: "/workspace/test",
+      metadata: { role: "orchestrator" },
+    });
     const cmd = await agent.getRestoreCommand!(session, makeProjectConfig({
       agentConfig: { permissions: "permissionless" },
     }));
@@ -1095,7 +1117,7 @@ describe("getRestoreCommand", () => {
     expect(cmd).not.toContain("--ask-for-approval");
   });
 
-  it("treats legacy project config permissions=skip as permissionless", async () => {
+  it("omits bypass flag when project config permissions=permissionless but session role=worker (safety)", async () => {
     const content = jsonl(
       { type: "session_meta", cwd: "/workspace/test", model: "gpt-4o" },
       { threadId: "thread-1" },
@@ -1106,7 +1128,34 @@ describe("getRestoreCommand", () => {
     mockReadFile.mockResolvedValue(content);
     mockStat.mockResolvedValue({ mtimeMs: 1000 });
 
-    const session = makeSession({ workspacePath: "/workspace/test" });
+    const session = makeSession({
+      workspacePath: "/workspace/test",
+      metadata: { role: "worker" },
+    });
+    const cmd = await agent.getRestoreCommand!(session, makeProjectConfig({
+      agentConfig: { permissions: "permissionless" },
+    }));
+
+    expect(cmd).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    // auto-edit is safe for workers
+    expect(cmd).toContain("--ask-for-approval never");
+  });
+
+  it("treats legacy project config permissions=skip as permissionless (orchestrator only)", async () => {
+    const content = jsonl(
+      { type: "session_meta", cwd: "/workspace/test", model: "gpt-4o" },
+      { threadId: "thread-1" },
+    );
+    mockReaddir.mockResolvedValue(["sess.jsonl"]);
+    setupMockOpen(content);
+    setupMockStream(content);
+    mockReadFile.mockResolvedValue(content);
+    mockStat.mockResolvedValue({ mtimeMs: 1000 });
+
+    const session = makeSession({
+      workspacePath: "/workspace/test",
+      metadata: { role: "orchestrator" },
+    });
     const cmd = await agent.getRestoreCommand!(session, makeProjectConfig({
       agentConfig: { permissions: "skip" as unknown as AgentSpecificConfig["permissions"] },
     }));

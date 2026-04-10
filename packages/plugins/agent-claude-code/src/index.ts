@@ -672,7 +672,10 @@ function createClaudeCodeAgent(): Agent {
       const parts: string[] = ["claude"];
 
       const permissionMode = normalizeAgentPermissionMode(config.permissions);
-      if (permissionMode === "permissionless" || permissionMode === "auto-edit") {
+      // Only orchestrators may skip permissions — workers should never use this flag
+      // even if `permissions: "permissionless"` is set in config (safety guardrail).
+      const canSkipPermissions = config.isOrchestrator === true;
+      if (canSkipPermissions && (permissionMode === "permissionless" || permissionMode === "auto-edit")) {
         parts.push("--dangerously-skip-permissions");
       }
 
@@ -835,8 +838,11 @@ function createClaudeCodeAgent(): Agent {
       // Build resume command
       const parts: string[] = ["claude", "--resume", shellEscape(sessionUuid)];
 
+      // Only orchestrators may skip permissions — workers should never use this flag
+      // even if `permissions: "permissionless"` is set in config (safety guardrail).
+      const isOrchestrator = session.metadata?.["role"] === "orchestrator";
       const permissionMode = normalizeAgentPermissionMode(project.agentConfig?.permissions);
-      if (permissionMode === "permissionless" || permissionMode === "auto-edit") {
+      if (isOrchestrator && (permissionMode === "permissionless" || permissionMode === "auto-edit")) {
         parts.push("--dangerously-skip-permissions");
       }
 

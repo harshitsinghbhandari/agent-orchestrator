@@ -116,8 +116,11 @@ function createAiderAgent(): Agent {
     getLaunchCommand(config: AgentLaunchConfig): string {
       const parts: string[] = ["aider"];
 
+      // Only orchestrators may skip confirmations — workers should not use --yes
+      // even if `permissions: "permissionless"` is set in config (safety guardrail).
       const permissionMode = normalizeAgentPermissionMode(config.permissions);
-      if (permissionMode === "permissionless" || permissionMode === "auto-edit") {
+      const canSkipConfirmations = config.isOrchestrator === true;
+      if (canSkipConfirmations && (permissionMode === "permissionless" || permissionMode === "auto-edit")) {
         parts.push("--yes");
       }
 

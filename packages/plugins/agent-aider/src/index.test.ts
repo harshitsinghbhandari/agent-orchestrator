@@ -142,20 +142,34 @@ describe("getLaunchCommand", () => {
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe("aider");
   });
 
-  it("includes --yes when permissions=permissionless", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "permissionless" }));
-    expect(cmd).toContain("--yes");
-  });
-
-  it("treats legacy permissions=skip as permissionless", () => {
+  it("includes --yes when permissions=permissionless AND isOrchestrator=true", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "skip" as unknown as AgentLaunchConfig["permissions"] }),
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: true }),
     );
     expect(cmd).toContain("--yes");
   });
 
-  it("maps permissions=auto-edit to no-prompt mode on Aider", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "auto-edit" }));
+  it("omits --yes when permissions=permissionless but isOrchestrator=false (worker safety)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: false }),
+    );
+    expect(cmd).not.toContain("--yes");
+  });
+
+  it("treats legacy permissions=skip as permissionless (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        permissions: "skip" as unknown as AgentLaunchConfig["permissions"],
+        isOrchestrator: true,
+      }),
+    );
+    expect(cmd).toContain("--yes");
+  });
+
+  it("maps permissions=auto-edit to --yes on Aider (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "auto-edit", isOrchestrator: true }),
+    );
     expect(cmd).toContain("--yes");
   });
 
@@ -169,9 +183,14 @@ describe("getLaunchCommand", () => {
     expect(cmd).toContain("--message 'Fix the tests'");
   });
 
-  it("combines all options", () => {
+  it("combines all options (orchestrator mode)", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "permissionless", model: "sonnet", prompt: "Go" }),
+      makeLaunchConfig({
+        permissions: "permissionless",
+        model: "sonnet",
+        prompt: "Go",
+        isOrchestrator: true,
+      }),
     );
     expect(cmd).toBe("aider --yes --model 'sonnet' --message 'Go'");
   });

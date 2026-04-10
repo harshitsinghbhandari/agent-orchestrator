@@ -160,8 +160,11 @@ function createCursorAgent(): Agent {
     getLaunchCommand(config: AgentLaunchConfig): string {
       const parts: string[] = ["agent"];
 
+      // Only orchestrators may skip permissions — workers should not use these flags
+      // even if `permissions: "permissionless"` is set in config (safety guardrail).
       const permissionMode = normalizeAgentPermissionMode(config.permissions);
-      if (permissionMode === "permissionless" || permissionMode === "auto-edit") {
+      const canSkipPermissions = config.isOrchestrator === true;
+      if (canSkipPermissions && (permissionMode === "permissionless" || permissionMode === "auto-edit")) {
         // Cursor uses --force (or --yolo alias) for automatic approval
         // --sandbox disabled: Skip workspace trust prompts entirely
         // --approve-mcps: Auto-approve MCP servers

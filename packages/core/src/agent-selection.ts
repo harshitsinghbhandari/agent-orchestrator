@@ -73,12 +73,36 @@ export function resolveAgentSelection(params: {
     agentConfig.model = model;
   }
 
-  const permissions = normalizeAgentPermissionMode(
-    typeof agentConfig.permissions === "string" ? agentConfig.permissions : undefined,
+  // Resolve permissions with role-based safety check:
+  // Workers should NOT inherit "permissionless" from shared config — it's too dangerous.
+  // Only allow permissionless for workers if explicitly set in worker.agentConfig.permissions.
+  const rolePermissions = normalizeAgentPermissionMode(
+    typeof roleAgentConfig.permissions === "string" ? roleAgentConfig.permissions : undefined,
   );
+  const sharedPermissions = normalizeAgentPermissionMode(
+    typeof sharedConfig.permissions === "string" ? sharedConfig.permissions : undefined,
+  );
+
+  let permissions: AgentPermissionMode | undefined;
+  if (role === "worker") {
+    // Workers: only use role-specific permissions, or safe fallback from shared config
+    if (rolePermissions !== undefined) {
+      permissions = rolePermissions;
+    } else if (sharedPermissions !== undefined && sharedPermissions !== "permissionless") {
+      // Safe to inherit non-permissionless modes from shared config
+      permissions = sharedPermissions;
+    }
+    // If sharedPermissions is "permissionless" and rolePermissions is undefined,
+    // permissions stays undefined (no skip-permissions flag)
+  } else {
+    // Orchestrators: can use any permission mode
+    permissions = rolePermissions ?? sharedPermissions;
+  }
+
   if (permissions !== undefined) {
     agentConfig.permissions = permissions;
   }
+
   const subagent =
     typeof agentConfig["subagent"] === "string" ? agentConfig["subagent"] : undefined;
 

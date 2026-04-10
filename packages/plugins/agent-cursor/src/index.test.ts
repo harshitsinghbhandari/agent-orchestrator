@@ -162,22 +162,38 @@ describe("getLaunchCommand", () => {
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe("agent");
   });
 
-  it("includes --force --sandbox disabled --approve-mcps when permissions=permissionless", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "permissionless" }));
+  it("includes --force --sandbox disabled --approve-mcps when permissions=permissionless AND isOrchestrator=true", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: true }),
+    );
     expect(cmd).toContain("--force");
     expect(cmd).toContain("--sandbox disabled");
     expect(cmd).toContain("--approve-mcps");
   });
 
-  it("treats legacy permissions=skip as permissionless", () => {
+  it("omits --force flags when permissions=permissionless but isOrchestrator=false (worker safety)", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "skip" as unknown as AgentLaunchConfig["permissions"] }),
+      makeLaunchConfig({ permissions: "permissionless", isOrchestrator: false }),
+    );
+    expect(cmd).not.toContain("--force");
+    expect(cmd).not.toContain("--sandbox");
+    expect(cmd).not.toContain("--approve-mcps");
+  });
+
+  it("treats legacy permissions=skip as permissionless (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        permissions: "skip" as unknown as AgentLaunchConfig["permissions"],
+        isOrchestrator: true,
+      }),
     );
     expect(cmd).toContain("--force");
   });
 
-  it("maps permissions=auto-edit to force mode on Cursor", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "auto-edit" }));
+  it("maps permissions=auto-edit to force mode on Cursor (orchestrator only)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "auto-edit", isOrchestrator: true }),
+    );
     expect(cmd).toContain("--force");
   });
 
@@ -192,9 +208,14 @@ describe("getLaunchCommand", () => {
     expect(cmd).not.toContain("--prompt");
   });
 
-  it("combines all options", () => {
+  it("combines all options (orchestrator mode)", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "permissionless", model: "sonnet", prompt: "Go" }),
+      makeLaunchConfig({
+        permissions: "permissionless",
+        model: "sonnet",
+        prompt: "Go",
+        isOrchestrator: true,
+      }),
     );
     expect(cmd).toBe("agent --force --sandbox disabled --approve-mcps --model 'sonnet' -- 'Go'");
   });
