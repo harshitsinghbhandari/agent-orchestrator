@@ -1428,15 +1428,59 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // should NOT destroy the session. The agent is running; user can retry with `ao send`.
     let promptDelivered = false;
     if (plugins.agent.promptDelivery === "post-launch" && agentLaunchConfig.prompt) {
+      // Wait for agent to be ready before sending the prompt.
+      // Poll until output is stable (agent has finished initializing and is waiting for input).
+      const readyTimeoutMs = SEND_BOOTSTRAP_READY_TIMEOUT_MS;
+      const readyPollMs = SEND_RESTORE_READY_POLL_MS;
+      const requiredStablePolls = SEND_BOOTSTRAP_STABLE_POLLS;
+
+      const deadline = Date.now() + readyTimeoutMs;
+      let lastOutput: string | null = null;
+      let stablePolls = 0;
+      let agentReady = false;
+
+      while (Date.now() < deadline) {
+        try {
+          const [runtimeAlive, processRunning, output] = await Promise.all([
+            plugins.runtime.isAlive(handle).catch(() => false),
+            plugins.agent.isProcessRunning(handle).catch(() => false),
+            plugins.runtime.getOutput(handle, 10).catch(() => ""),
+          ]);
+
+          // Agent is ready when: runtime is alive, process is running, and output is stable
+          const outputTrimmed = output?.trim() ?? "";
+          const hasOutput = outputTrimmed.length > 0;
+          const isStable = hasOutput && outputTrimmed === lastOutput;
+
+          if (runtimeAlive && processRunning && isStable) {
+            stablePolls += 1;
+            if (stablePolls >= requiredStablePolls) {
+              agentReady = true;
+              break;
+            }
+          } else {
+            stablePolls = 0;
+          }
+
+          lastOutput = outputTrimmed;
+        } catch {
+          // Ignore polling errors and continue waiting
+        }
+
+        await sleep(readyPollMs);
+      }
+
+      // Send prompt with retries
       const maxRetries = 3;
-      const baseDelayMs = 3_000;
+      const retryDelayMs = 2_000;
       let lastError: Error | undefined;
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          // Wait for agent to start and be ready for input
-          // Use exponential backoff: 3s, 6s, 9s between attempts
-          await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
+          // If agent wasn't ready on first attempt, wait a bit before retrying
+          if (attempt > 1 || !agentReady) {
+            await sleep(retryDelayMs);
+          }
           await plugins.runtime.sendMessage(handle, agentLaunchConfig.prompt);
           promptDelivered = true;
           break;
