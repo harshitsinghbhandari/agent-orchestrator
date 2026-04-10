@@ -1257,18 +1257,6 @@ export interface ProjectConfig {
     | "kill-previous";
 
   opencodeIssueSessionStrategy?: "reuse" | "delete" | "ignore";
-
-  /** Task decomposition configuration */
-  decomposer?: {
-    /** Enable auto-decomposition for backlog issues (default: false) */
-    enabled: boolean;
-    /** Max recursion depth (default: 3) */
-    maxDepth: number;
-    /** Model to use for decomposition (default: claude-sonnet-4-20250514) */
-    model: string;
-    /** Require human approval before executing decomposed plans (default: true) */
-    requireApproval: boolean;
-  };
 }
 
 export interface TrackerConfig {

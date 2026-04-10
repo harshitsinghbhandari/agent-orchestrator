@@ -227,6 +227,7 @@ export function buildPromptWithMetadata(
     });
   }
 
+  // Explicit user prompt (appended last, highest priority)
   if (config.userPrompt) {
     const content = `## Additional Instructions\n${config.userPrompt}`;
     sections.push({
