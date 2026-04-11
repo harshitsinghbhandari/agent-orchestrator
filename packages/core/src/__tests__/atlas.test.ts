@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -148,6 +148,14 @@ describe("atlas initialization", () => {
     expect(existsSync(join(getPendingDir(repoPath), ".gitignore"))).toBe(true);
   });
 
+  it("initAtlas creates .gitignore that ignores pending md files", () => {
+    initAtlas(repoPath);
+
+    const gitignoreContent = readFileSync(join(getPendingDir(repoPath), ".gitignore"), "utf-8");
+    expect(gitignoreContent).toContain("*");
+    expect(gitignoreContent).toContain("!.gitignore");
+  });
+
   it("atlasExists returns true after init", () => {
     initAtlas(repoPath);
     expect(atlasExists(repoPath)).toBe(true);
@@ -199,6 +207,17 @@ describe("flow management", () => {
   it("getMultipleFlowContents returns empty string for non-existent flows", () => {
     const content = getMultipleFlowContents(repoPath, ["non-existent"]);
     expect(content).toBe("");
+  });
+
+  it("getFlow rejects invalid flow IDs", () => {
+    expect(() => getFlow(repoPath, "../etc/passwd")).toThrow("Invalid flow ID");
+    expect(() => getFlow(repoPath, "..")).toThrow("Invalid flow ID");
+    expect(() => getFlow(repoPath, "UPPERCASE")).toThrow("Invalid flow ID");
+  });
+
+  it("getFlowContent rejects invalid flow IDs", () => {
+    expect(() => getFlowContent(repoPath, "../secret")).toThrow("Invalid flow ID");
+    expect(() => getFlowContent(repoPath, "has spaces")).toThrow("Invalid flow ID");
   });
 
   describe("with existing flows", () => {
@@ -328,7 +347,7 @@ updated: 2026-04-11
     expect(pending[0]?.frontmatter.discoveredIn).toBe("aa-3");
   });
 
-  it("approvePending moves file and updates index", () => {
+  it("approvePending moves file and updates index", async () => {
     const pendingContent = `---
 title: Test Flow
 discoveredIn: aa-4
@@ -339,7 +358,7 @@ updated: 2026-04-11
 
     writeFileSync(join(getPendingDir(repoPath), "aa-4-test-flow.md"), pendingContent);
 
-    const flow = approvePending(repoPath, "aa-4-test-flow");
+    const flow = await approvePending(repoPath, "aa-4-test-flow");
 
     // Check returned flow
     expect(flow.id).toBe("test-flow");
@@ -360,7 +379,7 @@ updated: 2026-04-11
     expect(atlas.flows["test-flow"]?.successCount).toBe(1);
   });
 
-  it("approvePending increments successCount for existing flow", () => {
+  it("approvePending increments successCount for existing flow", async () => {
     // Create an existing flow
     const existingContent = `---
 title: Existing Flow
@@ -394,7 +413,7 @@ updated: 2026-04-11
 
     writeFileSync(join(getPendingDir(repoPath), "aa-5-existing-flow.md"), pendingContent);
 
-    const flow = approvePending(repoPath, "aa-5-existing-flow");
+    const flow = await approvePending(repoPath, "aa-5-existing-flow");
 
     expect(flow.metadata.successCount).toBe(4);
     expect(flow.metadata.sourceAOSession).toContain("aa-1");
@@ -420,12 +439,23 @@ updated: 2026-04-11
     expect(existsSync(pendingPath)).toBe(false);
   });
 
-  it("approvePending throws for non-existent pending", () => {
-    expect(() => approvePending(repoPath, "non-existent")).toThrow("Pending flow not found");
+  it("approvePending throws for non-existent pending", async () => {
+    await expect(approvePending(repoPath, "non-existent")).rejects.toThrow("Pending flow not found");
   });
 
   it("rejectPending throws for non-existent pending", () => {
     expect(() => rejectPending(repoPath, "non-existent")).toThrow("Pending flow not found");
+  });
+
+  it("approvePending rejects path traversal attempts", async () => {
+    await expect(approvePending(repoPath, "../etc/passwd")).rejects.toThrow("Invalid pending flow ID");
+    await expect(approvePending(repoPath, "..")).rejects.toThrow("Invalid pending flow ID");
+    await expect(approvePending(repoPath, "foo/bar")).rejects.toThrow("Invalid pending flow ID");
+  });
+
+  it("rejectPending rejects path traversal attempts", () => {
+    expect(() => rejectPending(repoPath, "../secret")).toThrow("Invalid pending flow ID");
+    expect(() => rejectPending(repoPath, "..")).toThrow("Invalid pending flow ID");
   });
 });
 
@@ -488,5 +518,39 @@ Content`;
 
     expect(pending).toHaveLength(1);
     expect(pending[0]?.id).toBe("valid-flow");
+  });
+});
+
+describe("YAML escaping", () => {
+  let repoPath: string;
+
+  beforeEach(() => {
+    repoPath = join(tmpdir(), `ao-atlas-${randomUUID()}`);
+    mkdirSync(repoPath, { recursive: true });
+    initAtlas(repoPath);
+  });
+
+  afterEach(() => {
+    rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  it("properly escapes special characters in frontmatter", async () => {
+    const pendingContent = `---
+title: "Flow with: colons and 'quotes'"
+discoveredIn: aa-7
+updated: 2026-04-11
+---
+
+## Content with special chars`;
+
+    writeFileSync(join(getPendingDir(repoPath), "aa-7-special.md"), pendingContent);
+
+    const flow = await approvePending(repoPath, "aa-7-special");
+
+    // Read the saved flow and verify it's valid YAML
+    const savedContent = readFileSync(join(getFlowsDir(repoPath), `${flow.id}.md`), "utf-8");
+    const { frontmatter } = parseFrontmatter(savedContent);
+
+    expect(frontmatter.title).toBe("Flow with: colons and 'quotes'");
   });
 });

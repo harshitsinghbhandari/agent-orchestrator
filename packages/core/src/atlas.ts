@@ -14,16 +14,22 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { atomicWriteFileSync } from "./atomic-write.js";
+import { withFileLock } from "./file-lock.js";
 
 // Directory structure constants
 export const ATLAS_DIR = "code-atlas";
 export const ATLAS_INDEX_FILE = "atlas.json";
 export const FLOWS_DIR = "flows";
 export const PENDING_DIR = ".pending";
+
+// ID validation regex - must be a simple slug (lowercase alphanumeric with hyphens)
+const FLOW_ID_REGEX = /^[a-z0-9-]+$/;
+// Pending ID validation - more permissive but still safe (alphanumeric, dots, underscores, hyphens)
+const PENDING_ID_REGEX = /^[A-Za-z0-9._-]+$/;
 
 // Zod schemas for validation
 export const FlowMetadataSchema = z.object({
@@ -90,6 +96,36 @@ export function getAtlasIndexPath(repoPath: string): string {
   return join(getAtlasDir(repoPath), ATLAS_INDEX_FILE);
 }
 
+// ID validation to prevent path traversal
+function validateFlowId(flowId: string): string {
+  if (!flowId || flowId === "." || flowId === "..") {
+    throw new Error(`Invalid flow ID: ${flowId}`);
+  }
+  if (!FLOW_ID_REGEX.test(flowId)) {
+    throw new Error(`Invalid flow ID format: ${flowId}. Must be lowercase alphanumeric with hyphens.`);
+  }
+  return flowId;
+}
+
+function validatePendingId(pendingId: string): string {
+  if (!pendingId || pendingId === "." || pendingId === "..") {
+    throw new Error(`Invalid pending flow ID: ${pendingId}`);
+  }
+  if (!PENDING_ID_REGEX.test(pendingId)) {
+    throw new Error(`Invalid pending flow ID format: ${pendingId}`);
+  }
+  return pendingId;
+}
+
+// Ensure a resolved path is within the expected directory (defense in depth)
+function assertPathWithinDir(filePath: string, expectedDir: string): void {
+  const resolvedPath = resolve(filePath);
+  const resolvedDir = resolve(expectedDir);
+  if (!resolvedPath.startsWith(resolvedDir + "/") && resolvedPath !== resolvedDir) {
+    throw new Error(`Path traversal detected: ${filePath}`);
+  }
+}
+
 // Initialization
 export function atlasExists(repoPath: string): boolean {
   return existsSync(getAtlasIndexPath(repoPath));
@@ -112,10 +148,13 @@ export function initAtlas(repoPath: string): void {
     atomicWriteFileSync(indexPath, JSON.stringify(emptyIndex, null, 2) + "\n");
   }
 
-  // Create .gitignore for pending directory (but allow atlas itself to be tracked)
+  // Create .gitignore for pending directory to ignore pending flows until approved
   const gitignorePath = join(pendingDir, ".gitignore");
   if (!existsSync(gitignorePath)) {
-    atomicWriteFileSync(gitignorePath, "# Pending flows are not committed until approved\n");
+    atomicWriteFileSync(
+      gitignorePath,
+      "# Pending flows are not committed until approved\n*\n!.gitignore\n",
+    );
   }
 }
 
@@ -188,14 +227,21 @@ export function listFlows(repoPath: string): FlowSummary[] {
 }
 
 export function getFlow(repoPath: string, flowId: string): Flow | null {
+  // Validate flowId to prevent path traversal
+  const safeFlowId = validateFlowId(flowId);
+
   const atlas = loadAtlasIndex(repoPath);
-  const metadata = atlas.flows[flowId];
+  const metadata = atlas.flows[safeFlowId];
 
   if (!metadata) {
     return null;
   }
 
-  const flowPath = join(getFlowsDir(repoPath), `${flowId}.md`);
+  const flowsDir = getFlowsDir(repoPath);
+  const flowPath = join(flowsDir, `${safeFlowId}.md`);
+
+  // Defense in depth: verify path is within flows directory
+  assertPathWithinDir(flowPath, flowsDir);
 
   if (!existsSync(flowPath)) {
     return null;
@@ -206,18 +252,25 @@ export function getFlow(repoPath: string, flowId: string): Flow | null {
     const { frontmatter, body } = parseFrontmatter(content);
 
     return {
-      id: flowId,
+      id: safeFlowId,
       metadata,
       frontmatter,
       body,
     };
   } catch (err) {
-    throw new Error(`Failed to read flow ${flowId}`, { cause: err });
+    throw new Error(`Failed to read flow ${safeFlowId}`, { cause: err });
   }
 }
 
 export function getFlowContent(repoPath: string, flowId: string): string | null {
-  const flowPath = join(getFlowsDir(repoPath), `${flowId}.md`);
+  // Validate flowId to prevent path traversal
+  const safeFlowId = validateFlowId(flowId);
+
+  const flowsDir = getFlowsDir(repoPath);
+  const flowPath = join(flowsDir, `${safeFlowId}.md`);
+
+  // Defense in depth: verify path is within flows directory
+  assertPathWithinDir(flowPath, flowsDir);
 
   if (!existsSync(flowPath)) {
     return null;
@@ -280,12 +333,18 @@ export function listPending(repoPath: string): PendingFlow[] {
   return pending.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export function approvePending(repoPath: string, pendingId: string): Flow {
+export async function approvePending(repoPath: string, pendingId: string): Promise<Flow> {
+  // Validate pendingId to prevent path traversal
+  const safePendingId = validatePendingId(pendingId);
+
   const pendingDir = getPendingDir(repoPath);
-  const pendingPath = join(pendingDir, `${pendingId}.md`);
+  const pendingPath = join(pendingDir, `${safePendingId}.md`);
+
+  // Defense in depth: verify path is within pending directory
+  assertPathWithinDir(pendingPath, pendingDir);
 
   if (!existsSync(pendingPath)) {
-    throw new Error(`Pending flow not found: ${pendingId}`);
+    throw new Error(`Pending flow not found: ${safePendingId}`);
   }
 
   // Parse the pending file
@@ -299,79 +358,93 @@ export function approvePending(repoPath: string, pendingId: string): Flow {
     throw new Error(`Cannot generate valid flow ID from title: ${frontmatter.title}`);
   }
 
-  // Load current atlas index
-  const atlas = loadAtlasIndex(repoPath);
-  const existingMetadata = atlas.flows[flowId];
+  // Use file lock to prevent concurrent modifications to atlas.json
+  const indexPath = getAtlasIndexPath(repoPath);
+  const lockPath = `${indexPath}.lock`;
 
-  // Create or update metadata
-  const now = new Date().toISOString();
-  const metadata: FlowMetadata = {
-    id: flowId,
-    title: frontmatter.title,
-    description: body.split("\n").find((line) => line.trim().length > 0)?.trim().slice(0, 200) ?? "",
-    lastUpdated: now,
-    sourceAOSession: existingMetadata
-      ? [...new Set([...existingMetadata.sourceAOSession, frontmatter.discoveredIn])]
-      : [frontmatter.discoveredIn],
-    successCount: existingMetadata ? existingMetadata.successCount + 1 : 1,
-  };
+  return withFileLock(lockPath, async () => {
+    // Load current atlas index
+    const atlas = loadAtlasIndex(repoPath);
+    const existingMetadata = atlas.flows[flowId];
 
-  // Update frontmatter with current timestamp
-  const updatedFrontmatter: FlowFrontmatter = {
-    ...frontmatter,
-    updated: now,
-  };
+    // Create or update metadata
+    const now = new Date().toISOString();
+    const metadata: FlowMetadata = {
+      id: flowId,
+      title: frontmatter.title,
+      description: body.split("\n").find((line) => line.trim().length > 0)?.trim().slice(0, 200) ?? "",
+      lastUpdated: now,
+      sourceAOSession: existingMetadata
+        ? [...new Set([...existingMetadata.sourceAOSession, frontmatter.discoveredIn])]
+        : [frontmatter.discoveredIn],
+      successCount: existingMetadata ? existingMetadata.successCount + 1 : 1,
+    };
 
-  // Build updated file content
-  const updatedContent = formatFlowContent(updatedFrontmatter, body);
+    // Update frontmatter with current timestamp
+    const updatedFrontmatter: FlowFrontmatter = {
+      ...frontmatter,
+      updated: now,
+    };
 
-  // Ensure flows directory exists
-  const flowsDir = getFlowsDir(repoPath);
-  mkdirSync(flowsDir, { recursive: true });
+    // Build updated file content using yaml stringify for proper escaping
+    const updatedContent = formatFlowContent(updatedFrontmatter, body);
 
-  // Move file to flows directory
-  const flowPath = join(flowsDir, `${flowId}.md`);
-  atomicWriteFileSync(flowPath, updatedContent);
+    // Ensure flows directory exists
+    const flowsDir = getFlowsDir(repoPath);
+    mkdirSync(flowsDir, { recursive: true });
 
-  // Remove pending file
-  unlinkSync(pendingPath);
+    // Write the approved flow file
+    const flowPath = join(flowsDir, `${flowId}.md`);
+    atomicWriteFileSync(flowPath, updatedContent);
 
-  // Update atlas index
-  atlas.flows[flowId] = metadata;
-  saveAtlasIndex(repoPath, atlas);
+    // Update atlas index BEFORE removing pending file
+    // This ensures we don't lose the pending change if save fails
+    atlas.flows[flowId] = metadata;
+    saveAtlasIndex(repoPath, atlas);
 
-  return {
-    id: flowId,
-    metadata,
-    frontmatter: updatedFrontmatter,
-    body,
-  };
+    // Remove pending file only after flow and index are persisted
+    unlinkSync(pendingPath);
+
+    return {
+      id: flowId,
+      metadata,
+      frontmatter: updatedFrontmatter,
+      body,
+    };
+  });
 }
 
 export function rejectPending(repoPath: string, pendingId: string): void {
-  const pendingPath = join(getPendingDir(repoPath), `${pendingId}.md`);
+  // Validate pendingId to prevent path traversal
+  const safePendingId = validatePendingId(pendingId);
+
+  const pendingDir = getPendingDir(repoPath);
+  const pendingPath = join(pendingDir, `${safePendingId}.md`);
+
+  // Defense in depth: verify path is within pending directory
+  assertPathWithinDir(pendingPath, pendingDir);
 
   if (!existsSync(pendingPath)) {
-    throw new Error(`Pending flow not found: ${pendingId}`);
+    throw new Error(`Pending flow not found: ${safePendingId}`);
   }
 
   unlinkSync(pendingPath);
 }
 
-// Helper to format flow content with frontmatter
+// Helper to format flow content with frontmatter using yaml stringify for proper escaping
 function formatFlowContent(frontmatter: FlowFrontmatter, body: string): string {
-  const yamlLines = [
-    `title: "${frontmatter.title.replace(/"/g, '\\"')}"`,
-    `discoveredIn: "${frontmatter.discoveredIn}"`,
-    `updated: "${frontmatter.updated}"`,
-  ];
+  // Use yaml stringify to properly handle escaping of all values
+  const frontmatterObj: Record<string, unknown> = {
+    title: frontmatter.title,
+    discoveredIn: frontmatter.discoveredIn,
+    updated: frontmatter.updated,
+  };
 
   if (frontmatter.relatedFlows && frontmatter.relatedFlows.length > 0) {
-    yamlLines.push(`relatedFlows:`);
-    for (const related of frontmatter.relatedFlows) {
-      yamlLines.push(`  - "${related}"`);
-    }
+    frontmatterObj.relatedFlows = frontmatter.relatedFlows;
   }
 
-  return `---\n${yamlLines.join("\n")}\n---\n${body}`;
+  const yamlContent = stringifyYaml(frontmatterObj, { lineWidth: 0 }).trim();
+
+  return `---\n${yamlContent}\n---\n${body}`;
 }

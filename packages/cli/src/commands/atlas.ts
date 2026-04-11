@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import chalk from "chalk";
 import type { Command } from "commander";
 import {
@@ -14,32 +15,79 @@ import {
   loadConfig,
 } from "@aoagents/ao-core";
 
-function resolveRepoPath(): string {
+/**
+ * Resolve the repository path for atlas operations.
+ *
+ * Resolution order:
+ * 1. If --project is specified, use that project's path
+ * 2. If cwd is within a configured project's path, use that project
+ * 3. If only one project is configured, use it
+ * 4. Fall back to cwd (for repos without AO config)
+ */
+function resolveRepoPath(projectOption?: string): string {
   const configPath = findConfigFile();
-  if (configPath) {
-    try {
-      const config = loadConfig(configPath);
-      const firstProjectId = Object.keys(config.projects)[0];
-      if (firstProjectId) {
-        return config.projects[firstProjectId]?.path ?? process.cwd();
-      }
-    } catch {
-      // Fall back to cwd if config is invalid
+
+  if (!configPath) {
+    // No AO config - use cwd (atlas can work standalone)
+    return process.cwd();
+  }
+
+  let config;
+  try {
+    config = loadConfig(configPath);
+  } catch {
+    // Invalid config - fall back to cwd
+    return process.cwd();
+  }
+
+  const projectIds = Object.keys(config.projects);
+
+  if (projectIds.length === 0) {
+    return process.cwd();
+  }
+
+  // If --project is specified, use that project
+  if (projectOption) {
+    const project = config.projects[projectOption];
+    if (!project) {
+      throw new Error(
+        `Unknown project: ${projectOption}\nAvailable: ${projectIds.join(", ")}`,
+      );
+    }
+    return project.path;
+  }
+
+  // Try to match cwd to a configured project
+  const cwd = resolve(process.cwd());
+  for (const projectId of projectIds) {
+    const projectPath = resolve(config.projects[projectId]?.path ?? "");
+    if (cwd === projectPath || cwd.startsWith(projectPath + "/")) {
+      return projectPath;
     }
   }
+
+  // If only one project, use it
+  if (projectIds.length === 1) {
+    return config.projects[projectIds[0]]?.path ?? process.cwd();
+  }
+
+  // Multiple projects and cwd doesn't match any - use cwd
+  // This allows atlas to work in subdirectories or standalone repos
   return process.cwd();
 }
 
 export function registerAtlas(program: Command): void {
   const atlas = program
     .command("atlas")
-    .description("Manage codebase knowledge flows");
+    .description("Manage codebase knowledge flows")
+    .option("-p, --project <id>", "Project ID (for multi-project configs)");
 
   atlas
     .command("init")
     .description("Initialize code-atlas folder structure")
     .action(() => {
-      const repoPath = resolveRepoPath();
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (atlasExists(repoPath)) {
         console.log(chalk.dim("Atlas already initialized at this location."));
@@ -58,8 +106,9 @@ export function registerAtlas(program: Command): void {
     .command("list")
     .description("List all approved flows")
     .option("--json", "Output as JSON")
-    .action((opts: { json?: boolean }) => {
-      const repoPath = resolveRepoPath();
+    .action((cmdOpts: { json?: boolean }) => {
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         console.log(chalk.yellow("No atlas found. Run 'ao atlas init' first."));
@@ -68,7 +117,7 @@ export function registerAtlas(program: Command): void {
 
       const flows = listFlows(repoPath);
 
-      if (opts.json) {
+      if (cmdOpts.json) {
         console.log(JSON.stringify(flows, null, 2));
         return;
       }
@@ -94,8 +143,9 @@ export function registerAtlas(program: Command): void {
     .command("pending")
     .description("List pending flow changes from agents")
     .option("--json", "Output as JSON")
-    .action((opts: { json?: boolean }) => {
-      const repoPath = resolveRepoPath();
+    .action((cmdOpts: { json?: boolean }) => {
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         console.log(chalk.yellow("No atlas found. Run 'ao atlas init' first."));
@@ -104,7 +154,7 @@ export function registerAtlas(program: Command): void {
 
       const pending = listPending(repoPath);
 
-      if (opts.json) {
+      if (cmdOpts.json) {
         console.log(JSON.stringify(pending.map((p) => ({
           id: p.id,
           title: p.frontmatter.title,
@@ -135,14 +185,15 @@ export function registerAtlas(program: Command): void {
     .command("approve")
     .description("Approve a pending flow change")
     .argument("<id>", "Pending flow ID")
-    .action((id: string) => {
-      const repoPath = resolveRepoPath();
+    .action(async (id: string) => {
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         throw new Error("No atlas found. Run 'ao atlas init' first.");
       }
 
-      const flow = approvePending(repoPath, id);
+      const flow = await approvePending(repoPath, id);
 
       console.log(chalk.green(`Approved: ${id} → ${flow.id}`));
       console.log(chalk.dim(`  Title: ${flow.frontmatter.title}`));
@@ -155,7 +206,8 @@ export function registerAtlas(program: Command): void {
     .description("Reject a pending flow change")
     .argument("<id>", "Pending flow ID")
     .action((id: string) => {
-      const repoPath = resolveRepoPath();
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         throw new Error("No atlas found. Run 'ao atlas init' first.");
@@ -170,7 +222,8 @@ export function registerAtlas(program: Command): void {
     .description("Output a flow's content")
     .argument("<id>", "Flow ID")
     .action((id: string) => {
-      const repoPath = resolveRepoPath();
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         throw new Error("No atlas found. Run 'ao atlas init' first.");
@@ -190,7 +243,8 @@ export function registerAtlas(program: Command): void {
     .description("Output multiple flows for agent consumption")
     .argument("<ids...>", "Flow IDs to include")
     .action((ids: string[]) => {
-      const repoPath = resolveRepoPath();
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         throw new Error("No atlas found. Run 'ao atlas init' first.");
@@ -210,7 +264,8 @@ export function registerAtlas(program: Command): void {
     .description("Show detailed information about a flow")
     .argument("<id>", "Flow ID")
     .action((id: string) => {
-      const repoPath = resolveRepoPath();
+      const opts = atlas.opts<{ project?: string }>();
+      const repoPath = resolveRepoPath(opts.project);
 
       if (!atlasExists(repoPath)) {
         throw new Error("No atlas found. Run 'ao atlas init' first.");
