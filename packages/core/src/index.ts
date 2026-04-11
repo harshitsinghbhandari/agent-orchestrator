@@ -204,3 +204,39 @@ export type {
   DetectedProjectInfo,
   GenerateConfigOptions,
 } from "./config-generator.js";
+
+// Atlas — codebase knowledge flows
+export {
+  atlasExists,
+  initAtlas,
+  loadAtlasIndex,
+  saveAtlasIndex,
+  listFlows,
+  listPending,
+  getFlow,
+  getFlowContent,
+  getMultipleFlowContents,
+  approvePending,
+  rejectPending,
+  parseFrontmatter,
+  slugify,
+  getAtlasDir,
+  getFlowsDir,
+  getPendingDir,
+  getAtlasIndexPath,
+  FlowMetadataSchema,
+  AtlasIndexSchema,
+  FlowFrontmatterSchema,
+  ATLAS_DIR,
+  FLOWS_DIR,
+  PENDING_DIR,
+  ATLAS_INDEX_FILE,
+} from "./atlas.js";
+export type {
+  AtlasIndex,
+  FlowMetadata,
+  FlowFrontmatter,
+  Flow,
+  PendingFlow,
+  FlowSummary,
+} from "./atlas.js";
