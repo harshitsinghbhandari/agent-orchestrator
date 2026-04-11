@@ -347,7 +347,8 @@ export function useVoiceCopilot(
       retryTimeoutRef.current = null;
     }
 
-    // Reset manual disconnect flag when user initiates connection
+    // Reset retry/manual disconnect state when user initiates a fresh connection
+    retryCountRef.current = 0;
     isManualDisconnectRef.current = false;
 
     setStatus("connecting");
@@ -406,7 +407,9 @@ export function useVoiceCopilot(
         if (retryCountRef.current < maxRetries) {
           const delay = retryDelayMs * Math.pow(2, retryCountRef.current);
           retryCountRef.current++;
-          console.log(`[voice] Connection failed, retrying in ${delay}ms (attempt ${retryCountRef.current}/${maxRetries})...`);
+          wsRef.current = null;
+          setStatus("connecting");
+          console.log(`[voice] Connection failed, retrying in ${delay}ms (attempt ${retryCountRef.current + 1}/${maxRetries + 1})...`);
           setError(`Connecting to voice server... (attempt ${retryCountRef.current + 1}/${maxRetries + 1})`);
 
           retryTimeoutRef.current = setTimeout(() => {
@@ -426,12 +429,31 @@ export function useVoiceCopilot(
 
       ws.onclose = (event) => {
         console.log(`[voice] WebSocket closed: ${event.code} ${event.reason}`);
+        wsRef.current = null;
 
-        // Don't update status if we're retrying or manually disconnected
-        if (!retryTimeoutRef.current && !isManualDisconnectRef.current) {
+        const isExpectedClose = event.code === 1000 || event.code === 1001;
+        const shouldRetry =
+          !isManualDisconnectRef.current &&
+          !retryTimeoutRef.current &&
+          !isExpectedClose &&
+          retryCountRef.current < maxRetries;
+
+        if (shouldRetry) {
+          retryCountRef.current += 1;
+          setStatus("connecting");
+          const delay = retryDelayMs * Math.pow(2, retryCountRef.current - 1);
+          setError(`Connecting to voice server... (attempt ${retryCountRef.current + 1}/${maxRetries + 1})`);
+          retryTimeoutRef.current = setTimeout(() => {
+            retryTimeoutRef.current = null;
+            attemptConnection();
+          }, delay);
+          return;
+        }
+
+        // Don't update status if we're manually disconnected or a retry is already pending
+        if (!isManualDisconnectRef.current && !retryTimeoutRef.current) {
           setStatus("disconnected");
         }
-        wsRef.current = null;
       };
     };
 
@@ -682,12 +704,6 @@ export function useVoiceCopilot(
     }
 
     return () => {
-      // Clear retry timeout on unmount
-      if (retryTimeoutRef.current) {
-        clearTimeout(retryTimeoutRef.current);
-        retryTimeoutRef.current = null;
-      }
-
       // Only disconnect on unmount if we were the one who connected
       // Actually, standard practice is to cleanup on unmount
       if (wsRef.current) {
