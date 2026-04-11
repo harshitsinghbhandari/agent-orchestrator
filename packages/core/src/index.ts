@@ -101,6 +101,11 @@ export {
   parseWebhookBranchRef,
 } from "./scm-webhook-utils.js";
 export { asValidOpenCodeSessionId } from "./opencode-session-id.js";
+export {
+  OPENCODE_INTERNAL_ORCHESTRATOR_AGENT_NAME,
+  getWorkspaceOpenCodeConfigPath,
+  writeWorkspaceOpenCodeConfig,
+} from "./opencode-config.js";
 export { normalizeOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
 
 // Activity log — JSONL activity tracking for agents without native JSONL
