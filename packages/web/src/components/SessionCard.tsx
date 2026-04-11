@@ -794,7 +794,7 @@ function getFooterStatusLabel(
 
 interface Alert {
   key: string;
-  type: "ci" | "changes" | "review" | "conflict" | "comment";
+  type: "ci" | "changes" | "review" | "conflict" | "comment" | "truncation";
   icon: React.ReactNode;
   label: string;
   url: string;
@@ -816,9 +816,9 @@ function getAlerts(session: DashboardSession): Alert[] {
   if (meta["promptTruncationReport"]) {
     alerts.push({
       key: "truncation",
+      type: "truncation",
+      icon: "⚠",
       label: "prompt truncated",
-      className: "border-yellow-500/40 bg-yellow-500/10",
-      color: "var(--color-status-attention)",
       url: `/sessions/${encodeURIComponent(session.id)}`,
     });
   }
