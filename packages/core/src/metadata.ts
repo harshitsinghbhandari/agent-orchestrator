@@ -69,12 +69,12 @@ function decodeMetadataValue(value: string): string {
   return result;
 }
 
-/** Serialize a record back to key=value format. */
+/** Serialize a record back to key=value format. Newlines in values are replaced to prevent injection. */
 function serializeMetadata(data: Record<string, string>): string {
   return (
     Object.entries(data)
       .filter(([, v]) => v !== undefined && v !== "")
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, v]) => `${k}=${v.replace(/[\r\n]/g, " ")}`)
       .join("\n") + "\n"
   );
 }
@@ -134,6 +134,7 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
     pinnedSummary: raw["pinnedSummary"],
     promptDelivered: raw["promptDelivered"],
     customPrompt: raw["customPrompt"] ? decodeMetadataValue(raw["customPrompt"]) : undefined,
+    userPrompt: raw["userPrompt"],
   };
 }
 
@@ -202,8 +203,6 @@ export function writeMetadata(
     data["directTerminalWsPort"] = String(metadata.directTerminalWsPort);
   if (metadata.opencodeSessionId) data["opencodeSessionId"] = metadata.opencodeSessionId;
   if (metadata.pinnedSummary) data["pinnedSummary"] = metadata.pinnedSummary;
-  if (metadata.promptDelivered) data["promptDelivered"] = metadata.promptDelivered;
-  if (metadata.customPrompt) data["customPrompt"] = encodeMetadataValue(metadata.customPrompt);
 
   atomicWriteFileSync(path, serializeMetadata(data));
 }

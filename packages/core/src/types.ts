@@ -600,6 +600,7 @@ export interface Issue {
   labels: string[];
   assignee?: string;
   priority?: number;
+  branchName?: string;
 }
 
 export interface IssueFilters {
@@ -1451,6 +1452,7 @@ export interface SessionMetadata {
   pinnedSummary?: string; // First quality summary, pinned for display stability
   promptDelivered?: string; // "pending" | "true" | "false" — tracks post-launch prompt delivery
   customPrompt?: string; // Custom prompt from --prompt flag, stored for reference
+  userPrompt?: string; // Prompt used when spawning without a tracker issue
 }
 
 // =============================================================================

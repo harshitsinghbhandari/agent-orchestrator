@@ -70,6 +70,7 @@ import { asValidOpenCodeSessionId } from "./opencode-session-id.js";
 import { normalizeOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
 import { sessionFromMetadata } from "./utils/session-from-metadata.js";
 import { safeJsonParse } from "./utils/validation.js";
+import { isGitBranchNameSafe } from "./utils.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
 import { mergeCosts } from "./cost-utils.js";
 
@@ -1037,13 +1038,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     plugins: ReturnType<typeof resolvePlugins>,
     handleFromMetadata: boolean,
   ): Promise<void> {
-    // Skip all subprocess/IO work for sessions already known to be terminal.
-    if (TERMINAL_STATUSES.has(session.status)) {
-      session.activity = "exited";
-      return;
-    }
-
-    // Check runtime liveness — but only if the handle came from metadata.
+    // Check runtime liveness first — regardless of session status.
+    // This fixes #1081: terminal statuses (merged, done, etc.) should not force
+    // activity to "exited" if the agent process is still alive.
     // Fabricated handles (constructed as fallback for external sessions) should
     // NOT override status to "killed" — we don't know if the session ever had
     // a tmux session, and we'd clobber meaningful statuses like "pr_open".
@@ -1051,7 +1048,11 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       try {
         const alive = await plugins.runtime.isAlive(session.runtimeHandle);
         if (!alive) {
-          session.status = "killed";
+          // Process is confirmed dead — set activity to exited.
+          // Only update status to "killed" if not already in a terminal state.
+          if (!TERMINAL_SESSION_STATUSES.has(session.status)) {
+            session.status = "killed";
+          }
           session.activity = "exited";
           return;
         }
@@ -1060,10 +1061,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       }
     }
 
-    // Detect activity independently of runtime handle.
+    // Detect activity independently of runtime handle and session status.
     // Activity detection reads JSONL files on disk — it only needs workspacePath,
     // not a runtime handle. Gating on runtimeHandle caused sessions created by
     // external scripts (which don't store runtimeHandle) to always show "unknown".
+    // This now runs for ALL sessions, including terminal statuses, so a merged
+    // session with a live agent shows accurate activity (ready/idle/waiting_input).
     if (plugins.agent) {
       try {
         const detected = await plugins.agent.getActivityState(session, config.readyThresholdMs);
@@ -1172,7 +1175,11 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     if (spawnConfig.branch) {
       branch = spawnConfig.branch;
     } else if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
-      branch = plugins.tracker.branchName(spawnConfig.issueId, project);
+      const fromIssue = resolvedIssue.branchName;
+      branch =
+        fromIssue && isGitBranchNameSafe(fromIssue)
+          ? fromIssue
+          : plugins.tracker.branchName(spawnConfig.issueId, project);
     } else if (spawnConfig.issueId) {
       // If the issueId is already branch-safe (e.g. "INT-9999"), use as-is.
       // Otherwise sanitize free-text (e.g. "fix login bug") into a valid slug.
@@ -1353,7 +1360,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       lastActivityAt: new Date(),
       metadata: {
         ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
-        ...(truncationReport ? { promptTruncationReport: JSON.stringify(truncationReport) } : {}),
+        ...(spawnConfig.prompt ? { userPrompt: spawnConfig.prompt } : {}),
       },
     };
 
@@ -1370,11 +1377,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         createdAt: new Date().toISOString(),
         runtimeHandle: JSON.stringify(handle),
         opencodeSessionId: reusedOpenCodeSessionId,
-        // Include promptDelivered placeholder — prevents incomplete metadata
-        // if crash occurs between initial write and post-launch prompt delivery
-        promptDelivered: agentLaunchConfig.prompt ? "pending" : undefined,
-        // Store custom prompt for reference (from --prompt flag)
-        customPrompt: spawnConfig.prompt,
+        userPrompt: spawnConfig.prompt,
       });
 
       if (plugins.agent.postLaunchSetup) {

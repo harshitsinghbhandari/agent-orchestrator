@@ -94,13 +94,19 @@ async function spawnSession(
     const sm = await getSessionManager(config);
     spinner.text = "Spawning session via core";
 
+    // Validate and sanitize prompt (strip newlines to prevent metadata injection)
+    const sanitizedPrompt = prompt?.replace(/[\r\n]/g, " ").trim() || undefined;
+    if (sanitizedPrompt && sanitizedPrompt.length > 4096) {
+      throw new Error("Prompt must be at most 4096 characters");
+    }
+
     const session = await sm.spawn({
       projectId,
       issueId,
       agent,
       maxPromptTokens,
       baseBranch,
-      prompt,
+      prompt: sanitizedPrompt,
     });
 
     let claimedPrUrl: string | null = null;
