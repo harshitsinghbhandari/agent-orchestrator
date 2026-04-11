@@ -60,6 +60,10 @@ interface UseVoiceCopilotOptions {
   serverUrl?: string;
   /** Auto-connect on mount (default: false) */
   autoConnect?: boolean;
+  /** Maximum connection retry attempts (default: 3) */
+  maxRetries?: number;
+  /** Base delay for retry backoff in ms (default: 1000) */
+  retryDelayMs?: number;
   /** Callback when text response is received */
   onText?: (text: string) => void;
   /** Callback when error occurs */
@@ -117,6 +121,8 @@ export function useVoiceCopilot(
   const {
     serverUrl = "ws://localhost:3002",
     autoConnect = false,
+    maxRetries = 3,
+    retryDelayMs = 1000,
     onText,
     onError,
     onAction,
@@ -153,6 +159,11 @@ export function useVoiceCopilot(
   // Memory leak fix: Track active audio sources and timeouts for cleanup
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const playbackTimeoutsRef = useRef<Set<NodeJS.Timeout>>(new Set());
+
+  // Retry logic state
+  const retryCountRef = useRef(0);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isManualDisconnectRef = useRef(false);
 
   useEffect(() => {
     onTextRef.current = onText;
@@ -323,12 +334,22 @@ export function useVoiceCopilot(
   );
 
   /**
-   * Connect to voice server
+   * Connect to voice server with automatic retry on failure
    */
   const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
+
+    // Clear any pending retry timeout
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+
+    // Reset retry/manual disconnect state when user initiates a fresh connection
+    retryCountRef.current = 0;
+    isManualDisconnectRef.current = false;
 
     setStatus("connecting");
     setError(null);
@@ -360,36 +381,100 @@ export function useVoiceCopilot(
       audioContextRef.current.resume();
     }
 
-    console.log(`[voice] Connecting to ${serverUrl}...`);
-    const ws = new WebSocket(serverUrl);
-    wsRef.current = ws;
+    const attemptConnection = () => {
+      console.log(`[voice] Connecting to ${serverUrl}... (attempt ${retryCountRef.current + 1}/${maxRetries + 1})`);
+      const ws = new WebSocket(serverUrl);
+      wsRef.current = ws;
 
-    ws.onopen = () => {
-      console.log("[voice] WebSocket connected");
-      // Request Gemini connection with token
-      ws.send(JSON.stringify({ type: "connect", token }));
+      ws.onopen = () => {
+        console.log("[voice] WebSocket connected");
+        retryCountRef.current = 0; // Reset retry count on successful connection
+        // Request Gemini connection with token
+        ws.send(JSON.stringify({ type: "connect", token }));
+      };
+
+      ws.onmessage = handleMessage;
+
+      ws.onerror = (event) => {
+        console.error("[voice] WebSocket error event:", event);
+
+        // Don't retry if manually disconnected
+        if (isManualDisconnectRef.current) {
+          return;
+        }
+
+        // Check if we should retry
+        if (retryCountRef.current < maxRetries) {
+          const delay = retryDelayMs * Math.pow(2, retryCountRef.current);
+          retryCountRef.current++;
+          wsRef.current = null;
+          setStatus("connecting");
+          console.log(`[voice] Connection failed, retrying in ${delay}ms (attempt ${retryCountRef.current + 1}/${maxRetries + 1})...`);
+          setError(`Connecting to voice server... (attempt ${retryCountRef.current + 1}/${maxRetries + 1})`);
+
+          retryTimeoutRef.current = setTimeout(() => {
+            retryTimeoutRef.current = null;
+            if (!isManualDisconnectRef.current) {
+              attemptConnection();
+            }
+          }, delay);
+        } else {
+          setStatus("error");
+          setError(
+            "Voice server connection failed. Please check that the voice server is running (pnpm dev starts it automatically)."
+          );
+          retryCountRef.current = 0;
+        }
+      };
+
+      ws.onclose = (event) => {
+        console.log(`[voice] WebSocket closed: ${event.code} ${event.reason}`);
+        wsRef.current = null;
+
+        const isExpectedClose = event.code === 1000 || event.code === 1001;
+        const shouldRetry =
+          !isManualDisconnectRef.current &&
+          !retryTimeoutRef.current &&
+          !isExpectedClose &&
+          retryCountRef.current < maxRetries;
+
+        if (shouldRetry) {
+          const delay = retryDelayMs * Math.pow(2, retryCountRef.current);
+          retryCountRef.current += 1;
+          setStatus("connecting");
+          setError(`Connecting to voice server... (attempt ${retryCountRef.current + 1}/${maxRetries + 1})`);
+          retryTimeoutRef.current = setTimeout(() => {
+            retryTimeoutRef.current = null;
+            attemptConnection();
+          }, delay);
+          return;
+        }
+
+        // Don't update status if we're manually disconnected or a retry is already pending
+        if (!isManualDisconnectRef.current && !retryTimeoutRef.current) {
+          setStatus("disconnected");
+        }
+      };
     };
 
-    ws.onmessage = handleMessage;
-
-    ws.onerror = (event) => {
-      console.error("[voice] WebSocket error event:", event);
-      setStatus("error");
-      setError("WebSocket connection failed. Ensure server is running on port 3002.");
-    };
-
-    ws.onclose = (event) => {
-      console.log(`[voice] WebSocket closed: ${event.code} ${event.reason}`);
-      setStatus("disconnected");
-      wsRef.current = null;
-    };
-  }, [serverUrl, handleMessage]);
+    attemptConnection();
+  }, [serverUrl, handleMessage, maxRetries, retryDelayMs]);
 
   /**
    * Disconnect from voice server
    * Memory leak fix: Also cleans up audio resources to prevent accumulation
    */
   const disconnect = useCallback(() => {
+    // Set manual disconnect flag to prevent retry attempts
+    isManualDisconnectRef.current = true;
+    retryCountRef.current = 0;
+
+    // Clear any pending retry timeout
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+
     if (wsRef.current) {
       const ws = wsRef.current;
       // Request graceful disconnect if open
@@ -633,6 +718,12 @@ export function useVoiceCopilot(
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Clear retry timeout
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+
       // Memory leak fix: Stop and disconnect all active audio sources
       activeSourcesRef.current.forEach((source) => {
         try {
