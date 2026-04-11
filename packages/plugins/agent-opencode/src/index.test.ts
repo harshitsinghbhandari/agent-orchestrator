@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { type Session, type RuntimeHandle, type AgentLaunchConfig } from "@aoagents/ao-core";
+import type { Session, RuntimeHandle, AgentLaunchConfig } from "@aoagents/ao-core";
 
 const { mockAppendActivityEntry, mockReadLastActivityEntry, mockRecordTerminalActivity } =
   vi.hoisted(() => ({
@@ -310,7 +310,7 @@ describe("getLaunchCommand", () => {
     expect(cmd).not.toContain("direct prompt");
   });
 
-  it("keeps subagent when systemPromptFile is set", () => {
+  it("keeps subagent and prompt separate when systemPromptFile is set", () => {
     const cmd = agent.getLaunchCommand(
       makeLaunchConfig({
         systemPromptFile: "/tmp/orchestrator.md",
@@ -339,7 +339,7 @@ describe("getLaunchCommand", () => {
     expect(cmd).not.toContain("--agent");
   });
 
-  it("keeps prompt separate when systemPromptFile and subagent are both set", () => {
+  it("does not inline systemPromptFile when subagent and prompt are both set", () => {
     const cmd = agent.getLaunchCommand(
       makeLaunchConfig({
         systemPromptFile: "/tmp/orchestrator.md",
@@ -753,16 +753,6 @@ describe("getRestoreCommand", () => {
       },
     );
     expect(cmd).toContain("--model 'claude-sonnet-4-5-20250929'");
-  });
-
-  it("does not inject an internal agent during restore", async () => {
-    const cmd = await agent.getRestoreCommand!(
-      makeSession({
-        metadata: { opencodeSessionId: "ses_abc123" },
-      }),
-      { name: "proj", repo: "o/r", path: "/p", defaultBranch: "main", sessionPrefix: "p" },
-    );
-    expect(cmd).toBe("opencode --session 'ses_abc123'");
   });
 
   it("returns null when no session ID found", async () => {

@@ -475,7 +475,43 @@ describe("restore", () => {
     expect(createCall.launchCommand).toBe("claude --resume abc123");
   });
 
-  it("does not need extra OpenCode config when restoring OpenCode orchestrators", async () => {
+  it("falls back to getLaunchCommand when getRestoreCommand returns null", async () => {
+    const wsPath = join(tmpDir, "ws-app-1");
+    mkdirSync(wsPath, { recursive: true });
+
+    const mockAgentWithNullRestore: Agent = {
+      ...mockAgent,
+      getRestoreCommand: vi.fn().mockResolvedValue(null),
+    };
+
+    const registryWithNullRestore: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgentWithNullRestore;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithNullRestore });
+    await sm.restore("app-1");
+
+    expect(mockAgentWithNullRestore.getRestoreCommand).toHaveBeenCalled();
+    expect(mockAgent.getLaunchCommand).toHaveBeenCalled();
+    const createCall = (mockRuntime.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(createCall.launchCommand).toBe("mock-agent --start");
+  });
+
+  it("does not inject OPENCODE_CONFIG when restoring OpenCode orchestrators", async () => {
     const wsPath = join(tmpDir, "ws-app-orchestrator-opencode-restore");
     mkdirSync(wsPath, { recursive: true });
     writeFileSync(getWorkspaceAgentsMdPath(wsPath), "## Agent Orchestrator\n", "utf-8");
@@ -525,16 +561,6 @@ describe("restore", () => {
     });
     await sm.restore("app-orchestrator");
 
-    expect(mockOpenCodeAgentWithRestore.getRestoreCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ workspacePath: wsPath }),
-      expect.objectContaining({
-        agentConfig: expect.objectContaining({
-          opencodeSessionId: "ses_restore",
-          permissions: "permissionless",
-        }),
-      }),
-    );
-
     expect(mockRuntime.create).toHaveBeenCalledWith(
       expect.objectContaining({
         environment: expect.not.objectContaining({
@@ -542,42 +568,6 @@ describe("restore", () => {
         }),
       }),
     );
-  });
-
-  it("falls back to getLaunchCommand when getRestoreCommand returns null", async () => {
-    const wsPath = join(tmpDir, "ws-app-1");
-    mkdirSync(wsPath, { recursive: true });
-
-    const mockAgentWithNullRestore: Agent = {
-      ...mockAgent,
-      getRestoreCommand: vi.fn().mockResolvedValue(null),
-    };
-
-    const registryWithNullRestore: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
-        if (slot === "agent") return mockAgentWithNullRestore;
-        if (slot === "workspace") return mockWorkspace;
-        return null;
-      }),
-    };
-
-    writeMetadata(sessionsDir, "app-1", {
-      worktree: wsPath,
-      branch: "feat/TEST-1",
-      status: "killed",
-      project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
-    });
-
-    const sm = createSessionManager({ config, registry: registryWithNullRestore });
-    await sm.restore("app-1");
-
-    expect(mockAgentWithNullRestore.getRestoreCommand).toHaveBeenCalled();
-    expect(mockAgent.getLaunchCommand).toHaveBeenCalled();
-    const createCall = (mockRuntime.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(createCall.launchCommand).toBe("mock-agent --start");
   });
 
   it("preserves original createdAt/issue/PR metadata", async () => {

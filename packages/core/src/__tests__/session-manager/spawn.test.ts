@@ -1710,7 +1710,7 @@ describe("spawn", () => {
       expect(readFileSync(promptFile, "utf-8")).toBe("You are the orchestrator.");
     });
 
-    it("writes workspace AGENTS.md for OpenCode orchestrators", async () => {
+    it("writes orchestrator-only AGENTS.md for OpenCode orchestrators", async () => {
       const opencodeAgent: Agent = {
         ...mockAgent,
         name: "opencode",
@@ -1748,11 +1748,15 @@ describe("spawn", () => {
 
       const agentsMdPath = getWorkspaceAgentsMdPath("/tmp/ws");
       expect(existsSync(agentsMdPath)).toBe(true);
-      expect(readFileSync(agentsMdPath, "utf-8")).toContain("You are the orchestrator.");
+      expect(readFileSync(agentsMdPath, "utf-8")).toBe(
+        "<!-- AO_ORCHESTRATOR_PROMPT_START -->\n## Agent Orchestrator\n\nYou are the orchestrator.\n<!-- AO_ORCHESTRATOR_PROMPT_END -->\n",
+      );
 
-      expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect(mockRuntime.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          systemPromptFile: expect.stringContaining("orchestrator-prompt-app-orchestrator-1.md"),
+          environment: expect.not.objectContaining({
+            OPENCODE_CONFIG: expect.any(String),
+          }),
         }),
       );
     });

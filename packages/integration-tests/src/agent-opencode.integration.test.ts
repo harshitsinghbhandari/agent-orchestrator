@@ -16,7 +16,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { type ActivityDetection, type AgentSessionInfo } from "@aoagents/ao-core";
+import type { ActivityDetection, AgentSessionInfo } from "@aoagents/ao-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import opencodePlugin from "@aoagents/ao-plugin-agent-opencode";
 import {
@@ -216,12 +216,8 @@ describe("getLaunchCommand (integration)", () => {
       systemPrompt: "You are an orchestrator",
       prompt: "do the task",
     });
-    expect(cmd).toContain(
-      "opencode run --format json --title 'AO:test-1' --command true",
-    );
-    expect(cmd).toContain(
-      `exec opencode --session "$SES_ID" --prompt 'do the task'`,
-    );
+    expect(cmd).toContain("opencode run --format json --title 'AO:test-1' --command true");
+    expect(cmd).toContain(`exec opencode --session "$SES_ID" --prompt 'do the task'`);
   });
 
   it("generates correct command with systemPromptFile", () => {
@@ -230,12 +226,8 @@ describe("getLaunchCommand (integration)", () => {
       systemPromptFile: "/tmp/orchestrator-prompt.md",
       prompt: "do the task",
     });
-    expect(cmd).toContain(
-      "opencode run --format json --title 'AO:test-1' --command true",
-    );
-    expect(cmd).toContain(
-      `exec opencode --session "$SES_ID" --prompt 'do the task'`,
-    );
+    expect(cmd).toContain("opencode run --format json --title 'AO:test-1' --command true");
+    expect(cmd).toContain(`exec opencode --session "$SES_ID" --prompt 'do the task'`);
   });
 
   it("generates correct command with model override", () => {
@@ -255,6 +247,7 @@ describe("getLaunchCommand (integration)", () => {
       model: "gpt-5.2",
       prompt: "review this code",
     });
+    expect(cmd).toContain("--agent 'oracle'");
     expect(cmd).toContain(
       "opencode run --format json --title 'AO:test-1' --agent 'oracle' --model 'gpt-5.2' --command true",
     );
@@ -283,9 +276,7 @@ describe("getLaunchCommand (integration)", () => {
     expect(cmd).toContain(
       "opencode run --format json --title 'AO:test-orchestrator' --command true",
     );
-    expect(cmd).toContain(
-      `exec opencode --session "$SES_ID"`,
-    );
+    expect(cmd).toContain('exec opencode --session "$SES_ID"');
   });
 
   it("escapes single quotes in systemPrompt", () => {
