@@ -453,6 +453,7 @@ function orchestratorToSession(orchestrator: DashboardOrchestratorLink): Dashboa
     createdAt: new Date().toISOString(),
     lastActivityAt: new Date().toISOString(),
     pr: null,
+    userPrompt: null,
     metadata: { role: "orchestrator" },
   };
 }

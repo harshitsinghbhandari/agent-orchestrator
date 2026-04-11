@@ -1050,7 +1050,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         if (!alive) {
           // Process is confirmed dead — set activity to exited.
           // Only update status to "killed" if not already in a terminal state.
-          if (!TERMINAL_SESSION_STATUSES.has(session.status)) {
+          if (!TERMINAL_STATUSES.has(session.status)) {
             session.status = "killed";
           }
           session.activity = "exited";
