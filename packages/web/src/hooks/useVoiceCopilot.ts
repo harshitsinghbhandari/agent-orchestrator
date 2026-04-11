@@ -439,9 +439,9 @@ export function useVoiceCopilot(
           retryCountRef.current < maxRetries;
 
         if (shouldRetry) {
+          const delay = retryDelayMs * Math.pow(2, retryCountRef.current);
           retryCountRef.current += 1;
           setStatus("connecting");
-          const delay = retryDelayMs * Math.pow(2, retryCountRef.current - 1);
           setError(`Connecting to voice server... (attempt ${retryCountRef.current + 1}/${maxRetries + 1})`);
           retryTimeoutRef.current = setTimeout(() => {
             retryTimeoutRef.current = null;
