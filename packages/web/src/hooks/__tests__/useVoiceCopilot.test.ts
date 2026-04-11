@@ -75,14 +75,19 @@ describe("useVoiceCopilot", () => {
     lastWebSocketInstance = null;
     lastAudioContextInstance = null;
 
-    // Mock WebSocket constructor
-    vi.stubGlobal(
-      "WebSocket",
-      vi.fn(() => {
-        lastWebSocketInstance = new MockWebSocket();
-        return lastWebSocketInstance;
-      }),
-    );
+    // Mock WebSocket constructor with static constants
+    const mockWebSocketConstructor = vi.fn(() => {
+      lastWebSocketInstance = new MockWebSocket();
+      return lastWebSocketInstance;
+    });
+    // Add static constants that the real WebSocket has
+    Object.assign(mockWebSocketConstructor, {
+      CONNECTING: 0,
+      OPEN: 1,
+      CLOSING: 2,
+      CLOSED: 3,
+    });
+    vi.stubGlobal("WebSocket", mockWebSocketConstructor);
 
     // Mock AudioContext constructor
     vi.stubGlobal(
@@ -216,6 +221,168 @@ describe("useVoiceCopilot", () => {
       // Calling disconnect after unmount should be safe
       // (though in practice React prevents this)
       expect(disconnect).toBeDefined();
+    });
+  });
+
+  describe("connection retry logic", () => {
+    it("retries connection on WebSocket error with exponential backoff", async () => {
+      const { result } = renderHook(() =>
+        useVoiceCopilot({ maxRetries: 2, retryDelayMs: 100 }),
+      );
+
+      // Start connection - need to flush all microtasks for async connect
+      await act(async () => {
+        result.current.connect();
+        // Flush microtasks for the async token fetch
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+      });
+
+      expect(result.current.status).toBe("connecting");
+
+      // Simulate WebSocket error
+      await act(async () => {
+        if (lastWebSocketInstance?.onerror) {
+          lastWebSocketInstance.onerror(new Event("error"));
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // Should show retry message
+      expect(result.current.error).toContain("Connecting to voice server");
+      expect(result.current.error).toContain("attempt 2/3");
+
+      // Advance timer for first retry (100ms)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        await Promise.resolve();
+      });
+
+      // Should have created a new WebSocket
+      expect(WebSocket).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops retrying after max attempts and shows error message", async () => {
+      const { result } = renderHook(() =>
+        useVoiceCopilot({ maxRetries: 1, retryDelayMs: 100 }),
+      );
+
+      // Start connection
+      await act(async () => {
+        result.current.connect();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+      });
+
+      // First error - should retry
+      await act(async () => {
+        if (lastWebSocketInstance?.onerror) {
+          lastWebSocketInstance.onerror(new Event("error"));
+        }
+        await vi.advanceTimersByTimeAsync(100);
+        await Promise.resolve();
+      });
+
+      // Second error - should give up
+      await act(async () => {
+        if (lastWebSocketInstance?.onerror) {
+          lastWebSocketInstance.onerror(new Event("error"));
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(result.current.status).toBe("error");
+      expect(result.current.error).toContain("Voice server connection failed");
+    });
+
+    it("disconnect cancels pending retries", async () => {
+      const { result } = renderHook(() =>
+        useVoiceCopilot({ maxRetries: 3, retryDelayMs: 1000 }),
+      );
+
+      // Start connection
+      await act(async () => {
+        result.current.connect();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+      });
+
+      // Simulate WebSocket error
+      await act(async () => {
+        if (lastWebSocketInstance?.onerror) {
+          lastWebSocketInstance.onerror(new Event("error"));
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const callCountBeforeDisconnect = (WebSocket as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      // Disconnect before retry fires
+      await act(async () => {
+        result.current.disconnect();
+      });
+
+      // Advance timer past retry delay
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+
+      // Should not have created another WebSocket
+      expect(WebSocket).toHaveBeenCalledTimes(callCountBeforeDisconnect);
+      expect(result.current.status).toBe("disconnected");
+    });
+
+    it("resets retry count on successful connection", async () => {
+      const { result } = renderHook(() =>
+        useVoiceCopilot({ maxRetries: 3, retryDelayMs: 100 }),
+      );
+
+      // Start connection
+      await act(async () => {
+        result.current.connect();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+      });
+
+      // Simulate successful connection
+      await act(async () => {
+        if (lastWebSocketInstance) {
+          lastWebSocketInstance.readyState = MockWebSocket.OPEN;
+          lastWebSocketInstance.onopen?.();
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // Simulate connected status from server
+      await act(async () => {
+        if (lastWebSocketInstance?.onmessage) {
+          lastWebSocketInstance.onmessage({
+            data: JSON.stringify({ type: "status", status: "connected" }),
+          });
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(result.current.status).toBe("connected");
+
+      // Disconnect and reconnect - should start fresh with retries
+      await act(async () => {
+        result.current.disconnect();
+      });
+
+      await act(async () => {
+        result.current.connect();
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+      });
+
+      // Should be in connecting state, ready for new retry cycle
+      expect(result.current.status).toBe("connecting");
     });
   });
 });
