@@ -1,8 +1,7 @@
 ---
-title: "Liveness Detection Architecture"
+title: Liveness Detection Architecture
 discoveredIn: aa-9
-updated: "2025-04-12"
-relatedFlows: []
+updated: 2026-04-12T09:56:09.349Z
 ---
 
 ## Overview

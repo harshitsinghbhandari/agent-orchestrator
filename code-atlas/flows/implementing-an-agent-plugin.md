@@ -1,8 +1,7 @@
 ---
-title: "Implementing an Agent Plugin"
+title: Implementing an Agent Plugin
 discoveredIn: aa-9
-updated: "2025-04-12"
-relatedFlows: []
+updated: 2026-04-12T09:55:32.166Z
 ---
 
 ## Overview

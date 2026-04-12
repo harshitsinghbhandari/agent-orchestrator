@@ -1,7 +1,7 @@
 ---
-title: "Session Spawn Flow"
+title: Session Spawn Flow
 discoveredIn: aa-9
-updated: "2025-04-12"
+updated: 2026-04-12T09:55:59.935Z
 relatedFlows:
   - liveness-detection-architecture
 ---
