@@ -145,11 +145,11 @@ Seven plugin slots. Lifecycle stays in core.
 | Slot      | Default     | Alternatives             |
 | --------- | ----------- | ------------------------ |
 | Runtime   | tmux        | process                  |
-| Agent     | claude-code | codex, aider, cursor, opencode   |
+| Agent     | claude-code | aider, codex, cursor, opencode |
 | Workspace | worktree    | clone                    |
-| Tracker   | github      | linear, gitlab           |
+| Tracker   | github      | gitlab, linear           |
 | SCM       | github      | gitlab                   |
-| Notifier  | desktop     | slack, discord, composio, webhook, openclaw |
+| Notifier  | desktop     | composio, discord, openclaw, slack, webhook |
 | Terminal  | iterm2      | web                      |
 
 All interfaces defined in [`packages/core/src/types.ts`](packages/core/src/types.ts). A plugin implements one interface and exports a `PluginModule`. That's it.
