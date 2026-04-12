@@ -148,13 +148,11 @@ export function initAtlas(repoPath: string): void {
     atomicWriteFileSync(indexPath, JSON.stringify(emptyIndex, null, 2) + "\n");
   }
 
-  // Create .gitignore for pending directory to ignore pending flows until approved
-  const gitignorePath = join(pendingDir, ".gitignore");
-  if (!existsSync(gitignorePath)) {
-    atomicWriteFileSync(
-      gitignorePath,
-      "# Pending flows are not committed until approved\n*\n!.gitignore\n",
-    );
+  // Create .gitkeep to ensure pending directory exists in git
+  // Pending flows ARE committed so they can be reviewed/approved from any worktree
+  const gitkeepPath = join(pendingDir, ".gitkeep");
+  if (!existsSync(gitkeepPath)) {
+    atomicWriteFileSync(gitkeepPath, "");
   }
 }
 

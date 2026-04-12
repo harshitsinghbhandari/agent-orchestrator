@@ -145,15 +145,7 @@ describe("atlas initialization", () => {
     expect(existsSync(getFlowsDir(repoPath))).toBe(true);
     expect(existsSync(getPendingDir(repoPath))).toBe(true);
     expect(existsSync(getAtlasIndexPath(repoPath))).toBe(true);
-    expect(existsSync(join(getPendingDir(repoPath), ".gitignore"))).toBe(true);
-  });
-
-  it("initAtlas creates .gitignore that ignores pending md files", () => {
-    initAtlas(repoPath);
-
-    const gitignoreContent = readFileSync(join(getPendingDir(repoPath), ".gitignore"), "utf-8");
-    expect(gitignoreContent).toContain("*");
-    expect(gitignoreContent).toContain("!.gitignore");
+    expect(existsSync(join(getPendingDir(repoPath), ".gitkeep"))).toBe(true);
   });
 
   it("atlasExists returns true after init", () => {
