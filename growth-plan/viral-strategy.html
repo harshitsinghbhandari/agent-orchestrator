@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Viral Growth Strategy | agent-orchestrator ahead</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Mermaid -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+  <style>
+    :root {
+      --primary: #0a0c10;
+      --accent: #6366f1;
+      --accent-glow: #818cf8;
+      --accent-muted: #4f46e5;
+      --surface: #111318;
+      --surface-raised: #1a1d24;
+      --surface-overlay: #22262f;
+      --text: #e8eaed;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --border: #2d3139;
+      --gradient-1: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+      --gradient-2: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+      --noise: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--primary);
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 16px;
+      overflow-x: hidden;
+    }
+
+    /* Noise overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: var(--noise);
+      opacity: 0.03;
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* Hero Section */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+      padding: 4rem 2rem;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(ellipse at 30% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+                  radial-gradient(ellipse at 70% 80%, rgba(139, 92, 246, 0.1) 0%, transparent 40%);
+      animation: drift 20s ease-in-out infinite alternate;
+    }
+
+    @keyframes drift {
+      0% { transform: translate(0, 0) rotate(0deg); }
+      100% { transform: translate(-5%, 5%) rotate(3deg); }
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      max-width: 900px;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+      animation: fadeUp 0.8s ease-out;
+    }
+
+    .hero-badge span {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .hero h1 {
+      font-family: 'Instrument Serif', serif;
+      font-size: clamp(3rem, 8vw, 6rem);
+      font-weight: 400;
+      line-height: 1.1;
+      margin-bottom: 1.5rem;
+      animation: fadeUp 0.8s ease-out 0.1s both;
+    }
+
+    .hero h1 em {
+      font-style: italic;
+      background: var(--gradient-1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-subtitle {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto 3rem;
+      animation: fadeUp 0.8s ease-out 0.2s both;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 2rem;
+      font-size: 0.875rem;
+      color: var(--text-dim);
+      animation: fadeUp 0.8s ease-out 0.3s both;
+    }
+
+    .hero-meta strong {
+      color: var(--text-muted);
+    }
+
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* Navigation */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(10, 12, 16, 0.8);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+    }
+
+    .nav-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 2rem;
+    }
+
+    .nav-logo {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: var(--accent);
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.8125rem;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+      background: var(--surface-raised);
+    }
+
+    /* Main Content */
+    .main {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 4rem 2rem 8rem;
+    }
+
+    /* Chapter Headers */
+    .chapter {
+      margin-bottom: 6rem;
+      scroll-margin-top: 100px;
+    }
+
+    .chapter-number {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      margin-bottom: 0.75rem;
+    }
+
+    .chapter h2 {
+      font-family: 'Instrument Serif', serif;
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 400;
+      line-height: 1.2;
+      margin-bottom: 2rem;
+      position: relative;
+    }
+
+    .chapter h2::after {
+      content: '';
+      position: absolute;
+      bottom: -0.75rem;
+      left: 0;
+      width: 60px;
+      height: 3px;
+      background: var(--gradient-1);
+      border-radius: 2px;
+    }
+
+    /* Sections */
+    section {
+      margin-bottom: 3rem;
+    }
+
+    section h3 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text);
+    }
+
+    section h4 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    p {
+      margin-bottom: 1rem;
+      color: var(--text-muted);
+    }
+
+    strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    em {
+      font-style: italic;
+    }
+
+    /* Callout Boxes */
+    .callout {
+      padding: 1.5rem;
+      border-radius: 12px;
+      margin: 2rem 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .callout::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+    }
+
+    .callout-insight {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.05) 100%);
+      border: 1px solid rgba(99, 102, 241, 0.2);
+    }
+
+    .callout-insight::before {
+      background: var(--gradient-1);
+    }
+
+    .callout-warning {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+
+    .callout-warning::before {
+      background: var(--warning);
+    }
+
+    .callout-danger {
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .callout-danger::before {
+      background: var(--danger);
+    }
+
+    .callout-success {
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+    }
+
+    .callout-success::before {
+      background: var(--success);
+    }
+
+    .callout-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.75rem;
+      color: var(--accent);
+    }
+
+    .callout-insight .callout-title { color: var(--accent); }
+    .callout-warning .callout-title { color: var(--warning); }
+    .callout-danger .callout-title { color: var(--danger); }
+    .callout-success .callout-title { color: var(--success); }
+
+    .callout p:last-child {
+      margin-bottom: 0;
+    }
+
+    .callout-large {
+      text-align: center;
+      padding: 3rem 2rem;
+    }
+
+    .callout-large .callout-text {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.5rem;
+      font-style: italic;
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    /* Lists */
+    ul, ol {
+      margin-bottom: 1.5rem;
+      padding-left: 1.5rem;
+    }
+
+    li {
+      margin-bottom: 0.5rem;
+      color: var(--text-muted);
+    }
+
+    li strong {
+      color: var(--text);
+    }
+
+    /* Code */
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875em;
+      background: var(--surface-raised);
+      padding: 0.2em 0.4em;
+      border-radius: 4px;
+      color: var(--accent-glow);
+    }
+
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      overflow-x: auto;
+      margin: 1.5rem 0;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+    }
+
+    /* Tables */
+    .table-wrapper {
+      overflow-x: auto;
+      margin: 2rem 0;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    thead {
+      background: var(--surface-raised);
+    }
+
+    th {
+      text-align: left;
+      padding: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    tbody tr:hover {
+      background: var(--surface-raised);
+    }
+
+    .check {
+      color: var(--success);
+      font-weight: 600;
+    }
+
+    .partial {
+      color: var(--warning);
+    }
+
+    .none {
+      color: var(--text-dim);
+    }
+
+    /* Mermaid Diagrams */
+    .mermaid-wrapper {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin: 2rem 0;
+      overflow-x: auto;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+
+    /* Metrics Grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+
+    .metric-card {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      text-align: center;
+    }
+
+    .metric-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 2rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.25rem;
+    }
+
+    .metric-label {
+      font-size: 0.875rem;
+      color: var(--text-dim);
+    }
+
+    /* Feature Cards */
+    .feature-grid {
+      display: grid;
+      gap: 1.5rem;
+      margin: 2rem 0;
+    }
+
+    .feature-card {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.3s ease;
+    }
+
+    .feature-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 150px;
+      height: 150px;
+      background: radial-gradient(circle at center, rgba(99, 102, 241, 0.1) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .feature-number {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+
+    .feature-card h4 {
+      font-size: 1.25rem;
+      color: var(--text);
+      margin-bottom: 1rem;
+    }
+
+    /* Timeline */
+    .timeline {
+      position: relative;
+      margin: 3rem 0;
+      padding-left: 2rem;
+    }
+
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--border);
+    }
+
+    .timeline-item {
+      position: relative;
+      padding-bottom: 2rem;
+    }
+
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: -2rem;
+      top: 0.5rem;
+      width: 12px;
+      height: 12px;
+      background: var(--accent);
+      border-radius: 50%;
+      transform: translateX(-5px);
+    }
+
+    .timeline-time {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+    }
+
+    /* Checklist */
+    .checklist {
+      list-style: none;
+      padding: 0;
+      margin: 2rem 0;
+    }
+
+    .checklist li {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      padding: 1rem;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 0.75rem;
+      transition: all 0.2s ease;
+    }
+
+    .checklist li:hover {
+      border-color: var(--accent);
+    }
+
+    .checkbox {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 4rem 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 0.875rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .nav-links {
+        display: none;
+      }
+
+      .hero {
+        padding: 2rem 1rem;
+      }
+
+      .main {
+        padding: 2rem 1rem 4rem;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    /* Scroll animations */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: all 0.6s ease-out;
+    }
+
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+<!-- Hero Section -->
+<header class="hero">
+  <div class="hero-content">
+    <div class="hero-badge">
+      <span>ahead</span> branch launch playbook
+    </div>
+    <h1>Viral Growth <em>Strategy</em></h1>
+    <p class="hero-subtitle">
+      A data-driven roadmap to reach <strong>10,000+ GitHub stars</strong> in 90 days
+      and establish agent-orchestrator as the defining platform for parallel AI coding agents.
+    </p>
+    <div class="hero-meta">
+      <span>Prepared for <strong>Harshit Singh Bhandari</strong></span>
+      <span><strong>April 2026</strong></span>
+      <span>Confidential</span>
+    </div>
+  </div>
+</header>
+
+<!-- Navigation -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-logo">agent-orchestrator</div>
+    <div class="nav-links">
+      <a href="#overview">Overview</a>
+      <a href="#research">Research</a>
+      <a href="#features">Features</a>
+      <a href="#seamlessness">Seamlessness</a>
+      <a href="#security">Security</a>
+      <a href="#action-plan">Action Plan</a>
+      <a href="#narrative">Narrative</a>
+      <a href="#checklist">Checklist</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main class="main">
+
+  <!-- Chapter 1: Executive Overview -->
+  <article class="chapter fade-in" id="overview">
+    <div class="chapter-number">Chapter 01</div>
+    <h2>Executive Overview</h2>
+
+    <section>
+      <h3>Vision Statement</h3>
+      <div class="callout callout-insight callout-large">
+        <p class="callout-text">
+          "agent-orchestrator <code>ahead</code> becomes the undisputed orchestration layer for
+          parallel AI coding fleets — not just a tool, but a self-improving platform that
+          learns your codebase, compounds agent knowledge, and makes every subsequent task
+          smarter than the last."
+        </p>
+      </div>
+      <p>
+        The <code>ahead</code> branch of <code>harshitsinghbhandari/agent-orchestrator</code> represents
+        a significant architectural leap beyond the already-popular upstream <code>ComposioHQ/agent-orchestrator</code>
+        (5.8k stars). By fusing <strong>Code-atlas</strong> (persistent, project-aware semantic memory),
+        a <strong>Skills Compounding</strong> system (reusable agent knowledge that compounds across tasks),
+        voice copilot capabilities, hardened security, and Linear-native project tracking, the <code>ahead</code>
+        branch crosses a critical threshold: it becomes an <em>ecosystem</em>, not merely a CLI tool.
+      </p>
+    </section>
+
+    <section>
+      <h3>Why ahead is Uniquely Positioned for Virality</h3>
+      <h4>Lessons from NousResearch/hermes-agent (8.7k Stars)</h4>
+      <p>Hermes-agent's explosion from zero to 8,700+ stars provides a replicable blueprint. The five root causes of its virality:</p>
+      <ol>
+        <li><strong>A self-improving narrative.</strong> The tagline "The agent that grows with you" + an autonomous skill-creation loop made Hermes <em>inherently demo-able</em>.</li>
+        <li><strong>One-line install with zero prerequisites.</strong> <code>curl -fsSL ... | bash</code> removed all friction. Time-to-wow &lt;3 minutes.</li>
+        <li><strong>Open ecosystem plays.</strong> AgentSkills.io compatibility, open standard adoption, and 142 community contributors created a network effect.</li>
+        <li><strong>Feature breadth enabling cross-community discovery.</strong> Voice mode caught VoiceAI; Telegram/Discord gateway caught the bot community; RL training caught researchers.</li>
+        <li><strong>Release velocity + detailed changelogs.</strong> V0.3.0 shipped 50+ improvements in a 34.9 KB changelog with 220+ PR references.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h4>Competitive Differentiation Matrix</h4>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>ComposioHQ</th>
+              <th>hermes-agent</th>
+              <th>ahead branch</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Parallel coding agents</td>
+              <td class="check">✓</td>
+              <td class="none">—</td>
+              <td class="check">✓</td>
+            </tr>
+            <tr>
+              <td>Git worktree isolation</td>
+              <td class="check">✓</td>
+              <td class="none">—</td>
+              <td class="check">✓</td>
+            </tr>
+            <tr>
+              <td>CI/PR auto-feedback</td>
+              <td class="check">✓</td>
+              <td class="none">—</td>
+              <td class="check">✓</td>
+            </tr>
+            <tr>
+              <td>Plugin architecture</td>
+              <td class="check">✓</td>
+              <td class="check">✓</td>
+              <td class="check">✓</td>
+            </tr>
+            <tr>
+              <td><strong>Code-atlas (persistent memory)</strong></td>
+              <td class="none">—</td>
+              <td class="partial">Partial</td>
+              <td class="check"><strong>✓</strong></td>
+            </tr>
+            <tr>
+              <td><strong>Skills compounding</strong></td>
+              <td class="none">—</td>
+              <td class="check">✓</td>
+              <td class="check"><strong>✓</strong></td>
+            </tr>
+            <tr>
+              <td><strong>Voice copilot</strong></td>
+              <td class="none">—</td>
+              <td class="check">✓</td>
+              <td class="check"><strong>✓</strong></td>
+            </tr>
+            <tr>
+              <td>Linear integration</td>
+              <td class="partial">Partial</td>
+              <td class="check">✓</td>
+              <td class="check"><strong>✓</strong></td>
+            </tr>
+            <tr>
+              <td>Security hardening</td>
+              <td class="partial">Basic</td>
+              <td class="partial">Advanced</td>
+              <td class="check"><strong>Enhanced</strong></td>
+            </tr>
+            <tr>
+              <td>Self-improving loop</td>
+              <td class="none">—</td>
+              <td class="check">✓</td>
+              <td class="check"><strong>✓</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Success Metrics — 6-Month Targets</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Month 1</th>
+              <th>Month 3</th>
+              <th>Month 6</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>GitHub Stars</td><td>1,500</td><td>6,000</td><td>15,000</td></tr>
+            <tr><td>Forks</td><td>200</td><td>700</td><td>1,800</td></tr>
+            <tr><td>Discord Members</td><td>300</td><td>1,200</td><td>3,000</td></tr>
+            <tr><td>npm weekly downloads</td><td>500</td><td>3,000</td><td>10,000</td></tr>
+            <tr><td>Community PRs</td><td>10</td><td>50</td><td>150</td></tr>
+            <tr><td>Demo video views</td><td>20,000</td><td>80,000</td><td>200,000</td></tr>
+            <tr><td>Influencer mentions</td><td>5</td><td>20</td><td>50</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Expected Impact</h3>
+      <ul>
+        <li>Surpass upstream ComposioHQ in stars within 60 days ("the fork that outgrew the original")</li>
+        <li>Attract sponsorship or acquisition interest from Composio, Linear, or AI-infrastructure companies</li>
+        <li>Become the canonical reference implementation for multi-agent coding orchestration with persistent memory</li>
+        <li>Enable recruitment of a core team of 5–10 contributors who accelerate the roadmap</li>
+      </ul>
+    </section>
+  </article>
+
+  <!-- Chapter 2: Research -->
+  <article class="chapter fade-in" id="research">
+    <div class="chapter-number">Chapter 02</div>
+    <h2>Foundational Research Synthesis</h2>
+
+    <section>
+      <h3>hermes-agent: Anatomy of Viral Success</h3>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-value">8.7k+</div>
+          <div class="metric-label">Stars</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">1k+</div>
+          <div class="metric-label">Forks</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">142</div>
+          <div class="metric-label">Contributors</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">2,293</div>
+          <div class="metric-label">Commits</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h4>The Viral Growth Flywheel</h4>
+      <div class="mermaid-wrapper">
+        <pre class="mermaid">
+flowchart LR
+    A["⚡ Time-to-Wow\n<3 min"] --> B["🔄 Self-Improving\nSkills Loop"]
+    B --> C["📸 Shareable\nDemo Moment"]
+    C --> D["👥 Community\nNetwork Effect"]
+    D --> E["🚀 Release\nVelocity"]
+    E --> F["🌐 Cross-Audience\nDiscovery"]
+    F --> A
+
+    style A fill:#6366f1,stroke:#818cf8,color:#fff
+    style B fill:#8b5cf6,stroke:#a78bfa,color:#fff
+    style C fill:#a855f7,stroke:#c084fc,color:#fff
+    style D fill:#6366f1,stroke:#818cf8,color:#fff
+    style E fill:#8b5cf6,stroke:#a78bfa,color:#fff
+    style F fill:#a855f7,stroke:#c084fc,color:#fff
+        </pre>
+      </div>
+    </section>
+
+    <section>
+      <h3>ahead Branch Feature Analysis</h3>
+
+      <h4>Issue #87: Code-Atlas — Project-Specific Long-Term Memory</h4>
+      <p><strong>Goal:</strong> Give each orchestrated coding agent a structured, persistent semantic index of the target codebase — a "living atlas" that is built, updated, and queried automatically.</p>
+
+      <p><strong>Technical design:</strong></p>
+      <ul>
+        <li>A <code>.atlas/</code> directory committed to the repo root contains:
+          <ul>
+            <li><code>modules.json</code> — LLM-annotated module/package semantic summaries</li>
+            <li><code>patterns.json</code> — architectural patterns, conventions, anti-patterns</li>
+            <li><code>decisions.log</code> — append-only record of agent decisions and rationale</li>
+            <li><code>hotspots.json</code> — files/functions with high churn or interaction frequency</li>
+          </ul>
+        </li>
+        <li>Atlas is <em>incrementally updated</em> via GitHub Actions workflow on merge to <code>main</code></li>
+        <li>Agents query via <code>ao context [tags]</code> before beginning work</li>
+      </ul>
+
+      <h4>Issue #86: Skills Compounding System</h4>
+      <p><strong>Goal:</strong> When an agent successfully solves a non-trivial coding task, the solution strategy is distilled into a reusable "skill."</p>
+
+      <p><strong>Mechanics:</strong></p>
+      <ul>
+        <li><strong>Post-task reflection:</strong> orchestrator asks "what general approach solved this?" and stores in <code>.atlas/skills/</code></li>
+        <li><strong>Similarity matching:</strong> before spawning, query skills store for analogous past tasks</li>
+        <li><strong>Quality scoring:</strong> skills upvoted/downvoted based on subsequent success; poor skills decay and are pruned</li>
+        <li><strong>Cross-project skills:</strong> high-quality skills can be published to public <code>atlas-hub</code></li>
+      </ul>
+
+      <div class="callout callout-insight">
+        <div class="callout-title">The Compound Effect</div>
+        <p>The 10th task in a domain is dramatically faster and more accurate than the 1st, because 9 prior skills have been accumulated. This is the defining <em>self-improving</em> narrative that will drive virality.</p>
+      </div>
+    </section>
+  </article>
+
+  <!-- Chapter 3: Features -->
+  <article class="chapter fade-in" id="features">
+    <div class="chapter-number">Chapter 03</div>
+    <h2>Features to Add</h2>
+
+    <div class="callout callout-warning">
+      <div class="callout-title">Strategic Constraint</div>
+      <p>Add only 2–3 features that create immediate "wow" moments, build directly on Code-atlas and Skills Compounding, and can ship within 4 weeks. Every addition must justify its complexity with measurable user delight.</p>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-number">Feature 01</div>
+        <h4>Atlas Dashboard — Live Memory Visualization</h4>
+        <p>A real-time web dashboard that visualizes the Code-atlas as it grows — showing which modules have been mapped, which skills have been accumulated, which architectural patterns have been discovered.</p>
+        <ul>
+          <li><strong>Module map:</strong> Force-directed graph of annotated modules (D3.js)</li>
+          <li><strong>Skills timeline:</strong> Scrolling feed with success rate badges</li>
+          <li><strong>Decision log:</strong> Searchable log linkable to PRs</li>
+          <li><strong>Atlas health gauge:</strong> Coverage percentage and staleness indicator</li>
+        </ul>
+        <p><strong>Effort:</strong> 1.5 weeks | <strong>Impact:</strong> ~40% of demo viewers share a screenshot</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">Feature 02</div>
+        <h4>Atlas Export + "Share Your Atlas" Social Layer</h4>
+        <p>Let teams export anonymized, sanitized atlas snapshots and share them publicly on <code>atlas-hub.io</code>.</p>
+        <ul>
+          <li><code>ao atlas export --sanitize</code> — strips code, preserves patterns</li>
+          <li><strong>atlas-hub.io</strong> — public index searchable by tech stack</li>
+          <li><code>ao atlas import &lt;url&gt;</code> — bootstrap from similar projects</li>
+          <li>Each export includes "Built with agent-orchestrator ahead" badge</li>
+        </ul>
+        <p><strong>Effort:</strong> 1 week | <strong>Impact:</strong> 200+ atlases shared in first month</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-number">Feature 03</div>
+        <h4>"Replay Mode" — Agent Decision Playback</h4>
+        <p>Play back any completed agent session step-by-step in the dashboard — seeing each tool call, atlas query, skill lookup, and code change as an annotated narrative.</p>
+        <ul>
+          <li>Timeline slider + code diff panel + reasoning annotations</li>
+          <li><code>ao replay &lt;session-id&gt; --share</code> generates shareable HTML</li>
+          <li>Replays become "show don't tell" marketing assets</li>
+        </ul>
+        <p><strong>Effort:</strong> 2 weeks | <strong>Impact:</strong> ~15% of users share a replay in first week</p>
+      </div>
+    </div>
+  </article>
+
+  <!-- Chapter 4: Seamlessness -->
+  <article class="chapter fade-in" id="seamlessness">
+    <div class="chapter-number">Chapter 04</div>
+    <h2>Seamlessness as First Priority</h2>
+
+    <div class="callout callout-insight">
+      <div class="callout-title">The Seamlessness Principle</div>
+      <p>A user's first 3 minutes determine whether they star the repo, share it, or close the tab. Every second of friction in those 3 minutes costs approximately 8% of potential stars.</p>
+    </div>
+
+    <section>
+      <h3>Installation: Time-to-Running &lt;90 Seconds</h3>
+      <h4>Target Experience</h4>
+      <pre><code>npm install -g @aheadao/ao      # or: npx @aheadao/ao start
+ao start                         # auto-detects repo + opens dashboard</code></pre>
+
+      <p><strong>Requirements:</strong></p>
+      <ul>
+        <li>Single npm package with all features (atlas, voice copilot, Linear plugin)</li>
+        <li>Auto-detect repo, generate <code>agent-orchestrator.yaml</code> with sensible defaults</li>
+        <li>Preflight check that auto-installs prerequisites (tmux, gh CLI) with confirmation</li>
+        <li>60-second interactive wizard: which AI provider, which tracker, enable voice?</li>
+      </ul>
+    </section>
+
+    <section>
+      <h3>The 3-Minute Demo Path</h3>
+      <div class="timeline">
+        <div class="timeline-item">
+          <div class="timeline-time">00:00</div>
+          <p><strong>Install completes.</strong> Dashboard opens at <code>localhost:3000</code>. Welcome modal with "Quick Demo" button appears.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">00:30</div>
+          <p><strong>Quick Demo mode.</strong> User clicks button; ao auto-selects first open GitHub Issue and spawns an agent.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">01:30</div>
+          <p><strong>Atlas tab animates.</strong> Modules appear, patterns identified. <em>First "wow" moment.</em></p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">02:30</div>
+          <p><strong>Agent creates PR draft.</strong> Dashboard shows PR link with diff preview. "Share this run" button appears.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">03:00</div>
+          <p><strong>User has seen something real.</strong> They are now primed to explore, configure, and share.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h3>Error Handling: The No-Blame Policy</h3>
+      <p>Every error must: state what happened in plain English, suggest the most likely fix with a copy-pasteable command, link to docs, and never blame the user.</p>
+
+      <div class="callout callout-danger">
+        <div class="callout-title">Before</div>
+        <p><code>Error: ENOENT: no such file or directory, open '.atlas/modules.json'</code><br><em>(user has no idea what to do)</em></p>
+      </div>
+
+      <div class="callout callout-success">
+        <div class="callout-title">After</div>
+        <p><code>Atlas not initialized for this project. Run <strong>ao atlas init</strong> to build it (~2 minutes for most repos). See: docs/atlas-setup.md</code></p>
+      </div>
+    </section>
+  </article>
+
+  <!-- Chapter 5: Security -->
+  <article class="chapter fade-in" id="security">
+    <div class="chapter-number">Chapter 05</div>
+    <h2>Problems the User Must Never Face</h2>
+
+    <section>
+      <h3>Security Guardrails</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Required Mitigation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Agent writes outside worktree</td>
+              <td>Path containment: <code>.worktreeinclude</code> allowlist; any write outside kills session and logs violation</td>
+            </tr>
+            <tr>
+              <td>Secret exposure in atlas</td>
+              <td>Atlas build scans for secrets using <code>gitleaks</code>; block commit if detected</td>
+            </tr>
+            <tr>
+              <td>Prompt injection via issue text</td>
+              <td>Sanitize all issue body content; strip HTML/markdown that could inject instructions</td>
+            </tr>
+            <tr>
+              <td>Runaway agent cost</td>
+              <td>Hard token budget per session; alert and pause at 80% consumed</td>
+            </tr>
+            <tr>
+              <td>Fork bomb / infinite spawn</td>
+              <td>Max concurrent agent limit; detect and kill fork-bomb patterns</td>
+            </tr>
+            <tr>
+              <td>Atlas data poisoning</td>
+              <td>Append-only writes with version hash; modifications require re-verification</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Reliability Requirements</h3>
+      <ul>
+        <li><strong>Atlas staleness protection:</strong> CI prevents agents from running on stale atlas (&gt;24h); auto-rebuild before spawning</li>
+        <li><strong>Session recovery:</strong> <code>ao recover</code> restores crashed session state (worktree, PR branch, current task)</li>
+        <li><strong>Idempotent atlas builds:</strong> Running twice produces same result (fixed seed, temperature=0)</li>
+        <li><strong>Atomic skill writes:</strong> SQLite transactions; no corrupt records on crash</li>
+        <li><strong>Dashboard offline mode:</strong> Load historical data when orchestrator not running (read-only from SQLite)</li>
+      </ul>
+    </section>
+
+    <section>
+      <h3>Anti-Friction Checklist</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Failure Mode</th>
+              <th>Prevention</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td><code>ao start</code> fails if gh CLI not auth'd</td><td>Preflight check with "run <code>gh auth login</code>" message</td></tr>
+            <tr><td>2</td><td>Atlas build hangs on large binary files</td><td>Auto-exclude non-text files by MIME type</td></tr>
+            <tr><td>3</td><td>Voice mode requests mic on first run</td><td>Voice disabled by default; explicit opt-in</td></tr>
+            <tr><td>4</td><td>Linear integration fails when API key missing</td><td>Graceful degradation: fall back to GitHub tracker</td></tr>
+            <tr><td>5</td><td>Dashboard port 3000 in use</td><td>Auto-detect next free port; print actual URL</td></tr>
+            <tr><td>6</td><td>Agent submits PR to wrong branch</td><td>Validate <code>defaultBranch</code> against remote before spawning</td></tr>
+            <tr><td>7</td><td>Skills from different repos pollute each other</td><td>Skills namespaced by project ID hash</td></tr>
+            <tr><td>8</td><td>Atlas annotation costs spiral</td><td>Cost estimator before build: "~N API calls (~$X). Proceed?"</td></tr>
+            <tr><td>9</td><td>Node.js version incompatibility</td><td><code>.nvmrc</code> pinned; <code>ao doctor</code> checks on startup</td></tr>
+            <tr><td>10</td><td>Windows users (no tmux) blocked</td><td>Docker runtime as automatic fallback</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </article>
+
+  <!-- Chapter 6: Action Plan -->
+  <article class="chapter fade-in" id="action-plan">
+    <div class="chapter-number">Chapter 06</div>
+    <h2>Detailed Action Plan</h2>
+
+    <section>
+      <h3>Launch Sequence Timeline</h3>
+      <div class="mermaid-wrapper">
+        <pre class="mermaid">
+gantt
+    title 6-Month Launch Timeline
+    dateFormat YYYY-MM-DD
+
+    section Phase 0: Foundation
+    PR #94 merge + security audit    :a1, 2026-04-01, 14d
+    Skills Compounding implementation :a2, 2026-04-01, 14d
+    Atlas Dashboard                   :a3, 2026-04-08, 10d
+
+    section Phase 1: Launch
+    Teaser campaign                   :b1, 2026-04-15, 7d
+    Launch Day (v1.0)                 :milestone, m1, 2026-04-22, 0d
+    HN + Product Hunt + Reddit        :b2, 2026-04-22, 7d
+
+    section Phase 2: Amplify
+    atlas-hub.io launch               :c1, 2026-05-01, 14d
+    Replay Mode                       :c2, 2026-05-01, 14d
+    Integration tutorials             :c3, 2026-05-15, 30d
+    v1.1.0 release                    :milestone, m2, 2026-06-01, 0d
+
+    section Phase 3: Scale
+    Plugin Registry                   :d1, 2026-07-01, 30d
+    Enterprise features               :d2, 2026-07-15, 45d
+    Composio partnership              :d3, 2026-08-01, 30d
+        </pre>
+      </div>
+    </section>
+
+    <section>
+      <h3>Phase 0: Foundation (Weeks 1–2)</h3>
+      <p><strong>Goal:</strong> Merge, polish, and harden. Ship nothing until production-ready.</p>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Task</th><th>Details</th><th>Owner</th><th>KPI</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Merge PR #94</td><td>Resolve conflicts, full test suite, fix edge cases</td><td>Harshit</td><td>All 3,288 tests pass</td></tr>
+            <tr><td>Skills Compounding</td><td>Build distillation, similarity matching, scoring</td><td>Harshit + 1</td><td>E2E skill test passing</td></tr>
+            <tr><td>Atlas Dashboard</td><td>D3 force-graph, skills feed, decision log</td><td>Frontend contrib</td><td>Renders in &lt;2s</td></tr>
+            <tr><td>Security audit</td><td>Path containment, secret scanning, prompt injection</td><td>Harshit</td><td>0 critical vulns</td></tr>
+            <tr><td>README rewrite</td><td>Demo GIF, 2-line install, comparison table</td><td>Harshit</td><td>Readability &gt;70</td></tr>
+            <tr><td>npm publish</td><td><code>@aheadao/ao</code> on npm</td><td>Harshit</td><td>Install works</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Phase 1: Launch Day — "The Memory Release"</h3>
+      <ul>
+        <li><strong>Hacker News</strong> "Show HN" post: "Show HN: Agent Orchestrator with Persistent Codebase Memory — runs 30 parallel AI agents that learn your codebase"</li>
+        <li><strong>Product Hunt</strong> launch (Tuesday 12:01 AM PST)</li>
+        <li><strong>Reddit posts</strong> in r/MachineLearning, r/programming, r/LocalLLaMA, r/SideProject</li>
+        <li><strong>Twitter/X thread</strong> (12-tweet walkthrough with GIFs)</li>
+        <li><strong>Discord announcements</strong> in top 5 AI developer servers</li>
+        <li><strong>5-minute demo video</strong> on YouTube/Loom</li>
+      </ul>
+    </section>
+
+    <section>
+      <h3>Influencer Outreach Targets</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Target</th><th>Platform</th><th>Angle</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>@teknium1 (NousResearch)</td><td>Twitter/GitHub</td><td>Hermes interop; joint demo</td></tr>
+            <tr><td>@swyx</td><td>Twitter</td><td>DX-focused; loves agentic tooling</td></tr>
+            <tr><td>@karpathy</td><td>Twitter</td><td>AI systems; cite Code-atlas research</td></tr>
+            <tr><td>ThePrimeagen</td><td>YouTube/Twitch</td><td>Live code demo; irreverent style</td></tr>
+            <tr><td>Fireship</td><td>YouTube</td><td>"Agent Orchestrator in 100 seconds"</td></tr>
+            <tr><td>Theo (t3.gg)</td><td>YouTube</td><td>TypeScript developer audience</td></tr>
+            <tr><td>@simonw</td><td>Twitter</td><td>Open-source power user; loves CLIs</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Priority Partnership Targets</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Partner</th><th>We Offer</th><th>We Get</th><th>Priority</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>ComposioHQ</strong></td><td>Code-atlas + Skills PRs upstreamed</td><td>Co-branding, referral traffic, potential merge</td><td>High</td></tr>
+            <tr><td><strong>Linear</strong></td><td>Best-in-class Linear tracker plugin</td><td>Newsletter feature, API partnership</td><td>High</td></tr>
+            <tr><td><strong>NousResearch</strong></td><td>ao as orchestration backend for hermes</td><td>8.7k Hermes audience exposure</td><td>High</td></tr>
+            <tr><td><strong>Anthropic</strong></td><td>Claude Code as primary agent with atlas guide</td><td>API credits, developer blog feature</td><td>Medium</td></tr>
+            <tr><td><strong>GitHub</strong></td><td>"ao atlas build" GitHub Action</td><td>Marketplace discovery</td><td>Medium</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Risk Register</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Risk</th><th>Likelihood</th><th>Impact</th><th>Mitigation</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>ComposioHQ ships Code-atlas themselves</td><td>Medium</td><td>High</td><td>Differentiate on Skills + Voice + atlas-hub ecosystem</td></tr>
+            <tr><td>HN launch gets low traction</td><td>Medium</td><td>Medium</td><td>Reddit + Discord as independent channels</td></tr>
+            <tr><td>Atlas LLM costs too high for hobbyists</td><td>Low</td><td>High</td><td>Lightweight mode default; support local Ollama</td></tr>
+            <tr><td>Security vulnerability post-launch</td><td>Low</td><td>High</td><td>&lt;24h patching SLA; SECURITY.md on file</td></tr>
+            <tr><td>Maintainer burnout</td><td>Medium</td><td>High</td><td>Recruit 2–3 co-maintainers in Month 1</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h3>Budget Estimate (6 months)</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Item</th><th>Estimate</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Atlas LLM API calls (testing)</td><td>$50–200</td><td>Anthropic Haiku or Gemini Flash</td></tr>
+            <tr><td>atlas-hub.io hosting</td><td>$5/month</td><td>Vercel free tier or GitHub Pages</td></tr>
+            <tr><td>Demo video production</td><td>4–6 hours</td><td>Loom + basic editing</td></tr>
+            <tr><td><strong>Core engineering (Harshit)</strong></td><td><strong>15–20 hrs/week</strong></td><td>Primary resource constraint</td></tr>
+            <tr><td colspan="2"><strong>Total cash outlay</strong></td><td><strong>&lt;$500</strong> (primarily time investment)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </article>
+
+  <!-- Chapter 7: Narrative -->
+  <article class="chapter fade-in" id="narrative">
+    <div class="chapter-number">Chapter 07</div>
+    <h2>The Viral Narrative</h2>
+
+    <section>
+      <h3>Positioning Statement</h3>
+      <div class="callout callout-insight callout-large">
+        <p class="callout-text">
+          "Parallel coding agents that get smarter every task.<br>
+          Your codebase has a memory. Your agents share it."
+        </p>
+      </div>
+      <p>This narrative does three things:</p>
+      <ol>
+        <li>It <strong>differentiates</strong> from all other agent orchestrators (none have memory)</li>
+        <li>It makes the <strong>self-improving loop</strong> concrete and visceral</li>
+        <li>It implies the <strong>compound effect</strong>: value increases the longer you use it</li>
+      </ol>
+    </section>
+
+    <section>
+      <h3>Demo Video Script (5 Minutes)</h3>
+      <div class="timeline">
+        <div class="timeline-item">
+          <div class="timeline-time">0:00–0:20</div>
+          <p><strong>Hook.</strong> Empty terminal. "This is a fresh clone of a 200,000-line codebase. In 5 minutes, 8 AI agents will have fixed 8 open issues, learned the architecture, and accumulated skills they'll use on the next 800 tasks."</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">0:20–1:00</div>
+          <p><strong>Atlas building.</strong> <code>ao atlas init</code> runs. Dashboard shows modules populating in real time. "Code-atlas maps the codebase once. Every agent reads the map instead of the whole codebase."</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">1:00–2:30</div>
+          <p><strong>Parallel agents.</strong> 8 agents spawn, each on a different issue. Dashboard shows them querying atlas, citing specific modules. "Each agent knows the architecture before writing a single line."</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">2:30–3:30</div>
+          <p><strong>Skills accumulating.</strong> First two agents complete PRs. Skills appear in dashboard. "When an agent solves a problem, the solution becomes a skill. The next agent starts with the answer."</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">3:30–4:30</div>
+          <p><strong>Replay mode.</strong> Click "Replay" on a completed session. Step through each decision. "Every decision is logged. You always know why."</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-time">4:30–5:00</div>
+          <p><strong>CTA.</strong> <code>npm install -g @aheadao/ao</code> on screen. "Give your agents a memory. Star on GitHub."</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h3>"Fork That Outgrew the Original" Positioning</h3>
+      <p>The <code>ahead</code> branch has an additional narrative asset: it is a contributor fork that adds transformative capabilities the upstream lacks. This is a familiar and beloved open-source story (Neovim from Vim, MariaDB from MySQL).</p>
+      <div class="callout callout-insight">
+        <div class="callout-title">README Copy</div>
+        <p>"Built on the excellent ComposioHQ/agent-orchestrator. The <code>ahead</code> branch adds persistent codebase memory, skills compounding, and voice copilot. <strong>This is what orchestration looks like with a memory.</strong>"</p>
+      </div>
+    </section>
+  </article>
+
+  <!-- Chapter 8: Checklist -->
+  <article class="chapter fade-in" id="checklist">
+    <div class="chapter-number">Chapter 08</div>
+    <h2>The 10-Point Launch Checklist</h2>
+
+    <p>Before shipping to the public, every item below must be checked:</p>
+
+    <ul class="checklist">
+      <li><div class="checkbox"></div><span>PR #94 (Code-atlas) merged, all tests passing</span></li>
+      <li><div class="checkbox"></div><span>Skills Compounding (Issue #86) implemented and E2E tested</span></li>
+      <li><div class="checkbox"></div><span>Atlas Dashboard live at <code>localhost:3000/atlas</code></span></li>
+      <li><div class="checkbox"></div><span><code>npm install -g @aheadao/ao && ao start</code> completes in &lt;90 seconds</span></li>
+      <li><div class="checkbox"></div><span>Security audit complete: no path escapes, no secret leaks in atlas</span></li>
+      <li><div class="checkbox"></div><span>README rewritten with demo GIF + 2-line install</span></li>
+      <li><div class="checkbox"></div><span>Demo video recorded and edited (5 minutes)</span></li>
+      <li><div class="checkbox"></div><span>Discord server created with 5 starter channels</span></li>
+      <li><div class="checkbox"></div><span>Product Hunt listing drafted and scheduled</span></li>
+      <li><div class="checkbox"></div><span>10 influencer DMs sent with private demo access</span></li>
+    </ul>
+
+    <div class="callout callout-success">
+      <div class="callout-title">When All 10 Are Checked</div>
+      <p>Post the "Show HN" at <strong>9 AM PST on a Tuesday</strong>, publish the Twitter/X thread simultaneously, and activate the Product Hunt listing at midnight. The first 6 hours determine the trajectory. Be online and responsive to every comment, issue, and Discord message for the full first day.</p>
+    </div>
+  </article>
+
+</main>
+
+<!-- Footer -->
+<footer class="footer">
+  <p>
+    This strategy was compiled using live research from NousResearch/hermes-agent,
+    ComposioHQ/agent-orchestrator, and the <code>ahead</code> branch feature set
+    including Issue #87, PR #94, and Issue #86.
+  </p>
+  <p style="margin-top: 1rem; color: var(--text-dim);">April 2026 · Confidential</p>
+</footer>
+
+<script>
+  // Initialize Mermaid with dark theme
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#6366f1',
+      primaryTextColor: '#e8eaed',
+      primaryBorderColor: '#818cf8',
+      lineColor: '#6366f1',
+      secondaryColor: '#1a1d24',
+      tertiaryColor: '#22262f',
+      background: '#111318',
+      mainBkg: '#1a1d24',
+      secondBkg: '#22262f',
+      border1: '#2d3139',
+      border2: '#3d4149',
+      arrowheadColor: '#6366f1',
+      fontFamily: 'Outfit, sans-serif',
+      fontSize: '14px',
+      taskBorderColor: '#6366f1',
+      taskBkgColor: '#1a1d24',
+      taskTextColor: '#e8eaed',
+      taskTextLightColor: '#e8eaed',
+      taskTextDarkColor: '#e8eaed',
+      activeTaskBorderColor: '#818cf8',
+      activeTaskBkgColor: '#6366f1',
+      gridColor: '#2d3139',
+      doneTaskBkgColor: '#10b981',
+      doneTaskBorderColor: '#059669',
+      critBorderColor: '#ef4444',
+      critBkgColor: '#7f1d1d',
+      todayLineColor: '#f59e0b',
+      sectionBkgColor: '#1a1d24',
+      altSectionBkgColor: '#22262f',
+      sectionBkgColor2: '#111318'
+    },
+    flowchart: {
+      curve: 'basis',
+      padding: 20
+    },
+    gantt: {
+      titleTopMargin: 25,
+      barHeight: 30,
+      barGap: 8,
+      topPadding: 50,
+      leftPadding: 120,
+      gridLineStartPadding: 35,
+      fontSize: 12,
+      sectionFontSize: 14,
+      numberSectionStyles: 4,
+      axisFormat: '%b %d'
+    }
+  });
+
+  // Scroll animations
+  const fadeElements = document.querySelectorAll('.fade-in');
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, {
+    threshold: 0.1,
+    rootMargin: '0px 0px -50px 0px'
+  });
+
+  fadeElements.forEach(el => observer.observe(el));
+
+  // Smooth scroll for nav links
+  document.querySelectorAll('.nav-links a').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = document.querySelector(link.getAttribute('href'));
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+  });
+</script>
+
+</body>
+</html>

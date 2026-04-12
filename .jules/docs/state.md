@@ -33,11 +33,6 @@ Catalog scope:
 | `docs/observability.md` | Runtime observability reference for emitted signals, traces, and health surfaces. | 2026-03-12 |
 | `docs/openclaw-plugin-setup.md` | Setup guide for connecting the OpenClaw plugin to AO. | 2026-03-26 |
 | `examples/README.md` | Index and quick-start guide for example AO configuration files. | 2026-04-02 |
-| `examples/auto-merge.yaml` | Commented example config for aggressive automation and auto-merge behavior. | 2026-02-18 |
-| `examples/codex-integration.yaml` | Commented example config for using Codex as the agent backend. | 2026-02-18 |
-| `examples/linear-team.yaml` | Commented example config for Linear-backed team workflows. | 2026-02-18 |
-| `examples/multi-project.yaml` | Commented example config for running multiple projects with different settings. | 2026-02-18 |
-| `examples/simple-github.yaml` | Commented minimal example config for a single GitHub project. | 2026-02-18 |
 | `packages/ao/CHANGELOG.md` | Release history for the published `@composio/ao` package. | 2026-03-29 |
 | `packages/cli/CHANGELOG.md` | Release history for the CLI package. | 2026-03-29 |
 | `packages/cli/templates/rules/base.md` | Reusable base rule template injected into generated agent instructions. | 2026-02-16 |
@@ -75,24 +70,6 @@ Catalog scope:
 | `packages/plugins/workspace-worktree/CHANGELOG.md` | Release history for the worktree workspace plugin. | 2026-03-20 |
 | `packages/web/CHANGELOG.md` | Release history for the web dashboard package. | 2026-03-29 |
 
-## Past
-
-| File | Purpose | Why Classified As Past |
-|------|---------|------------------------|
-| `ARCHITECTURE.md` | Architecture plan for the hash-based system layout and core runtime decisions. | Historical architecture plan for an already-described migration path. |
-| `artifacts/architecture-design.md` | Early architecture design artifact describing interaction model and notification-first philosophy. | Compiled design artifact from the initial buildout phase. |
-| `artifacts/competitive-research.md` | Competitive research on other agent orchestration tools. | Research artifact feeding already-written product and architecture docs. |
-| `artifacts/implementation-plan.md` | Work-breakdown and dependency plan for implementation phases. | Implementation planning artifact for work that has since been executed. |
-| `docs/SECURITY-AUDIT-SUMMARY.md` | Security audit report summarizing a completed audit and historical findings. | Explicit audit summary of completed work. |
-| `docs/design-cli-redesign-analysis.html` | HTML design/analysis document for the CLI redesign and onboarding simplification. | Contains explicit `Status: Implemented`. |
-| `docs/design/README.md` | Index of dashboard design research artifacts. | Catalog for historical design research rather than living product docs. |
-| `docs/design/competitive-analysis-raw.md` | Raw design research notes from competitor analysis. | Research source material behind later design briefs. |
-| `docs/design/design-brief-v1.md` | Original dashboard design brief. | Superseded by the v2 `design-brief.md`. |
-| `docs/design/design-brief.md` | Research-backed dashboard design specification. | Reads as a design artifact for an already-built dashboard experience. |
-| `docs/design/graphql-batching-implementation.md` | Implementation write-up for GraphQL PR batching work. | Documents a named implementation for Issue #608. |
-| `docs/design/orchestrator-terminal-design-brief.md` | Design brief for the orchestrator terminal page. | Design-spec artifact for an existing page shape. |
-| `docs/design/session-detail-design-brief.md` | Design brief for the session detail page. | Design-spec artifact for an existing page shape. |
-
 ## Vision
 
 | File | Purpose | Vision Signal |
@@ -111,8 +88,6 @@ Catalog scope:
 
 ## Summary
 
-- Total documentation files cataloged: 88
-- Current: 64
-- Past: 13
+- Total documentation files cataloged: 70
+- Current: 59
 - Vision: 11
-- Orphaned/Outdated: Not assessed in this inventory-only pass
