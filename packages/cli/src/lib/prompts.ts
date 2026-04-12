@@ -29,6 +29,7 @@ export async function promptSelect<T extends string>(
   return result;
 }
 
+/* c8 ignore start -- interactive prompt wrapper, same pattern as promptConfirm/promptSelect */
 export async function promptText(
   message: string,
   placeholder?: string,
@@ -43,3 +44,4 @@ export async function promptText(
   }
   return result;
 }
+/* c8 ignore stop */

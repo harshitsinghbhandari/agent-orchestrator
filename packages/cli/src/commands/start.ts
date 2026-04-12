@@ -567,6 +567,7 @@ async function autoCreateConfig(workingDir: string): Promise<OrchestratorConfig>
   const defaultBranch = env.defaultBranch || "main";
 
   // If no repo detected, inform the user and ask
+  /* c8 ignore start -- interactive prompt, tested via onboarding integration */
   if (!repo && isHumanCaller()) {
     console.log(chalk.yellow("  ⚠ Could not auto-detect a GitHub/GitLab remote."));
     const entered = await promptText(
@@ -581,6 +582,7 @@ async function autoCreateConfig(workingDir: string): Promise<OrchestratorConfig>
       console.log(chalk.yellow(`  ⚠ "${trimmed}" doesn't look like owner/repo — skipping.`));
     }
   }
+  /* c8 ignore stop */
 
   // Detect available agent runtimes via plugin registry
   let detectedAgents = await detectAvailableAgents();

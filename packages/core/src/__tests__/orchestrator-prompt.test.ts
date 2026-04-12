@@ -56,6 +56,18 @@ describe("generateOrchestratorPrompt", () => {
     expect(prompt).toContain("ao send --no-wait");
   });
 
+  it("shows 'not configured' when repo is omitted", () => {
+    const noRepoProject = { ...config.projects["my-app"]!, repo: undefined };
+    const prompt = generateOrchestratorPrompt({
+      config,
+      projectId: "my-app",
+      project: noRepoProject,
+    });
+
+    expect(prompt).toContain("not configured");
+    expect(prompt).not.toContain("undefined");
+  });
+
   it("pushes implementation and PR claiming into worker sessions", () => {
     const prompt = generateOrchestratorPrompt({
       config,
