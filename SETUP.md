@@ -12,6 +12,12 @@ Comprehensive guide to installing, configuring, and troubleshooting Agent Orches
   node --version  # Should be v20.0.0 or higher
   ```
 
+- **pnpm 9.15.4** - Required package manager for development
+
+  ```bash
+  pnpm --version  # Should be 9.15.4
+  ```
+
 - **Git 2.25+** - For repository management and worktrees
 
   ```bash
@@ -192,12 +198,12 @@ Agent Orchestrator has 8 plugin slots. All are swappable:
 
 | Slot          | Purpose              | Default       | Alternatives                                    |
 | ------------- | -------------------- | ------------- | ----------------------------------------------- |
-| **Runtime**   | How sessions run     | `tmux`        | `process`, `docker`, `kubernetes`, `ssh`, `e2b` |
-| **Agent**     | AI coding assistant  | `claude-code` | `codex`, `aider`, `goose`, custom               |
-| **Workspace** | Workspace isolation  | `worktree`    | `clone`, `copy`                                 |
-| **Tracker**   | Issue tracking       | `github`      | `linear`, `jira`, custom                        |
-| **SCM**       | Source control       | `github`      | GitLab, Bitbucket (future)                      |
-| **Notifier**  | Notifications        | `desktop`     | `slack`, `discord`, `webhook`, `email`          |
+| **Runtime**   | How sessions run     | `tmux`        | `process`                                       |
+| **Agent**     | AI coding assistant  | `claude-code` | `aider`, `codex`, `cursor`, `opencode`, custom  |
+| **Workspace** | Workspace isolation  | `worktree`    | `clone`                                         |
+| **Tracker**   | Issue tracking       | `github`      | `gitlab`, `linear`, custom                      |
+| **SCM**       | Source control       | `github`      | `gitlab`                                        |
+| **Notifier**  | Notifications        | `desktop`     | `composio`, `discord`, `openclaw`, `slack`, `webhook` |
 | **Terminal**  | Terminal integration | `iterm2`      | `web`, custom                                   |
 | **Lifecycle** | Session lifecycle    | (core)        | Non-pluggable                                   |
 
@@ -381,6 +387,46 @@ curl -X POST -H 'Content-type: application/json' \
   --data '{"text":"Agent Orchestrator test"}' \
   $SLACK_WEBHOOK_URL
 ```
+
+### Composio
+
+**Setup:**
+
+1. Get your API key from Composio.
+2. Add to environment:
+
+   ```bash
+   echo 'export COMPOSIO_API_KEY="your-api-key"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+3. Configure in `agent-orchestrator.yaml`:
+   ```yaml
+   notifiers:
+     composio:
+       plugin: composio
+   ```
+
+### OpenClaw
+
+**Setup:**
+
+1. Obtain your OpenClaw hooks token.
+2. Add to environment:
+
+   ```bash
+   echo 'export OPENCLAW_HOOKS_TOKEN="your-hooks-token"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+3. Configure in `agent-orchestrator.yaml`:
+   ```yaml
+   notifiers:
+     openclaw:
+       plugin: openclaw
+       url: http://127.0.0.1:18789/hooks/agent
+       token: ${OPENCLAW_HOOKS_TOKEN}
+   ```
 
 ### Custom Trackers
 
@@ -638,28 +684,6 @@ Create custom plugins for:
 - Different notifiers (email, webhooks, custom integrations)
 
 See [Development Guide](./docs/DEVELOPMENT.md) for plugin development guidelines.
-
-### Docker Runtime
-
-Run agents in Docker containers:
-
-```yaml
-defaults:
-  runtime: docker
-
-# Plugin will use official images or build from Dockerfile
-```
-
-### Kubernetes Runtime
-
-Run agents in Kubernetes pods:
-
-```yaml
-defaults:
-  runtime: kubernetes
-
-# Requires kubectl configured with cluster access
-```
 
 ### Custom Notifiers
 

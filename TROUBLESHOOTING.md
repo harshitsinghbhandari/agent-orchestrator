@@ -54,8 +54,8 @@ npx node-gyp rebuild
 
 **Symptom**: API returns 500 with "No agent-orchestrator.yaml found"
 
-**Fix**: Ensure config exists in the directory where you run `ao start`, or symlink it:
+**Fix**: Ensure `agent-orchestrator.yaml` exists in the directory where you run `ao start`. The orchestrator will automatically discover it. If you need to specify a custom location, you can set the `AO_CONFIG_PATH` environment variable:
 
 ```bash
-ln -s /path/to/agent-orchestrator.yaml packages/web/agent-orchestrator.yaml
+export AO_CONFIG_PATH=/path/to/agent-orchestrator.yaml
 ```
