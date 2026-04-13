@@ -1,5 +1,11 @@
 # @composio/ao-web
 
+## Unreleased
+
+### Patch Changes
+
+- Fix dashboard orchestrator creation for projects configured to use the Codex agent plugin.
+
 ## 0.2.2
 
 ### Patch Changes
