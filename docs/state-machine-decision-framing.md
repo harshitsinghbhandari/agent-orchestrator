@@ -1,487 +1,562 @@
 # State Machine Redesign Decision Framing
 
-Status: Draft for human decision-making  
-Audience: Maintainers deciding the redesign direction before implementation  
-Goal: Surface the decisions that must be made before changing session/state behavior
+Status: Working draft based on human review notes  
+Purpose: Convert raw redesign thoughts into a cleaner decision record before implementation  
+Scope: Worker sessions, orchestrator sessions, PR interaction, liveness, UI expectations, recovery policy
 
-## How To Use This Document
+## Intent
 
-This is not a solution document. It is a decision worksheet.
+This document does not define the final redesign. It records the current human decisions, strong preferences, and unresolved questions in a form that can guide implementation planning.
 
-The intended output from a 2-3 hour review is:
+The key shift in thinking is:
 
-- explicit product and operational decisions
-- clarified invariants
-- answers to ambiguous behaviors
-- a small number of “not now” deferrals
-
-If these questions are answered clearly, implementation can be scoped cleanly. If they are not, any redesign will smuggle policy decisions into code by accident.
+- stop trying to infer everything from weak signals
+- ask the agent to report meaningful state transitions where possible
+- keep session state and PR state separate
+- avoid killing sessions automatically just because a PR changed state
+- expose ambiguity honestly instead of pretending the system knows more than it does
 
 ---
 
-## 1. Core Framing Questions
+## 1. High-Level Position
 
-These are the highest-leverage questions.
+### 1.1 What a session represents
 
-### 1.1 What is a session supposed to represent?
+There are effectively two session types:
 
-Choose one or clarify the boundary:
+- `orchestrator` session
+- `worker` session
 
-- a running agent process
-- a unit of work on an issue/task
-- a workflow record that may outlive the process
-- a PR-oriented work item
-- a container for all of the above
+These should not be treated identically.
 
-Why this matters:
+#### Orchestrator session
 
-- if a session represents a process, process death should dominate
-- if a session represents work, process death may be recoverable and not terminal
-- if a session represents workflow, PR state may matter more than runtime state
+The orchestrator is a long-lived coordination agent. It may eventually track useful aggregate information such as spawned workers and related PRs, but its defining behavior is durability, not short-lived task execution.
 
-### 1.2 What kinds of truths need to be represented separately?
+Current position:
 
-Decide whether these must remain separate:
+- orchestrators should be deliberately hard to kill
+- orchestrators should not be terminated casually or by incidental state confusion
+- there should not be an easy accidental path that marks an orchestrator dead
 
-- runtime reachability
-- process liveness
-- work/activity state
-- PR/workflow state
-- operator attention state
-- termination reason
+#### Worker session
 
-Question:
+A worker session is closer to a workflow record than a pure process record.
 
-- should these be separate first-class facts, or should some continue to be collapsed?
+Current position:
 
-### 1.3 What should be stored versus derived?
+- a worker is strongly related to PR state
+- a worker is not defined only by PR state
+- a merged PR does not automatically mean the worker session should be killed
+- the worker session may outlive a process and may be recoverable
 
-Decide which of the following should be persisted as truth:
+### 1.2 What truths should exist separately
+
+The redesign should separate at least these concerns:
+
+- session state
+- PR state
+- reason metadata explaining why the state is what it is
+
+The preferred shape is not just “state = X”, but more like:
+
+- process/session state: `working`, `idle`, `detecting`, `killed`
+- reason: `started`, `fixing-ci`, `addressing-review-comments`, `manually-killed`, `error-in-process`
+- PR state: `not-created`, `open`, `merged`, `closed`
+- PR reason: `working-on-pr`, `ci-failing`, `review-comments-pending`, `merged-successfully`
+
+Core idea:
+
+- keep the core state simpler
+- move a lot of nuance into explicit reasons
+
+### 1.3 Stored vs derived
+
+This remains unresolved.
+
+Open item:
+
+- decide what should be stored as authoritative truth versus derived for UI and notifications
+
+Topics still needing explicit decisions:
 
 - workflow phase
 - activity/work state
 - attention level
 - termination reason
-- “stuck”
-- “needs input”
-
-Question:
-
-- which values are authoritative facts, and which are projections for UI/notifications?
+- `stuck`
+- `needs_input`
 
 ---
 
-## 2. Session Lifecycle Policy Questions
+## 2. Session Lifecycle Decisions
 
-### 2.1 When does a session officially begin?
+### 2.1 When a session officially begins
 
-Possible definitions:
+Current position:
 
-- when the session ID is reserved
-- when metadata is written
-- when the runtime is created
-- when the prompt is delivered
-- when the agent acknowledges work
+- a session should officially begin when the agent explicitly acknowledges that it has started work
 
-Question:
+Preferred mechanism:
 
-- which point should count as “session exists and may be shown/tracked normally”?
+- the agent should call something like `ao acknowledge <session-id>`
+- this should happen because the system prompt tells the agent to do it, rather than AO guessing from weak runtime evidence
 
-### 2.2 When is a session considered active?
+Reasoning:
 
-Question:
+- metadata creation, runtime creation, or prompt delivery do not prove the agent actually started working
+- explicit acknowledgment is closer to how a real worker would confirm task pickup
 
-- is “active” about recent output, recent structured activity, recent tool use, recent file changes, or something else?
+### 2.2 How to think about “active”
 
-### 2.3 When is a session considered complete?
+Current position:
 
-Possible answers:
+- “active” is less important than correctly defining `not-started`, `working`, `stuck`, and `done`
+- token usage or cost signals might help in the future, but the current priority is robust state modeling, not perfect “active” inference
 
-- when the PR is opened
-- when the PR is approved
-- when the PR is merged
-- when the agent says it is done
-- when cleanup/archive finishes
+Working direction:
 
-Question:
+- focus on states that matter operationally
+- avoid over-optimizing a fragile definition of “active”
 
-- what user-visible milestone should “complete” mean?
+### 2.3 When a session is complete
 
-### 2.4 What should terminal mean?
+Current position:
 
-Question:
+- a session is considered complete when a PR is merged or closed
 
-- should terminal mean “cannot progress further”, “will no longer be polled”, “runtime is dead”, or “workflow ended”?
+Important clarification:
+
+- complete does not mean the session must be killed immediately
+
+### 2.4 What “terminal” means
+
+This is unresolved.
+
+Open item:
+
+- define whether “terminal” means workflow complete, runtime dead, no further polling, no further automation, or fully archived
 
 ---
 
-## 3. PR-Related Decision Points
+## 3. PR-Related Policy
 
-These are currently under-specified and likely to drive surprising behavior.
+### 3.1 What happens when a PR is opened
 
-### 3.1 What should happen when a PR is opened?
+Current position:
 
-Questions:
+- opening a PR should notify the user
+- opening a PR should preferably notify the orchestrator too
+- the PR state should move to something positive such as `pr-open`
+- once PR exists, the system should begin CI polling and PR-follow-up behavior
 
-- should session workflow immediately change to a PR phase?
-- should opening a PR change operator attention?
-- should the agent keep working after PR creation by default?
-- should PR existence ever affect liveness interpretation?
+Operational expectations after PR open:
 
-### 3.2 What should happen when a PR is closed?
+- poll CI every 30 seconds for 5 minutes
+- if still unresolved after 5 minutes, reduce to 1 minute polling
+- if CI fails, switch worker focus to CI fixing first
+- while CI is failing, do not prioritize review comments
+- once CI is fixed, fetch comments and process them
 
-Questions:
+Suggested worker/session interpretation:
 
-- does PR closure mean the session should terminate?
-- if yes, is that always true or only for some closure causes?
-- if no, should the session continue working, pause, or request human input?
-- should the system distinguish “closed by agent”, “closed by reviewer”, and “closed by human outside AO”?
+- after PR creation, worker may be `idle`
+- the reason should explain why, for example `pr-created`
+- if CI fails or comments arrive, the worker should move back to `working`
+- the reason should explain the work, for example `ci-fixing` or `resolving-comments`
 
-### 3.3 What should happen when a PR is merged?
+### 3.2 What happens when a PR is closed
 
-Questions:
+Current position:
 
-- should merge immediately end the session?
-- should the runtime/process be killed automatically?
-- should the session remain inspectable as live if the agent is still running?
-- does merge imply success regardless of process state?
+- closed means not merged
+- this should be treated as a meaningful outcome, not just a dead end
 
-### 3.4 What should happen when a PR is clicked in the UI?
+Important policy preference:
 
-Questions:
+- if a PR is closed, AO should learn from it
+- if review exists, that is especially valuable input
 
-- is click behavior purely navigational?
-- should clicking imply ownership transfer, investigation mode, terminal attachment, or nothing?
-- should UI interaction ever mutate session state?
+Desired future integration:
 
-### 3.5 What should happen when PR state disagrees with agent state?
+- pipe this into learning/agent-improvement work, likely related to issue `#86`
+- distinguish closure causes such as:
+  - closed by agent
+  - closed by reviewer
+  - closed externally by another human
+
+Likely operational direction:
+
+- learn from the closure
+- then terminate or close the session deliberately
+
+### 3.3 What happens when a PR is merged
+
+This is one of the clearest decisions.
+
+Current position:
+
+- merged PR does **not** mean kill the session
+- merged PR should notify the user and orchestrator
+- after merge, the system should ask or offer whether to keep the session alive or kill it
+
+Suggested UX:
+
+- popup notification
+- sidebar control
+- explicit kill/keep action
+
+Strong rule:
+
+- do not automatically kill just because merge happened
+
+### 3.4 What happens when a PR is clicked in the UI
+
+Current position:
+
+- clicking a PR should just open the link
+
+Strong rule:
+
+- no hidden tracking behavior
+- no state mutation from clicking
+- no extra intelligence layered onto a simple navigation action
+
+### 3.5 What happens when PR state and agent state disagree
+
+Current position:
+
+- the system should be redesigned so this disagreement becomes rare
+- if it still happens, the right response is recovery and explicit handling, not pretending the disagreement is normal
+
+Example direction:
+
+- if workflow says work should continue but the agent died, spawn or resume another agent with context explaining what happened and why it is taking over
+
+---
+
+## 4. Runtime, Process, and Liveness
+
+### 4.1 What happens when runtime/process evidence becomes inconsistent
+
+The following questions were answered together:
+
+- what happens when the runtime dies
+- what happens when process appears dead but recent activity exists
+- what happens when runtime exists but agent process does not
+
+Current position:
+
+- introduce a `detecting` state
+- do not immediately guess the final answer when runtime/process evidence is inconsistent
+- run an explicit evidence-gathering pass
+
+What `detecting` is meant to communicate:
+
+- “we know something is wrong or inconsistent”
+- “we are actively determining what happened”
+- “the system has not given up or collapsed to a fake answer”
+
+Evidence the system should inspect in `detecting`:
+
+- tmux/runtime state
+- agent process ID state
+- logs if available
+- whether the session is recoverable
+
+### 4.2 What happens when probes fail
+
+Current position:
+
+- show that the system could not detect cleanly
+- offer retry
+
+Desired behavior:
+
+- avoid pretending a probe failure equals death
+- keep the failure explicit and actionable
+
+### 4.3 When the system should declare death
+
+Current position:
+
+- user-triggered termination is authoritative
+- otherwise, dead tmux/runtime plus dead agent process is the strongest practical evidence
+- JSONL/activity logs should not be the primary basis for declaring death
+
+Important nuance:
+
+- runtime + process may be sufficient most of the time, but the system should still inspect surrounding context rather than making an overly shallow call
+
+---
+
+## 5. Signal Disagreement
+
+### 5.1 General policy when signals disagree
+
+Current position:
+
+- the real goal is to eliminate avoidable disagreement, not normalize it
+- JSONL is considered unreliable for final death decisions
+- the system should investigate disagreement rather than flatten it into a wrong label
+
+Current practical direction:
+
+- disagreement should lead to `detecting`
+- the system should keep scanning for a proper explanation
+
+### 5.2 Whether to expose an `unknown` state
+
+Current position:
+
+- no first-class `unknown`
+- use `detecting` instead
+
+Why:
+
+- `unknown` feels passive
+- `detecting` better communicates that the system is actively resolving ambiguity
+
+### 5.3 Whether stale data counts as evidence
+
+This remains unresolved.
+
+Open item:
+
+- decide when old activity is still useful and when it should stop protecting against dead classification
+
+---
+
+## 6. Idle, Stuck, Needs Input, and Blocked
+
+### 6.1 What `idle` should mean
+
+Current position:
+
+- idle should be a meaningful, mutable state with explicit reasons
+- AO should rely less on brittle inference and more on explicit agent reporting
+
+Preferred future direction:
+
+- ask the agent to report state transitions with AO commands such as “I am waiting”
+
+Examples of valid idle reasons:
+
+- `pr-open`
+- research/non-coding task completed
+- answer produced, waiting for next instruction
+
+### 6.2 What `stuck` should mean
+
+Current position:
+
+- stuck means the agent is not doing what it is supposed to be doing at that stage
 
 Examples:
 
-- PR merged but agent still producing output
-- PR closed but agent still alive
-- PR open but runtime is gone
+- PR not created and the agent is no longer progressing
+- CI is failing and the agent is not actively fixing CI
+- the worker likely actually needs input or intervention
 
-Questions:
+Interpretation:
 
-- which truth wins in UI?
-- which truth wins operationally?
-- should the disagreement be surfaced explicitly?
+- stuck is not just “quiet for too long”
+- stuck is about mismatch between expected work and observed behavior
 
----
+### 6.3 What should happen when a session stays idle too long
 
-## 4. Runtime and Liveness Decision Points
+Current position:
 
-### 4.1 What should happen when the runtime dies?
-
-Questions:
-
-- should the session immediately become terminal?
-- should the system wait for corroborating evidence first?
-- should the session be marked recoverable versus unrecoverable?
-- should UI say “runtime lost”, “session killed”, or something else?
-
-### 4.2 What should happen when the process appears dead but recent activity exists?
-
-Questions:
-
-- should recent structured activity override process death temporarily?
-- for how long?
-- is disagreement treated as “alive”, “dead”, or “unknown”?
-
-### 4.3 What should happen when the runtime exists but the agent process does not?
-
-Questions:
-
-- is this a dead session, a booting session, a broken runtime, or an unknown state?
-- should the answer differ during spawn versus steady-state?
-
-### 4.4 What should happen when probes fail?
+- outcome depends on the reason for idle
 
 Examples:
 
-- `ps` times out
-- tmux returns inconsistent data
-- JSONL is missing
-- activity parser throws
+- if PR is merged and the session stays idle, surface that to the user and ask whether to kill it
+- other idle cases may need different follow-up based on reason
 
-Questions:
+### 6.4 What should happen when user input is required
 
-- should failure preserve prior state, yield `unknown`, or force a fallback classification?
-- what level of uncertainty is acceptable before showing a terminal state?
+Current position:
 
-### 4.5 When should the system declare death?
+- notify the user immediately
+- make it explicit which session needs input
 
-Questions:
+Policy for long-waiting permission prompts:
 
-- can any single probe declare death?
-- should death require corroboration?
-- should there be a confidence or evidence threshold?
-- should user-triggered termination be treated differently from inferred death?
+- if input is required for too long, send escape and dismiss the permission prompt
+- when the user returns, explain that it waited too long and was dismissed
+- allow the user to restart by telling the agent to continue
+
+Illustrative threshold from current thought:
+
+- around 10 minutes, though this is not yet formalized
+
+### 6.5 What `blocked` or error states should mean
+
+Current position:
+
+- blocked is not yet clearly separated from needs-input
+- if spawn or runtime work fails transiently, retry
+- if the system hits repetitive issues, escalate to orchestrator and then to the user
+
+Open item:
+
+- define whether `blocked` is truly separate from `needs_input`, or just a specific reason category under it
 
 ---
 
-## 5. Signal Disagreement Questions
+## 7. UI and User Expectations
 
-This is the heart of the current ambiguity.
+### 7.1 What one headline status should mean
 
-### 5.1 What should happen when signals disagree?
+Current position:
+
+- the headline shown to the user should reflect truth, not convenience
+- the UI should show both session state and PR state when relevant
+
+Preferred presentation:
+
+- not necessarily one overloaded badge
+- two or three simple boxes are acceptable if that better communicates reality
+
+### 7.2 Whether the UI should ever hide disagreement
+
+Current position:
+
+- no
+- disagreement should surface as `detecting`
+
+Strong rule:
+
+- do not hide inconsistent state behind a fake confident label
+
+### 7.3 What the dashboard should optimize for
+
+Current position:
+
+- usability
+- correctness
+- operator flexibility
+
+Desired UX direction:
+
+- preserve the parts of the current structure that are already good
+- give users more toggles and options
+- do not over-restrict the UI to what the system thinks is best
 
 Examples:
 
-- runtime alive, process dead
-- runtime dead, recent activity exists
-- process alive, no activity for a long time
-- PR merged, runtime alive
+- toggle visibility of CI state
+- toggle PR state details
+- terminal optional on worker session page
 
-Questions:
+### 7.4 What actions should be available in ambiguous states
 
-- should the system prefer explicit events over heuristics?
-- should it prefer “unknown” over a decisive label?
-- what disagreements should be surfaced to the user rather than hidden?
+Current position:
 
-### 5.2 Do we want a first-class “unknown” state?
+- any session that the provider can resume should be resumable through AO
+- kill/terminate should generally remain available for worker sessions
+- when runtime truth is unresolved, sending messages should be delayed until detection completes
 
-Questions:
+Illustrative interaction:
 
-- is `unknown` a real state we should expose?
-- if yes, where: liveness, activity, workflow, attention, or all?
-- if no, what should be shown instead?
-
-### 5.3 Should stale data be treated as evidence?
-
-Questions:
-
-- when is old activity still relevant?
-- when does it stop protecting against dead classification?
-- should freshness windows differ by source type?
+- user tries `ao send`
+- AO responds that the session is in `detecting`
+- once detection completes, the system or orchestrator can tell the user work can continue
 
 ---
 
-## 6. Idle, Stuck, and Waiting Decision Points
+## 8. Recovery and Restore
 
-### 6.1 What should “idle” mean?
+### 8.1 What should be restorable
 
-Possible meanings:
+Current position:
 
-- no output recently
-- no meaningful work recently
-- waiting naturally for next step
-- stale but healthy
+- every session that the underlying provider can restore should be restorable through AO
 
-Question:
+### 8.2 What restore means
 
-- what user expectation should “idle” communicate?
+Current position:
 
-### 6.2 What should “stuck” mean?
+- restore means the underlying chat/session comes back and is ready to work again
 
-Questions:
+This is not just reopening metadata. It is restoring useful working continuity.
 
-- should “stuck” exist at all?
-- is it a factual state or an operator interpretation?
-- should it mean “no progress for too long”, “blocked”, “unknown but suspicious”, or something else?
+### 8.3 When the system should auto-recover versus wait for a human
 
-### 6.3 What should happen when a session is idle for a long time?
+Current position:
 
-Questions:
+- if the agent process died because of runtime or agent error, auto-recovery may be acceptable
+- otherwise require human involvement
 
-- should it escalate to human attention automatically?
-- should it stay in the same workflow phase with a warning?
-- should it become recoverable/paused?
-- should idle duration thresholds differ before and after PR creation?
+Open item:
 
-### 6.4 What should happen when user input is required?
-
-Questions:
-
-- should this override workflow phase or coexist with it?
-- should UI show both “awaiting review” and “needs input” if both are true?
-- does “needs input” pause automation?
-- how stale can a user-input request become before it stops being actionable?
-
-### 6.5 What should happen when blocked/error states are detected?
-
-Questions:
-
-- should blocked imply human attention immediately?
-- should blocked be distinct from needs-input?
-- should blocked sessions keep being polled for recovery?
+- define a clearer taxonomy of recoverable vs non-recoverable failures
 
 ---
 
-## 7. UI and User Expectation Questions
+## 9. Emerging Invariants
 
-### 7.1 What does the user expect one headline status to mean?
+These are not fully finalized, but several strong directions are visible.
 
-Question:
+Likely invariants:
 
-- if the UI only shows one primary badge/label, should it prioritize workflow, liveness, or attention?
+- a weak single signal should not unilaterally declare death
+- activity should not be the primary source of death decisions
+- PR state should not directly overwrite session/runtime truth
+- merged PR should not automatically kill the session
+- clicking UI links should not mutate session state
+- uncertainty/disagreement should be surfaced rather than hidden
+- user-triggered kill is authoritative
 
-### 7.2 Should UI ever hide disagreement?
+Open work:
 
-Questions:
-
-- if the process appears dead but the PR is open and recent activity exists, should the UI compress that to one label or show multiple facts?
-- is “simple but misleading” acceptable?
-
-### 7.3 What should the dashboard optimize for?
-
-Choose priority:
-
-- operational correctness
-- low cognitive load
-- fastest human triage
-- preserving implementation simplicity
-
-### 7.4 What actions should be available in each ambiguous state?
-
-Questions:
-
-- should users be able to restore/restart when liveness is uncertain?
-- should kill/terminate be offered when a PR is merged but runtime is alive?
-- should “send message” be available when runtime truth is not confirmed?
+- decide which of these are permanent product invariants versus current implementation preferences
 
 ---
 
-## 8. Recovery and Restore Policy Questions
+## 10. Observability and Debuggability
 
-### 8.1 What should be restorable?
+This section is still under-specified in the raw notes.
 
-Questions:
+Open items:
 
-- only sessions with dead runtimes?
-- sessions with closed PRs?
-- sessions with merged PRs?
-- sessions waiting for input?
+- what evidence must be recorded on every state change
+- whether evidence should be shown only in logs or also in UI/API
+- which disagreements deserve special logging
 
-### 8.2 What does restore mean?
+Strong directional preference from the rest of the notes:
 
-Possible meanings:
-
-- reattach to existing runtime
-- recreate runtime and continue same work
-- create a new session seeded from old context
-
-Question:
-
-- which of these behaviors should the product own under “restore”?
-
-### 8.3 When should the system auto-recover versus wait for a human?
-
-Questions:
-
-- should AO attempt recovery for certain termination reasons?
-- what failures are safe to auto-recover?
-- what failures must require human confirmation?
+- when the system says something meaningful happened, it should be able to explain why
 
 ---
 
-## 9. Invariants To Decide Explicitly
+## 11. Main Open Questions Remaining
 
-These should become hard rules if accepted.
+These are the most important unresolved items from the current notes:
 
-### 9.1 Possible invariants
-
-Review and decide yes/no:
-
-- a single weak signal must never unilaterally declare death
-- activity must never encode death
-- attention must not overwrite workflow truth
-- PR state must not directly overwrite runtime truth
-- terminal outcomes must have an explicit reason
-- uncertainty should be represented rather than hidden
-- UI should not mutate session state by passive inspection/clicking
-
-### 9.2 Which invariants are product commitments versus implementation preferences?
-
-Question:
-
-- which of the above must hold long-term, even if implementation changes?
+1. What exactly counts as “terminal”?
+2. What should be stored versus derived?
+3. How should stale evidence be treated?
+4. Is `blocked` distinct from `needs_input`, or just a reason subtype?
+5. What precise timeout should govern long-waiting input prompts?
+6. Which failures are safe to auto-recover?
+7. What evidence must be shown during `detecting`?
 
 ---
 
-## 10. Observability and Debuggability Questions
+## 12. Clean Summary of Current Position
 
-### 10.1 What evidence should always be available when a state changes?
+The current human direction is clear even where details remain open:
 
-Questions:
+- sessions should be modeled more like workflow records than pure process records
+- orchestrators and workers should have different durability expectations
+- PR state and session state should be separate
+- reasons should carry more of the nuance than giant enums
+- explicit agent acknowledgments/reporting are preferred over brittle inference
+- merge does not imply kill
+- disagreement should become `detecting`, not fake certainty
+- user notifications matter a lot at PR-open, PR-merge, and needs-input moments
+- restore/resume should exist wherever the provider supports it
 
-- should the system record which signals were consulted?
-- should it record why a status was chosen over alternatives?
-- should evidence be exposed only in logs, or also in API/UI?
-
-### 10.2 What disagreements deserve special logging?
-
-Examples:
-
-- recent activity plus dead process
-- PR merged plus runtime alive
-- waiting-input state with no visible prompt
-
-### 10.3 How much explanation should the user get?
-
-Question:
-
-- should the UI show just a label, or a short “why” explanation for non-obvious states?
-
----
-
-## 11. Scope-Control Questions
-
-These are meant to prevent an implementation from turning into a total rewrite.
-
-### 11.1 What must be solved in the first redesign pass?
-
-Candidates:
-
-- false dead/killed transitions
-- spawn-time races
-- activity/liveness separation
-- explicit termination reasons
-- UI simplification
-
-Question:
-
-- which 2-3 items are required for the first milestone?
-
-### 11.2 What should explicitly wait?
-
-Candidates:
-
-- full dashboard/API redesign
-- event-sourced history
-- orchestrator-specific UX changes
-- deep restoration semantics
-
-Question:
-
-- what is intentionally out of scope for phase one?
-
----
-
-## 12. Recommended Human Review Output
-
-At the end of the review, maintainers should ideally produce:
-
-1. A short statement of what a session represents.
-2. A list of fact domains that must be separated.
-3. A policy answer for PR open/close/merge behavior.
-4. A policy answer for runtime death and signal disagreement.
-5. A decision on whether `stuck` and `needs input` are facts or projections.
-6. A small set of hard invariants.
-7. A phase-one scope boundary.
-
-If those seven outputs exist, the redesign can be written without policy guesswork.
-
----
-
-## 13. Suggested Review Order
-
-To fit the 2-3 hour window:
-
-1. Answer Sections 1-4 first.
-2. Decide Sections 5-6 next.
-3. Use Sections 7-9 to lock UI/invariant consequences.
-4. Finish with Sections 10-11 to control rollout scope.
-
-That should be enough to turn this from “state cleanup” into a deliberate product/architecture decision.
+That is enough to guide the next design pass, even before every unresolved question is closed.
