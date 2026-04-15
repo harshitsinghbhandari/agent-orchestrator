@@ -881,13 +881,16 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     plugins: ReturnType<typeof resolvePlugins>,
     handleFromMetadata: boolean,
   ): Promise<void> {
-    // Check runtime liveness first — regardless of session status.
-    // This fixes #1081: terminal statuses (merged, done, etc.) should not force
-    // activity to "exited" if the agent process is still alive.
+    // Check runtime liveness first — for all statuses except "spawning".
+    // Skip spawning sessions because tmux may not be fully initialized yet,
+    // and a false-negative from isAlive() would permanently mark the session
+    // as "killed" (see #1035).
+    // This also fixes #1081: terminal statuses (merged, done, etc.) should not
+    // force activity to "exited" if the agent process is still alive.
     // Fabricated handles (constructed as fallback for external sessions) should
     // NOT override status to "killed" — we don't know if the session ever had
     // a tmux session, and we'd clobber meaningful statuses like "pr_open".
-    if (handleFromMetadata && session.runtimeHandle && plugins.runtime) {
+    if (handleFromMetadata && session.runtimeHandle && plugins.runtime && session.status !== "spawning") {
       try {
         const alive = await plugins.runtime.isAlive(session.runtimeHandle);
         if (!alive) {

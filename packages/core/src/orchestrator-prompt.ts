@@ -24,6 +24,8 @@ interface OrchestratorPromptRenderData {
   dashboardPort: string;
   automatedReactionsSection: string;
   projectSpecificRulesSection: string;
+  repoConfiguredSection: string;
+  repoNotConfiguredSection: string;
 }
 
 type OrchestratorPromptRenderKey = keyof OrchestratorPromptRenderData;
@@ -70,6 +72,8 @@ function removeOptionalSectionBlocks(
   data: OrchestratorPromptRenderData,
 ): string {
   const templates = [
+    ["REPO_CONFIGURED_SECTION_START", "REPO_CONFIGURED_SECTION_END", data.repoConfiguredSection],
+    ["REPO_NOT_CONFIGURED_SECTION_START", "REPO_NOT_CONFIGURED_SECTION_END", data.repoNotConfiguredSection],
     ["AUTOMATED_REACTIONS_SECTION_START", "AUTOMATED_REACTIONS_SECTION_END", data.automatedReactionsSection],
     ["PROJECT_SPECIFIC_RULES_SECTION_START", "PROJECT_SPECIFIC_RULES_SECTION_END", data.projectSpecificRulesSection],
   ] as const;
@@ -78,28 +82,31 @@ function removeOptionalSectionBlocks(
   for (const [startKey, endKey, section] of templates) {
     const startMarker = `{{${startKey}}}`;
     const endMarker = `{{${endKey}}}`;
-    const start = interpolated.indexOf(startMarker);
-    const end = interpolated.indexOf(endMarker);
 
-    if (start === -1 && end === -1) {
-      continue;
+    while (true) {
+      const start = interpolated.indexOf(startMarker);
+      const end = interpolated.indexOf(endMarker);
+
+      if (start === -1 && end === -1) {
+        break;
+      }
+
+      if (start === -1 || end === -1 || end < start) {
+        throw new Error(
+          `Malformed optional section block: expected ${startMarker} before ${endMarker}`,
+        );
+      }
+
+      const fullStart = start;
+      const fullEnd = end + endMarker.length;
+      const blockContent = interpolated.slice(start + startMarker.length, end);
+      const replacement = section ? blockContent : "";
+
+      interpolated =
+        interpolated.slice(0, fullStart) +
+        replacement +
+        interpolated.slice(fullEnd);
     }
-
-    if (start === -1 || end === -1 || end < start) {
-      throw new Error(
-        `Malformed optional section block: expected ${startMarker} before ${endMarker}`,
-      );
-    }
-
-    const fullStart = start;
-    const fullEnd = end + endMarker.length;
-    const blockContent = interpolated.slice(start + startMarker.length, end);
-    const replacement = section ? blockContent : "";
-
-    interpolated =
-      interpolated.slice(0, fullStart) +
-      replacement +
-      interpolated.slice(fullEnd);
   }
 
   return interpolated;
@@ -114,17 +121,20 @@ function hasRenderDataKey(
 
 function createRenderData(opts: OrchestratorPromptConfig): OrchestratorPromptRenderData {
   const { config, projectId, project } = opts;
+  const hasRepo = Boolean(project.repo);
 
   return {
     projectId,
     projectName: project.name,
-    projectRepo: project.repo,
+    projectRepo: project.repo ?? "not configured",
     projectDefaultBranch: project.defaultBranch,
     projectSessionPrefix: project.sessionPrefix,
     projectPath: project.path,
     dashboardPort: String(config.port ?? 3000),
     automatedReactionsSection: buildAutomatedReactionsSection(project),
     projectSpecificRulesSection: buildProjectSpecificRulesSection(project),
+    repoConfiguredSection: hasRepo ? "true" : "",
+    repoNotConfiguredSection: hasRepo ? "" : "true",
   };
 }
 
@@ -149,7 +159,10 @@ function normalizeRenderedPrompt(prompt: string): string {
  */
 export function generateOrchestratorPrompt(opts: OrchestratorPromptConfig): string {
   const data = createRenderData(opts);
-  const templateWithOptionalSections = removeOptionalSectionBlocks(orchestratorTemplate.trim(), data);
+  const templateWithOptionalSections = removeOptionalSectionBlocks(
+    orchestratorTemplate.trim(),
+    data,
+  );
 
   return normalizeRenderedPrompt(
     renderTemplate(templateWithOptionalSections, data),

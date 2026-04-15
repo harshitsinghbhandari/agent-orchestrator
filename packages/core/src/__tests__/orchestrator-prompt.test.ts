@@ -4,6 +4,7 @@ import type { OrchestratorConfig, ProjectConfig } from "../types.js";
 const config: OrchestratorConfig = {
   configPath: "/tmp/agent-orchestrator.yaml",
   port: 3000,
+  power: { preventIdleSleep: false },
   defaults: {
     runtime: "tmux",
     agent: "claude-code",
@@ -74,6 +75,23 @@ describe("generateOrchestratorPrompt", () => {
     expect(prompt).toContain("Always use `ao send`");
     expect(prompt).toContain("never use raw `tmux send-keys`");
     expect(prompt).toContain("ao send --no-wait");
+  });
+
+  it("shows 'not configured' and omits repo-only guidance when repo is omitted", async () => {
+    const generateOrchestratorPrompt = await loadGenerateOrchestratorPrompt();
+    const noRepoProject = { ...config.projects["my-app"]!, repo: undefined };
+    const prompt = generateOrchestratorPrompt({
+      config,
+      projectId: "my-app",
+      project: noRepoProject,
+    });
+
+    expect(prompt).toContain("not configured");
+    expect(prompt).not.toContain("undefined");
+    expect(prompt).not.toContain("ao batch-spawn");
+    expect(prompt).not.toContain("ao session claim-pr");
+    expect(prompt).not.toContain("PR state (open/merged/closed)");
+    expect(prompt).toContain("No repository remote is configured.");
   });
 
   it("pushes implementation and PR claiming into worker sessions", async () => {
