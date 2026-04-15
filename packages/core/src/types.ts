@@ -220,6 +220,7 @@ export function isTerminalSession(session: {
     return (
       session.lifecycle.session.state === "done" ||
       session.lifecycle.session.state === "terminated" ||
+      session.lifecycle.pr.state === "merged" ||
       session.lifecycle.runtime.state === "missing" ||
       session.lifecycle.runtime.state === "exited"
     );
