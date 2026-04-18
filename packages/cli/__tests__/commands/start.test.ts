@@ -1633,6 +1633,21 @@ describe("start command — already-running detection", () => {
 
     expect(events).toEqual(["register", "release"]);
   });
+
+  it("routes startup lock acquisition failures through the standard exit path", async () => {
+    mockAcquireStartupLock.mockRejectedValue(new Error("Could not acquire startup lock"));
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
+
+    await expect(
+      program.parseAsync(["node", "test", "start", "--no-dashboard", "--no-orchestrator"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    const output = vi
+      .mocked(console.error)
+      .mock.calls.map((c) => c.join(" "))
+      .join("\n");
+    expect(output).toContain("Could not acquire startup lock");
+  });
 });
 
 // ---------------------------------------------------------------------------

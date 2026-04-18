@@ -1365,15 +1365,16 @@ export function registerStart(program: Command): void {
           interactive?: boolean;
         },
       ) => {
-        const releaseStartupLock = await acquireStartupLock();
+        let releaseStartupLock: (() => void) | undefined;
         let startupLockReleased = false;
         const unlockStartup = (): void => {
-          if (startupLockReleased) return;
+          if (startupLockReleased || !releaseStartupLock) return;
           startupLockReleased = true;
           releaseStartupLock();
         };
 
         try {
+          releaseStartupLock = await acquireStartupLock();
           let config: OrchestratorConfig;
           let projectId: string;
           let project: ProjectConfig;
