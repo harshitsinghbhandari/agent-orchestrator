@@ -49,7 +49,10 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code === "EPERM") {
+      return true;
+    }
     return false;
   }
 }
@@ -106,13 +109,14 @@ async function acquireLock(
     const release = tryAcquire(lockFile);
     if (release) return release;
 
+    const owner = readLockMetadata(lockFile);
+    if (!owner || !isProcessAlive(owner.pid)) {
+      try { unlinkSync(lockFile); } catch { /* ignore */ }
+      const retryRelease = tryAcquire(lockFile);
+      if (retryRelease) return retryRelease;
+    }
+
     if (Date.now() - start > timeoutMs) {
-      const owner = readLockMetadata(lockFile);
-      if (!owner || !isProcessAlive(owner.pid)) {
-        try { unlinkSync(lockFile); } catch { /* ignore */ }
-        const finalRelease = tryAcquire(lockFile);
-        if (finalRelease) return finalRelease;
-      }
       throw new Error(`Could not acquire ${resourceName}`);
     }
 
