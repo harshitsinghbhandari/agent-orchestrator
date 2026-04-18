@@ -404,6 +404,26 @@ function appendApprovalFlags(
   }
 }
 
+/** Append restore-time approval flags, avoiding worker resumes in `never` mode. */
+function appendRestoreApprovalFlags(
+  parts: string[],
+  permissions: string | undefined,
+  isOrchestrator: boolean,
+): void {
+  const mode = normalizeAgentPermissionMode(permissions);
+  if (mode === "permissionless") {
+    if (isOrchestrator) {
+      parts.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      parts.push("--ask-for-approval", "on-request");
+    }
+  } else if (mode === "auto-edit") {
+    parts.push("--ask-for-approval", "on-request");
+  } else if (mode === "suggest") {
+    parts.push("--ask-for-approval", "untrusted");
+  }
+}
+
 /** Append model and reasoning flags to a command parts array */
 function appendModelFlags(parts: string[], model: string | undefined): void {
   if (!model) return;
@@ -734,7 +754,7 @@ function createCodexAgent(): Agent {
       appendNoUpdateCheckFlag(parts);
 
       const isOrchestrator = session.metadata?.["role"] === "orchestrator";
-      appendApprovalFlags(parts, project.agentConfig?.permissions, isOrchestrator);
+      appendRestoreApprovalFlags(parts, project.agentConfig?.permissions, isOrchestrator);
       const effectiveModel = (project.agentConfig?.model ?? data.model) as string | undefined;
       appendModelFlags(parts, effectiveModel ?? undefined);
 
