@@ -29,6 +29,7 @@ import {
   configToYaml,
   normalizeOrchestratorSessionStrategy,
   isOrchestratorSession,
+  isRestorable,
   isTerminalSession,
   ConfigNotFoundError,
   type OrchestratorConfig,
@@ -1112,10 +1113,16 @@ async function runStartup(
     const allSessionPrefixes = Object.entries(config.projects).map(
       ([, p]) => p.sessionPrefix ?? generateSessionPrefix(p.name ?? ""),
     );
-    const existingOrchestrators = allSessions.filter(
+    const projectOrchestrators = allSessions.filter(
+      (s) => isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes),
+    );
+    const existingOrchestrators = projectOrchestrators.filter(
+      (s) => !isTerminalSession(s),
+    );
+    const restorableOrchestrators = projectOrchestrators.filter(
       (s) =>
-        isOrchestratorSession(s, project.sessionPrefix ?? projectId, allSessionPrefixes) &&
-        !isTerminalSession(s),
+        isTerminalSession(s) &&
+        isRestorable(s),
     );
 
     if (existingOrchestrators.length > 0) {
@@ -1137,6 +1144,30 @@ async function runStartup(
           (existingOrchestrators.length > 1
             ? ` (${existingOrchestrators.length - 1} other session(s) available)` : ""),
       );
+    } else if (restorableOrchestrators.length > 0) {
+      try {
+        const sortedRestorable = [...restorableOrchestrators].sort(
+          (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
+        );
+        const selected = sortedRestorable[0];
+        spinner.start(`Restoring orchestrator session: ${selected.id}`);
+        const session = await sm.restore(selected.id);
+        selectedOrchestratorId = session.id;
+        spinner.succeed(
+          `Orchestrator session restored: ${selected.id}` +
+            (restorableOrchestrators.length > 1
+              ? ` (${restorableOrchestrators.length - 1} other restorable session(s) available)` : ""),
+        );
+      } catch (err) {
+        spinner.fail("Orchestrator restore failed");
+        if (dashboardProcess) {
+          dashboardProcess.kill();
+        }
+        throw new Error(
+          `Failed to restore orchestrator: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
     } else {
       // No existing orchestrators — spawn a new one
       try {
