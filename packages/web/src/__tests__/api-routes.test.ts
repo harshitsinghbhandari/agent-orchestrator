@@ -336,6 +336,65 @@ describe("API Routes", () => {
       expect(mockSessionManager.listCached).toHaveBeenCalledWith("docs-app");
     });
 
+    it("prefers the most recently active live orchestrator for project-scoped worker navigation", async () => {
+      const deadLifecycle = createInitialCanonicalLifecycle("orchestrator", new Date("2026-04-19T11:00:00.000Z"));
+      deadLifecycle.session.state = "terminated";
+      deadLifecycle.session.reason = "runtime_missing";
+      deadLifecycle.session.terminatedAt = "2026-04-19T11:00:00.000Z";
+      deadLifecycle.session.lastTransitionAt = "2026-04-19T11:00:00.000Z";
+      deadLifecycle.runtime.state = "missing";
+      deadLifecycle.runtime.reason = "process_missing";
+      deadLifecycle.runtime.lastObservedAt = "2026-04-19T11:00:00.000Z";
+
+      const olderLive = makeSession({
+        id: "my-app-orchestrator-1",
+        projectId: "my-app",
+        metadata: { role: "orchestrator" },
+        lastActivityAt: new Date("2026-04-19T09:00:00.000Z"),
+      });
+      const newerLive = makeSession({
+        id: "my-app-orchestrator-2",
+        projectId: "my-app",
+        metadata: { role: "orchestrator" },
+        lastActivityAt: new Date("2026-04-19T10:00:00.000Z"),
+      });
+      const deadOlder = makeSession({
+        id: "my-app-orchestrator-0",
+        projectId: "my-app",
+        metadata: { role: "orchestrator" },
+        status: "killed",
+        activity: "exited",
+        lastActivityAt: new Date("2026-04-19T11:00:00.000Z"),
+        lifecycle: deadLifecycle,
+      });
+      (mockSessionManager.listCached as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        deadOlder,
+        olderLive,
+        newerLive,
+        makeSession({
+          id: "backend-3",
+          projectId: "my-app",
+          status: "working",
+          activity: "active",
+        }),
+      ]);
+
+      const res = await sessionsGET(
+        makeRequest("http://localhost:3000/api/sessions?project=my-app&orchestratorOnly=true"),
+      );
+      expect(res.status).toBe(200);
+      const data = await res.json();
+
+      expect(data.orchestratorId).toBe("my-app-orchestrator-2");
+      expect(data.orchestrators.map((session: { id: string }) => session.id)).toEqual([
+        "my-app-orchestrator-0",
+        "my-app-orchestrator-1",
+        "my-app-orchestrator-2",
+      ]);
+      expect(data.sessions).toEqual([]);
+      expect(mockSessionManager.listCached).toHaveBeenCalledWith("my-app");
+    });
+
     it("enriches all PRs concurrently, not sequentially", async () => {
       vi.useFakeTimers();
 

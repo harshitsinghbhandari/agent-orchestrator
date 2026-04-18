@@ -1,4 +1,4 @@
-import { ACTIVITY_STATE, isOrchestratorSession } from "@aoagents/ao-core";
+import { ACTIVITY_STATE, isOrchestratorSession, isTerminalSession } from "@aoagents/ao-core";
 import { getServices, getSCM } from "@/lib/services";
 import {
   sessionToDashboard,
@@ -15,6 +15,32 @@ import { settlesWithin } from "@/lib/async-utils";
 const METADATA_ENRICH_TIMEOUT_MS = 3_000;
 const PR_ENRICH_TIMEOUT_MS = 4_000;
 const PER_PR_ENRICH_TIMEOUT_MS = 1_500;
+
+function selectPreferredOrchestratorId(
+  sessions: Parameters<typeof listDashboardOrchestrators>[0],
+  projects: Parameters<typeof listDashboardOrchestrators>[1],
+): string | null {
+  const allSessionPrefixes = Object.entries(projects).map(
+    ([projectId, project]) => project.sessionPrefix ?? projectId,
+  );
+
+  const liveOrchestrators = sessions
+    .filter((session) =>
+      isOrchestratorSession(
+        session,
+        projects[session.projectId]?.sessionPrefix ?? session.projectId,
+        allSessionPrefixes,
+      ) && !isTerminalSession(session),
+    )
+    .sort(
+      (a, b) =>
+        (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0) ||
+        (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+
+  return liveOrchestrators[0]?.id ?? null;
+}
 
 export async function GET(request: Request) {
   const correlationId = getCorrelationId(request);
@@ -33,7 +59,9 @@ export async function GET(request: Request) {
     const coreSessions = await sessionManager.listCached(requestedProjectId);
     const visibleSessions = filterProjectSessions(coreSessions, projectFilter, config.projects);
     const orchestrators = listDashboardOrchestrators(visibleSessions, config.projects);
-    const orchestratorId = orchestrators.length === 1 ? (orchestrators[0]?.id ?? null) : null;
+    const orchestratorId = requestedProjectId
+      ? selectPreferredOrchestratorId(visibleSessions, config.projects)
+      : (orchestrators.length === 1 ? (orchestrators[0]?.id ?? null) : null);
 
     if (orchestratorOnly) {
       recordApiObservation({

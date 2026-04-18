@@ -1,5 +1,11 @@
 # @composio/ao-web
 
+## [Unreleased]
+
+### Fixed
+
+- Make worker-session orchestrator navigation prefer the most recently active live orchestrator for the project instead of defaulting to the first sorted orchestrator id.
+
 ## 0.2.2
 
 ### Patch Changes
