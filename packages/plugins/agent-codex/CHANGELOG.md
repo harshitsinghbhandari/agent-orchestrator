@@ -1,11 +1,5 @@
 # @composio/ao-plugin-agent-codex
 
-## [Unreleased]
-
-### Fixed
-
-- Make Codex worker restore commands use `--ask-for-approval on-request` instead of resuming in `never` approval mode, while keeping permissionless orchestrator restores explicitly bypassed.
-
 ## 0.2.0
 
 ### Patch Changes
