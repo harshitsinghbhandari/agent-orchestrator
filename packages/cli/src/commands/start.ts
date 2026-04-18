@@ -50,7 +50,14 @@ import {
 } from "../lib/web-dir.js";
 import { rebuildDashboardProductionArtifacts } from "../lib/dashboard-rebuild.js";
 import { preflight } from "../lib/preflight.js";
-import { register, unregister, isAlreadyRunning, getRunning, waitForExit } from "../lib/running-state.js";
+import {
+  register,
+  unregister,
+  isAlreadyRunning,
+  getRunning,
+  waitForExit,
+  acquireStartupLock,
+} from "../lib/running-state.js";
 import { preventIdleSleep } from "../lib/prevent-sleep.js";
 import { isHumanCaller } from "../lib/caller-context.js";
 import { detectEnvironment } from "../lib/detect-env.js";
@@ -1327,6 +1334,14 @@ export function registerStart(program: Command): void {
           interactive?: boolean;
         },
       ) => {
+        const releaseStartupLock = await acquireStartupLock();
+        let startupLockReleased = false;
+        const unlockStartup = (): void => {
+          if (startupLockReleased) return;
+          startupLockReleased = true;
+          releaseStartupLock();
+        };
+
         try {
           let config: OrchestratorConfig;
           let projectId: string;
@@ -1354,6 +1369,7 @@ export function registerStart(program: Command): void {
               );
 
               if (choice === "open") {
+                unlockStartup();
                 const url = `http://localhost:${running.port}`;
                 openUrl(url);
                 process.exit(0);
@@ -1375,6 +1391,7 @@ export function registerStart(program: Command): void {
                 console.log(chalk.yellow("\n  Stopped existing instance. Restarting...\n"));
                 // Continue to startup below
               } else {
+                unlockStartup();
                 process.exit(0);
               }
             } else {
@@ -1384,6 +1401,7 @@ export function registerStart(program: Command): void {
               console.log(`PID: ${running.pid}`);
               console.log(`Projects: ${running.projects.join(", ")}`);
               console.log(`To restart: ao stop && ao start`);
+              unlockStartup();
               process.exit(0);
             }
           }
@@ -1513,6 +1531,7 @@ export function registerStart(program: Command): void {
             startedAt: new Date().toISOString(),
             projects: [projectId],
           });
+          unlockStartup();
 
           // Install shutdown handlers so `ao stop` (which sends SIGTERM to
           // this pid) flushes lifecycle health state before exit. Handlers
@@ -1533,6 +1552,7 @@ export function registerStart(program: Command): void {
           process.once("SIGINT", shutdown);
           process.once("SIGTERM", shutdown);
         } catch (err) {
+          unlockStartup();
           if (err instanceof Error) {
             console.error(chalk.red("\nError:"), err.message);
           } else {
@@ -1588,22 +1608,41 @@ export function registerStop(program: Command): void {
 
           const config = loadConfig();
           const { projectId: _projectId, project } = await resolveProject(config, projectArg, "stop");
-          const sessionId = `${project.sessionPrefix}-orchestrator`;
           const port = config.port ?? DEFAULT_PORT;
 
           console.log(chalk.bold(`\nStopping orchestrator for ${chalk.cyan(project.name)}\n`));
 
-          // Kill orchestrator session via SessionManager
+          // Kill all active orchestrator sessions for this project. Numbered
+          // orchestrators ({prefix}-orchestrator-N) are the current default.
           const sm = await getSessionManager(config);
-          const existing = await sm.get(sessionId);
+          const allSessionPrefixes = Object.entries(config.projects).map(
+            ([id, candidate]) => candidate.sessionPrefix ?? id,
+          );
+          const orchestrators = (await sm.list(_projectId))
+            .filter(
+              (session) =>
+                isOrchestratorSession(session, project.sessionPrefix ?? _projectId, allSessionPrefixes) &&
+                !isTerminalSession(session),
+            )
+            .sort((a, b) => a.id.localeCompare(b.id));
 
-          if (existing) {
-            const spinner = ora("Stopping orchestrator session").start();
+          if (orchestrators.length > 0) {
+            const spinner = ora(
+              orchestrators.length === 1
+                ? "Stopping orchestrator session"
+                : `Stopping ${orchestrators.length} orchestrator sessions`,
+            ).start();
             const purgeOpenCode = opts?.purgeSession === true;
-            await sm.kill(sessionId, { purgeOpenCode });
-            spinner.succeed("Orchestrator session stopped");
+            for (const orchestrator of orchestrators) {
+              await sm.kill(orchestrator.id, { purgeOpenCode });
+            }
+            spinner.succeed(
+              orchestrators.length === 1
+                ? "Orchestrator session stopped"
+                : `${orchestrators.length} orchestrator sessions stopped`,
+            );
           } else {
-            console.log(chalk.yellow(`Orchestrator session "${sessionId}" is not running`));
+            console.log(chalk.yellow(`No active orchestrator sessions are running for "${project.name}"`));
           }
 
           // Lifecycle polling runs in-process inside the `ao start` process

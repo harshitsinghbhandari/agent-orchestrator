@@ -56,10 +56,18 @@ const { mockPromptSelect, mockPromptConfirm } = vi.hoisted(() => ({
   mockPromptConfirm: vi.fn().mockResolvedValue(true),
 }));
 
-const { mockIsAlreadyRunning, mockUnregister, mockWaitForExit } = vi.hoisted(() => ({
+const {
+  mockRegister,
+  mockIsAlreadyRunning,
+  mockUnregister,
+  mockWaitForExit,
+  mockAcquireStartupLock,
+} = vi.hoisted(() => ({
+  mockRegister: vi.fn(),
   mockIsAlreadyRunning: vi.fn().mockReturnValue(null),
   mockUnregister: vi.fn(),
   mockWaitForExit: vi.fn().mockReturnValue(true),
+  mockAcquireStartupLock: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
 const { mockIsHumanCaller } = vi.hoisted(() => ({
@@ -141,11 +149,12 @@ vi.mock("../../src/lib/preflight.js", () => ({
 }));
 
 vi.mock("../../src/lib/running-state.js", () => ({
-  register: vi.fn(),
+  register: (...args: unknown[]) => mockRegister(...args),
   unregister: (...args: unknown[]) => mockUnregister(...args),
   isAlreadyRunning: (...args: unknown[]) => mockIsAlreadyRunning(...args),
   getRunning: vi.fn().mockReturnValue(null),
   waitForExit: (...args: unknown[]) => mockWaitForExit(...args),
+  acquireStartupLock: (...args: unknown[]) => mockAcquireStartupLock(...args),
 }));
 
 vi.mock("../../src/lib/caller-context.js", () => ({
@@ -271,9 +280,13 @@ beforeEach(() => {
   mockPromptConfirm.mockResolvedValue(true);
   mockIsAlreadyRunning.mockReset();
   mockIsAlreadyRunning.mockResolvedValue(null);
+  mockRegister.mockReset();
+  mockRegister.mockResolvedValue(undefined);
   mockUnregister.mockReset();
   mockWaitForExit.mockReset();
   mockWaitForExit.mockResolvedValue(true);
+  mockAcquireStartupLock.mockReset();
+  mockAcquireStartupLock.mockResolvedValue(vi.fn());
   mockIsHumanCaller.mockReset();
   mockIsHumanCaller.mockReturnValue(true);
 });
@@ -1068,13 +1081,15 @@ describe("stop command", () => {
 
   it("stops orchestrator session and dashboard", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
-    mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
+    mockSessionManager.list.mockResolvedValue([
+      { id: "app-orchestrator-1", projectId: "my-app", status: "working", activity: "active" },
+    ]);
     mockSessionManager.kill.mockResolvedValue(undefined);
     mockDashboardOnPort(3000);
 
     await program.parseAsync(["node", "test", "stop"]);
 
-    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator", {
+    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator-1", {
       purgeOpenCode: false,
     });
     const output = vi
@@ -1086,7 +1101,7 @@ describe("stop command", () => {
 
   it("handles missing orchestrator session gracefully", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
-    mockSessionManager.get.mockResolvedValue(null);
+    mockSessionManager.list.mockResolvedValue([]);
     mockExec.mockRejectedValue(new Error("no process"));
 
     await program.parseAsync(["node", "test", "stop"]);
@@ -1096,25 +1111,47 @@ describe("stop command", () => {
       .mocked(console.log)
       .mock.calls.map((c) => c.join(" "))
       .join("\n");
-    expect(output).toContain("is not running");
+    expect(output).toContain("No active orchestrator sessions are running");
   });
 
   it("passes purge flag when stopping orchestrator with --purge-session", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
-    mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
+    mockSessionManager.list.mockResolvedValue([
+      { id: "app-orchestrator-1", projectId: "my-app", status: "working", activity: "active" },
+    ]);
     mockSessionManager.kill.mockResolvedValue(undefined);
     mockDashboardOnPort(3000);
 
     await program.parseAsync(["node", "test", "stop", "--purge-session"]);
 
-    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator", {
+    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator-1", {
       purgeOpenCode: true,
     });
   });
 
+  it("stops all active numbered orchestrators for the project", async () => {
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
+    mockSessionManager.list.mockResolvedValue([
+      { id: "app-orchestrator-2", projectId: "my-app", status: "working", activity: "active" },
+      { id: "app-1", projectId: "my-app", status: "working", activity: "active" },
+      { id: "app-orchestrator-1", projectId: "my-app", status: "working", activity: "active" },
+    ]);
+    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockDashboardOnPort(3000);
+
+    await program.parseAsync(["node", "test", "stop"]);
+
+    expect(mockSessionManager.kill.mock.calls).toEqual([
+      ["app-orchestrator-1", { purgeOpenCode: false }],
+      ["app-orchestrator-2", { purgeOpenCode: false }],
+    ]);
+  });
+
   it("finds orphaned dashboard on a reassigned port via port scan", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
-    mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
+    mockSessionManager.list.mockResolvedValue([
+      { id: "app-orchestrator-1", projectId: "my-app", status: "working", activity: "active" },
+    ]);
     mockSessionManager.kill.mockResolvedValue(undefined);
     // Port 3000 has nothing, but port 3001 has the orphaned dashboard
     mockDashboardOnPort(3001, "99999");
@@ -1130,7 +1167,9 @@ describe("stop command", () => {
 
   it("skips non-dashboard processes during port scan", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
-    mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
+    mockSessionManager.list.mockResolvedValue([
+      { id: "app-orchestrator-1", projectId: "my-app", status: "working", activity: "active" },
+    ]);
     mockSessionManager.kill.mockResolvedValue(undefined);
     // Port 3000 has nothing, port 3001 has an unrelated process,
     // port 3002 has the actual dashboard
@@ -1162,7 +1201,9 @@ describe("stop command", () => {
 
   it("only kills dashboard PIDs when port has mixed processes", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
-    mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
+    mockSessionManager.list.mockResolvedValue([
+      { id: "app-orchestrator-1", projectId: "my-app", status: "working", activity: "active" },
+    ]);
     mockSessionManager.kill.mockResolvedValue(undefined);
     // Port 3000 has two processes: a dashboard and an unrelated sidecar
     mockExec.mockImplementation(async (cmd: string, args: string[] = []) => {
@@ -1464,6 +1505,43 @@ describe("start command — already-running detection", () => {
     // YAML should be unchanged — no duplicate entry added
     const afterYaml = readFileSync(configPath, "utf-8");
     expect(afterYaml).toBe(originalYaml);
+  });
+
+  it("releases the startup lock before exiting for non-TTY callers", async () => {
+    const release = vi.fn();
+    mockAcquireStartupLock.mockResolvedValue(release);
+    mockIsAlreadyRunning.mockResolvedValue({
+      pid: 9999,
+      configPath: "/fake/config.yaml",
+      port: 3000,
+      startedAt: "2026-01-01T00:00:00Z",
+      projects: ["my-app"],
+    });
+    mockIsHumanCaller.mockReturnValue(false);
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
+
+    await expect(
+      program.parseAsync(["node", "test", "start", "--no-dashboard", "--no-orchestrator"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the startup lock until running state registration completes", async () => {
+    const release = vi.fn();
+    const events: string[] = [];
+    mockAcquireStartupLock.mockResolvedValue(release);
+    mockRegister.mockImplementation(async () => {
+      events.push("register");
+    });
+    release.mockImplementation(() => {
+      events.push("release");
+    });
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
+
+    await program.parseAsync(["node", "test", "start", "--no-dashboard", "--no-orchestrator"]);
+
+    expect(events).toEqual(["register", "release"]);
   });
 });
 
