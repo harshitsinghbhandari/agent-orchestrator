@@ -251,19 +251,20 @@ export class TerminalManager {
    * If has subscribers but PTY crashed, re-attach.
    */
   async open(id: string): Promise<string> {
-    // Validate and resolve
+    // Validate first, but avoid probing tmux again if the terminal is already
+    // attached or another caller is already driving the attach flow.
     if (!validateSessionId(id)) {
       throw new Error(`Invalid session ID: ${id}`);
-    }
-
-    const tmuxSessionId = resolveTmuxSession(id, this.TMUX);
-    if (!tmuxSessionId) {
-      throw new Error(`Session not found: ${id}`);
     }
 
     // Get or create terminal entry
     let terminal = this.terminals.get(id);
     if (!terminal) {
+      const tmuxSessionId = resolveTmuxSession(id, this.TMUX);
+      if (!tmuxSessionId) {
+        throw new Error(`Session not found: ${id}`);
+      }
+
       terminal = {
         id,
         tmuxSessionId,
@@ -280,7 +281,7 @@ export class TerminalManager {
 
     // If PTY is already attached, we're done
     if (terminal.pty) {
-      return tmuxSessionId;
+      return terminal.tmuxSessionId;
     }
 
     if (terminal.openingPromise) {
