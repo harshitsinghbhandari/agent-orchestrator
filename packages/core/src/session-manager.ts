@@ -1382,6 +1382,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         lifecycle,
         tmuxName, // Store tmux name for mapping
         issue: spawnConfig.issueId,
+        issueTitle: resolvedIssue?.title, // Store issue title for event enrichment
         project: spawnConfig.projectId,
         agent: selection.agentName, // Persist agent name for lifecycle manager
         createdAt: createdAt.toISOString(),

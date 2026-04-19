@@ -1678,6 +1678,7 @@ export interface SessionMetadata {
   lifecycle?: CanonicalSessionLifecycle;
   tmuxName?: string; // Tmux session name (matches session ID, e.g. "ao-1")
   issue?: string;
+  issueTitle?: string; // Issue title for event enrichment
   pr?: string;
   prAutoDetect?: boolean;
   summary?: string;
