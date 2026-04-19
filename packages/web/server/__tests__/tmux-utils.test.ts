@@ -370,7 +370,7 @@ describe("resolveTmuxSession", () => {
       expect(mockExec).toHaveBeenCalledWith(
         TMUX,
         ["has-session", "-t", "=ao-1"],
-        { timeout: 5000 },
+        { timeout: 5000, stdio: "ignore" },
       );
     });
 
@@ -383,7 +383,7 @@ describe("resolveTmuxSession", () => {
       expect(mockExec).toHaveBeenCalledWith(
         customTmux,
         ["has-session", "-t", "=my-session"],
-        { timeout: 5000 },
+        { timeout: 5000, stdio: "ignore" },
       );
     });
 
@@ -407,7 +407,7 @@ describe("resolveTmuxSession", () => {
       expect(mockExec).toHaveBeenCalledWith(
         TMUX,
         ["has-session", "-t", "=ao-15"],
-        { timeout: 5000 },
+        { timeout: 5000, stdio: "ignore" },
       );
     });
   });
@@ -566,7 +566,7 @@ describe("resolveTmuxSession", () => {
       expect(mockExec).toHaveBeenNthCalledWith(2,
         TMUX,
         ["list-sessions", "-F", "#{session_name}"],
-        { timeout: 5000, encoding: "utf8" },
+        { timeout: 5000, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
       );
     });
 
@@ -787,7 +787,11 @@ describe("resolveTmuxSession", () => {
       for (const tmuxPath of paths) {
         const mockExec = vi.fn().mockReturnValue("");
         resolveTmuxSession("ao-15", tmuxPath, mockExec);
-        expect(mockExec).toHaveBeenCalledWith(tmuxPath, ["has-session", "-t", "=ao-15"], { timeout: 5000 });
+        expect(mockExec).toHaveBeenCalledWith(
+          tmuxPath,
+          ["has-session", "-t", "=ao-15"],
+          { timeout: 5000, stdio: "ignore" },
+        );
       }
     });
   });
