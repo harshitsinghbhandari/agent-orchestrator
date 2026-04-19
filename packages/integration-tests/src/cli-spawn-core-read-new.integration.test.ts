@@ -14,7 +14,7 @@
  */
 
 import { mkdtemp, rm, realpath, writeFile } from "node:fs/promises";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -30,6 +30,7 @@ import { isTmuxAvailable, killSessionsByPrefix, killSession } from "./helpers/tm
 const tmuxOk = await isTmuxAvailable();
 
 describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () => {
+  const storageKeyA = "111111111111";
   let tmpDir: string;
   let configPath: string;
   let repoPath: string;
@@ -70,6 +71,7 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
           name: "Test Project",
           repo: "test/test-repo",
           path: repoPath,
+          storageKey: storageKeyA,
           defaultBranch: "main",
           sessionPrefix,
         },
@@ -99,17 +101,17 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
   }, 30_000);
 
   it("sessions are stored in hash-based project-specific directory", () => {
-    const sessionsDir = getSessionsDir("111111111111");
+    const sessionsDir = getSessionsDir(storageKeyA);
 
     expect(sessionsDir).toMatch(/\.agent-orchestrator\/111111111111\/sessions$/);
   });
 
   it("session metadata includes tmuxName field", () => {
-    const sessionsDir = getSessionsDir("111111111111");
+    const sessionsDir = getSessionsDir(storageKeyA);
     mkdirSync(sessionsDir, { recursive: true });
 
     // Write metadata as CLI would do
-    const tmuxName = generateTmuxName("111111111111", sessionPrefix, 1);
+    const tmuxName = generateTmuxName(storageKeyA, sessionPrefix, 1);
     const metadataPath = join(sessionsDir, sessionName);
     const metadata = [
       `worktree=${tmpDir}`,
@@ -132,11 +134,11 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
   });
 
   it("core session-manager finds session in hash-based directory", async () => {
-    const sessionsDir = getSessionsDir("111111111111");
+    const sessionsDir = getSessionsDir(storageKeyA);
     mkdirSync(sessionsDir, { recursive: true });
 
     // Write metadata
-    const tmuxName = generateTmuxName("111111111111", sessionPrefix, 1);
+    const tmuxName = generateTmuxName(storageKeyA, sessionPrefix, 1);
     const metadataPath = join(sessionsDir, sessionName);
     const metadata = [
       `worktree=${tmpDir}`,
@@ -166,6 +168,7 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
           name: "Test Project",
           repo: "test/test-repo",
           path: repoPath,
+          storageKey: storageKeyA,
           defaultBranch: "main",
           sessionPrefix,
         },
@@ -197,13 +200,15 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
   });
 
   it("tmux name includes hash for global uniqueness", () => {
-    const tmuxName = generateTmuxName("111111111111", sessionPrefix, 1);
+    const tmuxName = generateTmuxName(storageKeyA, sessionPrefix, 1);
 
-    expect(tmuxName).toMatch(new RegExp(`^111111111111-${sessionPrefix}-1$`));
+    expect(tmuxName).toMatch(new RegExp(`^${storageKeyA}-${sessionPrefix}-1$`));
     expect(tmuxName).not.toBe(sessionName); // User-facing name is different
   });
 
   it("cross-project isolation with hash-based directories", async () => {
+    const isolatedStorageKeyA = "333333333333";
+    const isolatedStorageKeyB = "444444444444";
     // Create second project path
     const repo2Path = join(tmpDir, "project-b");
     const repoAPath = join(tmpDir, "project-a"); // Use separate path for project A
@@ -226,6 +231,7 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
           name: "Project A",
           repo: "test/project-a",
           path: repoAPath, // Different path from test-repo
+          storageKey: isolatedStorageKeyA,
           defaultBranch: "main",
           sessionPrefix: `${sessionPrefix}-a`,
         },
@@ -233,6 +239,7 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
           name: "Project B",
           repo: "test/project-b",
           path: repo2Path,
+          storageKey: isolatedStorageKeyB,
           defaultBranch: "main",
           sessionPrefix: `${sessionPrefix}-b`,
         },
@@ -248,7 +255,8 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
     };
 
     // Write metadata for project A
-    const sessionsDirA = getSessionsDir("111111111111");
+    const sessionsDirA = getSessionsDir(isolatedStorageKeyA);
+    rmSync(sessionsDirA, { recursive: true, force: true });
     mkdirSync(sessionsDirA, { recursive: true });
     const sessionAName = `${sessionPrefix}-a-1`;
     writeFileSync(
@@ -257,7 +265,8 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
     );
 
     // Write metadata for project B
-    const sessionsDirB = getSessionsDir("222222222222");
+    const sessionsDirB = getSessionsDir(isolatedStorageKeyB);
+    rmSync(sessionsDirB, { recursive: true, force: true });
     mkdirSync(sessionsDirB, { recursive: true });
     const sessionBName = `${sessionPrefix}-b-1`;
     writeFileSync(
@@ -280,7 +289,7 @@ describe.skipIf(!tmuxOk)("CLI-Core integration (hash-based architecture)", () =>
 
     // Verify sessions are in different directories
     expect(sessionsDirA).not.toBe(sessionsDirB);
-    expect(sessionsDirA).toContain("project-a");
-    expect(sessionsDirB).toContain("project-b");
+    expect(sessionsDirA).toContain(isolatedStorageKeyA);
+    expect(sessionsDirB).toContain(isolatedStorageKeyB);
   });
 });

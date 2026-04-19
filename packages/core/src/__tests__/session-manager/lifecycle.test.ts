@@ -27,7 +27,6 @@ import { installMockOpencode, installMockOpencodeWithNotFoundDelete } from "./op
 
 let ctx: TestContext;
 let tmpDir: string;
-let configPath: string;
 let sessionsDir: string;
 let mockRuntime: Runtime;
 let mockAgent: Agent;
@@ -38,7 +37,7 @@ let originalPath: string | undefined;
 
 beforeEach(() => {
   ctx = setupTestContext();
-  ({ tmpDir, configPath, sessionsDir, mockRuntime, mockAgent, mockWorkspace, mockRegistry, config, originalPath } = ctx);
+  ({ tmpDir, sessionsDir, mockRuntime, mockAgent, mockWorkspace, mockRegistry, config, originalPath } = ctx);
 });
 
 afterEach(() => {

@@ -14,7 +14,7 @@ import {
 } from "../paths.js";
 
 describe("paths", () => {
-  const storageKey = "a1b2c3d4e5f6";
+  const storageKey = "aaaaaaaaaaaa";
   const baseDir = join(process.env["HOME"] ?? "", ".agent-orchestrator", storageKey);
 
   it("returns storage-key scoped directories", () => {
@@ -34,7 +34,7 @@ describe("paths", () => {
 
   it("uses the storage key as the tmux hash segment", () => {
     const tmuxName = generateTmuxName(storageKey, "ao", 3);
-    expect(tmuxName).toBe("a1b2c3d4e5f6-ao-3");
+    expect(tmuxName).toBe("aaaaaaaaaaaa-ao-3");
     expect(parseTmuxName(tmuxName)).toEqual({
       hash: storageKey,
       prefix: "ao",

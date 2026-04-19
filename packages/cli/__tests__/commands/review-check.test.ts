@@ -108,6 +108,7 @@ vi.mock("../../src/lib/create-session-manager.js", () => ({
 let tmpDir: string;
 let sessionsDir: string;
 let originalHome: string | undefined;
+const STORAGE_KEY = "111111111114";
 
 import { Command } from "commander";
 import { registerReviewCheck } from "../../src/commands/review-check.js";
@@ -137,6 +138,7 @@ beforeEach(() => {
         name: "My App",
         repo: "org/my-app",
         path: join(tmpDir, "main-repo"),
+        storageKey: STORAGE_KEY,
         defaultBranch: "main",
         sessionPrefix: "app",
       },
@@ -147,7 +149,7 @@ beforeEach(() => {
   } as Record<string, unknown>;
 
   // Calculate and create sessions directory for hash-based architecture
-  sessionsDir = getSessionsDir("111111111111");
+  sessionsDir = getSessionsDir(STORAGE_KEY);
   mkdirSync(sessionsDir, { recursive: true });
   sessionsDirRef.current = sessionsDir;
 

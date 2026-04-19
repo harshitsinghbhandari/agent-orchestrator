@@ -109,8 +109,6 @@ describe("recoverSession", () => {
 
   afterEach(() => {
     if (rootDir) {
-      const configPath = join(rootDir, "agent-orchestrator.yaml");
-      const projectPath = join(rootDir, "project");
       const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
@@ -246,8 +244,6 @@ describe("escalateSession", () => {
 
   afterEach(() => {
     if (rootDir) {
-      const configPath = join(rootDir, "agent-orchestrator.yaml");
-      const projectPath = join(rootDir, "project");
       const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
@@ -284,8 +280,6 @@ describe("cleanupSession", () => {
 
   afterEach(() => {
     if (rootDir) {
-      const configPath = join(rootDir, "agent-orchestrator.yaml");
-      const projectPath = join(rootDir, "project");
       const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
@@ -402,8 +396,6 @@ describe("recovery manager and scanner", () => {
 
   afterEach(() => {
     if (rootDir) {
-      const configPath = join(rootDir, "agent-orchestrator.yaml");
-      const projectPath = join(rootDir, "project");
       const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });

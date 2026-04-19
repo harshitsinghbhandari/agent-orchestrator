@@ -271,6 +271,7 @@ export function loadGlobalConfig(configPath?: string): GlobalConfig | null {
       if (!freshSanitized.changed) return;
 
       for (const project of freshSanitized.strippedProjects) {
+        // eslint-disable-next-line no-console -- required migration visibility for stale shadow stripping
         console.info(
           `[ao] stripping ${project.strippedFieldCount} stale shadow fields from project ${project.projectId}`,
         );
@@ -518,7 +519,6 @@ function ensureProjectStorageIdentity(
   }
 
   const projectPath = entry.path;
-  const oldStorageKey = typeof entry.storageKey === "string" ? entry.storageKey : legacyProjectHash(projectPath);
   const identity = deriveProjectStorageIdentity(projectPath);
   const nextStorageKey = identity.storageKey;
   const owner = findStorageKeyOwner(globalConfig, nextStorageKey, projectId);
@@ -567,6 +567,7 @@ function ensureProjectStorageIdentity(
 
     entry.storageKey = freshEntry.storageKey;
     entry.repo = freshEntry.repo;
+    // eslint-disable-next-line no-console -- required migration visibility for storage identity updates
     console.info(
       `[ao] migrated storage identity for "${projectId}" to "${freshEntry.storageKey}" (${freshEntry.repo?.originUrl ?? `local://${resolve(freshIdentity.gitRoot)}`})`,
     );
@@ -1088,10 +1089,9 @@ function sanitizeRawGlobalProjectEntry(
   delete entry["originUrl"];
 
   for (const key of Object.keys(entry)) {
-    if (!GLOBAL_PROJECT_ENTRY_FIELDS.has(key)) {
-      delete entry[key];
-      strippedFieldCount += 1;
-    }
+    if (GLOBAL_PROJECT_ENTRY_FIELDS.has(key)) continue;
+    Reflect.deleteProperty(entry, key);
+    strippedFieldCount += 1;
   }
 
   return { strippedFieldCount };

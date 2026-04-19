@@ -1,6 +1,6 @@
-import { Dirent, readdirSync } from "node:fs";
+import { readdirSync, type Dirent } from "node:fs";
 import path from "node:path";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import {
   PathSecurityError,
   assertDirectoryPath,

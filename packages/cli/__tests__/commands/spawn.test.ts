@@ -68,6 +68,7 @@ vi.mock("../../src/lib/metadata.js", () => ({
 let tmpDir: string;
 let configPath: string;
 let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
+const STORAGE_KEY = "111111111113";
 
 import { Command } from "commander";
 import { registerSpawn } from "../../src/commands/spawn.js";
@@ -94,6 +95,7 @@ beforeEach(() => {
         name: "My App",
         repo: "org/my-app",
         path: join(tmpDir, "main-repo"),
+        storageKey: STORAGE_KEY,
         defaultBranch: "main",
         sessionPrefix: "app",
       },
@@ -128,7 +130,7 @@ beforeEach(() => {
 afterEach(() => {
   cwdSpy?.mockRestore();
   cwdSpy = undefined;
-  const projectBaseDir = getProjectBaseDir("111111111111");
+  const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
   if (projectBaseDir) {
     rmSync(projectBaseDir, { recursive: true, force: true });
   }

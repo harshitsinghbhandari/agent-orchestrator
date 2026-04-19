@@ -1,7 +1,10 @@
-import type { DegradedProjectEntry, LoadedConfig, ProjectConfig } from "./types.js";
-import { ProjectResolveError } from "./types.js";
-import type { GlobalConfig } from "./global-config.js";
-import { resolveProjectIdentity } from "./global-config.js";
+import {
+  ProjectResolveError,
+  type DegradedProjectEntry,
+  type LoadedConfig,
+  type ProjectConfig,
+} from "./types.js";
+import { resolveProjectIdentity, type GlobalConfig } from "./global-config.js";
 
 export function loadEffectiveProjectConfig(
   projectId: string,
