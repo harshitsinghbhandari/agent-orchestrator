@@ -121,6 +121,11 @@ export function create(): Runtime {
         try {
           await tmux("load-buffer", "-b", bufferName, tmpPath);
           await tmux("paste-buffer", "-b", bufferName, "-t", handle.id, "-d");
+          // Send Enter immediately after paste succeeds, before any cleanup.
+          // Placing Enter here (not after the finally block) prevents cleanup
+          // operations (delete-buffer, unlinkSync) from delaying the keypress.
+          await sleep(300);
+          await tmux("send-keys", "-t", handle.id, "Enter");
         } finally {
           // Clean up temp file and tmux buffer (in case paste-buffer failed
           // and the -d flag didn't delete it)
@@ -139,12 +144,10 @@ export function create(): Runtime {
         // Use -l (literal) so text like "Enter" or "Space" isn't interpreted
         // as tmux key names
         await tmux("send-keys", "-t", handle.id, "-l", message);
+        // Small delay to let tmux process the text before pressing Enter.
+        await sleep(300);
+        await tmux("send-keys", "-t", handle.id, "Enter");
       }
-
-      // Small delay to let tmux process the pasted text before pressing Enter.
-      // Without this, Enter can arrive before the text is fully rendered.
-      await sleep(300);
-      await tmux("send-keys", "-t", handle.id, "Enter");
     },
 
     async getOutput(handle: RuntimeHandle, lines = 50): Promise<string> {

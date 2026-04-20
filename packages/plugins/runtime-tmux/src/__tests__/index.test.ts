@@ -348,12 +348,12 @@ describe("runtime.sendMessage()", () => {
     const handle = makeHandle("msg-long");
     const longText = "x".repeat(250);
 
-    // 1: C-u, 2: load-buffer, 3: paste-buffer, 4: unlinkSync (sync), 5: delete-buffer, 6: Enter
+    // 1: C-u, 2: load-buffer, 3: paste-buffer, 4: Enter, 5: delete-buffer (finally)
     mockTmuxSuccess(); // C-u
     mockTmuxSuccess(); // load-buffer
     mockTmuxSuccess(); // paste-buffer
+    mockTmuxSuccess(); // Enter (sent immediately after paste, before cleanup)
     mockTmuxSuccess(); // delete-buffer (finally block)
-    mockTmuxSuccess(); // Enter
 
     await runtime.sendMessage(handle, longText);
 
@@ -388,6 +388,14 @@ describe("runtime.sendMessage()", () => {
       expectedTmuxOptions,
     );
 
+    // Call 3: Enter is sent immediately after paste (before cleanup)
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(
+      4,
+      "tmux",
+      ["send-keys", "-t", "msg-long", "Enter"],
+      expectedTmuxOptions,
+    );
+
     // Verify writeFileSync was called with the message
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       expect.stringContaining("ao-send-test-uuid-1234.txt"),
@@ -405,11 +413,12 @@ describe("runtime.sendMessage()", () => {
     const runtime = create();
     const handle = makeHandle("msg-multi");
 
+    // 1: C-u, 2: load-buffer, 3: paste-buffer, 4: Enter, 5: delete-buffer (finally)
     mockTmuxSuccess(); // C-u
     mockTmuxSuccess(); // load-buffer
     mockTmuxSuccess(); // paste-buffer
+    mockTmuxSuccess(); // Enter (before cleanup)
     mockTmuxSuccess(); // delete-buffer (finally)
-    mockTmuxSuccess(); // Enter
 
     await runtime.sendMessage(handle, "line1\nline2\nline3");
 
@@ -423,6 +432,14 @@ describe("runtime.sendMessage()", () => {
         "ao-test-uuid-1234",
         expect.stringContaining("ao-send-test-uuid-1234.txt"),
       ],
+      expectedTmuxOptions,
+    );
+
+    // Enter is sent immediately after paste, before cleanup
+    expect(mockExecFileCustom).toHaveBeenNthCalledWith(
+      4,
+      "tmux",
+      ["send-keys", "-t", "msg-multi", "Enter"],
       expectedTmuxOptions,
     );
 
@@ -459,6 +476,51 @@ describe("runtime.sendMessage()", () => {
       ["delete-buffer", "-b", "ao-test-uuid-1234"],
       expectedTmuxOptions,
     );
+  });
+
+  it("sends Enter immediately after pasting spawn prompt (long multiline)", async () => {
+    const runtime = create();
+    const handle = makeHandle("spawn-prompt");
+    // Simulate a typical spawn prompt: long, multiline, just like buildPrompt produces
+    const spawnPrompt =
+      "You are an AI coding agent managed by the Agent Orchestrator (ao).\n\n" +
+      "## Session Lifecycle\n" +
+      "- You are running inside a managed session.\n\n" +
+      "## Additional Instructions\n" +
+      "Fix the login bug in auth.ts";
+
+    // 1: C-u, 2: load-buffer, 3: paste-buffer, 4: Enter, 5: delete-buffer (finally)
+    mockTmuxSuccess(); // C-u
+    mockTmuxSuccess(); // load-buffer
+    mockTmuxSuccess(); // paste-buffer
+    mockTmuxSuccess(); // Enter
+    mockTmuxSuccess(); // delete-buffer
+
+    await runtime.sendMessage(handle, spawnPrompt);
+
+    // Verify Enter is the 4th tmux call — immediately after paste-buffer, before cleanup
+    const calls = mockExecFileCustom.mock.calls;
+    const enterCallIndex = calls.findIndex(
+      (call: unknown[]) =>
+        call[0] === "tmux" &&
+        Array.isArray(call[1]) &&
+        call[1][0] === "send-keys" &&
+        call[1].includes("Enter"),
+    );
+    const deleteBufferCallIndex = calls.findIndex(
+      (call: unknown[]) =>
+        call[0] === "tmux" &&
+        Array.isArray(call[1]) &&
+        call[1][0] === "delete-buffer",
+    );
+
+    // Enter MUST come before delete-buffer (cleanup)
+    expect(enterCallIndex).toBeGreaterThan(-1);
+    expect(deleteBufferCallIndex).toBeGreaterThan(-1);
+    expect(enterCallIndex).toBeLessThan(deleteBufferCallIndex);
+
+    // Verify Enter targets the correct session
+    expect(calls[enterCallIndex][1]).toEqual(["send-keys", "-t", "spawn-prompt", "Enter"]);
   });
 });
 
