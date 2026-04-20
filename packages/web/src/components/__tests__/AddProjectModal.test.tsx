@@ -50,7 +50,7 @@ describe("AddProjectModal", () => {
     expect(screen.getByRole("button", { name: /^add project$/i })).toBeDisabled();
   });
 
-  it("renders both collision actions when the server returns 409", async () => {
+  it("offers opening the existing project when the server returns 409", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -82,7 +82,7 @@ describe("AddProjectModal", () => {
     expect(
       await screen.findByRole("button", { name: /open existing/i }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /register as second/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /register as second/i })).not.toBeInTheDocument();
   });
 
   it("pushes directly to the new project after a successful POST", async () => {

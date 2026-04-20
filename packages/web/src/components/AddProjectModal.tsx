@@ -25,7 +25,7 @@ interface BrowseEntry {
 interface CollisionState {
   error: string;
   existingProjectId: string;
-  suggestion: "open-existing" | "register-as-second";
+  suggestion: "open-existing";
 }
 
 interface AddProjectModalProps {
@@ -144,7 +144,7 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
       }
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canSubmit) {
         event.preventDefault();
-        void submit(false);
+        void submit();
         return;
       }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -164,7 +164,7 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
         }
         if (canSubmit) {
           event.preventDefault();
-          void submit(false);
+          void submit();
         }
       }
     };
@@ -172,7 +172,7 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [browsePath, canSubmit, directoryEntries, onClose, open, selectedBrowsePath, selectedIndex]);
 
-  const submit = async (allowStorageKeyReuse = false) => {
+  const submit = async () => {
     setInlineError(null);
     setNetworkError(null);
     setCollision(null);
@@ -184,10 +184,10 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, name, path: resolvedPath, allowStorageKeyReuse }),
+        body: JSON.stringify({ projectId, name, path: resolvedPath }),
       });
       const body = (await response.json().catch(() => null)) as
-        | { error?: string; projectId?: string; existingProjectId?: string; suggestion?: "open-existing" | "register-as-second" }
+        | { error?: string; projectId?: string; existingProjectId?: string; suggestion?: "open-existing" }
         | null;
       if (response.status === 409 && body?.existingProjectId && body?.suggestion) {
         setCollision({
@@ -229,8 +229,7 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
       <p className="add-project-modal__notice-copy">Existing project: <code>{collision.existingProjectId}</code></p>
       <div className="add-project-modal__notice-actions">
         <button type="button" onClick={() => { onClose(); router.push(`/projects/${encodeURIComponent(collision.existingProjectId)}`); }} className="add-project-modal__ghostbtn">Open existing</button>
-        <button type="button" onClick={() => void submit(true)} className="add-project-modal__primarybtn">Register as second</button>
-        <span className="add-project-modal__notice-hint">Recommended: {collision.suggestion === "open-existing" ? "open existing" : "register as second"}</span>
+        <span className="add-project-modal__notice-hint">Recommended: open existing</span>
       </div>
     </div>
   ) : inlineError ? (
@@ -307,7 +306,7 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
           <div className="add-project-modal__foldercount">{directoryEntries.length} folders</div>
           <div className="add-project-modal__actions">
             <button type="button" onClick={onClose} className="add-project-modal__ghostbtn">Cancel</button>
-            <button type="button" onClick={() => void submit(false)} disabled={!canSubmit || submitting} className="add-project-modal__primarybtn">{submitting ? "Adding…" : "Add project"}</button>
+            <button type="button" onClick={() => void submit()} disabled={!canSubmit || submitting} className="add-project-modal__primarybtn">{submitting ? "Adding…" : "Add project"}</button>
           </div>
         </div>
       </div>

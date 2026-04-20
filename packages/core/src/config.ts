@@ -10,7 +10,9 @@
  * Everything else has sensible defaults.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { resolve, join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -72,6 +74,49 @@ function classifyConfigShape(
     "projects" in (parsed as Record<string, unknown>)
     ? "wrapped"
     : "flat-or-nonobject";
+}
+
+function generateLegacyWrappedStorageKey(configPath: string, projectPath: string): string {
+  const resolvedConfigPath = realpathSync(configPath);
+  const configDir = dirname(resolvedConfigPath);
+  const hash = createHash("sha256").update(configDir).digest("hex").slice(0, 12);
+  return `${hash}-${basename(projectPath)}`;
+}
+
+function applyWrappedLocalStorageKeys(
+  configPath: string,
+  parsed: unknown,
+): unknown {
+  if (!parsed || typeof parsed !== "object") return parsed;
+
+  const parsedObject = parsed as Record<string, unknown>;
+  if (!("projects" in parsedObject) || !parsedObject["projects"] || typeof parsedObject["projects"] !== "object") {
+    return parsed;
+  }
+
+  return {
+    ...parsedObject,
+    projects: Object.fromEntries(
+      Object.entries(parsedObject["projects"] as Record<string, unknown>).map(([projectId, value]) => {
+        if (!value || typeof value !== "object") {
+          return [projectId, value];
+        }
+
+        const project = value as Record<string, unknown>;
+        if (typeof project["storageKey"] === "string" || typeof project["path"] !== "string") {
+          return [projectId, value];
+        }
+
+        return [
+          projectId,
+          {
+            ...project,
+            storageKey: generateLegacyWrappedStorageKey(configPath, project["path"]),
+          },
+        ];
+      }),
+    ),
+  };
 }
 
 // =============================================================================
@@ -837,12 +882,16 @@ export function loadConfig(configPath?: string): LoadedConfig {
   const parsed = parseYaml(raw);
   const shape = classifyConfigShape(path);
   const isCanonicalGlobalConfig = resolve(path) === resolve(getGlobalConfigPath());
+  const normalizedParsed =
+    !isCanonicalGlobalConfig && shape === "wrapped"
+      ? applyWrappedLocalStorageKeys(path, parsed)
+      : parsed;
   const config =
     isCanonicalGlobalConfig
-      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(parsed)
+      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(normalizedParsed)
       : shape === "wrapped"
-      ? validateConfig(parsed)
-      : buildEffectiveConfigFromFlatLocalPath(path, parsed) ?? validateConfig(parsed);
+      ? validateConfig(normalizedParsed)
+      : buildEffectiveConfigFromFlatLocalPath(path, normalizedParsed) ?? validateConfig(normalizedParsed);
 
   // Set the config path in the config object for hash generation
   config.configPath = path;
@@ -868,12 +917,16 @@ export function loadConfigWithPath(configPath?: string): {
   const parsed = parseYaml(raw);
   const shape = classifyConfigShape(path);
   const isCanonicalGlobalConfig = resolve(path) === resolve(getGlobalConfigPath());
+  const normalizedParsed =
+    !isCanonicalGlobalConfig && shape === "wrapped"
+      ? applyWrappedLocalStorageKeys(path, parsed)
+      : parsed;
   const config =
     isCanonicalGlobalConfig
-      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(parsed)
+      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(normalizedParsed)
       : shape === "wrapped"
-      ? validateConfig(parsed)
-      : buildEffectiveConfigFromFlatLocalPath(path, parsed) ?? validateConfig(parsed);
+      ? validateConfig(normalizedParsed)
+      : buildEffectiveConfigFromFlatLocalPath(path, normalizedParsed) ?? validateConfig(normalizedParsed);
 
   // Set the config path in the config object for hash generation
   config.configPath = path;

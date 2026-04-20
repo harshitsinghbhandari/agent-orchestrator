@@ -55,8 +55,6 @@ export async function POST(request: NextRequest) {
   const projectId = sanitizeString(body["projectId"]);
   const name = sanitizeString(body["name"]) ?? projectId;
   const rawPath = sanitizeString(body["path"]);
-  const allowStorageKeyReuse = body["allowStorageKeyReuse"] === true;
-
   if (!projectId) {
     return NextResponse.json({ error: "Project ID is required." }, { status: 400 });
   }
@@ -70,7 +68,6 @@ export async function POST(request: NextRequest) {
       name ?? projectId,
       expandHomePath(rawPath),
       undefined,
-      { allowStorageKeyReuse },
     );
     invalidatePortfolioServicesCache();
     revalidatePortfolioPaths(projectId);
@@ -78,15 +75,11 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     if (err instanceof StorageKeyCollisionError) {
       const globalConfig = loadGlobalConfig();
-      const existingPath = globalConfig?.projects[err.existingProjectId]?.path;
-      const suggestion =
-        existingPath === expandHomePath(rawPath) ? "open-existing" : "register-as-second";
-
       return NextResponse.json(
         {
           error: err.message,
           existingProjectId: err.existingProjectId,
-          suggestion,
+          suggestion: "open-existing",
         },
         { status: 409 },
       );

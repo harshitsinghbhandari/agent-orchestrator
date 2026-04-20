@@ -116,6 +116,28 @@ projects:
       expect(config.port).toBe(5000);
     });
 
+    it("synthesizes storage keys for legacy wrapped local configs", () => {
+      const configPath = join(testDir, "agent-orchestrator.yaml");
+      const projectPath = join(testDir, "legacy-app");
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+        configPath,
+        [
+          "projects:",
+          "  legacy-app:",
+          `    path: ${projectPath}`,
+          "    defaultBranch: main",
+          "    runtime: tmux",
+          "    agent: claude-code",
+          "    workspace: worktree",
+          "",
+        ].join("\n"),
+      );
+
+      const config = loadConfig(configPath);
+      expect(config.projects["legacy-app"]?.storageKey).toMatch(/^[a-f0-9]{12}-legacy-app$/);
+    });
+
     it("should throw error if config not found", () => {
       expect(() => loadConfig()).toThrow(ConfigNotFoundError);
     });

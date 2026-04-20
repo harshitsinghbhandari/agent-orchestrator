@@ -115,7 +115,7 @@ describe("POST /api/projects", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       existingProjectId: "existing-app",
-      suggestion: "register-as-second",
+      suggestion: "open-existing",
     });
   });
 });
