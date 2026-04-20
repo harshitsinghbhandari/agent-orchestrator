@@ -1091,7 +1091,6 @@ async function runStartup(
   }
 
   // Create orchestrator session (unless --no-orchestrator or existing orchestrators found)
-  let hasMultipleReusable = false;
   let selectedOrchestratorId: string | null = null;
   let otherCandidateCount = 0;
 
@@ -1155,9 +1154,6 @@ async function runStartup(
       // surfaces all of them via the orchestrator-selection page. Only meaningful
       // when the dashboard is running.
       otherCandidateCount = candidates.length - 1;
-      if (opts?.dashboard !== false && candidates.length > 1) {
-        hasMultipleReusable = true;
-      }
 
       const otherSuffix =
         otherCandidateCount > 0 ? ` (${otherCandidateCount} other session(s) available)` : "";
@@ -1248,19 +1244,19 @@ async function runStartup(
   console.log(chalk.dim(`Config: ${config.configPath}`));
 
   // Auto-open browser once the server is ready.
-  // With a single chosen orchestrator (live, restored, or newly spawned), navigate directly to
-  // its session page. With multiple reusable orchestrators, open the selection page so the user
-  // can choose or spawn a new one — the dashboard only links one orchestrator per project.
+  // Always navigate directly to the most recently used orchestrator session —
+  // the CLI already picks the best candidate by lastActivityAt. This avoids
+  // forcing the user through a selector page on every `ao start` when multiple
+  // orchestrators exist (see #1359). The selector is still accessible via the
+  // dashboard for users who want to switch.
   // Polls the port instead of using a fixed delay — deterministic and works regardless of
   // how long Next.js takes to compile. AbortController cancels polling on early exit.
   let openAbort: AbortController | undefined;
   if (opts?.dashboard !== false) {
     openAbort = new AbortController();
-    const orchestratorUrl = hasMultipleReusable
-      ? `http://localhost:${port}/orchestrators?project=${projectId}`
-      : selectedOrchestratorId
-        ? `http://localhost:${port}/sessions/${selectedOrchestratorId}`
-        : `http://localhost:${port}`;
+    const orchestratorUrl = selectedOrchestratorId
+      ? `http://localhost:${port}/sessions/${selectedOrchestratorId}`
+      : `http://localhost:${port}`;
     void waitForPortAndOpen(port, orchestratorUrl, openAbort.signal);
   }
 

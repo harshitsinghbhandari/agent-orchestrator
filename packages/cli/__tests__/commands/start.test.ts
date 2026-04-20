@@ -1088,7 +1088,7 @@ describe("start command — orchestrator session strategy display", () => {
     expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
   });
 
-  it("opens orchestrator selection page when multiple existing orchestrators found with dashboard enabled", async () => {
+  it("navigates directly to most recent orchestrator when multiple exist with dashboard enabled (#1359)", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
     // Mock findWebDir
@@ -1130,11 +1130,12 @@ describe("start command — orchestrator session strategy display", () => {
     expect(output).toContain("/sessions/app-orchestrator-2");
     expect(output).toContain("1 other session(s) available");
 
-    // The browser auto-open should land on the dashboard's orchestrator-selection page
-    // (not a direct session URL) so the user can pick a different one if desired.
+    // The browser auto-open should navigate directly to the most recent
+    // orchestrator session — not the selector page (#1359).
     expect(mockWaitForPortAndOpen).toHaveBeenCalledTimes(1);
     const args = mockWaitForPortAndOpen.mock.calls[0];
-    expect(args[1]).toContain("/orchestrators?project=my-app");
+    expect(args[1]).toContain("/sessions/app-orchestrator-2");
+    expect(args[1]).not.toContain("/orchestrators");
 
     // Should NOT spawn a new orchestrator when existing ones exist
     expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
