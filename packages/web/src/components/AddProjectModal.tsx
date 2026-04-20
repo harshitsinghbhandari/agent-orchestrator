@@ -1,0 +1,351 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { formatRelativeTime } from "@/lib/format";
+import {
+  ArrowUpIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  deriveProjectIdFromPath,
+  deriveProjectNameFromPath,
+  FolderIcon,
+  getBreadcrumbs,
+  getParentBrowsePath,
+  HomeIcon,
+  joinBrowsePath,
+  loadRecentPaths,
+  RefreshIcon,
+  saveRecentPath,
+  SidebarSection,
+  SortChevronIcon,
+} from "@/components/AddProjectModal.parts";
+
+interface BrowseEntry {
+  name: string;
+  isDirectory: boolean;
+  isGitRepo: boolean;
+  hasLocalConfig: boolean;
+  modifiedAt?: number;
+}
+
+interface CollisionState {
+  error: string;
+  existingProjectId: string;
+  suggestion: "open-existing" | "register-as-second";
+}
+
+interface AddProjectModalProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
+  const router = useRouter();
+  const modalRef = useRef<HTMLDivElement>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [inlineError, setInlineError] = useState<string | null>(null);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const [collision, setCollision] = useState<CollisionState | null>(null);
+  const [browsePath, setBrowsePath] = useState("~");
+  const [selectedBrowsePath, setSelectedBrowsePath] = useState("~");
+  const [browseHistory, setBrowseHistory] = useState<string[]>(["~"]);
+  const [browseHistoryIndex, setBrowseHistoryIndex] = useState(0);
+  const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [recentPaths, setRecentPaths] = useState<string[]>([]);
+  const [favoritesOpen, setFavoritesOpen] = useState(true);
+  const [reposOpen, setReposOpen] = useState(true);
+  const [recentOpen, setRecentOpen] = useState(true);
+
+  const browse = async (
+    path: string,
+    options?: { mode?: "push" | "replace"; selectedPath?: string; historyIndex?: number },
+  ) => {
+    setBrowseLoading(true);
+    setBrowseError(null);
+    try {
+      const response = await fetch(`/api/filesystem/browse?path=${encodeURIComponent(path)}`);
+      const body = (await response.json().catch(() => null)) as { error?: string; entries?: BrowseEntry[] } | null;
+      if (!response.ok) {
+        const isBrowseDisabled = response.status === 404 && body?.error === "Not found";
+        setBrowseEntries([]);
+        setSelectedBrowsePath(isBrowseDisabled ? "" : options?.selectedPath ?? path);
+        setBrowseError(
+          isBrowseDisabled
+            ? "Directory browsing is unavailable in this environment. Set AO_ALLOW_FILESYSTEM_BROWSE=1 to enable it."
+            : body?.error ?? "Failed to browse directories.",
+        );
+        return;
+      }
+      const mode = options?.mode ?? "push";
+      const targetHistoryIndex = options?.historyIndex ?? browseHistoryIndex;
+      setBrowsePath(path);
+      setSelectedBrowsePath(options?.selectedPath ?? path);
+      setBrowseEntries(body?.entries ?? []);
+      if (mode === "push") {
+        setBrowseHistory((current) => {
+          const next = current.slice(0, targetHistoryIndex + 1);
+          if (next[next.length - 1] !== path) next.push(path);
+          setBrowseHistoryIndex(next.length - 1);
+          return next;
+        });
+      } else {
+        setBrowseHistory((current) => {
+          const next = [...current];
+          next[targetHistoryIndex] = path;
+          return next;
+        });
+      }
+    } catch {
+      setBrowseError("Failed to browse directories.");
+    } finally {
+      setBrowseLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const initialPath = "~";
+    setInlineError(null);
+    setNetworkError(null);
+    setCollision(null);
+    setBrowseError(null);
+    setBrowseHistory([initialPath]);
+    setBrowseHistoryIndex(0);
+    setBrowsePath(initialPath);
+    setSelectedBrowsePath(initialPath);
+    setRecentPaths(loadRecentPaths());
+    modalRef.current?.focus();
+    void browse(initialPath, { mode: "replace", selectedPath: initialPath });
+  }, [open]);
+
+  const directoryEntries = useMemo(() => browseEntries.filter((entry) => entry.isDirectory), [browseEntries]);
+  const selectedCrumbs = useMemo(
+    () => getBreadcrumbs(selectedBrowsePath || "~").map((crumb) => crumb.label),
+    [selectedBrowsePath],
+  );
+  const parentPath = getParentBrowsePath(browsePath);
+  const canGoBack = browseHistoryIndex > 0;
+  const canGoForward = browseHistoryIndex < browseHistory.length - 1;
+  const canSubmit = selectedBrowsePath.trim() !== "" && selectedBrowsePath !== "~" && !browseError;
+  const selectedIndex = directoryEntries.findIndex(
+    (entry) => joinBrowsePath(browsePath, entry.name) === selectedBrowsePath,
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!modalRef.current?.contains(document.activeElement) && document.activeElement !== document.body) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canSubmit) {
+        event.preventDefault();
+        void submit(false);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (directoryEntries.length === 0) return;
+        event.preventDefault();
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = selectedIndex === -1 ? (offset > 0 ? 0 : directoryEntries.length - 1) : Math.min(Math.max(selectedIndex + offset, 0), directoryEntries.length - 1);
+        const nextEntry = directoryEntries[nextIndex];
+        if (nextEntry) setSelectedBrowsePath(joinBrowsePath(browsePath, nextEntry.name));
+        return;
+      }
+      if (event.key === "Enter") {
+        if (selectedIndex >= 0) {
+          event.preventDefault();
+          void browse(selectedBrowsePath);
+          return;
+        }
+        if (canSubmit) {
+          event.preventDefault();
+          void submit(false);
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [browsePath, canSubmit, directoryEntries, onClose, open, selectedBrowsePath, selectedIndex]);
+
+  const submit = async (allowStorageKeyReuse = false) => {
+    setInlineError(null);
+    setNetworkError(null);
+    setCollision(null);
+    setSubmitting(true);
+    const resolvedPath = selectedBrowsePath.trim();
+    const projectId = deriveProjectIdFromPath(resolvedPath);
+    const name = deriveProjectNameFromPath(resolvedPath);
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, name, path: resolvedPath, allowStorageKeyReuse }),
+      });
+      const body = (await response.json().catch(() => null)) as
+        | { error?: string; projectId?: string; existingProjectId?: string; suggestion?: "open-existing" | "register-as-second" }
+        | null;
+      if (response.status === 409 && body?.existingProjectId && body?.suggestion) {
+        setCollision({
+          error: body.error ?? "A project with the same storage key already exists.",
+          existingProjectId: body.existingProjectId,
+          suggestion: body.suggestion,
+        });
+        return;
+      }
+      if (!response.ok) {
+        const message = body?.error ?? "Failed to add project.";
+        if (response.status < 500) setInlineError(message);
+        else setNetworkError(message);
+        return;
+      }
+      saveRecentPath(resolvedPath);
+      setRecentPaths(loadRecentPaths());
+      const nextProjectId = body?.projectId ?? projectId.trim();
+      onClose();
+      router.push(`/projects/${encodeURIComponent(nextProjectId)}`);
+      router.refresh();
+    } catch {
+      setNetworkError("Network error while adding project.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!open) return null;
+
+  const navigateHistory = (nextIndex: number) => {
+    if (nextIndex < 0 || nextIndex >= browseHistory.length) return;
+    setBrowseHistoryIndex(nextIndex);
+    void browse(browseHistory[nextIndex] ?? "~", { mode: "replace", historyIndex: nextIndex });
+  };
+
+  const selectedNotice = collision ? (
+    <div className="add-project-modal__notice add-project-modal__notice--warning">
+      <p className="add-project-modal__notice-title">{collision.error}</p>
+      <p className="add-project-modal__notice-copy">Existing project: <code>{collision.existingProjectId}</code></p>
+      <div className="add-project-modal__notice-actions">
+        <button type="button" onClick={() => { onClose(); router.push(`/projects/${encodeURIComponent(collision.existingProjectId)}`); }} className="add-project-modal__ghostbtn">Open existing</button>
+        <button type="button" onClick={() => void submit(true)} className="add-project-modal__primarybtn">Register as second</button>
+        <span className="add-project-modal__notice-hint">Recommended: {collision.suggestion === "open-existing" ? "open existing" : "register as second"}</span>
+      </div>
+    </div>
+  ) : inlineError ? (
+    <div role="alert" className="add-project-modal__notice add-project-modal__notice--error">{inlineError}</div>
+  ) : networkError ? (
+    <div className="add-project-modal__notice add-project-modal__notice--error">{networkError}</div>
+  ) : null;
+
+  return (
+    <div className="add-project-modal-backdrop">
+      <div ref={modalRef} role="dialog" aria-modal="true" aria-label="Add project" className="add-project-modal" tabIndex={-1}>
+        <div className="add-project-modal__titlebar">
+          <h2 className="add-project-modal__windowtitle">add project</h2>
+          <button type="button" aria-label="Close" onClick={onClose} className="add-project-modal__iconbtn">×</button>
+        </div>
+        <div className="add-project-modal__toolbar">
+          <div className="add-project-modal__toolbarcluster">
+            <button type="button" onClick={() => navigateHistory(browseHistoryIndex - 1)} disabled={!canGoBack} className="add-project-modal__toolbtn" aria-label="Go back"><ChevronLeftIcon /></button>
+            <button type="button" onClick={() => navigateHistory(browseHistoryIndex + 1)} disabled={!canGoForward} className="add-project-modal__toolbtn" aria-label="Go forward"><ChevronRightIcon /></button>
+            <button type="button" onClick={() => parentPath && void browse(parentPath)} disabled={!parentPath} className="add-project-modal__toolbtn" aria-label="Go up"><ArrowUpIcon /></button>
+            <button type="button" onClick={() => void browse(browsePath, { mode: "replace", selectedPath: selectedBrowsePath })} className="add-project-modal__toolbtn" aria-label="Refresh"><RefreshIcon /></button>
+          </div>
+          <input className="add-project-modal__search" type="text" placeholder="⌘ search folders" aria-label="Search folders" />
+        </div>
+
+        <div className="add-project-modal__content">
+          <aside className="add-project-browser__sidebar">
+            <SidebarSection title="Favorites" open={favoritesOpen} onToggle={() => setFavoritesOpen((value) => !value)}>
+              <button type="button" onClick={() => void browse("~")} className={`add-project-browser__sidebar-row${browsePath === "~" ? " is-active" : ""}`}>
+                <span className="add-project-browser__sidebar-rowaccent" aria-hidden="true" />
+                <HomeIcon className="add-project-browser__sidebar-icon" />
+                <span className="add-project-browser__sidebar-copy">Home</span>
+              </button>
+            </SidebarSection>
+            <SidebarSection title="Detected Repos" open={reposOpen} onToggle={() => setReposOpen((value) => !value)}>
+              {/* TODO: wire this section to /api/filesystem/detected-repos if that endpoint is introduced. */}
+              <div className="add-project-browser__sidebar-empty">No git repos detected nearby</div>
+            </SidebarSection>
+            <SidebarSection title="Recent" open={recentOpen} onToggle={() => setRecentOpen((value) => !value)}>
+              {recentPaths.length === 0 ? (
+                <div className="add-project-browser__sidebar-empty">No recent folders yet</div>
+              ) : (
+                recentPaths.map((path) => (
+                  <button key={path} type="button" onClick={() => { setSelectedBrowsePath(path); void browse(path, { selectedPath: path }); }} className={`add-project-browser__sidebar-row${selectedBrowsePath === path ? " is-active" : ""}`}>
+                    <span className="add-project-browser__sidebar-rowaccent" aria-hidden="true" />
+                    <FolderIcon className="add-project-browser__sidebar-icon" />
+                    <span className="add-project-browser__sidebar-copy">{path}</span>
+                  </button>
+                ))
+              )}
+            </SidebarSection>
+          </aside>
+
+          <div className="add-project-browser">
+            <div className="add-project-browser__headerrow">
+              <span className="add-project-browser__headerlabel add-project-browser__headerlabel--name">Name <SortChevronIcon /></span>
+              <span className="add-project-browser__headerlabel">Modified</span>
+              <span className="add-project-browser__headerlabel">Kind</span>
+            </div>
+            {browseError ? (
+              <div className="add-project-browser__state add-project-browser__state--error">
+                <p className="add-project-browser__state-title">Directory browser unavailable</p>
+                <p className="add-project-browser__state-copy">{browseError}</p>
+              </div>
+            ) : browseLoading ? (
+              <div className="add-project-browser__state">
+                <p className="add-project-browser__state-title">Loading folders</p>
+                <p className="add-project-browser__state-copy">Fetching directories for this location.</p>
+              </div>
+            ) : directoryEntries.length === 0 ? (
+              <div className="add-project-browser__state">
+                <p className="add-project-browser__state-title">No visible folders here</p>
+                <p className="add-project-browser__state-copy">Try navigating up or picking a different location.</p>
+              </div>
+            ) : (
+              <div className="add-project-browser__rows">
+                {directoryEntries.map((entry) => {
+                  const nextPath = joinBrowsePath(browsePath, entry.name);
+                  return (
+                    <button key={nextPath} type="button" onClick={() => setSelectedBrowsePath(nextPath)} onDoubleClick={() => void browse(nextPath)} className={`add-project-browser__row${selectedBrowsePath === nextPath ? " is-selected" : ""}`}>
+                      <span className="add-project-browser__rowaccent" aria-hidden="true" />
+                      <span className="add-project-browser__rowname"><FolderIcon className="add-project-browser__foldericon" />{entry.name}</span>
+                      <span className="add-project-browser__rowmeta">{entry.modifiedAt ? formatRelativeTime(entry.modifiedAt) : "—"}</span>
+                      <span className={`add-project-browser__rowkind${entry.isGitRepo ? " is-git" : entry.hasLocalConfig ? " is-configured" : ""}`}>{entry.isGitRepo ? "git repo" : entry.hasLocalConfig ? "configured" : "folder"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="add-project-modal__pathbar">
+          <FolderIcon className="add-project-modal__pathicon" />
+          <div className="add-project-modal__pathcrumbs">
+            {selectedCrumbs.map((crumb, index) => (
+              <span key={`${crumb}-${index}`} className="add-project-modal__pathcrumb">
+                {index > 0 ? <span className="add-project-modal__pathseparator">▸</span> : null}
+                <span>{crumb}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+        {selectedNotice}
+
+        <div className="add-project-modal__footer">
+          <div className="add-project-modal__foldercount">{directoryEntries.length} folders</div>
+          <div className="add-project-modal__actions">
+            <button type="button" onClick={onClose} className="add-project-modal__ghostbtn">Cancel</button>
+            <button type="button" onClick={() => void submit(false)} disabled={!canSubmit || submitting} className="add-project-modal__primarybtn">{submitting ? "Adding…" : "Add project"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

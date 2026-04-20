@@ -9,6 +9,7 @@ import { isOrchestratorSession } from "@aoagents/ao-core/types";
 import { getSessionTitle, humanizeBranch } from "@/lib/format";
 import { usePopoverClamp } from "@/hooks/usePopoverClamp";
 import { ThemeToggle } from "./ThemeToggle";
+import { AddProjectModal } from "./AddProjectModal";
 
 interface ProjectSidebarProps {
   projects: ProjectInfo[];
@@ -99,6 +100,7 @@ function ProjectSidebarInner({
   const [showDone, setShowDone] = useState(false);
   const [showSessionId, setShowSessionId] = useState<boolean>(loadShowSessionId);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsPopoverRef = useRef<HTMLDivElement>(null);
   usePopoverClamp(settingsOpen, settingsPopoverRef);
@@ -261,7 +263,12 @@ function ProjectSidebarInner({
     >
         <div className="project-sidebar__compact-hdr">
           <span className="project-sidebar__sect-label">Projects</span>
-          <button type="button" className="project-sidebar__add-btn" aria-label="New project">
+          <button
+            type="button"
+            className="project-sidebar__add-btn"
+            aria-label="New project"
+            onClick={() => setAddProjectOpen(true)}
+          >
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path d="M12 5v14M5 12h14" />
             </svg>
@@ -537,6 +544,7 @@ function ProjectSidebarInner({
             <ThemeToggle className="project-sidebar__theme-toggle" />
           </div>
         </div>
+        <AddProjectModal open={addProjectOpen} onClose={() => setAddProjectOpen(false)} />
     </aside>
   );
 }

@@ -70,6 +70,15 @@ export function getServices(): Promise<Services> {
   return globalForServices._aoServicesInit;
 }
 
+/** Clear the cached services singleton so subsequent requests reload config/plugins. */
+export function invalidatePortfolioServicesCache(): void {
+  if (globalForServices._aoServices) {
+    globalForServices._aoServices.lifecycleManager.stop();
+  }
+  globalForServices._aoServices = undefined;
+  globalForServices._aoServicesInit = undefined;
+}
+
 async function initServices(): Promise<Services> {
   const config = loadConfig();
   const registry = createPluginRegistry();

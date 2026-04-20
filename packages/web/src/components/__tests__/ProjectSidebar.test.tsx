@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ProjectSidebar } from "@/components/ProjectSidebar";
 import { makeSession } from "@/__tests__/helpers";
 
@@ -105,6 +105,31 @@ describe("ProjectSidebar", () => {
     const toggle = screen.getByRole("button", { name: /Project Two/ });
     fireEvent.click(toggle);
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("navigates to the add-project flow from the plus button", () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ entries: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ProjectSidebar
+        projects={projects}
+        sessions={[]}
+        activeProjectId="project-1"
+        activeSessionId={undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+
+    return waitFor(() => {
+      expect(screen.getByRole("dialog", { name: /add project/i })).toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledWith("/api/filesystem/browse?path=~");
+      expect(mockPush).not.toHaveBeenCalled();
+    });
   });
 
   it("shows non-done worker sessions for the expanded active project", () => {
