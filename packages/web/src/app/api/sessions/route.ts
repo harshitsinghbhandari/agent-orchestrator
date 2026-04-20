@@ -1,4 +1,4 @@
-import { ACTIVITY_STATE, isOrchestratorSession } from "@aoagents/ao-core";
+import { ACTIVITY_STATE, isOrchestratorSession, type Session } from "@aoagents/ao-core";
 import { getServices, getSCM } from "@/lib/services";
 import {
   sessionToDashboard,
@@ -17,6 +17,40 @@ const METADATA_ENRICH_TIMEOUT_MS = 3_000;
 const PR_ENRICH_TIMEOUT_MS = 4_000;
 const PER_PR_ENRICH_TIMEOUT_MS = 1_500;
 
+/**
+ * Select the preferred orchestrator from a list of dashboard orchestrator links.
+ * Returns null when orchestrators span multiple projects (no single preferred).
+ * When all are for the same project, prefers the most recently active one by
+ * matching against the original session data for timestamps. Falls back to
+ * reverse-lexicographic ID order (higher-numbered = more recently spawned).
+ */
+function selectPreferredOrchestratorId(
+  orchestrators: { id: string; projectId: string }[],
+  sessions: Session[],
+): string | null {
+  if (orchestrators.length === 0) return null;
+  if (orchestrators.length === 1) return orchestrators[0]?.id ?? null;
+
+  // When orchestrators span multiple projects, there's no single preferred one
+  const projects = new Set(orchestrators.map((o) => o.projectId));
+  if (projects.size > 1) return null;
+
+  const orchestratorIds = new Set(orchestrators.map((o) => o.id));
+  const matchingSessions = sessions
+    .filter((s) => orchestratorIds.has(s.id))
+    .sort(compareSessionRecency);
+
+  return matchingSessions[0]?.id ?? orchestrators[0]?.id ?? null;
+}
+
+function compareSessionRecency(a: Session, b: Session): number {
+  return (
+    (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0) ||
+    (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0) ||
+    b.id.localeCompare(a.id)
+  );
+}
+
 export async function GET(request: Request) {
   const correlationId = getCorrelationId(request);
   const startedAt = Date.now();
@@ -34,7 +68,7 @@ export async function GET(request: Request) {
     const coreSessions = await sessionManager.list(requestedProjectId);
     const visibleSessions = filterProjectSessions(coreSessions, projectFilter, config.projects);
     const orchestrators = listDashboardOrchestrators(visibleSessions, config.projects);
-    const orchestratorId = orchestrators.length === 1 ? (orchestrators[0]?.id ?? null) : null;
+    const orchestratorId = selectPreferredOrchestratorId(orchestrators, visibleSessions);
 
     // Compute session prefixes once (used by both branches)
     const allSessionPrefixes = Object.entries(config.projects).map(

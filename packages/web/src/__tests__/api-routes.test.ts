@@ -319,6 +319,62 @@ describe("API Routes", () => {
       expect(mockSessionManager.list).toHaveBeenCalledWith("docs-app");
     });
 
+    it("prefers the most recently active orchestrator when multiple exist for same project", async () => {
+      (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        makeSession({
+          id: "my-app-orchestrator-3",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+          lastActivityAt: new Date("2026-04-19T09:00:00.000Z"),
+        }),
+        makeSession({
+          id: "my-app-orchestrator-4",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+          lastActivityAt: new Date("2026-04-19T10:00:00.000Z"),
+        }),
+        makeSession({ id: "worker-1", projectId: "my-app", status: "working", activity: "active" }),
+      ]);
+
+      const res = await sessionsGET(
+        makeRequest("http://localhost:3000/api/sessions?project=my-app&orchestratorOnly=true"),
+      );
+      expect(res.status).toBe(200);
+      const data = await res.json();
+
+      // Should prefer orchestrator-4 (more recently active) over orchestrator-3
+      expect(data.orchestratorId).toBe("my-app-orchestrator-4");
+    });
+
+    it("prefers lexicographically larger orchestrator id when activity timestamps are equal", async () => {
+      const sharedTimestamp = new Date("2026-04-19T10:00:00.000Z");
+      (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        makeSession({
+          id: "my-app-orchestrator-3",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+          lastActivityAt: sharedTimestamp,
+          createdAt: sharedTimestamp,
+        }),
+        makeSession({
+          id: "my-app-orchestrator-4",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+          lastActivityAt: sharedTimestamp,
+          createdAt: sharedTimestamp,
+        }),
+      ]);
+
+      const res = await sessionsGET(
+        makeRequest("http://localhost:3000/api/sessions?project=my-app&orchestratorOnly=true"),
+      );
+      expect(res.status).toBe(200);
+      const data = await res.json();
+
+      // Should prefer orchestrator-4 (larger id = more recently spawned) over orchestrator-3
+      expect(data.orchestratorId).toBe("my-app-orchestrator-4");
+    });
+
     it("returns enriched orchestrators when orchestratorOnly=true", async () => {
       const orchestratorSessions: Session[] = [
         makeSession({
