@@ -17,6 +17,7 @@ import { getSessionTitle } from "@/lib/format";
 import type { ProjectInfo } from "@/lib/project-name";
 import { SidebarContext } from "./workspace/SidebarContext";
 import { projectDashboardPath, projectSessionPath } from "@/lib/routes";
+import { ToastProvider, useToast } from "./Toast";
 
 import { ProjectSidebar } from "./ProjectSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
@@ -362,7 +363,15 @@ function _OrchestratorStatusStrip({
 
 // ── Main component ────────────────────────────────────────────────────
 
-export function SessionDetail({
+export function SessionDetail(props: SessionDetailProps) {
+  return (
+    <ToastProvider>
+      <SessionDetailInner {...props} />
+    </ToastProvider>
+  );
+}
+
+function SessionDetailInner({
   session,
   isOrchestrator = false,
   orchestratorZones,
@@ -375,10 +384,12 @@ export function SessionDetail({
 }: SessionDetailProps) {
   const searchParams = useSearchParams();
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const { showToast } = useToast();
   const startFullscreen = searchParams.get("fullscreen") === "true";
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const pr = session.pr;
   const terminalEnded = TERMINAL_STATUSES.has(session.status);
   const isRestorable = terminalEnded && !NON_RESTORABLE_STATUSES.has(session.status);
@@ -406,22 +417,38 @@ export function SessionDetail({
   const handleKill = useCallback(async () => {
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/kill`, { method: "POST" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const msg = (body as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+        showToast(`Failed to kill session: ${msg}`, "error");
+        return;
+      }
       window.location.reload();
     } catch (err) {
       console.error("Failed to kill session:", err);
+      showToast("Failed to kill session: network error", "error");
     }
-  }, [session.id]);
+  }, [session.id, showToast]);
 
   const handleRestore = useCallback(async () => {
+    if (restoring) return;
+    setRestoring(true);
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}/restore`, { method: "POST" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const msg = (body as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+        showToast(`Restore failed: ${msg}`, "error");
+        return;
+      }
       window.location.reload();
     } catch (err) {
       console.error("Failed to restore session:", err);
+      showToast("Restore failed: network error", "error");
+    } finally {
+      setRestoring(false);
     }
-  }, [session.id]);
+  }, [session.id, restoring, showToast]);
 
   const allGreen = pr ? isPRMergeReady(pr) : false;
   const [prPopoverOpen, setPrPopoverOpen] = useState(false);
@@ -599,12 +626,12 @@ export function SessionDetail({
 
           {/* Restore is available for any restorable session; Kill stays worker-only. */}
           {isRestorable ? (
-            <button type="button" className="dashboard-app-btn" onClick={handleRestore}>
-              <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <button type="button" className="dashboard-app-btn" onClick={handleRestore} disabled={restoring}>
+              <svg className={cn("h-3 w-3", restoring && "animate-spin")} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <polyline points="1 4 1 10 7 10" />
                 <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
               </svg>
-              <span className="topbar-btn-label">Restore</span>
+              <span className="topbar-btn-label">{restoring ? "Restoring…" : "Restore"}</span>
             </button>
           ) : !isOrchestrator && !terminalEnded ? (
               <button type="button" className="dashboard-app-btn dashboard-app-btn--danger" onClick={handleKill}>
