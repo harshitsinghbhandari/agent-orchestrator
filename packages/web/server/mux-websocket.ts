@@ -538,6 +538,7 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
 
     const subscriptions = new Map<string, () => void>();
     let sessionUnsubscribe: (() => void) | null = null;
+    let messageQueue = Promise.resolve();
     let missedPongs = 0;
     const MAX_MISSED_PONGS = 3;
 
@@ -564,8 +565,7 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
     /**
      * Handle incoming messages
      */
-    ws.on("message", (data) => {
-      void (async () => {
+    const handleMessage = async (data: WebSocket.RawData): Promise<void> => {
         try {
           const msg = JSON.parse(data.toString("utf8")) as ClientMessage;
 
@@ -662,7 +662,14 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
             ws.send(JSON.stringify(errorMsg));
           }
         }
-      })();
+    };
+
+    ws.on("message", (data) => {
+      messageQueue = messageQueue
+        .then(() => handleMessage(data))
+        .catch((err) => {
+          console.error("[MuxServer] Message handling failed:", err);
+        });
     });
 
     /**

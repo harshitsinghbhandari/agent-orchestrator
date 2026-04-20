@@ -282,6 +282,35 @@ describe("mux terminal I/O", () => {
     ws.close();
   });
 
+  it("serializes immediate input sent right after open", async () => {
+    const ws = await connectMux();
+    const marker = `MUX_RACE_${Date.now()}`;
+
+    ws.send(JSON.stringify({ ch: "terminal", id: TEST_SESSION, type: "open" }));
+    ws.send(JSON.stringify({ ch: "terminal", id: TEST_SESSION, type: "data", data: `echo ${marker}\n` }));
+
+    let received = "";
+    await new Promise<void>((resolve) => {
+      const handler = (raw: Buffer | string) => {
+        try {
+          const msg = JSON.parse(raw.toString()) as MuxMessage;
+          if (msg.ch === "terminal" && msg.type === "data") {
+            received += msg.data as string;
+            if (received.includes(marker)) {
+              ws.off("message", handler);
+              resolve();
+            }
+          }
+        } catch { /* */ }
+      };
+      ws.on("message", handler);
+      setTimeout(() => { ws.off("message", handler); resolve(); }, 5000);
+    });
+
+    expect(received).toContain(marker);
+    ws.close();
+  });
+
   it("handles resize without error", async () => {
     const ws = await connectMux();
 
