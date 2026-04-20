@@ -220,6 +220,7 @@ interface ManagedTerminal {
   id: string;
   tmuxSessionId: string;
   pty: IPty | null;
+  openingPromise: Promise<string> | null;
   subscribers: Set<(data: string) => void>;
   exitCallbacks: Set<(exitCode: number) => void>;
   buffer: string[];
@@ -229,12 +230,15 @@ interface ManagedTerminal {
 
 const RING_BUFFER_MAX = 50 * 1024; // 50KB max per terminal
 const MAX_REATTACH_ATTEMPTS = 3;
+const MAX_TRANSIENT_ATTACH_RETRIES = 2;
+const ATTACH_READY_GRACE_MS = 150;
+const TRANSIENT_ATTACH_ERROR_PATTERN = /(can't find session|no sessions?|session .* not found)/i;
 
 /**
  * TerminalManager manages PTY processes independently of WebSocket connections.
  * A single manager instance is shared across all mux connections.
  */
-class TerminalManager {
+export class TerminalManager {
   private terminals = new Map<string, ManagedTerminal>();
   private TMUX: string;
 
@@ -246,24 +250,26 @@ class TerminalManager {
    * Open/attach to a terminal. If already open, just return.
    * If has subscribers but PTY crashed, re-attach.
    */
-  open(id: string): string {
-    // Validate and resolve
+  async open(id: string): Promise<string> {
+    // Validate first, but avoid probing tmux again if the terminal is already
+    // attached or another caller is already driving the attach flow.
     if (!validateSessionId(id)) {
       throw new Error(`Invalid session ID: ${id}`);
-    }
-
-    const tmuxSessionId = resolveTmuxSession(id, this.TMUX);
-    if (!tmuxSessionId) {
-      throw new Error(`Session not found: ${id}`);
     }
 
     // Get or create terminal entry
     let terminal = this.terminals.get(id);
     if (!terminal) {
+      const tmuxSessionId = resolveTmuxSession(id, this.TMUX);
+      if (!tmuxSessionId) {
+        throw new Error(`Session not found: ${id}`);
+      }
+
       terminal = {
         id,
         tmuxSessionId,
         pty: null,
+        openingPromise: null,
         subscribers: new Set(),
         exitCallbacks: new Set(),
         buffer: [],
@@ -275,22 +281,25 @@ class TerminalManager {
 
     // If PTY is already attached, we're done
     if (terminal.pty) {
-      return tmuxSessionId;
+      return terminal.tmuxSessionId;
     }
 
+    if (terminal.openingPromise) {
+      return terminal.openingPromise;
+    }
+
+    terminal.openingPromise = this.attachTerminal(terminal);
+    try {
+      return await terminal.openingPromise;
+    } finally {
+      if (terminal.openingPromise) {
+        terminal.openingPromise = null;
+      }
+    }
+  }
+
+  private async attachTerminal(terminal: ManagedTerminal): Promise<string> {
     // Enable mouse mode
-    const mouseProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "mouse", "on"]);
-    mouseProc.on("error", (err) => {
-      console.error(`[MuxServer] Failed to set mouse mode for ${tmuxSessionId}:`, err.message);
-    });
-
-    // Hide the status bar
-    const statusProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "status", "off"]);
-    statusProc.on("error", (err) => {
-      console.error(`[MuxServer] Failed to hide status bar for ${tmuxSessionId}:`, err.message);
-    });
-
-    // Build environment
     const homeDir = process.env.HOME || homedir();
     const currentUser = process.env.USER || userInfo().username;
     const env = {
@@ -307,70 +316,145 @@ class TerminalManager {
       throw new Error("node-pty not available");
     }
 
-    // Spawn PTY
-    const pty = ptySpawn(this.TMUX, ["attach-session", "-t", tmuxSessionId], {
-      name: "xterm-256color",
-      cols: 80,
-      rows: 24,
-      cwd: homeDir,
-      env,
-    });
+    for (let attempt = 0; attempt <= MAX_TRANSIENT_ATTACH_RETRIES; attempt += 1) {
+      const tmuxSessionId = resolveTmuxSession(terminal.id, this.TMUX);
+      if (!tmuxSessionId) {
+        throw new Error(`Session not found: ${terminal.id}`);
+      }
+      terminal.tmuxSessionId = tmuxSessionId;
 
-    terminal.pty = pty;
+      const mouseProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "mouse", "on"]);
+      mouseProc.on("error", (err) => {
+        console.error(`[MuxServer] Failed to set mouse mode for ${tmuxSessionId}:`, err.message);
+      });
 
-    // Wire up data events
-    pty.onData((data: string) => {
-      // Push to all subscribers — isolate each callback so a throw in one
-      // (e.g. a closed ws.send) doesn't abort the loop or skip the buffer.
-      for (const callback of terminal.subscribers) {
-        try {
-          callback(data);
-        } catch (err) {
-          console.error("[MuxServer] Subscriber callback threw:", err);
-        }
+      const statusProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "status", "off"]);
+      statusProc.on("error", (err) => {
+        console.error(`[MuxServer] Failed to hide status bar for ${tmuxSessionId}:`, err.message);
+      });
+
+      const attachResult = await new Promise<{
+        exitCode: number | null;
+        ready: boolean;
+        tmuxSessionId: string;
+      }>((resolve) => {
+        const pty = ptySpawn!(this.TMUX, ["attach-session", "-t", tmuxSessionId], {
+          name: "xterm-256color",
+          cols: 80,
+          rows: 24,
+          cwd: homeDir,
+          env,
+        });
+
+        terminal.pty = pty;
+        let ready = false;
+        let preReadyOutput = "";
+        const markReady = () => {
+          if (ready) {
+            return;
+          }
+          ready = true;
+          console.log(`[MuxServer] Opened terminal ${terminal.id} (tmux: ${tmuxSessionId})`);
+          resolve({ exitCode: null, ready: true, tmuxSessionId });
+        };
+        const readyTimer = setTimeout(markReady, ATTACH_READY_GRACE_MS);
+        readyTimer.unref?.();
+
+        pty.onData((data: string) => {
+          if (!ready) {
+            preReadyOutput += data;
+            if (TRANSIENT_ATTACH_ERROR_PATTERN.test(preReadyOutput)) {
+              return;
+            }
+          }
+
+          if (!ready) {
+            clearTimeout(readyTimer);
+            markReady();
+          }
+
+          // Push to all subscribers — isolate each callback so a throw in one
+          // (e.g. a closed ws.send) doesn't abort the loop or skip the buffer.
+          for (const callback of terminal.subscribers) {
+            try {
+              callback(data);
+            } catch (err) {
+              console.error("[MuxServer] Subscriber callback threw:", err);
+            }
+          }
+
+          terminal.buffer.push(data);
+          terminal.bufferBytes += Buffer.byteLength(data, "utf8");
+
+          while (terminal.bufferBytes > RING_BUFFER_MAX && terminal.buffer.length > 0) {
+            const removed = terminal.buffer.shift() ?? "";
+            terminal.bufferBytes -= Buffer.byteLength(removed, "utf8");
+          }
+        });
+
+        pty.onExit(({ exitCode }) => {
+          clearTimeout(readyTimer);
+          terminal.pty = null;
+
+          if (!ready) {
+            resolve({ exitCode, ready: false, tmuxSessionId });
+            return;
+          }
+
+          console.log(`[MuxServer] PTY exited for ${terminal.id} with code ${exitCode}`);
+
+          // Re-attach if subscribers are still present, up to MAX_REATTACH_ATTEMPTS.
+          // The cap prevents an unbounded respawn loop when the PTY crashes immediately
+          // after every attach (e.g. resource exhaustion or a broken tmux session).
+          if (terminal.subscribers.size > 0 && terminal.reattachAttempts < MAX_REATTACH_ATTEMPTS) {
+            terminal.reattachAttempts += 1;
+            console.warn(
+              `[MuxServer] Terminal ${terminal.id} detached unexpectedly, retrying attach ` +
+                `(${terminal.reattachAttempts}/${MAX_REATTACH_ATTEMPTS})`,
+            );
+            void this.open(terminal.id)
+              .then(() => {
+                terminal.reattachAttempts = 0;
+              })
+              .catch((err) => {
+                console.error(`[MuxServer] Failed to re-attach ${terminal.id}:`, err);
+                for (const cb of terminal.exitCallbacks) {
+                  cb(exitCode);
+                }
+              });
+            return;
+          }
+
+          if (terminal.reattachAttempts >= MAX_REATTACH_ATTEMPTS) {
+            console.error(`[MuxServer] Max re-attach attempts reached for ${terminal.id}, giving up`);
+          }
+
+          for (const cb of terminal.exitCallbacks) {
+            cb(exitCode);
+          }
+        });
+      });
+
+      if (attachResult.ready) {
+        terminal.reattachAttempts = 0;
+        return attachResult.tmuxSessionId;
       }
 
-      // Append to ring buffer
-      terminal.buffer.push(data);
-      terminal.bufferBytes += Buffer.byteLength(data, "utf8");
-
-      // Trim buffer if over limit
-      while (terminal.bufferBytes > RING_BUFFER_MAX && terminal.buffer.length > 0) {
-        const removed = terminal.buffer.shift() ?? "";
-        terminal.bufferBytes -= Buffer.byteLength(removed, "utf8");
-      }
-    });
-
-    // Handle PTY exit
-    pty.onExit(({ exitCode }) => {
-      console.log(`[MuxServer] PTY exited for ${id} with code ${exitCode}`);
-      terminal.pty = null;
-
-      // Re-attach if subscribers are still present, up to MAX_REATTACH_ATTEMPTS.
-      // The cap prevents an unbounded respawn loop when the PTY crashes immediately
-      // after every attach (e.g. resource exhaustion or a broken tmux session).
-      if (terminal.subscribers.size > 0 && terminal.reattachAttempts < MAX_REATTACH_ATTEMPTS) {
-        terminal.reattachAttempts += 1;
-        console.log(`[MuxServer] Re-attaching to ${id} (attempt ${terminal.reattachAttempts}/${MAX_REATTACH_ATTEMPTS})`);
-        try {
-          this.open(id);
-          terminal.reattachAttempts = 0; // reset on successful attach
-          return; // re-attached — don't notify exit
-        } catch (err) {
-          console.error(`[MuxServer] Failed to re-attach ${id}:`, err);
-        }
-      } else if (terminal.reattachAttempts >= MAX_REATTACH_ATTEMPTS) {
-        console.error(`[MuxServer] Max re-attach attempts reached for ${id}, giving up`);
+      if (attempt < MAX_TRANSIENT_ATTACH_RETRIES && attachResult.exitCode === 1) {
+        console.warn(
+          `[MuxServer] Terminal ${terminal.id} attach raced tmux availability; retrying ` +
+            `(${attempt + 1}/${MAX_TRANSIENT_ATTACH_RETRIES})`,
+        );
+        continue;
       }
 
-      // Notify subscribers that the terminal has exited (re-attach failed or no subscribers)
-      for (const cb of terminal.exitCallbacks) {
-        cb(exitCode);
-      }
-    });
+      console.warn(
+        `[MuxServer] Terminal ${terminal.id} failed before attach completed (exit ${attachResult.exitCode ?? "unknown"})`,
+      );
+      throw new Error(`Session not ready for attach: ${terminal.id}`);
+    }
 
-    console.log(`[MuxServer] Opened terminal ${id} (tmux: ${tmuxSessionId})`);
-    return tmuxSessionId;
+    throw new Error(`Session not ready for attach: ${terminal.id}`);
   }
 
   /**
@@ -395,12 +479,9 @@ class TerminalManager {
 
   /**
    * Subscribe to terminal data. Returns unsubscribe function.
-   * Automatically opens the terminal if needed.
    * @param onExit - called when the PTY exits and cannot be re-attached
    */
   subscribe(id: string, callback: (data: string) => void, onExit?: (exitCode: number) => void): () => void {
-    // Ensure terminal is open
-    this.open(id);
     const terminal = this.terminals.get(id);
     if (!terminal) {
       throw new Error(`Failed to open terminal: ${id}`);
@@ -457,6 +538,7 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
 
     const subscriptions = new Map<string, () => void>();
     let sessionUnsubscribe: (() => void) | null = null;
+    let messageQueue = Promise.resolve();
     let missedPongs = 0;
     const MAX_MISSED_PONGS = 3;
 
@@ -483,110 +565,111 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
     /**
      * Handle incoming messages
      */
-    ws.on("message", (data) => {
+    const handleMessage = async (data: WebSocket.RawData): Promise<void> => {
+        try {
+          const msg = JSON.parse(data.toString("utf8")) as ClientMessage;
 
-      try {
-        const msg = JSON.parse(data.toString("utf8")) as ClientMessage;
+          if (msg.ch === "system") {
+            if (msg.type === "ping") {
+              const pong: ServerMessage = { ch: "system", type: "pong" };
+              ws.send(JSON.stringify(pong));
+            }
+          } else if (msg.ch === "terminal") {
+            const { id, type } = msg;
 
-        if (msg.ch === "system") {
-          if (msg.type === "ping") {
-            const pong: ServerMessage = { ch: "system", type: "pong" };
-            ws.send(JSON.stringify(pong));
-          }
-        } else if (msg.ch === "terminal") {
-          const { id, type } = msg;
+            try {
+              if (type === "open") {
+                // Validate session exists and wait for attach to survive the
+                // transient tmux race window before reporting "opened".
+                await terminalManager.open(id);
 
-          try {
-            if (type === "open") {
-              // Validate session exists
-              terminalManager.open(id);
+                const openedMsg: ServerMessage = { ch: "terminal", id, type: "opened" };
+                ws.send(JSON.stringify(openedMsg));
 
-              // Send opened confirmation (idempotent — safe to send on re-open)
-              const openedMsg: ServerMessage = { ch: "terminal", id, type: "opened" };
-              ws.send(JSON.stringify(openedMsg));
-
-              // Subscribe and send history buffer only for new subscribers.
-              // Skipping the buffer on re-open prevents duplicate output when
-              // MuxProvider re-sends open for all terminals on reconnect.
-              if (!subscriptions.has(id)) {
-                // Send buffered history to catch up the new subscriber
-                const buffer = terminalManager.getBuffer(id);
-                if (buffer) {
-                  const bufferMsg: ServerMessage = {
-                    ch: "terminal",
-                    id,
-                    type: "data",
-                    data: buffer,
-                  };
-                  ws.send(JSON.stringify(bufferMsg));
-                }
-                const unsub = terminalManager.subscribe(
-                  id,
-                  (data) => {
-                    const dataMsg: ServerMessage = {
+                if (!subscriptions.has(id)) {
+                  const buffer = terminalManager.getBuffer(id);
+                  if (buffer) {
+                    const bufferMsg: ServerMessage = {
                       ch: "terminal",
                       id,
                       type: "data",
-                      data,
+                      data: buffer,
                     };
-                    if (ws.readyState === WebSocket.OPEN) {
-                      ws.send(JSON.stringify(dataMsg));
-                    }
-                  },
-                  (exitCode) => {
-                    const exitedMsg: ServerMessage = { ch: "terminal", id, type: "exited", code: exitCode };
-                    if (ws.readyState === WebSocket.OPEN) {
-                      ws.send(JSON.stringify(exitedMsg));
-                    }
-                  },
-                );
-                subscriptions.set(id, unsub);
+                    ws.send(JSON.stringify(bufferMsg));
+                  }
+                  const unsub = terminalManager.subscribe(
+                    id,
+                    (data) => {
+                      const dataMsg: ServerMessage = {
+                        ch: "terminal",
+                        id,
+                        type: "data",
+                        data,
+                      };
+                      if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify(dataMsg));
+                      }
+                    },
+                    (exitCode) => {
+                      const exitedMsg: ServerMessage = { ch: "terminal", id, type: "exited", code: exitCode };
+                      if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify(exitedMsg));
+                      }
+                    },
+                  );
+                  subscriptions.set(id, unsub);
+                }
+              } else if (type === "data" && "data" in msg) {
+                terminalManager.write(id, msg.data);
+              } else if (type === "resize" && "cols" in msg && "rows" in msg) {
+                terminalManager.resize(id, msg.cols, msg.rows);
+              } else if (type === "close") {
+                const unsub = subscriptions.get(id);
+                if (unsub) {
+                  unsub();
+                  subscriptions.delete(id);
+                }
               }
-            } else if (type === "data" && "data" in msg) {
-              terminalManager.write(id, msg.data);
-            } else if (type === "resize" && "cols" in msg && "rows" in msg) {
-              terminalManager.resize(id, msg.cols, msg.rows);
-            } else if (type === "close") {
-              // Unsubscribe this client only — TerminalManager is shared across
-              // all mux connections so we must not kill the PTY here.
-              const unsub = subscriptions.get(id);
-              if (unsub) {
-                unsub();
-                subscriptions.delete(id);
-              }
-            }
-          } catch (err) {
-            if (ws.readyState === WebSocket.OPEN) {
-              const errorMsg: ServerMessage = {
-                ch: "terminal",
-                id,
-                type: "error",
-                message: err instanceof Error ? err.message : String(err),
-              };
-              ws.send(JSON.stringify(errorMsg));
-            }
-          }
-        } else if (msg.ch === "subscribe") {
-          if (msg.topics.includes("sessions") && !sessionUnsubscribe) {
-            sessionUnsubscribe = broadcaster.subscribe((sessions) => {
+            } catch (err) {
               if (ws.readyState === WebSocket.OPEN) {
-                const snapMsg: ServerMessage = { ch: "sessions", type: "snapshot", sessions };
-                ws.send(JSON.stringify(snapMsg));
+                const errorMsg: ServerMessage = {
+                  ch: "terminal",
+                  id,
+                  type: "error",
+                  message: err instanceof Error ? err.message : String(err),
+                };
+                ws.send(JSON.stringify(errorMsg));
               }
-            });
+            }
+          } else if (msg.ch === "subscribe") {
+            if (msg.topics.includes("sessions") && !sessionUnsubscribe) {
+              sessionUnsubscribe = broadcaster.subscribe((sessions) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  const snapMsg: ServerMessage = { ch: "sessions", type: "snapshot", sessions };
+                  ws.send(JSON.stringify(snapMsg));
+                }
+              });
+            }
+          }
+        } catch (err) {
+          console.error("[MuxServer] Failed to parse message:", err);
+          const errorMsg: ServerMessage = {
+            ch: "system",
+            type: "error",
+            message: "Invalid message format",
+          };
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(errorMsg));
           }
         }
-      } catch (err) {
-        console.error("[MuxServer] Failed to parse message:", err);
-        const errorMsg: ServerMessage = {
-          ch: "system",
-          type: "error",
-          message: "Invalid message format",
-        };
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(errorMsg));
-        }
-      }
+    };
+
+    ws.on("message", (data) => {
+      messageQueue = messageQueue
+        .then(() => handleMessage(data))
+        .catch((err) => {
+          console.error("[MuxServer] Message handling failed:", err);
+        });
     });
 
     /**

@@ -73,7 +73,10 @@ export function resolveTmuxSession(
   // Try exact match first using = prefix for exact matching (e.g., "ao-orchestrator")
   // Without =, tmux uses prefix matching: "ao-1" would match "ao-15"
   try {
-    execFn(tmuxPath, ["has-session", "-t", `=${sessionId}`], { timeout: 5000 });
+    execFn(tmuxPath, ["has-session", "-t", `=${sessionId}`], {
+      timeout: 5000,
+      stdio: "ignore",
+    });
     return sessionId;
   } catch {
     // Not an exact match
@@ -86,6 +89,7 @@ export function resolveTmuxSession(
     const output = execFn(tmuxPath, ["list-sessions", "-F", "#{session_name}"], {
       timeout: 5000,
       encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
     }) as string;
     const sessions = output.split("\n").filter(Boolean);
     const match = sessions.find((s) =>
