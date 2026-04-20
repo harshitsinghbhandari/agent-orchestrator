@@ -339,4 +339,34 @@ describe("POST /api/projects/reload", () => {
       degradedCount: 0,
     });
   });
+
+  it("falls back to the repo-local config when the canonical global registry does not exist yet", async () => {
+    const localOnlyDir = path.join(tempRoot, "local-only");
+    mkdirSync(localOnlyDir, { recursive: true });
+
+    const localConfigPath = path.join(localOnlyDir, "agent-orchestrator.yaml");
+    writeFileSync(
+      localConfigPath,
+      [
+        "projects:",
+        "  local-only:",
+        '    name: "Local Only"',
+        `    path: ${JSON.stringify(localOnlyDir)}`,
+        '    storageKey: "local-only"',
+        "",
+      ].join("\n"),
+    );
+    process.env["AO_CONFIG_PATH"] = localConfigPath;
+
+    const { POST } = await import("@/app/api/projects/reload/route");
+    const response = await POST();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      reloaded: true,
+      projectCount: 1,
+      degradedCount: 0,
+    });
+    expect(invalidatePortfolioServicesCache).toHaveBeenCalledTimes(1);
+  });
 });

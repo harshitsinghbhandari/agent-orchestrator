@@ -1,13 +1,29 @@
 import { NextResponse } from "next/server";
-import { getGlobalConfigPath, loadConfig } from "@aoagents/ao-core";
+import { ConfigNotFoundError, getGlobalConfigPath, loadConfig } from "@aoagents/ao-core";
 import { invalidatePortfolioServicesCache } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
+function loadReloadConfig() {
+  const globalConfigPath = getGlobalConfigPath();
+
+  try {
+    return loadConfig(globalConfigPath);
+  } catch (error) {
+    if (error instanceof ConfigNotFoundError) {
+      return loadConfig();
+    }
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return loadConfig();
+    }
+    throw error;
+  }
+}
+
 export async function POST() {
   try {
     invalidatePortfolioServicesCache();
-    const config = loadConfig(getGlobalConfigPath());
+    const config = loadReloadConfig();
 
     return NextResponse.json({
       reloaded: true,
