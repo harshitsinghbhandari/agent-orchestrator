@@ -375,7 +375,7 @@ echo $LINEAR_API_KEY  # Should print your key
    notifiers:
      slack:
        plugin: slack
-       webhook: ${SLACK_WEBHOOK_URL}
+       webhookUrl: ${SLACK_WEBHOOK_URL}
        channel: "#agent-updates"
    ```
 
