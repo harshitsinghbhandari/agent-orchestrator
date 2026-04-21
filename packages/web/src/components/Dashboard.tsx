@@ -20,6 +20,7 @@ import type { ProjectInfo } from "@/lib/project-name";
 import { EmptyState } from "./Skeleton";
 import { ToastProvider, useToast } from "./Toast";
 import { ConnectionBar } from "./ConnectionBar";
+import { CopyDebugBundleButton } from "./CopyDebugBundleButton";
 import { SidebarContext } from "./workspace/SidebarContext";
 
 interface DashboardProps {
@@ -30,6 +31,8 @@ interface DashboardProps {
   orchestrators?: DashboardOrchestratorLink[];
   /** Dashboard attention zone mode (defaults to "simple" — 4 zones). */
   attentionZones?: DashboardAttentionZoneMode;
+  /** SSR/services failure — show an error banner instead of a misleading empty dashboard */
+  dashboardLoadError?: string;
 }
 
 const SIMPLE_KANBAN_LEVELS = ["working", "pending", "action", "merge"] as const;
@@ -131,6 +134,7 @@ function DashboardInner({
   projects = [],
   orchestrators,
   attentionZones = "simple",
+  dashboardLoadError,
 }: DashboardProps) {
   const orchestratorLinks = orchestrators ?? EMPTY_ORCHESTRATORS;
   const mux = useMuxOptional();
@@ -142,13 +146,15 @@ function DashboardInner({
     }
     return levels;
   }, [initialSessions, attentionZones]);
-  const { sessions, connectionStatus, sseAttentionLevels } = useSessionEvents({
+  const { sessions, connectionStatus, sseAttentionLevels, liveSessionsResolved } = useSessionEvents({
     initialSessions,
     project: projectId,
     muxSessions: mux?.status === "connected" ? mux.sessions : undefined,
     initialAttentionLevels,
     attentionZones,
   });
+  const recoveredFromLoadError = Boolean(dashboardLoadError) && liveSessionsResolved;
+  const visibleDashboardLoadError = recoveredFromLoadError ? undefined : dashboardLoadError;
   const searchParams = useSearchParams();
   const activeSessionId = searchParams.get("session") ?? undefined;
   const [rateLimitDismissed, setRateLimitDismissed] = useState(false);
@@ -401,7 +407,22 @@ function DashboardInner({
   };
 
   const hasAnySessions = kanbanLevels.some((level) => grouped[level].length > 0);
-  const showEmptyState = !allProjectsView && !hasAnySessions;
+  const showEmptyState = !allProjectsView && !hasAnySessions && !visibleDashboardLoadError;
+
+  const loadErrorBanner = visibleDashboardLoadError ? (
+    <div
+      className="dashboard-alert mb-6 flex flex-col gap-1.5 border border-[color-mix(in_srgb,var(--color-status-error)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-status-error)_10%,transparent)] px-3.5 py-2.5 text-[11px] md:mb-4"
+      role="alert"
+      aria-live="assertive"
+    >
+      <span className="font-semibold text-[var(--color-status-error)]">Orchestrator failed to load</span>
+      <span className="break-words text-[var(--color-text-secondary)]">{visibleDashboardLoadError}</span>
+      <span className="text-[var(--color-text-secondary)]">
+        Confirm <span className="font-mono text-[10px]">agent-orchestrator.yaml</span> exists and is valid, then run{" "}
+        <span className="font-mono text-[10px]">ao doctor</span> for diagnostics.
+      </span>
+    </div>
+  ) : null;
 
   const anyRateLimited = useMemo(
     () => sessions.some((session) => session.pr && isPRRateLimited(session.pr)),
@@ -491,6 +512,7 @@ function DashboardInner({
                   Orchestrator
                 </a>
               ) : null}
+              {!isMobile ? <CopyDebugBundleButton projectId={projectId} /> : null}
             </div>
           </header>
 
@@ -524,6 +546,7 @@ function DashboardInner({
               </div>
 
               <div className="dashboard-main__body">
+                {loadErrorBanner}
                 {anyRateLimited && !rateLimitDismissed && (
                   <div className="dashboard-alert mb-4 flex items-center gap-2.5 border border-[color-mix(in_srgb,var(--color-status-attention)_25%,transparent)] bg-[var(--color-tint-yellow)] px-3.5 py-2.5 text-[11px] text-[var(--color-status-attention)]">
                     <svg
