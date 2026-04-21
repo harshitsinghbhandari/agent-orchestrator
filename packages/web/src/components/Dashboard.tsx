@@ -80,7 +80,7 @@ function DoneCard({
     session.issueTitle ||
     session.summary ||
     session.id;
-  const isMerged = session.pr?.state === "merged";
+  const isMerged = session.pr?.state === "merged" || session.status === "merged";
   const isTerminated = session.status === "killed" || session.status === "terminated";
   const badgeLabel = isMerged ? "merged" : isTerminated ? "terminated" : "done";
   const badgeClass = `done-card__badge ${isTerminated ? "done-card__badge--terminated" : "done-card__badge--merged"}`;
@@ -107,16 +107,18 @@ function DoneCard({
           </a>
         ) : null}
         <span className="done-card__age">{formatRelativeTimeCompact(session.lastActivityAt)}</span>
-        <button
-          type="button"
-          className="done-card__restore"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRestore(session.id);
-          }}
-        >
-          Restore
-        </button>
+        {!isMerged ? (
+          <button
+            type="button"
+            className="done-card__restore"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRestore(session.id);
+            }}
+          >
+            Restore
+          </button>
+        ) : null}
       </div>
     </div>
   );
