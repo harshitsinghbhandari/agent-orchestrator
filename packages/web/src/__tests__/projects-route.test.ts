@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
-import { deriveStorageKey, loadGlobalConfig, registerProjectInGlobalConfig } from "@aoagents/ao-core";
+import { loadGlobalConfig, registerProjectInGlobalConfig } from "@aoagents/ao-core";
 
 const invalidatePortfolioServicesCache = vi.fn();
 
@@ -104,7 +104,7 @@ describe("POST /api/projects", () => {
     });
   });
 
-  it("stores the Phase 1a-derived storage key and invalidates services cache", async () => {
+  it("registers a project and invalidates services cache", async () => {
     const repoDir = path.join(tempRoot, "demo");
     mkdirSync(path.join(repoDir, ".git"), { recursive: true });
     writeFileSync(path.join(repoDir, ".git", "HEAD"), "ref: refs/heads/trunk\n");
@@ -125,13 +125,6 @@ describe("POST /api/projects", () => {
 
     expect(readFileSync(configPath, "utf-8").length).toBeGreaterThan(0);
     const saved = loadGlobalConfig(configPath);
-    expect(saved?.projects.demo?.storageKey).toBe(
-      deriveStorageKey({
-        originUrl: "https://github.com/acme/demo",
-        gitRoot: repoDir,
-        projectPath: repoDir,
-      }),
-    );
     expect(saved?.projects.demo?.defaultBranch).toBe("trunk");
   });
 
@@ -205,7 +198,7 @@ describe("POST /api/projects", () => {
     });
   });
 
-  it("returns 409 with collision metadata when another project owns the storage key", async () => {
+  it("returns 400 when another project is already registered at the same path", async () => {
     const repoDir = path.join(tempRoot, "demo");
     const aliasDir = path.join(tempRoot, "demo-alias");
     mkdirSync(path.join(repoDir, ".git"), { recursive: true });
@@ -222,38 +215,10 @@ describe("POST /api/projects", () => {
       makeRequest({ projectId: "second-app", name: "Second", path: aliasDir }),
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
-      existingProjectId: "existing-app",
-      suggestion: "confirm-reuse",
+      error: expect.stringContaining("already registered"),
     });
-  });
-
-  it("registers a project when shared storage reuse is explicitly confirmed", async () => {
-    const repoDir = path.join(tempRoot, "demo");
-    const aliasDir = path.join(tempRoot, "demo-alias");
-    mkdirSync(path.join(repoDir, ".git"), { recursive: true });
-    writeFileSync(
-      path.join(repoDir, ".git", "config"),
-      '[remote "origin"]\n  url = git@github.com:acme/demo.git\n',
-    );
-    symlinkSync(repoDir, aliasDir);
-
-    const { POST } = await import("@/app/api/projects/route");
-    await POST(makeRequest({ projectId: "existing-app", name: "Existing", path: repoDir }));
-
-    const response = await POST(
-      makeRequest({
-        projectId: "second-app",
-        name: "Second",
-        path: aliasDir,
-        allowStorageKeyReuse: true,
-      }),
-    );
-
-    expect(response.status).toBe(201);
-    const saved = loadGlobalConfig(configPath);
-    expect(saved?.projects["second-app"]?.storageKey).toBe(saved?.projects["existing-app"]?.storageKey);
   });
 });
 

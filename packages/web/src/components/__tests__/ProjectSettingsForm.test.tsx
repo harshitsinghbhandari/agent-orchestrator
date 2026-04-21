@@ -32,7 +32,6 @@ describe("ProjectSettingsForm", () => {
           identity: {
             projectId: "docs",
             path: "/tmp/docs",
-            storageKey: "github.com/org/repo",
             repo: "org/repo",
             defaultBranch: "main",
           },
@@ -41,7 +40,7 @@ describe("ProjectSettingsForm", () => {
     );
 
     expect(screen.getByDisplayValue("/tmp/docs")).toBeDisabled();
-    expect(screen.getByDisplayValue("github.com/org/repo")).toBeDisabled();
+    expect(screen.getByDisplayValue("org/repo")).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "claude-code" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
@@ -90,7 +89,6 @@ describe("ProjectSettingsForm", () => {
           identity: {
             projectId: "docs",
             path: "/tmp/docs",
-            storageKey: "github.com/org/repo",
             repo: "org/repo",
             defaultBranch: "main",
           },

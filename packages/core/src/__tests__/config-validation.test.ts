@@ -29,30 +29,6 @@ describe("Config Validation - Project Uniqueness", () => {
     expect(() => validateConfig(config)).not.toThrow();
   });
 
-  it("rejects duplicate storage keys with a distinct error", () => {
-    const config = {
-      projects: {
-        proj1: {
-          path: "/repos/integrator",
-          repo: "org/integrator",
-          defaultBranch: "main",
-          sessionPrefix: "proj1",
-          storageKey: "shared-storage",
-        },
-        proj2: {
-          path: "/other/backend",
-          repo: "org/backend",
-          defaultBranch: "main",
-          sessionPrefix: "proj2",
-          storageKey: "shared-storage",
-        },
-      },
-    };
-
-    expect(() => validateConfig(config)).toThrow(/Duplicate storage key/);
-    expect(() => validateConfig(config)).not.toThrow(/Duplicate project ID/);
-  });
-
   it("accepts unique basenames", () => {
     const config = {
       projects: {

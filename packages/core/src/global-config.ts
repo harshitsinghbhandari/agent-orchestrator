@@ -1,11 +1,8 @@
-import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   realpathSync,
   readFileSync,
-  readdirSync,
-  renameSync,
   statSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -18,11 +15,8 @@ import { withFileLockSync } from "./file-lock.js";
 import { ProjectResolveError } from "./types.js";
 import {
   generateSessionPrefix,
-  getAoBaseDir,
-  getProjectBaseDir,
-  getSessionsDir,
 } from "./paths.js";
-import { deriveStorageKey, normalizeOriginUrl } from "./storage-key.js";
+import { normalizeOriginUrl } from "./storage-key.js";
 
 function globalConfigLockPath(configPath: string): string {
   return `${configPath}.lock`;
@@ -57,27 +51,9 @@ function normalizeRegisteredProjectPath(projectPath: string): string {
   return realpathSync(resolve(projectPath));
 }
 
-export class StorageKeyCollisionError extends Error {
-  constructor(
-    readonly storageKey: string,
-    readonly existingProjectId: string,
-    readonly projectId: string,
-  ) {
-    super(
-      `Project "${existingProjectId}" already owns storage key "${storageKey}". ` +
-        `Refusing to register "${projectId}" against the same repo slice without confirmation.`,
-    );
-    this.name = "StorageKeyCollisionError";
-  }
-}
-
 export interface RegisterProjectOptions {
+  /** @deprecated No longer used — storageKey has been removed */
   allowStorageKeyReuse?: boolean;
-}
-
-export interface RelinkProjectOptions {
-  url?: string;
-  force?: boolean;
 }
 
 // =============================================================================
@@ -124,7 +100,6 @@ const GlobalRepoIdentitySchema = z.object({
 const GLOBAL_PROJECT_ENTRY_FIELDS = new Set([
   "projectId",
   "path",
-  "storageKey",
   "repo",
   "defaultBranch",
   "source",
@@ -134,12 +109,11 @@ const GLOBAL_PROJECT_ENTRY_FIELDS = new Set([
 ]);
 
 const LOCAL_CONFIG_FILENAMES = ["agent-orchestrator.yaml", "agent-orchestrator.yml"] as const;
-const LOCAL_IDENTITY_FIELDS = new Set(["repo", "defaultBranch", "originUrl", "projectId", "path", "storageKey"]);
+const LOCAL_IDENTITY_FIELDS = new Set(["repo", "defaultBranch", "projectId", "path"]);
 
 export const GlobalProjectEntrySchema = z.object({
   projectId: z.string().optional(),
   path: z.string(),
-  storageKey: z.string().optional(),
   repo: GlobalRepoIdentitySchema.optional(),
   defaultBranch: z.string().optional(),
   source: z.string().optional(),
@@ -201,7 +175,7 @@ export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
  * Flat, behavior-only local project config.
  * Lives at <project>/agent-orchestrator.yaml.
  *
- * Does NOT contain identity fields: projectId, path, storageKey, repo,
+ * Does NOT contain identity fields: projectId, path, repo,
  * defaultBranch, source, registeredAt, displayName, sessionPrefix.
  * Those are owned by the global registry.
  */
@@ -445,8 +419,6 @@ export function repairWrappedLocalProjectConfig(projectId: string, projectPath: 
     name: _name,
     path: _path,
     sessionPrefix: _sessionPrefix,
-    storageKey: _storageKey,
-    originUrl: _originUrl,
     projectId: _projectId,
     source: _source,
     registeredAt: _registeredAt,
@@ -456,24 +428,12 @@ export function repairWrappedLocalProjectConfig(projectId: string, projectPath: 
   void _name;
   void _path;
   void _sessionPrefix;
-  void _storageKey;
-  void _originUrl;
   void _projectId;
   void _source;
   void _registeredAt;
   void _displayName;
 
   writeLocalProjectConfig(projectPath, behaviorFields, configPath);
-}
-
-interface StorageIdentity {
-  gitRoot: string;
-  originUrl: string | null;
-  storageKey: string;
-}
-
-function legacyProjectHash(projectPath: string): string {
-  return createHash("sha256").update(resolve(projectPath)).digest("hex").slice(0, 12);
 }
 
 function resolveGitRoot(projectPath: string): string {
@@ -533,16 +493,6 @@ function readOriginUrlFromGitConfig(projectPath: string): string | null {
   return null;
 }
 
-function deriveProjectStorageIdentity(projectPath: string, originUrlOverride?: string | null): StorageIdentity {
-  const gitRoot = resolveGitRoot(projectPath);
-  const rawOriginUrl = originUrlOverride !== undefined ? originUrlOverride : readOriginUrlFromGitConfig(projectPath);
-  const originUrl = rawOriginUrl === null ? null : normalizeOriginUrl(rawOriginUrl);
-  return {
-    gitRoot,
-    originUrl,
-    storageKey: deriveStorageKey({ originUrl, gitRoot, projectPath }),
-  };
-}
 
 function normalizeRepoIdentity(originUrl: string | null): z.infer<typeof GlobalRepoIdentitySchema> | undefined {
   if (!originUrl) return undefined;
@@ -604,27 +554,6 @@ function normalizeLegacyRepoValue(
   return undefined;
 }
 
-function findStorageKeyOwner(
-  globalConfig: GlobalConfig,
-  storageKey: string,
-  excludeProjectId?: string,
-): string | null {
-  for (const [projectId, entry] of Object.entries(globalConfig.projects)) {
-    if (projectId === excludeProjectId) continue;
-    if (entry.storageKey === storageKey) return projectId;
-  }
-  return null;
-}
-
-function getLegacyProjectBaseDir(storageKey: string, projectPath: string): string {
-  return join(getAoBaseDir(), `${storageKey}-${basename(projectPath)}`);
-}
-
-function getLegacyWrappedStorageKey(configPath: string, projectPath: string): string {
-  const configDir = dirname(realpathSync(configPath));
-  const hash = createHash("sha256").update(configDir).digest("hex").slice(0, 12);
-  return `${hash}-${basename(projectPath)}`;
-}
 
 function getRegisteredSessionPrefix(entry: GlobalProjectEntry, projectId: string): string {
   return entry.sessionPrefix ?? generateSessionPrefix(basename(entry.path ?? projectId));
@@ -644,99 +573,6 @@ function findSessionPrefixOwner(
   return null;
 }
 
-function moveStorageDirectory(fromDir: string, toDir: string): void {
-  if (!existsSync(fromDir) || fromDir === toDir) return;
-  if (existsSync(toDir)) {
-    throw new Error(`Cannot move storage directory to ${toDir}: destination already exists`);
-  }
-  mkdirSync(dirname(toDir), { recursive: true });
-  renameSync(fromDir, toDir);
-}
-
-function countSessionEntries(storageKey: string): number {
-  const sessionsDir = getSessionsDir(storageKey);
-  if (!existsSync(sessionsDir)) return 0;
-  return readdirSync(sessionsDir).filter((entry) => entry !== ".DS_Store").length;
-}
-
-function ensureProjectStorageIdentity(
-  projectId: string,
-  globalConfig: GlobalConfig,
-  globalConfigPath?: string,
-  alreadyLocked = false,
-): (GlobalProjectEntry & Record<string, unknown>) | null {
-  const entry = globalConfig.projects[projectId] as (GlobalProjectEntry & Record<string, unknown>) | undefined;
-  if (!entry?.path) return null;
-
-  if (typeof entry.storageKey === "string") {
-    return entry;
-  }
-
-  const projectPath = entry.path;
-  const identity = deriveProjectStorageIdentity(projectPath);
-  const nextStorageKey = identity.storageKey;
-  const owner = findStorageKeyOwner(globalConfig, nextStorageKey, projectId);
-  if (owner) {
-    throw new StorageKeyCollisionError(nextStorageKey, owner, projectId);
-  }
-
-  const configPath = globalConfigPath ?? getGlobalConfigPath();
-  const migrate = () => {
-    const fresh = loadGlobalConfig(configPath, { alreadyLocked: true }) ?? globalConfig;
-    const freshEntry = fresh.projects[projectId] as (GlobalProjectEntry & Record<string, unknown>) | undefined;
-    if (!freshEntry?.path) return;
-
-    const freshOldStorageKey =
-      typeof freshEntry.storageKey === "string"
-        ? freshEntry.storageKey
-        : legacyProjectHash(freshEntry.path);
-    const freshIdentity = deriveProjectStorageIdentity(
-      freshEntry.path,
-      typeof freshEntry.repo?.originUrl === "string" ? freshEntry.repo.originUrl : undefined,
-    );
-
-    const collisionOwner = findStorageKeyOwner(fresh, freshIdentity.storageKey, projectId);
-    if (collisionOwner) {
-      throw new StorageKeyCollisionError(freshIdentity.storageKey, collisionOwner, projectId);
-    }
-
-    const targetDir = getProjectBaseDir(freshIdentity.storageKey);
-    const legacyDir = getLegacyProjectBaseDir(freshOldStorageKey, freshEntry.path);
-    const currentDir = getProjectBaseDir(freshOldStorageKey);
-
-    if (freshOldStorageKey !== freshIdentity.storageKey) {
-      if (existsSync(currentDir)) {
-        moveStorageDirectory(currentDir, targetDir);
-      } else if (existsSync(legacyDir)) {
-        moveStorageDirectory(legacyDir, targetDir);
-      }
-    } else if (existsSync(legacyDir) && legacyDir !== targetDir && !existsSync(targetDir)) {
-      moveStorageDirectory(legacyDir, targetDir);
-    }
-
-    freshEntry.projectId = projectId;
-    freshEntry.storageKey = freshIdentity.storageKey;
-    if (!freshEntry.repo) {
-      freshEntry.repo = normalizeRepoIdentity(freshIdentity.originUrl);
-    }
-    saveGlobalConfig(fresh, configPath);
-
-    entry.storageKey = freshEntry.storageKey;
-    entry.repo = freshEntry.repo;
-    // eslint-disable-next-line no-console -- required migration visibility for storage identity updates
-    console.info(
-      `[ao] migrated storage identity for "${projectId}" to "${freshEntry.storageKey}" (${freshEntry.repo?.originUrl ?? `local://${resolve(freshIdentity.gitRoot)}`})`,
-    );
-  };
-
-  if (alreadyLocked) {
-    migrate();
-  } else {
-    withFileLockSync(globalConfigLockPath(configPath), migrate);
-  }
-
-  return entry;
-}
 
 // =============================================================================
 // REGISTRATION
@@ -758,14 +594,12 @@ export function registerProjectInGlobalConfig(
   optionsOrGlobalConfigPath?: RegisterProjectOptions | string,
   globalConfigPath?: string,
 ): void {
-  const options = typeof optionsOrGlobalConfigPath === "string" ? {} : (optionsOrGlobalConfigPath ?? {});
   const configPath =
     typeof optionsOrGlobalConfigPath === "string"
       ? optionsOrGlobalConfigPath
       : (globalConfigPath ?? getGlobalConfigPath());
   const requestedProjectPath = resolve(projectPath);
   const normalizedProjectPath = normalizeRegisteredProjectPath(projectPath);
-  const identity = deriveProjectStorageIdentity(normalizedProjectPath);
 
   withFileLockSync(globalConfigLockPath(configPath), () => {
     const globalConfig = loadGlobalConfig(configPath, { alreadyLocked: true }) ?? makeEmptyGlobalConfig();
@@ -784,23 +618,15 @@ export function registerProjectInGlobalConfig(
     for (const [existingProjectId, entry] of Object.entries(globalConfig.projects)) {
       if (existingProjectId === projectId) continue;
       if (entry.path === normalizedProjectPath) {
-        if (!options.allowStorageKeyReuse) {
-          throw new StorageKeyCollisionError(
-            entry.storageKey ?? identity.storageKey,
-            existingProjectId,
-            projectId,
-          );
-        }
+        throw new Error(
+          `Project "${existingProjectId}" is already registered at "${normalizedProjectPath}". ` +
+            `Choose a different project ID or path.`,
+        );
       }
     }
 
-    const storageKey = (existing?.storageKey as string | undefined) ?? identity.storageKey;
-    const collisionOwner = findStorageKeyOwner(globalConfig, storageKey, projectId);
-    if (collisionOwner && !options.allowStorageKeyReuse) {
-      throw new StorageKeyCollisionError(storageKey, collisionOwner, projectId);
-    }
-
-    const repoIdentity = existing?.repo ?? normalizeRepoIdentity(identity.originUrl);
+    const originUrl = readOriginUrlFromGitConfig(normalizedProjectPath);
+    const repoIdentity = existing?.repo ?? normalizeRepoIdentity(originUrl);
     const defaultBranch = existing?.defaultBranch ?? localConfig?.defaultBranch ?? "main";
     const sessionPrefix =
       existing?.sessionPrefix ??
@@ -821,7 +647,6 @@ export function registerProjectInGlobalConfig(
     globalConfig.projects[projectId] = {
       projectId,
       path: normalizedProjectPath,
-      storageKey,
       ...(repoIdentity ? { repo: repoIdentity } : {}),
       defaultBranch,
       source,
@@ -853,9 +678,9 @@ export function registerProjectInGlobalConfig(
 export function buildEffectiveProjectConfig(
   projectId: string,
   globalConfig: GlobalConfig,
-  globalConfigPath?: string,
-): (Record<string, unknown> & { name: string; path: string; storageKey: string }) | null {
-  const resolved = resolveProjectIdentity(projectId, globalConfig, globalConfigPath);
+  _globalConfigPath?: string,
+): (Record<string, unknown> & { name: string; path: string }) | null {
+  const resolved = resolveProjectIdentity(projectId, globalConfig);
   return resolved ?? null;
 }
 
@@ -871,12 +696,10 @@ export function buildEffectiveProjectConfig(
 export function resolveProjectIdentity(
   projectId: string,
   globalConfig: GlobalConfig,
-  globalConfigPath?: string,
+  _globalConfigPath?: string,
 ): (Record<string, unknown> & {
   name: string;
   path: string;
-  storageKey: string;
-  originUrl?: string;
   repo?: string;
   defaultBranch: string;
   sessionPrefix: string;
@@ -887,32 +710,26 @@ export function resolveProjectIdentity(
     | undefined;
   if (!entry || !entry.path) return null;
 
-  const ensuredEntry = ensureProjectStorageIdentity(projectId, globalConfig, globalConfigPath);
-  if (!ensuredEntry) return null;
-
-  const projectPath = ensuredEntry.path as string;
-  const name = (ensuredEntry.displayName as string | undefined) ?? projectId;
-  const storageKey = ensuredEntry.storageKey as string;
+  const projectPath = entry.path;
+  const name = (entry.displayName as string | undefined) ?? projectId;
   const sessionPrefix =
-    typeof ensuredEntry.sessionPrefix === "string" && ensuredEntry.sessionPrefix.length > 0
-      ? ensuredEntry.sessionPrefix
+    typeof entry.sessionPrefix === "string" && entry.sessionPrefix.length > 0
+      ? entry.sessionPrefix
       : generateSessionPrefix(basename(projectPath));
   const defaultBranch =
-    typeof ensuredEntry.defaultBranch === "string" && ensuredEntry.defaultBranch.length > 0
-      ? ensuredEntry.defaultBranch
+    typeof entry.defaultBranch === "string" && entry.defaultBranch.length > 0
+      ? entry.defaultBranch
       : "main";
   const repoString =
-    ensuredEntry.repo &&
-    typeof ensuredEntry.repo.owner === "string" &&
-    typeof ensuredEntry.repo.name === "string"
-      ? `${ensuredEntry.repo.owner}/${ensuredEntry.repo.name}`
+    entry.repo &&
+    typeof entry.repo.owner === "string" &&
+    typeof entry.repo.name === "string"
+      ? `${entry.repo.owner}/${entry.repo.name}`
       : undefined;
   const identityFields = {
     name,
     path: projectPath,
-    storageKey,
     ...(repoString ? { repo: repoString } : {}),
-    ...(ensuredEntry.repo?.originUrl ? { originUrl: ensuredEntry.repo.originUrl } : {}),
     sessionPrefix,
     defaultBranch,
   };
@@ -974,70 +791,6 @@ export function resolveProjectIdentity(
     ...identityFields,
     ...(resolveError ? { resolveError } : {}),
   };
-}
-
-export function relinkProjectInGlobalConfig(
-  projectId: string,
-  options: RelinkProjectOptions = {},
-  globalConfigPath?: string,
-): { oldStorageKey: string; storageKey: string; originUrl: string } {
-  const configPath = globalConfigPath ?? getGlobalConfigPath();
-  let result: { oldStorageKey: string; storageKey: string; originUrl: string } | null = null;
-
-  withFileLockSync(globalConfigLockPath(configPath), () => {
-    const globalConfig = loadGlobalConfig(configPath, { alreadyLocked: true }) ?? makeEmptyGlobalConfig();
-    const entry = globalConfig.projects[projectId] as (GlobalProjectEntry & Record<string, unknown>) | undefined;
-    if (!entry?.path) {
-      throw new Error(`Project "${projectId}" is not registered in the global config.`);
-    }
-
-    const currentEntry = ensureProjectStorageIdentity(projectId, globalConfig, configPath, true);
-    if (!currentEntry?.path || typeof currentEntry.storageKey !== "string") {
-      throw new Error(`Project "${projectId}" could not resolve a storage key.`);
-    }
-
-    const oldStorageKey = currentEntry.storageKey;
-    const identity = deriveProjectStorageIdentity(currentEntry.path, options.url ?? undefined);
-    const nextOriginUrl = identity.originUrl ?? `local://${resolve(identity.gitRoot)}`;
-    const nextStorageKey = identity.storageKey;
-
-    if (nextStorageKey === oldStorageKey && nextOriginUrl === currentEntry.repo?.originUrl) {
-      result = { oldStorageKey, storageKey: nextStorageKey, originUrl: nextOriginUrl };
-      return;
-    }
-
-    const collisionOwner = findStorageKeyOwner(globalConfig, nextStorageKey, projectId);
-    if (collisionOwner) {
-      throw new StorageKeyCollisionError(nextStorageKey, collisionOwner, projectId);
-    }
-
-    const sessionCount = countSessionEntries(oldStorageKey);
-    if (sessionCount > 0 && !options.force) {
-      throw new Error(
-        `Project "${projectId}" has ${sessionCount} existing session entries. Re-run with --force to relink its storage.`,
-      );
-    }
-
-    const currentDir = getProjectBaseDir(oldStorageKey);
-    const legacyDir = getLegacyProjectBaseDir(oldStorageKey, currentEntry.path);
-    const targetDir = getProjectBaseDir(nextStorageKey);
-    if (existsSync(currentDir)) {
-      moveStorageDirectory(currentDir, targetDir);
-    } else if (existsSync(legacyDir)) {
-      moveStorageDirectory(legacyDir, targetDir);
-    }
-
-    currentEntry.storageKey = nextStorageKey;
-    currentEntry.repo = normalizeRepoIdentity(nextOriginUrl);
-    saveGlobalConfig(globalConfig, configPath);
-    result = { oldStorageKey, storageKey: nextStorageKey, originUrl: nextOriginUrl };
-  });
-
-  if (!result) {
-    throw new Error(`Failed to relink project "${projectId}".`);
-  }
-
-  return result;
 }
 
 // =============================================================================
@@ -1120,11 +873,6 @@ export function migrateToGlobalConfig(oldConfigPath: string, globalConfigPath?: 
       typeof project["path"] === "string" && project["path"].startsWith("~/")
         ? join(homedir(), (project["path"] as string).slice(2))
         : (project["path"] as string);
-    const storageKey =
-      typeof project["storageKey"] === "string"
-        ? (project["storageKey"] as string)
-        : getLegacyWrappedStorageKey(oldConfigPath, projectPath);
-
     const repoIdentity =
       typeof project["originUrl"] === "string"
         ? normalizeRepoIdentity(project["originUrl"] as string)
@@ -1132,7 +880,6 @@ export function migrateToGlobalConfig(oldConfigPath: string, globalConfigPath?: 
     newGlobal.projects[projectId] = {
       projectId,
       path: projectPath,
-      storageKey,
       ...(repoIdentity ? { repo: repoIdentity } : {}),
       ...(typeof project["defaultBranch"] === "string"
         ? { defaultBranch: project["defaultBranch"] as string }
@@ -1165,15 +912,11 @@ export function migrateToGlobalConfig(oldConfigPath: string, globalConfigPath?: 
       name: _name,
       path: _path,
       sessionPrefix: _sessionPrefix,
-      storageKey: _storageKey,
-      originUrl: _originUrl,
       ...behaviorFields
     } = project;
     void _name;
     void _path;
     void _sessionPrefix;
-    void _storageKey;
-    void _originUrl;
     const localBehaviorFields = behaviorFields;
 
     // Write flat local config

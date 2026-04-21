@@ -10,7 +10,6 @@
  * Everything else has sensible defaults.
  */
 
-import { createHash } from "node:crypto";
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { resolve, join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
@@ -73,49 +72,6 @@ function classifyConfigShape(
     "projects" in (parsed as Record<string, unknown>)
     ? "wrapped"
     : "flat-or-nonobject";
-}
-
-function generateLegacyWrappedStorageKey(configPath: string, projectPath: string): string {
-  const resolvedConfigPath = realpathSync(configPath);
-  const configDir = dirname(resolvedConfigPath);
-  const hash = createHash("sha256").update(configDir).digest("hex").slice(0, 12);
-  return `${hash}-${basename(projectPath)}`;
-}
-
-function applyWrappedLocalStorageKeys(
-  configPath: string,
-  parsed: unknown,
-): unknown {
-  if (!parsed || typeof parsed !== "object") return parsed;
-
-  const parsedObject = parsed as Record<string, unknown>;
-  if (!("projects" in parsedObject) || !parsedObject["projects"] || typeof parsedObject["projects"] !== "object") {
-    return parsed;
-  }
-
-  return {
-    ...parsedObject,
-    projects: Object.fromEntries(
-      Object.entries(parsedObject["projects"] as Record<string, unknown>).map(([projectId, value]) => {
-        if (!value || typeof value !== "object") {
-          return [projectId, value];
-        }
-
-        const project = value as Record<string, unknown>;
-        if (typeof project["storageKey"] === "string" || typeof project["path"] !== "string") {
-          return [projectId, value];
-        }
-
-        return [
-          projectId,
-          {
-            ...project,
-            storageKey: generateLegacyWrappedStorageKey(configPath, project["path"]),
-          },
-        ];
-      }),
-    ),
-  };
 }
 
 // =============================================================================
@@ -244,10 +200,6 @@ const ProjectConfigSchema = z.object({
     .string()
     .regex(/^[a-zA-Z0-9_-]+$/, "sessionPrefix must match [a-zA-Z0-9_-]+")
     .optional(),
-  /** Stable storage identity hash — set once at registration, never recomputed. */
-  storageKey: z.string().optional(),
-  /** Canonical git origin URL associated with the storage identity. */
-  originUrl: z.string().optional(),
   /** Per-project resolution failure captured without aborting global load. */
   resolveError: z.string().optional(),
   runtime: z.string().optional(),
@@ -602,9 +554,8 @@ function applyProjectDefaults(config: OrchestratorConfig): OrchestratorConfig {
 /** Validate project uniqueness and session prefix collisions */
 function validateProjectUniqueness(config: OrchestratorConfig): void {
   const projectIds = new Set<string>();
-  const storageKeys = new Map<string, string>();
 
-  for (const [projectId, project] of Object.entries(config.projects)) {
+  for (const [projectId] of Object.entries(config.projects)) {
     if (projectIds.has(projectId)) {
       throw new Error(
         `Duplicate project ID detected: "${projectId}"\n` +
@@ -612,19 +563,6 @@ function validateProjectUniqueness(config: OrchestratorConfig): void {
       );
     }
     projectIds.add(projectId);
-
-    if (!project.storageKey) continue;
-
-    const existingProjectId = storageKeys.get(project.storageKey);
-    if (existingProjectId && existingProjectId !== projectId) {
-      throw new Error(
-        `Duplicate storage key detected: "${project.storageKey}"\n` +
-          `Projects "${existingProjectId}" and "${projectId}" point at the same storage identity.\n\n` +
-          `This usually indicates a registration collision. Re-register or relink one of the projects so each projectId owns a unique storageKey.`,
-      );
-    }
-
-    storageKeys.set(project.storageKey, projectId);
   }
 
   // Check for duplicate session prefixes
@@ -875,7 +813,6 @@ function buildEffectiveConfigFromGlobalConfigPath(configPath: string): LoadedCon
       degradedProjects[projectId] = {
         projectId,
         path: entry.path,
-        storageKey: entry.storageKey ?? "",
         resolveError: error.message,
       };
     }
@@ -918,16 +855,12 @@ export function loadConfig(configPath?: string): LoadedConfig {
   const parsed = parseYaml(raw);
   const shape = classifyConfigShape(path);
   const isCanonicalGlobalConfig = resolve(path) === resolve(getGlobalConfigPath());
-  const normalizedParsed =
-    !isCanonicalGlobalConfig && shape === "wrapped"
-      ? applyWrappedLocalStorageKeys(path, parsed)
-      : parsed;
   const config =
     isCanonicalGlobalConfig
-      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(normalizedParsed)
+      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(parsed)
       : shape === "wrapped"
-      ? validateConfig(normalizedParsed)
-      : buildEffectiveConfigFromFlatLocalPath(path, normalizedParsed) ?? validateConfig(normalizedParsed);
+      ? validateConfig(parsed)
+      : buildEffectiveConfigFromFlatLocalPath(path, parsed) ?? validateConfig(parsed);
 
   // Set the config path in the config object for hash generation
   config.configPath = path;
@@ -953,16 +886,12 @@ export function loadConfigWithPath(configPath?: string): {
   const parsed = parseYaml(raw);
   const shape = classifyConfigShape(path);
   const isCanonicalGlobalConfig = resolve(path) === resolve(getGlobalConfigPath());
-  const normalizedParsed =
-    !isCanonicalGlobalConfig && shape === "wrapped"
-      ? applyWrappedLocalStorageKeys(path, parsed)
-      : parsed;
   const config =
     isCanonicalGlobalConfig
-      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(normalizedParsed)
+      ? buildEffectiveConfigFromGlobalConfigPath(path) ?? validateConfig(parsed)
       : shape === "wrapped"
-      ? validateConfig(normalizedParsed)
-      : buildEffectiveConfigFromFlatLocalPath(path, normalizedParsed) ?? validateConfig(normalizedParsed);
+      ? validateConfig(parsed)
+      : buildEffectiveConfigFromFlatLocalPath(path, parsed) ?? validateConfig(parsed);
 
   // Set the config path in the config object for hash generation
   config.configPath = path;

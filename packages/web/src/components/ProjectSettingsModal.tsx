@@ -14,7 +14,6 @@ interface ProjectSettingsResponse {
     id: string;
     name: string;
     path: string;
-    storageKey?: string;
     repo?: string;
     defaultBranch?: string;
     agent?: string;
@@ -100,7 +99,6 @@ export function ProjectSettingsModal({ open, projectId, onClose }: ProjectSettin
       identity: {
         projectId,
         path: project.path,
-        storageKey: project.storageKey ?? "",
         repo: project.repo ?? "",
         defaultBranch: project.defaultBranch ?? "main",
       },

@@ -36,7 +36,7 @@ import { createPluginRegistry } from "../plugin-registry.js";
 import { createSessionManager } from "../session-manager.js";
 import { createLifecycleManager } from "../lifecycle-manager.js";
 import { writeMetadata } from "../metadata.js";
-import { getSessionsDir, getProjectBaseDir } from "../paths.js";
+import { getProjectSessionsDir, getProjectDir } from "../paths.js";
 import trackerGithub from "@aoagents/ao-plugin-tracker-github";
 import scmGithub from "@aoagents/ao-plugin-scm-github";
 import { createMockPlugins, makeHandle, makeSession as makeSessionBase, makePR, type TestEnvironment } from "./test-utils.js";
@@ -91,6 +91,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
+let previousHome: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
 
@@ -104,6 +106,8 @@ beforeEach(() => {
   };
 
   mkdirSync(env.tmpDir, { recursive: true });
+  previousHome = process.env["HOME"];
+  process.env["HOME"] = env.tmpDir;
   env.configPath = join(env.tmpDir, "agent-orchestrator.yaml");
   writeFileSync(env.configPath, "projects: {}\n");
 
@@ -118,7 +122,6 @@ beforeEach(() => {
     name: "Test App",
     repo: "acme/app",
     path: join(env.tmpDir, "test-app"),
-    storageKey: "111111111111",
     defaultBranch: "main",
     sessionPrefix: "app",
     tracker: { plugin: "github" },
@@ -149,13 +152,13 @@ beforeEach(() => {
   };
 
   env.config = config;
-  env.sessionsDir = getSessionsDir(project.storageKey);
+  env.sessionsDir = getProjectSessionsDir("my-app");
   mkdirSync(env.sessionsDir, { recursive: true });
 
   env.cleanup = () => {
-    const projectBaseDir = getProjectBaseDir(project.storageKey);
-    if (existsSync(projectBaseDir)) {
-      rmSync(projectBaseDir, { recursive: true, force: true });
+    const projectDir = getProjectDir("my-app");
+    if (existsSync(projectDir)) {
+      rmSync(projectDir, { recursive: true, force: true });
     }
     rmSync(env.tmpDir, { recursive: true, force: true });
   };
@@ -163,6 +166,11 @@ beforeEach(() => {
 
 afterEach(() => {
   env.cleanup();
+  if (previousHome === undefined) {
+    delete process.env["HOME"];
+  } else {
+    process.env["HOME"] = previousHome;
+  }
 });
 
 // ---------------------------------------------------------------------------

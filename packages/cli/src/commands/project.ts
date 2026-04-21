@@ -7,8 +7,6 @@ import {
   getPortfolioSessionCounts,
   isPortfolioEnabled,
   registerProject,
-  relinkProject,
-  StorageKeyCollisionError,
   unregisterProject,
   loadPreferences,
   savePreferences,
@@ -113,36 +111,8 @@ export function registerProject_cmd(program: Command): void {
         process.exit(1);
       }
 
-      try {
-        registerProject(resolvedPath, opts.key);
-      } catch (error) {
-        if (error instanceof StorageKeyCollisionError && isHumanCaller()) {
-          console.log(
-            chalk.dim(
-              `This repo slice is already registered as "${error.existingProjectId}". ` +
-                `Use \`ao open ${error.existingProjectId}\` or \`ao project ls\` to work from the existing project.`,
-            ),
-          );
-          return;
-        } else {
-          throw error;
-        }
-      }
+      registerProject(resolvedPath, opts.key);
       console.log(chalk.green(`Registered project at ${resolvedPath}`));
-    });
-
-  project
-    .command("relink <id>")
-    .description("Recompute and move a project's storage key from its repo origin")
-    .option("--url <new-url>", "Override the repo origin URL used for the new storage key")
-    .option("--force", "Allow relinking even when session history already exists")
-    .action((id: string, opts: { url?: string; force?: boolean }) => {
-      assertPortfolioEnabled();
-      const result = relinkProject(id, { url: opts.url, force: opts.force });
-      console.log(chalk.green(`Relinked "${id}" storage.`));
-      console.log(chalk.dim(`  Old key: ${result.oldStorageKey}`));
-      console.log(chalk.dim(`  New key: ${result.storageKey}`));
-      console.log(chalk.dim(`  Origin:  ${result.originUrl}`));
     });
 
   // ao project rm <id>

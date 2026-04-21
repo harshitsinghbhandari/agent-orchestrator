@@ -5,7 +5,6 @@ const {
   mockGetPortfolio,
   mockGetPortfolioSessionCounts,
   mockRegisterProject,
-  mockRelinkProject,
   mockUnregisterProject,
   mockLoadPreferences,
   mockSavePreferences,
@@ -14,7 +13,6 @@ const {
   mockGetPortfolio: vi.fn(),
   mockGetPortfolioSessionCounts: vi.fn(),
   mockRegisterProject: vi.fn(),
-  mockRelinkProject: vi.fn(),
   mockUnregisterProject: vi.fn(),
   mockLoadPreferences: vi.fn(),
   mockSavePreferences: vi.fn(),
@@ -26,14 +24,6 @@ vi.mock("@aoagents/ao-core", () => ({
   getPortfolio: mockGetPortfolio,
   getPortfolioSessionCounts: mockGetPortfolioSessionCounts,
   registerProject: mockRegisterProject,
-  relinkProject: mockRelinkProject,
-  StorageKeyCollisionError: class StorageKeyCollisionError extends Error {
-    existingProjectId: string;
-    constructor(existingProjectId: string) {
-      super("collision");
-      this.existingProjectId = existingProjectId;
-    }
-  },
   unregisterProject: mockUnregisterProject,
   loadPreferences: mockLoadPreferences,
   savePreferences: mockSavePreferences,
@@ -153,34 +143,17 @@ describe("ao project add", () => {
     );
   });
 
-  it("surfaces duplicate storage collisions without registering a shared-storage project", async () => {
+  it("surfaces duplicate path collisions as errors", async () => {
     mockLoadLocalProjectConfig.mockReturnValue({ projects: {} });
-    const { StorageKeyCollisionError } = await import("@aoagents/ao-core");
     mockRegisterProject.mockImplementationOnce(() => {
-      throw new StorageKeyCollisionError("existing-proj");
+      throw new Error('Project "existing-proj" is already registered at "/tmp/my-project". Choose a different project ID or path.');
     });
 
-    await program.parseAsync(["node", "ao", "project", "add", "/tmp/my-project"]);
+    await expect(
+      program.parseAsync(["node", "ao", "project", "add", "/tmp/my-project"]),
+    ).rejects.toThrow();
 
     expect(mockRegisterProject).toHaveBeenCalledTimes(1);
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining('already registered as "existing-proj"'),
-    );
-  });
-});
-
-describe("ao project relink", () => {
-  it("relinks a project and prints the old/new storage keys", async () => {
-    mockRelinkProject.mockReturnValue({
-      oldStorageKey: "aaaaaaaaaaaa",
-      storageKey: "bbbbbbbbbbbb",
-      originUrl: "https://github.com/acme/demo",
-    });
-
-    await program.parseAsync(["node", "ao", "project", "relink", "demo", "--force"]);
-
-    expect(mockRelinkProject).toHaveBeenCalledWith("demo", { url: undefined, force: true });
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Relinked "demo" storage.'));
   });
 });
 

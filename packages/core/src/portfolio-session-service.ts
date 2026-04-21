@@ -8,9 +8,24 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { isOrchestratorSession, type PortfolioProject, type PortfolioSession, type Session, type SessionMetadata } from "./types.js";
-import { getSessionsDir } from "./paths.js";
-import { parseKeyValueContent } from "./key-value.js";
+import { getProjectSessionsDir } from "./paths.js";
 import { sessionFromMetadata } from "./utils/session-from-metadata.js";
+
+const JSON_EXTENSION = ".json";
+
+/** Flatten a JSON object to Record<string, string> for backward compat with metadata consumers. */
+function flattenToStringRecord(data: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "object") {
+      result[key] = JSON.stringify(value);
+    } else {
+      result[key] = String(value);
+    }
+  }
+  return result;
+}
 
 const DEFAULT_PER_PROJECT_TIMEOUT_MS = 3_000;
 const VALID_SESSION_ID = /^[a-zA-Z0-9_-]+$/;
@@ -46,7 +61,7 @@ export async function listPortfolioSessions(
 
 async function loadProjectSessions(project: PortfolioProject): Promise<PortfolioSession[]> {
   const results: PortfolioSession[] = [];
-  const sessionsDir = getSessionsDir(project.storageKey);
+  const sessionsDir = getProjectSessionsDir(project.id);
 
   let entries: string[];
   try {
@@ -56,8 +71,10 @@ async function loadProjectSessions(project: PortfolioProject): Promise<Portfolio
   }
 
   for (const name of entries) {
+    if (!name.endsWith(JSON_EXTENSION)) continue;
     if (name === "archive" || name.startsWith(".")) continue;
-    if (!VALID_SESSION_ID.test(name)) continue;
+    const sessionId = name.slice(0, -JSON_EXTENSION.length);
+    if (!VALID_SESSION_ID.test(sessionId)) continue;
 
     try {
       const filePath = join(sessionsDir, name);
@@ -65,13 +82,13 @@ async function loadProjectSessions(project: PortfolioProject): Promise<Portfolio
       if (!fileStat.isFile()) continue;
 
       const content = await readFile(filePath, "utf-8");
-      const raw = parseKeyValueContent(content);
+      const raw = flattenToStringRecord(JSON.parse(content) as Record<string, unknown>);
 
       // Exclude orchestrator sessions from portfolio listings
-      if (isOrchestratorSession({ id: name, metadata: raw })) continue;
+      if (isOrchestratorSession({ id: sessionId, metadata: raw })) continue;
 
       const metadata = rawToMetadata(raw);
-      const session = metadataToSession(name, project, metadata);
+      const session = metadataToSession(sessionId, project, metadata);
       results.push({ session, project });
     } catch {
       continue;
@@ -147,7 +164,7 @@ export async function getPortfolioSessionCounts(portfolio: PortfolioProject[]): 
     }
 
     try {
-      const sessionsDir = getSessionsDir(project.storageKey);
+      const sessionsDir = getProjectSessionsDir(project.id);
       let entries: string[];
       try {
         entries = await readdir(sessionsDir);
@@ -160,8 +177,10 @@ export async function getPortfolioSessionCounts(portfolio: PortfolioProject[]): 
       let active = 0;
 
       for (const name of entries) {
+        if (!name.endsWith(JSON_EXTENSION)) continue;
         if (name === "archive" || name.startsWith(".")) continue;
-        if (!VALID_SESSION_ID.test(name)) continue;
+        const sessionId = name.slice(0, -JSON_EXTENSION.length);
+        if (!VALID_SESSION_ID.test(sessionId)) continue;
 
         try {
           const filePath = join(sessionsDir, name);
@@ -169,10 +188,10 @@ export async function getPortfolioSessionCounts(portfolio: PortfolioProject[]): 
           if (!fileStat.isFile()) continue;
 
           const content = await readFile(filePath, "utf-8");
-          const raw = parseKeyValueContent(content);
+          const raw = flattenToStringRecord(JSON.parse(content) as Record<string, unknown>);
 
           // Exclude orchestrator sessions from portfolio counts
-          if (isOrchestratorSession({ id: name, metadata: raw })) continue;
+          if (isOrchestratorSession({ id: sessionId, metadata: raw })) continue;
 
           total++;
           if (!TERMINAL.has(raw["status"] ?? "")) active++;

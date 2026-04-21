@@ -8,7 +8,7 @@ import {
 import { join } from "node:path";
 import { createSessionManager } from "../../session-manager.js";
 import { getWorkspaceAgentsMdPath } from "../../opencode-agents-md.js";
-import { getProjectBaseDir } from "../../paths.js";
+import { getProjectDir } from "../../paths.js";
 import {
   writeMetadata,
   readMetadataRaw,
@@ -592,9 +592,9 @@ describe("restore", () => {
     const wsPath = join(tmpDir, "ws-app-orchestrator-opencode-agentsmd");
     mkdirSync(wsPath, { recursive: true });
 
-    const baseDir = getProjectBaseDir(ctx.config.projects["my-app"]!.storageKey);
-    mkdirSync(baseDir, { recursive: true });
-    const promptFile = join(baseDir, "orchestrator-prompt-app-orchestrator.md");
+    const projectDir = getProjectDir("my-app");
+    mkdirSync(projectDir, { recursive: true });
+    const promptFile = join(projectDir, "orchestrator-prompt-app-orchestrator.md");
     const promptContent = "You are the AO orchestrator. Delegate tasks.";
     writeFileSync(promptFile, promptContent, "utf-8");
 

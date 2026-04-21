@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { getSessionsDir, readAgentReportAuditTrailAsync } from "@aoagents/ao-core";
+import { getProjectSessionsDir, readAgentReportAuditTrailAsync } from "@aoagents/ao-core";
 import { getServices, getSCM } from "@/lib/services";
 import {
   sessionToDashboard,
@@ -24,7 +24,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const dashboardSession = sessionToDashboard(coreSession);
     const project = resolveProject(coreSession, config.projects);
     if (project) {
-      const sessionsDir = getSessionsDir(project.storageKey);
+      const sessionsDir = getProjectSessionsDir(coreSession.projectId);
       dashboardSession.agentReportAudit = await readAgentReportAuditTrailAsync(
         sessionsDir,
         coreSession.id,

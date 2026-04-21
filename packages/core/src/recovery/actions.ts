@@ -1,6 +1,6 @@
 import type { OrchestratorConfig, PluginRegistry, Runtime, Workspace } from "../types.js";
 import { updateMetadata, deleteMetadata } from "../metadata.js";
-import { getSessionsDir } from "../paths.js";
+import { getProjectSessionsDir } from "../paths.js";
 import { validateStatus } from "../utils/validation.js";
 import { sessionFromMetadata } from "../utils/session-from-metadata.js";
 import type { RecoveryAssessment, RecoveryResult, RecoveryContext } from "./types.js";
@@ -47,7 +47,7 @@ export async function recoverSession(
         error: `Unknown project: ${projectId}`,
       };
     }
-    const sessionsDir = getSessionsDir(project.storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
 
     if (recoveryCount > context.recoveryConfig.maxRecoveryAttempts) {
       updateMetadata(sessionsDir, sessionId, {
@@ -153,7 +153,7 @@ export async function cleanupSession(
       }
     }
 
-    const sessionsDir = getSessionsDir(project.storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
 
     updateMetadata(sessionsDir, sessionId, {
       status: "terminated",
@@ -208,7 +208,7 @@ export async function escalateSession(
         requiresManualIntervention: true,
       };
     }
-    const sessionsDir = getSessionsDir(project.storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
 
     updateMetadata(sessionsDir, sessionId, {
       status: "stuck",

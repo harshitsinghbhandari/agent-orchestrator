@@ -40,7 +40,7 @@ import {
 } from "./types.js";
 import { buildLifecycleMetadataPatch, cloneLifecycle, deriveLegacyStatus } from "./lifecycle-state.js";
 import { updateMetadata } from "./metadata.js";
-import { getSessionsDir } from "./paths.js";
+import { getProjectSessionsDir } from "./paths.js";
 import { applyDecisionToLifecycle as commitLifecycleDecisionInPlace } from "./lifecycle-transition.js";
 import {
   classifyActivitySignal,
@@ -707,7 +707,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           lifecycle.pr.number = detectedPR.number;
           lifecycle.pr.url = detectedPR.url;
           lifecycle.pr.lastObservedAt = nowIso;
-          const sessionsDir = getSessionsDir(project.storageKey);
+          const sessionsDir = getProjectSessionsDir(session.projectId);
           updateMetadata(sessionsDir, session.id, { pr: detectedPR.url });
         }
       } catch (error) {
@@ -1059,7 +1059,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const project = config.projects[session.projectId];
     if (!project) return;
 
-    const sessionsDir = getSessionsDir(project.storageKey);
+    const sessionsDir = getProjectSessionsDir(session.projectId);
     const lifecycleUpdates = buildLifecycleMetadataPatch(
       cloneLifecycle(session.lifecycle),
       session.status,

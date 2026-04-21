@@ -1290,7 +1290,6 @@ export interface OrchestratorConfig {
 export interface DegradedProjectEntry {
   projectId: string;
   path: string;
-  storageKey: string;
   resolveError: string;
 }
 
@@ -1394,12 +1393,6 @@ export interface ProjectConfig {
 
   /** Local path to the repo */
   path: string;
-
-  /** Persisted storage hash — stable across directory moves */
-  storageKey?: string;
-
-  /** Canonical git origin URL associated with the storage identity */
-  originUrl?: string;
 
   resolveError?: string;
 
@@ -1862,8 +1855,6 @@ export interface PortfolioProject {
   configPath: string;                  // Absolute path to agent-orchestrator.yaml
   configProjectKey: string;            // Key in config.projects map
   repoPath: string;                    // Absolute local filesystem path
-  storageKey?: string;                 // Persisted storage hash — stable across directory moves
-  originUrl?: string;                  // Canonical git origin URL associated with the storage identity
   repo?: string;                       // "owner/repo" for SCM
   defaultBranch?: string;
   sessionPrefix: string;

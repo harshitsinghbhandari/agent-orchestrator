@@ -12,7 +12,7 @@ import {
   readMetadata,
   deleteMetadata,
 } from "../../metadata.js";
-import { getSessionsDir, getWorktreesDir } from "../../paths.js";
+import { getProjectSessionsDir, getProjectWorktreesDir } from "../../paths.js";
 import type {
   OrchestratorConfig,
   PluginRegistry,
@@ -47,7 +47,7 @@ afterEach(() => {
 describe("kill", () => {
   it("destroys runtime, workspace, and archives metadata", async () => {
     const managedWorktree = join(
-      getWorktreesDir(config.projects["my-app"]!.storageKey),
+      getProjectWorktreesDir("my-app"),
       "app-1",
     );
     writeMetadata(sessionsDir, "app-1", {
@@ -410,7 +410,6 @@ describe("cleanup", () => {
           name: "My App 2",
           repo: "org/my-app-2",
           path: project2Path,
-          storageKey: "222222222222",
           defaultBranch: "main",
           sessionPrefix: "app",
           scm: { plugin: "github" },
@@ -418,7 +417,7 @@ describe("cleanup", () => {
         },
       },
     };
-    const sessionsDir2 = getSessionsDir("222222222222");
+    const sessionsDir2 = getProjectSessionsDir("my-app-2");
     mkdirSync(sessionsDir2, { recursive: true });
 
     writeMetadata(sessionsDir, "app-1", {

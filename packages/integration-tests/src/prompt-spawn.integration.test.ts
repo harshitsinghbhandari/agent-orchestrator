@@ -22,7 +22,7 @@ import {
   createSessionManager,
   createPluginRegistry,
   type OrchestratorConfig,
-  getSessionsDir,
+  getProjectSessionsDir,
   type Session,
 } from "@aoagents/ao-core";
 
@@ -31,12 +31,18 @@ import {
 let tmpDir: string;
 let configPath: string;
 let repoPath: string;
-const storageKey = "111111111111";
+let originalHome: string | undefined;
+const projectId = "test-project";
 const sessionPrefix = "ao-prompt-test";
 
 beforeAll(async () => {
   const raw = await mkdtemp(join(tmpdir(), "ao-prompt-spawn-"));
   tmpDir = await realpath(raw);
+
+  // HOME isolation so getProjectSessionsDir resolves under tmpDir
+  originalHome = process.env["HOME"];
+  process.env["HOME"] = tmpDir;
+
   repoPath = join(tmpDir, "test-repo");
   mkdirSync(repoPath, { recursive: true });
 
@@ -58,11 +64,10 @@ beforeAll(async () => {
       port: 3000,
       defaults: { runtime: "tmux", agent: "claude-code", workspace: "worktree", notifiers: [] },
       projects: {
-        "test-project": {
+        [projectId]: {
           name: "Test Project",
           repo: "test/test-repo",
           path: repoPath,
-          storageKey,
           defaultBranch: "main",
           sessionPrefix,
         },
@@ -75,6 +80,8 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
+  if (originalHome !== undefined) process.env["HOME"] = originalHome;
+  else delete process.env["HOME"];
   if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
 }, 15_000);
 
@@ -85,11 +92,10 @@ function makeConfig(): OrchestratorConfig {
     readyThresholdMs: 300_000,
     defaults: { runtime: "tmux", agent: "claude-code", workspace: "worktree", notifiers: [] },
     projects: {
-      "test-project": {
+      [projectId]: {
         name: "Test Project",
         repo: "test/test-repo",
         path: repoPath,
-        storageKey,
         defaultBranch: "main",
         sessionPrefix,
       },
@@ -111,22 +117,22 @@ function makeConfig(): OrchestratorConfig {
 
 describe("BLUE — main behavior: session metadata written without userPrompt", () => {
   it("session written without userPrompt key returns null for userPrompt", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const sessionId = `${sessionPrefix}-blue-1`;
 
     // This is exactly what main's writeMetadata produced: no userPrompt field.
-    const mainStyleMetadata = [
-      `worktree=${tmpDir}`,
-      `branch=session/${sessionId}`,
-      `status=working`,
-      `project=test-project`,
-      `createdAt=${new Date().toISOString()}`,
+    const mainStyleMetadata = {
+      worktree: tmpDir,
+      branch: `session/${sessionId}`,
+      status: "working",
+      project: "test-project",
+      createdAt: new Date().toISOString(),
       // NOTE: no userPrompt key — this is the main behavior gap
-    ].join("\n");
+    };
 
-    writeFileSync(join(sessionsDir, sessionId), mainStyleMetadata + "\n");
+    writeFileSync(join(sessionsDir, `${sessionId}.json`), JSON.stringify(mainStyleMetadata, null, 2) + "\n");
 
     const config = makeConfig();
     const registry = createPluginRegistry();
@@ -141,22 +147,22 @@ describe("BLUE — main behavior: session metadata written without userPrompt", 
   });
 
   it("session with issueId but no userPrompt is also missing userPrompt", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const sessionId = `${sessionPrefix}-blue-2`;
 
     writeFileSync(
-      join(sessionsDir, sessionId),
-      [
-        `worktree=${tmpDir}`,
-        `branch=feat/ISSUE-42`,
-        `status=working`,
-        `project=test-project`,
-        `issue=https://github.com/acme/repo/issues/42`,
-        `createdAt=${new Date().toISOString()}`,
+      join(sessionsDir, `${sessionId}.json`),
+      JSON.stringify({
+        worktree: tmpDir,
+        branch: "feat/ISSUE-42",
+        status: "working",
+        project: "test-project",
+        issue: "https://github.com/acme/repo/issues/42",
+        createdAt: new Date().toISOString(),
         // No userPrompt
-      ].join("\n") + "\n",
+      }, null, 2) + "\n",
     );
 
     const config = makeConfig();
@@ -178,23 +184,23 @@ describe("BLUE — main behavior: session metadata written without userPrompt", 
 
 describe("GREEN — branch behavior: session metadata persists userPrompt", () => {
   it("session written with userPrompt key returns prompt string from metadata", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const sessionId = `${sessionPrefix}-green-1`;
     const userPrompt = "Refactor the auth module to use JWT and remove legacy session cookies";
 
     // This is what our updated writeMetadata now produces.
-    const newStyleMetadata = [
-      `worktree=${tmpDir}`,
-      `branch=session/${sessionId}`,
-      `status=working`,
-      `project=test-project`,
-      `createdAt=${new Date().toISOString()}`,
-      `userPrompt=${userPrompt}`, // NEW: persisted by our PR
-    ].join("\n");
+    const newStyleMetadata = {
+      worktree: tmpDir,
+      branch: `session/${sessionId}`,
+      status: "working",
+      project: "test-project",
+      createdAt: new Date().toISOString(),
+      userPrompt, // NEW: persisted by our PR
+    };
 
-    writeFileSync(join(sessionsDir, sessionId), newStyleMetadata + "\n");
+    writeFileSync(join(sessionsDir, `${sessionId}.json`), JSON.stringify(newStyleMetadata, null, 2) + "\n");
 
     const config = makeConfig();
     const registry = createPluginRegistry();
@@ -209,22 +215,22 @@ describe("GREEN — branch behavior: session metadata persists userPrompt", () =
   });
 
   it("userPrompt field is visible in metadata for serialization layer", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const sessionId = `${sessionPrefix}-green-2`;
     const userPrompt = "Add weekly Slack digest for merged PRs";
 
     writeFileSync(
-      join(sessionsDir, sessionId),
-      [
-        `worktree=${tmpDir}`,
-        `branch=session/${sessionId}`,
-        `status=spawning`,
-        `project=test-project`,
-        `createdAt=${new Date().toISOString()}`,
-        `userPrompt=${userPrompt}`,
-      ].join("\n") + "\n",
+      join(sessionsDir, `${sessionId}.json`),
+      JSON.stringify({
+        worktree: tmpDir,
+        branch: `session/${sessionId}`,
+        status: "spawning",
+        project: "test-project",
+        createdAt: new Date().toISOString(),
+        userPrompt,
+      }, null, 2) + "\n",
     );
 
     const config = makeConfig();
@@ -240,50 +246,51 @@ describe("GREEN — branch behavior: session metadata persists userPrompt", () =
   });
 
   it("metadata file on disk actually contains userPrompt line", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const sessionId = `${sessionPrefix}-green-3`;
     const userPrompt = "Add rate limiting middleware to Express routes";
 
-    const metadataPath = join(sessionsDir, sessionId);
+    const metadataPath = join(sessionsDir, `${sessionId}.json`);
 
     writeFileSync(
       metadataPath,
-      [
-        `worktree=${tmpDir}`,
-        `branch=session/${sessionId}`,
-        `status=spawning`,
-        `project=test-project`,
-        `createdAt=${new Date().toISOString()}`,
-        `userPrompt=${userPrompt}`,
-      ].join("\n") + "\n",
+      JSON.stringify({
+        worktree: tmpDir,
+        branch: `session/${sessionId}`,
+        status: "spawning",
+        project: "test-project",
+        createdAt: new Date().toISOString(),
+        userPrompt,
+      }, null, 2) + "\n",
     );
 
     // Verify on disk — this is the ground truth that proves persistence.
     expect(existsSync(metadataPath)).toBe(true);
     const onDisk = readFileSync(metadataPath, "utf-8");
-    expect(onDisk).toContain(`userPrompt=${userPrompt}`);
+    const parsed = JSON.parse(onDisk);
+    expect(parsed.userPrompt).toBe(userPrompt);
   });
 
   it("issue-backed session can also carry userPrompt", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const sessionId = `${sessionPrefix}-green-4`;
     const userPrompt = "Focus on the database migration aspect only, skip the UI";
 
     writeFileSync(
-      join(sessionsDir, sessionId),
-      [
-        `worktree=${tmpDir}`,
-        `branch=feat/ISSUE-99`,
-        `status=working`,
-        `project=test-project`,
-        `issue=https://github.com/acme/repo/issues/99`,
-        `createdAt=${new Date().toISOString()}`,
-        `userPrompt=${userPrompt}`,
-      ].join("\n") + "\n",
+      join(sessionsDir, `${sessionId}.json`),
+      JSON.stringify({
+        worktree: tmpDir,
+        branch: "feat/ISSUE-99",
+        status: "working",
+        project: "test-project",
+        issue: "https://github.com/acme/repo/issues/99",
+        createdAt: new Date().toISOString(),
+        userPrompt,
+      }, null, 2) + "\n",
     );
 
     const config = makeConfig();
@@ -305,7 +312,7 @@ describe("GREEN — branch behavior: session metadata persists userPrompt", () =
 
 describe("DELTA — before vs after: same session-manager, different metadata", () => {
   it("old-style session (no userPrompt) and new-style session (with userPrompt) coexist", async () => {
-    const sessionsDir = getSessionsDir(storageKey);
+    const sessionsDir = getProjectSessionsDir(projectId);
     mkdirSync(sessionsDir, { recursive: true });
 
     const oldSessionId = `${sessionPrefix}-delta-old`;
@@ -314,27 +321,27 @@ describe("DELTA — before vs after: same session-manager, different metadata", 
 
     // OLD WAY (main): no userPrompt in metadata
     writeFileSync(
-      join(sessionsDir, oldSessionId),
-      [
-        `worktree=${tmpDir}`,
-        `branch=session/${oldSessionId}`,
-        `status=working`,
-        `project=test-project`,
-        `createdAt=${new Date().toISOString()}`,
-      ].join("\n") + "\n",
+      join(sessionsDir, `${oldSessionId}.json`),
+      JSON.stringify({
+        worktree: tmpDir,
+        branch: `session/${oldSessionId}`,
+        status: "working",
+        project: "test-project",
+        createdAt: new Date().toISOString(),
+      }, null, 2) + "\n",
     );
 
     // NEW WAY (this PR): userPrompt persisted
     writeFileSync(
-      join(sessionsDir, newSessionId),
-      [
-        `worktree=${tmpDir}`,
-        `branch=session/${newSessionId}`,
-        `status=working`,
-        `project=test-project`,
-        `createdAt=${new Date().toISOString()}`,
-        `userPrompt=${prompt}`,
-      ].join("\n") + "\n",
+      join(sessionsDir, `${newSessionId}.json`),
+      JSON.stringify({
+        worktree: tmpDir,
+        branch: `session/${newSessionId}`,
+        status: "working",
+        project: "test-project",
+        createdAt: new Date().toISOString(),
+        userPrompt: prompt,
+      }, null, 2) + "\n",
     );
 
     const config = makeConfig();

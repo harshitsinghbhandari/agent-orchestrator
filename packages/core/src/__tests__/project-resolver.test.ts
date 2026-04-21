@@ -59,7 +59,6 @@ describe("project resolver", () => {
           demo: {
             projectId: "demo",
             path: projectPath,
-            storageKey: "storage-key-demo",
             displayName: "Demo",
             defaultBranch: "main",
             sessionPrefix: "demo",
@@ -79,7 +78,6 @@ describe("project resolver", () => {
     expect(loaded.projects.demo).toMatchObject({
       name: "Demo",
       path: projectPath,
-      storageKey: "storage-key-demo",
       runtime: "docker",
       agent: "codex",
       workspace: "clone",
@@ -99,7 +97,6 @@ describe("project resolver", () => {
         demo: {
           projectId: "demo",
           path: projectPath,
-          storageKey: "storage-key-demo",
           displayName: "Demo",
           defaultBranch: "main",
           sessionPrefix: "demo",
@@ -122,7 +119,6 @@ describe("project resolver", () => {
       broken: {
         projectId: "broken",
         path: projectPath,
-        storageKey: "storage-key-broken",
         displayName: "Broken",
         defaultBranch: "main",
         sessionPrefix: "broken",
@@ -147,7 +143,6 @@ describe("project resolver", () => {
         app: {
           projectId: "app",
           path: projectPath,
-          storageKey: "storage-key-app",
           displayName: "App",
           defaultBranch: "main",
           sessionPrefix: "app",
@@ -183,7 +178,6 @@ describe("project resolver", () => {
         clean: {
           projectId: "clean",
           path: cleanPath,
-          storageKey: "storage-key-clean",
           displayName: "Clean",
           defaultBranch: "main",
           sessionPrefix: "clean",
@@ -191,7 +185,6 @@ describe("project resolver", () => {
         broken: {
           projectId: "broken",
           path: brokenPath,
-          storageKey: "storage-key-degraded",
           displayName: "Broken",
           defaultBranch: "main",
           sessionPrefix: "broken",
@@ -208,7 +201,6 @@ describe("project resolver", () => {
     expect(entries[1]).toMatchObject({
       projectId: "broken",
       path: brokenPath,
-      storageKey: "storage-key-degraded",
       resolveError: expect.any(String),
     });
   });
@@ -230,7 +222,6 @@ describe("project resolver", () => {
         app: {
           projectId: "app",
           path: realProjectPath,
-          storageKey: "storage-key-app",
           displayName: "App",
           defaultBranch: "main",
           sessionPrefix: "app",

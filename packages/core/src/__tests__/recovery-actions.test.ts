@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { readMetadataRaw } from "../metadata.js";
-import { getSessionsDir, getProjectBaseDir } from "../paths.js";
+import { getProjectSessionsDir, getProjectDir } from "../paths.js";
 import { cleanupSession, escalateSession, recoverSession } from "../recovery/actions.js";
 import { runRecovery } from "../recovery/manager.js";
 import { getRecoveryLogPath, scanAllSessions } from "../recovery/scanner.js";
@@ -15,7 +15,7 @@ import {
 } from "../recovery/types.js";
 import type { OrchestratorConfig, PluginRegistry, Runtime, Workspace } from "../types.js";
 
-const STORAGE_KEY = "111111111111";
+const PROJECT_ID = "app";
 
 function makeConfig(rootDir: string): OrchestratorConfig {
   return {
@@ -34,7 +34,6 @@ function makeConfig(rootDir: string): OrchestratorConfig {
         name: "app",
         repo: "org/repo",
         path: join(rootDir, "project"),
-        storageKey: STORAGE_KEY,
         defaultBranch: "main",
         sessionPrefix: "app",
       },
@@ -106,10 +105,25 @@ function makeContext(rootDir: string, overrides: Partial<RecoveryContext> = {}):
 
 describe("recoverSession", () => {
   let rootDir: string;
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(join(rootDir, "project"), { recursive: true });
+    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
+    previousHome = process.env["HOME"];
+    process.env["HOME"] = rootDir;
+  });
 
   afterEach(() => {
+    if (previousHome === undefined) {
+      delete process.env["HOME"];
+    } else {
+      process.env["HOME"] = previousHome;
+    }
     if (rootDir) {
-      const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
+      const projectBaseDir = getProjectDir(PROJECT_ID);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
       }
@@ -118,10 +132,6 @@ describe("recoverSession", () => {
   });
 
   it("persists restoredAt and returns a session with restoredAt", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
 
     const config = makeConfig(rootDir);
     const registry = makeRegistry();
@@ -129,7 +139,7 @@ describe("recoverSession", () => {
     const context = makeContext(rootDir);
 
     const result = await recoverSession(assessment, config, registry, context);
-    const sessionsDir = getSessionsDir(STORAGE_KEY);
+    const sessionsDir = getProjectSessionsDir(PROJECT_ID);
     const metadata = readMetadataRaw(sessionsDir, assessment.sessionId);
 
     expect(result.success).toBe(true);
@@ -139,11 +149,6 @@ describe("recoverSession", () => {
   });
 
   it("preserves project ownership when legacy metadata omits the project field", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const registry = makeRegistry();
     const assessment = makeAssessment({
@@ -162,11 +167,6 @@ describe("recoverSession", () => {
   });
 
   it("returns the max-attempt reason when recovery escalates", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const registry = makeRegistry();
     const assessment = makeAssessment({
@@ -191,11 +191,6 @@ describe("recoverSession", () => {
   });
 
   it("dry-run recovery reports escalate when attempts exceed limit", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const registry = makeRegistry();
     const assessment = makeAssessment({
@@ -222,11 +217,6 @@ describe("recoverSession", () => {
   });
 
   it("calls context.invalidateCache() after mutating metadata", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const registry = makeRegistry();
     const assessment = makeAssessment();
@@ -241,10 +231,25 @@ describe("recoverSession", () => {
 
 describe("escalateSession", () => {
   let rootDir: string;
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(join(rootDir, "project"), { recursive: true });
+    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
+    previousHome = process.env["HOME"];
+    process.env["HOME"] = rootDir;
+  });
 
   afterEach(() => {
+    if (previousHome === undefined) {
+      delete process.env["HOME"];
+    } else {
+      process.env["HOME"] = previousHome;
+    }
     if (rootDir) {
-      const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
+      const projectBaseDir = getProjectDir(PROJECT_ID);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
       }
@@ -253,11 +258,6 @@ describe("escalateSession", () => {
   });
 
   it("uses the assessment reason during dry runs", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const registry = makeRegistry();
     const assessment = makeAssessment({
@@ -277,10 +277,25 @@ describe("escalateSession", () => {
 
 describe("cleanupSession", () => {
   let rootDir: string;
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(join(rootDir, "project"), { recursive: true });
+    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
+    previousHome = process.env["HOME"];
+    process.env["HOME"] = rootDir;
+  });
 
   afterEach(() => {
+    if (previousHome === undefined) {
+      delete process.env["HOME"];
+    } else {
+      process.env["HOME"] = previousHome;
+    }
     if (rootDir) {
-      const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
+      const projectBaseDir = getProjectDir(PROJECT_ID);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
       }
@@ -289,11 +304,6 @@ describe("cleanupSession", () => {
   });
 
   it("continues cleanup and calls deleteMetadata even when workspace.destroy throws", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const workspacePath = join(rootDir, "worktree");
     const mockWorkspace: Workspace = {
@@ -327,7 +337,7 @@ describe("cleanupSession", () => {
     const context = makeContext(rootDir);
 
     const result = await cleanupSession(assessment, config, registry, context);
-    const sessionsDir = getSessionsDir(STORAGE_KEY);
+    const sessionsDir = getProjectSessionsDir(PROJECT_ID);
 
     expect(mockWorkspace.destroy).toHaveBeenCalled();
     expect(result.success).toBe(true);
@@ -335,11 +345,6 @@ describe("cleanupSession", () => {
   });
 
   it("continues cleanup and calls workspace.destroy and deleteMetadata even when runtime.destroy throws", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
     const workspacePath = join(rootDir, "worktree");
     const mockRuntime: Runtime = {
@@ -382,7 +387,7 @@ describe("cleanupSession", () => {
     const context = makeContext(rootDir);
 
     const result = await cleanupSession(assessment, config, registry, context);
-    const sessionsDir = getSessionsDir(STORAGE_KEY);
+    const sessionsDir = getProjectSessionsDir(PROJECT_ID);
 
     expect(mockRuntime.destroy).toHaveBeenCalled();
     expect(mockWorkspace.destroy).toHaveBeenCalled();
@@ -393,10 +398,25 @@ describe("cleanupSession", () => {
 
 describe("recovery manager and scanner", () => {
   let rootDir: string;
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(join(rootDir, "project"), { recursive: true });
+    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
+    previousHome = process.env["HOME"];
+    process.env["HOME"] = rootDir;
+  });
 
   afterEach(() => {
+    if (previousHome === undefined) {
+      delete process.env["HOME"];
+    } else {
+      process.env["HOME"] = previousHome;
+    }
     if (rootDir) {
-      const projectBaseDir = getProjectBaseDir(STORAGE_KEY);
+      const projectBaseDir = getProjectDir(PROJECT_ID);
       if (existsSync(projectBaseDir)) {
         rmSync(projectBaseDir, { recursive: true, force: true });
       }
@@ -405,13 +425,8 @@ describe("recovery manager and scanner", () => {
   });
 
   it("respects custom recovery logPath in manager options", async () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
-    const sessionsDir = getSessionsDir(STORAGE_KEY);
+    const sessionsDir = getProjectSessionsDir(PROJECT_ID);
     mkdirSync(sessionsDir, { recursive: true });
     writeFileSync(
       join(sessionsDir, "app-1.json"),
@@ -439,13 +454,8 @@ describe("recovery manager and scanner", () => {
   });
 
   it("scans sessions using metadata listing rules", () => {
-    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
-    mkdirSync(rootDir, { recursive: true });
-    mkdirSync(join(rootDir, "project"), { recursive: true });
-    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
-
     const config = makeConfig(rootDir);
-    const sessionsDir = getSessionsDir(STORAGE_KEY);
+    const sessionsDir = getProjectSessionsDir(PROJECT_ID);
     mkdirSync(sessionsDir, { recursive: true });
 
     writeFileSync(join(sessionsDir, "app-1.json"), JSON.stringify({ project: "app", status: "working" }, null, 2) + "\n", "utf-8");

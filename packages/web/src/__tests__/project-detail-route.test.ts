@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import {
-  getProjectBaseDir,
+  getProjectDir,
   loadGlobalConfig,
   registerProjectInGlobalConfig,
 } from "@aoagents/ao-core";
@@ -209,7 +209,6 @@ describe("/api/projects/[id]", () => {
         id: "broken",
         name: "broken",
         path: expect.stringContaining(path.sep + "broken"),
-        storageKey: expect.any(String),
         resolveError: expect.any(String),
       },
     });
@@ -261,10 +260,8 @@ describe("/api/projects/[id]", () => {
        },
      });
 
-    const storageKey = loadGlobalConfig(configPath)?.projects.demo?.storageKey;
-    expect(storageKey).toBeTruthy();
-    const storageDir = getProjectBaseDir(storageKey);
-    mkdirSync(storageDir, { recursive: true });
+    const projectDir = getProjectDir("demo");
+    mkdirSync(projectDir, { recursive: true });
 
     const { DELETE } = await import("@/app/api/projects/[id]/route");
     const response = await DELETE(makeRequest("DELETE"), {
@@ -275,11 +272,10 @@ describe("/api/projects/[id]", () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       projectId: "demo",
-      storageKey,
       removedStorageDir: true,
     });
     expect(loadGlobalConfig(configPath)?.projects.demo).toBeUndefined();
-    expect(existsSync(storageDir)).toBe(false);
+    expect(existsSync(projectDir)).toBe(false);
     expect(existsSync(repoDir)).toBe(true);
     expect(list).toHaveBeenCalledWith("demo");
     expect(destroy).toHaveBeenCalledWith(

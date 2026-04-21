@@ -116,28 +116,6 @@ projects:
       expect(config.port).toBe(5000);
     });
 
-    it("synthesizes storage keys for legacy wrapped local configs", () => {
-      const configPath = join(testDir, "agent-orchestrator.yaml");
-      const projectPath = join(testDir, "legacy-app");
-      mkdirSync(projectPath, { recursive: true });
-      writeFileSync(
-        configPath,
-        [
-          "projects:",
-          "  legacy-app:",
-          `    path: ${projectPath}`,
-          "    defaultBranch: main",
-          "    runtime: tmux",
-          "    agent: claude-code",
-          "    workspace: worktree",
-          "",
-        ].join("\n"),
-      );
-
-      const config = loadConfig(configPath);
-      expect(config.projects["legacy-app"]?.storageKey).toMatch(/^[a-f0-9]{12}-legacy-app$/);
-    });
-
     it("should throw error if config not found", () => {
       expect(() => loadConfig()).toThrow(ConfigNotFoundError);
     });
@@ -192,7 +170,6 @@ projects:
       expect(config.degradedProjects["broken-project"]).toMatchObject({
         projectId: "broken-project",
         path: brokenPath,
-        storageKey: "defdefdefdef",
         resolveError: expect.any(String),
       });
     });
@@ -307,25 +284,5 @@ projects:
       expect(() => loadConfig(configPath)).toThrow(/Map keys must be unique|Duplicate project ID/);
     });
 
-    it("fails with a distinct error when two projectIds share a storageKey", () => {
-      expect(() =>
-        validateConfig({
-          projects: {
-            alpha: {
-              path: "/a/foo",
-              defaultBranch: "main",
-              sessionPrefix: "alpha",
-              storageKey: "shared-storage-key",
-            },
-            beta: {
-              path: "/b/bar",
-              defaultBranch: "main",
-              sessionPrefix: "beta",
-              storageKey: "shared-storage-key",
-            },
-          },
-        }),
-      ).toThrow(/Duplicate storage key detected/);
-    });
   });
 });

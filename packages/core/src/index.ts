@@ -253,7 +253,6 @@ export {
 export {
   normalizeOriginUrl,
   relativeSubdir,
-  deriveStorageKey,
 } from "./storage-key.js";
 
 // Global config — Option C hybrid architecture (global registry + local behavior)
@@ -267,8 +266,6 @@ export {
   getLocalProjectConfigPath,
   repairWrappedLocalProjectConfig,
   registerProjectInGlobalConfig,
-  relinkProjectInGlobalConfig,
-  StorageKeyCollisionError,
   buildEffectiveProjectConfig,
   resolveProjectIdentity,
   isOldConfigFormat,
@@ -281,7 +278,6 @@ export type {
   LocalProjectConfig,
   LocalProjectConfigLoadResult,
   RegisterProjectOptions,
-  RelinkProjectOptions,
 } from "./global-config.js";
 
 export {
@@ -334,7 +330,6 @@ export {
   saveRegistered,
   getPortfolio,
   registerProject,
-  relinkProject,
   unregisterProject,
   refreshProject,
 } from "./portfolio-registry.js";

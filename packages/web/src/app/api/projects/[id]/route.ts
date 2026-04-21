@@ -4,7 +4,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   ConfigNotFoundError,
   LocalProjectConfigSchema,
-  getProjectBaseDir,
+  getProjectDir,
   getGlobalConfigPath,
   loadConfig,
   loadGlobalConfig,
@@ -19,7 +19,7 @@ import { getServices, invalidatePortfolioServicesCache } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
-const IDENTITY_FIELDS = new Set(["projectId", "path", "storageKey", "repo", "defaultBranch"]);
+const IDENTITY_FIELDS = new Set(["projectId", "path", "repo", "defaultBranch"]);
 
 function sanitizeString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -89,7 +89,6 @@ function degradedPayload(projectId: string, degradedProject: NonNullable<ReturnT
       id: projectId,
       name: projectId,
       path: degradedProject.path,
-      storageKey: degradedProject.storageKey,
       resolveError: degradedProject.resolveError,
     },
   };
@@ -116,7 +115,6 @@ export async function GET(
           id,
           name: state.project?.name ?? id,
           path: state.globalEntry?.path ?? state.project?.path,
-          storageKey: state.globalEntry?.storageKey ?? state.project?.storageKey,
           repo:
             (state.globalEntry?.repo &&
             typeof state.globalEntry.repo === "object" &&
@@ -261,16 +259,7 @@ export async function DELETE(
     const workspacePluginName = state.project?.workspace ?? state.config.defaults.workspace ?? "worktree";
     await cleanupManagedWorkspaces(id, workspacePluginName);
 
-    const storageKey = state.globalEntry?.storageKey ?? state.degradedProject?.storageKey ?? null;
-    const otherStorageOwners = storageKey
-      ? Object.entries(loadGlobalConfig(getGlobalConfigPath())?.projects ?? {}).filter(
-          ([projectId, entry]) => projectId !== id && entry.storageKey === storageKey,
-        )
-      : [];
-
-    if (storageKey && otherStorageOwners.length === 0) {
-      rmSync(getProjectBaseDir(storageKey), { recursive: true, force: true });
-    }
+    rmSync(getProjectDir(id), { recursive: true, force: true });
     unregisterProject(id);
     invalidatePortfolioServicesCache();
     revalidateProjectPaths(id);
@@ -278,8 +267,7 @@ export async function DELETE(
     return NextResponse.json({
       ok: true,
       projectId: id,
-      storageKey,
-      removedStorageDir: Boolean(storageKey) && otherStorageOwners.length === 0,
+      removedStorageDir: true,
     });
   } catch (error) {
     return NextResponse.json(

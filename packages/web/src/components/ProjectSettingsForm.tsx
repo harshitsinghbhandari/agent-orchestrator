@@ -18,7 +18,6 @@ interface ProjectSettingsFormProps {
     identity: {
       projectId: string;
       path: string;
-      storageKey: string;
       repo: string;
       defaultBranch: string;
     };
@@ -201,7 +200,6 @@ function ProjectSettingsFormInner({ projectId, initialValues }: ProjectSettingsF
         <div className="project-settings-form__grid">
           <ReadonlyField id="identity-project-id" label="Project ID" value={initialValues.identity.projectId} />
           <ReadonlyField id="identity-path" label="Path" value={initialValues.identity.path} />
-          <ReadonlyField id="identity-storage-key" label="Storage key" value={initialValues.identity.storageKey} />
           <ReadonlyField id="identity-repo" label="Repo" value={initialValues.identity.repo} />
           <ReadonlyField
             id="identity-default-branch"

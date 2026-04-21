@@ -179,24 +179,25 @@ describe("metadata lifecycle (real filesystem)", () => {
       status: "working",
     });
 
-    expect(existsSync(join(sessionsDir, "session-del"))).toBe(true);
+    expect(existsSync(join(sessionsDir, "session-del.json"))).toBe(true);
 
     deleteMetadata(sessionsDir, "session-del", true);
 
     // Original file removed
-    expect(existsSync(join(sessionsDir, "session-del"))).toBe(false);
+    expect(existsSync(join(sessionsDir, "session-del.json"))).toBe(false);
 
-    // Archive created
+    // Archive created with compact timestamp format (e.g. session-del_20260420T143052Z.json)
     const archiveDir = join(sessionsDir, "archive");
     expect(existsSync(archiveDir)).toBe(true);
     const archived = readdirSync(archiveDir);
     expect(archived.length).toBe(1);
-    expect(archived[0]).toMatch(/^session-del_/);
+    expect(archived[0]).toMatch(/^session-del_\d{8}T\d{6}Z\.json$/);
 
-    // Archive content matches original
+    // Archive content matches original (JSON format)
     const content = readFileSync(join(archiveDir, archived[0]), "utf-8");
-    expect(content).toContain("worktree=/w");
-    expect(content).toContain("branch=main");
+    const parsed = JSON.parse(content);
+    expect(parsed.worktree).toBe("/w");
+    expect(parsed.branch).toBe("main");
   });
 
   it("deleteMetadata with archive=false permanently removes file", () => {
@@ -211,7 +212,7 @@ describe("metadata lifecycle (real filesystem)", () => {
 
     deleteMetadata(sessionsDir, "session-gone", false);
 
-    expect(existsSync(join(sessionsDir, "session-gone"))).toBe(false);
+    expect(existsSync(join(sessionsDir, "session-gone.json"))).toBe(false);
     expect(existsSync(join(sessionsDir, "archive"))).toBe(false);
   });
 
