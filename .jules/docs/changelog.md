@@ -9,3 +9,14 @@
 - [x] Commands tested
 - [x] Cross-referenced with code
 - [x] No broken links
+
+## 2026-04-19
+
+### Files Updated
+- `README.md` - Changed "Seven plugin slots" to "Eight plugin slots + core services" and added the non-pluggable "Lifecycle" slot to the Plugin Architecture table to correctly reflect the codebase structure.
+- `SETUP.md` - Corrected the Slack configuration example parameter from `webhook` to `webhookUrl` to match the actual implementation in `packages/plugins/notifier-slack/src/index.ts`.
+
+### Verification
+- [x] Commands tested
+- [x] Cross-referenced with code
+- [x] No broken links

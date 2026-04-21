@@ -140,7 +140,7 @@ See [`agent-orchestrator.yaml.example`](agent-orchestrator.yaml.example) for the
 
 ## Plugin Architecture
 
-Seven plugin slots. Lifecycle stays in core.
+Eight plugin slots. Lifecycle stays in core.
 
 | Slot      | Default     | Alternatives             |
 | --------- | ----------- | ------------------------ |
@@ -151,6 +151,7 @@ Seven plugin slots. Lifecycle stays in core.
 | SCM       | github      | gitlab                   |
 | Notifier  | desktop     | composio, discord, openclaw, slack, webhook |
 | Terminal  | iterm2      | web                      |
+| Lifecycle | (core)      | Non-pluggable            |
 
 All interfaces defined in [`packages/core/src/types.ts`](packages/core/src/types.ts). A plugin implements one interface and exports a `PluginModule`. That's it.
 
