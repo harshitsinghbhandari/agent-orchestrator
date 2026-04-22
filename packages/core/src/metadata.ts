@@ -303,9 +303,11 @@ export function mutateMetadata(
   let existing: Record<string, string> = {};
 
   if (existsSync(path)) {
-    const content = readFileSync(path, "utf-8");
-    const raw = parseMetadataContent(content);
-    existing = flattenToStringRecord(raw);
+    const content = readFileSync(path, "utf-8").trim();
+    if (content) {
+      const raw = parseMetadataContent(content);
+      existing = flattenToStringRecord(raw);
+    }
   } else if (!options.createIfMissing) {
     return null;
   }
@@ -377,7 +379,7 @@ export function deleteMetadata(dataDir: string, sessionId: SessionId, archive = 
 
 /**
  * Read the latest archived metadata for a session.
- * Archive files are named `<sessionId>_<compact-timestamp>.json` inside `<projectDir>/archive/`.
+ * Archive files are named `<sessionId>_<compact-timestamp>.json` inside `<sessionsDir>/archive/`.
  * Returns null if no archived metadata exists.
  */
 export function readArchivedMetadataRaw(
