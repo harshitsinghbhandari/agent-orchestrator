@@ -161,6 +161,7 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
     opencodeSessionId: raw["opencodeSessionId"] as string | undefined,
     pinnedSummary: raw["pinnedSummary"] as string | undefined,
     userPrompt: raw["userPrompt"] as string | undefined,
+    displayName: raw["displayName"] as string | undefined,
   };
 }
 
@@ -248,6 +249,7 @@ export function writeMetadata(
   if (metadata.opencodeSessionId) data["opencodeSessionId"] = metadata.opencodeSessionId;
   if (metadata.pinnedSummary) data["pinnedSummary"] = metadata.pinnedSummary;
   if (metadata.userPrompt) data["userPrompt"] = metadata.userPrompt;
+  if (metadata.displayName) data["displayName"] = metadata.displayName;
 
   atomicWriteFileSync(path, serializeMetadata(data));
 }

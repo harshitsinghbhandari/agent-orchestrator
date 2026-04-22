@@ -135,6 +135,21 @@ describe("writeMetadata + readMetadata", () => {
     const parsed = JSON.parse(content);
     expect(parsed.pinnedSummary).toBe("First quality summary");
   });
+
+  it("serializes and reads back displayName", () => {
+    writeMetadata(dataDir, "app-6", {
+      worktree: "/tmp/w",
+      branch: "feat/test",
+      status: "working",
+      displayName: "Refactor session manager",
+    });
+
+    const content = readFileSync(join(dataDir, "app-6"), "utf-8");
+    expect(content).toContain("displayName=Refactor session manager\n");
+
+    const parsed = readMetadata(dataDir, "app-6");
+    expect(parsed?.displayName).toBe("Refactor session manager");
+  });
 });
 
 describe("readMetadataRaw", () => {
