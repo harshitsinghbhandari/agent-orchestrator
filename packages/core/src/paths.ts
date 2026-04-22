@@ -89,8 +89,23 @@ export function generateSessionPrefix(projectId: string): string {
 // V2 PATH FUNCTIONS (projects/{projectId}/ layout)
 // =============================================================================
 
+/** Validate a projectId is safe for use as a directory name. */
+function assertSafeProjectId(projectId: string): void {
+  if (
+    !projectId ||
+    projectId === "." ||
+    projectId === ".." ||
+    projectId.includes("/") ||
+    projectId.includes("\\") ||
+    projectId.includes("\0")
+  ) {
+    throw new Error(`Unsafe project ID: "${projectId}"`);
+  }
+}
+
 /** Get the project directory by project ID. */
 export function getProjectDir(projectId: string): string {
+  assertSafeProjectId(projectId);
   return join(getAoBaseDir(), "projects", projectId);
 }
 

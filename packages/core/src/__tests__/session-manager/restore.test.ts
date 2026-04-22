@@ -59,7 +59,7 @@ describe("restore", () => {
       issue: "TEST-1",
       pr: "https://github.com/org/my-app/pull/10",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -112,7 +112,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithFailingDestroy });
@@ -153,7 +153,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "terminated",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithRestore });
@@ -226,7 +226,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryNoRestore });
@@ -246,7 +246,7 @@ describe("restore", () => {
       issue: "TEST-1",
       pr: "https://github.com/org/my-app/pull/10",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     // Archive it (deleteMetadata with archive=true is the default)
@@ -321,7 +321,7 @@ describe("restore", () => {
       status: "killed",
       project: "my-app",
       agent: "opencode",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
     deleteMetadata(sessionsDir, "app-1");
 
@@ -342,7 +342,7 @@ describe("restore", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_archive_valid",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
     deleteMetadata(sessionsDir, "app-1", true);
 
@@ -375,7 +375,7 @@ describe("restore", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses bad id",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -410,7 +410,7 @@ describe("restore", () => {
       status: "killed",
       project: "my-app",
       role: "orchestrator",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({
@@ -446,7 +446,7 @@ describe("restore", () => {
       branch: "feat/TEST-SUBAGENT",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config: configWithSubagent, registry: mockRegistry });
@@ -481,7 +481,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "errored",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithAgentRestore });
@@ -517,7 +517,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithNullRestore });
@@ -558,7 +558,7 @@ describe("restore", () => {
       role: "orchestrator",
       agent: "opencode",
       opencodeSessionId: "ses_restore",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const configWithOpenCode: OrchestratorConfig = {
@@ -625,7 +625,7 @@ describe("restore", () => {
       role: "orchestrator",
       agent: "opencode",
       opencodeSessionId: "ses_restore",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const configWithOpenCode: OrchestratorConfig = {
@@ -666,7 +666,7 @@ describe("restore", () => {
       pr: "https://github.com/org/my-app/pull/99",
       summary: "Implementing feature X",
       createdAt: originalCreatedAt,
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -704,7 +704,7 @@ describe("restore", () => {
       branch: "feat/TEST-77",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithNoopPostLaunch });
@@ -745,7 +745,7 @@ describe("restore", () => {
       branch: "feat/TEST-78",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithMetadataUpdate });

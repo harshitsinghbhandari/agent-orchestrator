@@ -494,7 +494,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       decision: LifecycleDecision = {
         status: deriveLegacyStatus(lifecycle, session.status),
         evidence: "lifecycle_commit",
-        detectingAttempts: currentDetectingAttempts,
+        detecting: { attempts: currentDetectingAttempts },
       },
     ): DeterminedStatus => {
       commitLifecycleDecisionInPlace(lifecycle, decision, nowIso);
@@ -504,9 +504,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return {
         status: decision.status,
         evidence: decision.evidence,
-        detectingAttempts: decision.detectingAttempts,
-        detectingStartedAt: decision.detectingStartedAt,
-        detectingEvidenceHash: decision.detectingEvidenceHash,
+        detectingAttempts: decision.detecting.attempts,
+        detectingStartedAt: decision.detecting.startedAt,
+        detectingEvidenceHash: decision.detecting.evidenceHash,
       };
     };
 
@@ -580,7 +580,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             return commit({
               status: SESSION_STATUS.NEEDS_INPUT,
               evidence: activityEvidence,
-              detectingAttempts: 0,
+              detecting: { attempts: 0 },
               sessionState: "needs_input",
               sessionReason: "awaiting_user_input",
             });
@@ -608,7 +608,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               return commit({
                 status: SESSION_STATUS.NEEDS_INPUT,
                 evidence: activityEvidence,
-                detectingAttempts: 0,
+                detecting: { attempts: 0 },
                 sessionState: "needs_input",
                 sessionReason: "awaiting_user_input",
               });
@@ -641,7 +641,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           return commit({
             status: session.status,
             evidence: activityEvidence,
-            detectingAttempts: currentDetectingAttempts,
+            detecting: { attempts: currentDetectingAttempts },
           });
         }
         return commit(
@@ -694,7 +694,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       !session.pr &&
       scm &&
       session.branch &&
-      session.metadata["prAutoDetect"] !== "off" &&
+      session.metadata["prAutoDetect"] !== "off" && session.metadata["prAutoDetect"] !== "false" &&
       session.metadata["role"] !== "orchestrator" &&
       !session.id.endsWith("-orchestrator")
     ) {
@@ -833,7 +833,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           session.status,
         ),
         evidence: `agent_report:${agentReport.state}`,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: mapped.sessionState,
         sessionReason: mapped.sessionReason,
       });
@@ -847,7 +847,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return commit({
         status: SESSION_STATUS.STUCK,
         evidence: `idle_beyond_threshold ${activityEvidence}`,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "stuck",
         sessionReason: idleWasBlocked ? "error_in_process" : "probe_failure",
       });
@@ -873,7 +873,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         return commit({
           status: SESSION_STATUS.DETECTING,
           evidence: activityEvidence,
-          detectingAttempts: 0,
+          detecting: { attempts: 0 },
           sessionState: "detecting",
           sessionReason: "probe_failure",
         });
@@ -882,7 +882,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return commit({
         status: deriveLegacyStatus(lifecycle, session.status),
         evidence: activityEvidence,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
       });
     }
 
@@ -895,7 +895,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return commit({
         status: SESSION_STATUS.WORKING,
         evidence: activityEvidence,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "working",
         sessionReason: "task_in_progress",
       });
@@ -904,7 +904,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     return commit({
       status: session.status,
       evidence: activityEvidence,
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
     });
   }
 
@@ -1642,7 +1642,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const previousPRState = session.lifecycle.pr.state;
     const assessment = await determineStatus(session);
     const newStatus = assessment.status;
-    const lifecycleChanged = session.metadata["statePayload"] !== JSON.stringify(session.lifecycle);
+    const lifecycleChanged = session.metadata["lifecycle"] !== JSON.stringify(session.lifecycle);
     let transitionReaction: { key: string; result: ReactionResult | null } | undefined;
 
     const nextLifecycleEvidence = assessment.evidence;

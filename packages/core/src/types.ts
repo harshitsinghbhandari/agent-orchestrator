@@ -1630,22 +1630,23 @@ export interface SessionMetadata {
   worktree: string;
   branch: string;
   status: string;
-  stateVersion?: string;
-  statePayload?: string;
+  lifecycle?: CanonicalSessionLifecycle;
   tmuxName?: string; // Globally unique tmux session name (includes hash)
   issue?: string;
   pr?: string;
-  prAutoDetect?: "on" | "off";
+  prAutoDetect?: boolean;
   summary?: string;
   project?: string;
   agent?: string; // Agent plugin name (e.g. "codex", "claude-code") — persisted for lifecycle
   createdAt?: string;
-  runtimeHandle?: string;
+  runtimeHandle?: RuntimeHandle;
   restoredAt?: string;
   role?: string; // "orchestrator" for orchestrator sessions
-  dashboardPort?: number;
-  terminalWsPort?: number;
-  directTerminalWsPort?: number;
+  dashboard?: {
+    port?: number;
+    terminalWsPort?: number;
+    directTerminalWsPort?: number;
+  };
   opencodeSessionId?: string;
   pinnedSummary?: string; // First quality summary, pinned for display stability
   userPrompt?: string; // Prompt used when spawning without a tracker issue

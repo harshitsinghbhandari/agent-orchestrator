@@ -349,3 +349,17 @@ export {
   resolvePortfolioSession,
   derivePortfolioProjectId,
 } from "./portfolio-routing.js";
+
+// Storage V2 migration — one-time converter from hash-based to projectId-based layout
+export {
+  migrateStorage,
+  rollbackStorage,
+  inventoryHashDirs,
+  convertKeyValueToJson,
+} from "./migration/storage-v2.js";
+export type {
+  MigrationOptions,
+  MigrationResult,
+  RollbackOptions,
+  HashDirEntry,
+} from "./migration/storage-v2.js";

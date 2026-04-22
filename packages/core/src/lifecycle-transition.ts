@@ -118,8 +118,7 @@ export function buildTransitionMetadataPatch(
   previousStatus: SessionStatus,
 ): Record<string, string> {
   const patch: Record<string, string> = {
-    stateVersion: "2",
-    statePayload: JSON.stringify(lifecycle),
+    lifecycle: JSON.stringify(lifecycle),
     status: deriveLegacyStatus(lifecycle, previousStatus),
   };
 
@@ -129,20 +128,20 @@ export function buildTransitionMetadataPatch(
   }
 
   // Include detecting metadata
-  if (decision.detectingAttempts > 0) {
-    patch["detectingAttempts"] = String(decision.detectingAttempts);
+  if (decision.detecting.attempts > 0) {
+    patch["detectingAttempts"] = String(decision.detecting.attempts);
   } else {
     patch["detectingAttempts"] = "";
   }
 
-  if (decision.detectingStartedAt) {
-    patch["detectingStartedAt"] = decision.detectingStartedAt;
+  if (decision.detecting.startedAt) {
+    patch["detectingStartedAt"] = decision.detecting.startedAt;
   } else {
     patch["detectingStartedAt"] = "";
   }
 
-  if (decision.detectingEvidenceHash) {
-    patch["detectingEvidenceHash"] = decision.detectingEvidenceHash;
+  if (decision.detecting.evidenceHash) {
+    patch["detectingEvidenceHash"] = decision.detecting.evidenceHash;
   } else {
     patch["detectingEvidenceHash"] = "";
   }
@@ -295,7 +294,7 @@ export function createStateTransitionDecision(
   return {
     status,
     evidence,
-    detectingAttempts: 0,
+    detecting: { attempts: 0 },
     sessionState: state,
     sessionReason: reason,
   };

@@ -399,9 +399,11 @@ export function parseCanonicalLifecycle(
   options: ParseCanonicalLifecycleOptions = {},
 ): CanonicalSessionLifecycle {
   const parsed =
-    meta["statePayload"] && meta["stateVersion"] === "2"
-      ? safeJsonParse<unknown>(meta["statePayload"])
-      : null;
+    meta["lifecycle"]
+      ? safeJsonParse<unknown>(meta["lifecycle"])
+      : meta["statePayload"] && meta["stateVersion"] === "2"
+        ? safeJsonParse<unknown>(meta["statePayload"])
+        : null;
   const validated = CanonicalSessionLifecycleSchema.safeParse(parsed);
   if (validated.success) {
     return normalizePayloadLifecycle(validated.data, meta, options);
@@ -467,8 +469,7 @@ export function buildLifecycleMetadataPatch(
   previousStatus?: SessionStatus,
 ): Partial<Record<string, string>> {
   return {
-    stateVersion: "2",
-    statePayload: JSON.stringify(lifecycle),
+    lifecycle: JSON.stringify(lifecycle),
     status: deriveLegacyStatus(lifecycle, previousStatus),
     pr: lifecycle.pr.url ?? "",
     runtimeHandle: lifecycle.runtime.handle ? JSON.stringify(lifecycle.runtime.handle) : "",

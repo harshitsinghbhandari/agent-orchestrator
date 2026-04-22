@@ -48,7 +48,7 @@ describe("metadata lifecycle (real filesystem)", () => {
       summary: "Implementing feature INT-100",
       project: "my-project",
       createdAt: "2026-01-01T00:00:00.000Z",
-      dashboardPort: 4000,
+      dashboard: { port: 4000 },
     };
 
     writeMetadata(sessionsDir, "session-1", metadata);
@@ -64,7 +64,7 @@ describe("metadata lifecycle (real filesystem)", () => {
     expect(result!.summary).toBe(metadata.summary);
     expect(result!.project).toBe(metadata.project);
     expect(result!.createdAt).toBe(metadata.createdAt);
-    expect(result!.dashboardPort).toBe(4000);
+    expect(result!.dashboard?.port).toBe(4000);
   });
 
   it("readMetadataRaw returns all key-value pairs", () => {
@@ -301,8 +301,8 @@ describe("metadata lifecycle (real filesystem)", () => {
     });
   });
 
-  describe("dashboardPort serialization", () => {
-    it("preserves dashboardPort through write/read cycle", () => {
+  describe("dashboard port serialization", () => {
+    it("preserves dashboard ports through write/read cycle", () => {
       const sessionsDir = join(tmpDir, "test-dashboard-port");
       mkdirSync(sessionsDir, { recursive: true });
 
@@ -310,14 +310,14 @@ describe("metadata lifecycle (real filesystem)", () => {
         worktree: "/w",
         branch: "main",
         status: "working",
-        dashboardPort: 4567,
+        dashboard: { port: 4567 },
       });
 
       const result = readMetadata(sessionsDir, "port-session");
-      expect(result!.dashboardPort).toBe(4567);
+      expect(result!.dashboard?.port).toBe(4567);
     });
 
-    it("omits dashboardPort when undefined", () => {
+    it("omits dashboard when undefined", () => {
       const sessionsDir = join(tmpDir, "test-no-dashboard-port");
       mkdirSync(sessionsDir, { recursive: true });
 
@@ -328,10 +328,10 @@ describe("metadata lifecycle (real filesystem)", () => {
       });
 
       const raw = readMetadataRaw(sessionsDir, "no-port-session");
-      expect(raw!["dashboardPort"]).toBeUndefined();
+      expect(raw!["dashboard"]).toBeUndefined();
 
       const result = readMetadata(sessionsDir, "no-port-session");
-      expect(result!.dashboardPort).toBeUndefined();
+      expect(result!.dashboard).toBeUndefined();
     });
   });
 });

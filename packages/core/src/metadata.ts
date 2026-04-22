@@ -22,7 +22,7 @@ import {
   constants,
 } from "node:fs";
 import { join, dirname } from "node:path";
-import type { CanonicalSessionLifecycle, SessionId, SessionMetadata, SessionStatus } from "./types.js";
+import type { CanonicalSessionLifecycle, RuntimeHandle, SessionId, SessionMetadata, SessionStatus } from "./types.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
 import {
   buildLifecycleMetadataPatch,
@@ -43,6 +43,71 @@ function serializeMetadata(data: Record<string, unknown>): string {
 /** Parse JSON metadata file content. */
 function parseMetadataContent(content: string): Record<string, unknown> {
   return JSON.parse(content) as Record<string, unknown>;
+}
+
+/**
+ * Extract the lifecycle object from raw metadata.
+ * Supports both V2 format ("lifecycle" key) and legacy format ("statePayload" + "stateVersion").
+ */
+function parseLifecycleField(raw: Record<string, unknown>): CanonicalSessionLifecycle | undefined {
+  // V2 format: lifecycle is stored directly as an object
+  if (raw["lifecycle"] && typeof raw["lifecycle"] === "object") {
+    return raw["lifecycle"] as CanonicalSessionLifecycle;
+  }
+  // Legacy format: statePayload is a JSON string or pre-parsed object
+  if (raw["statePayload"] && raw["stateVersion"] === "2") {
+    if (typeof raw["statePayload"] === "object") {
+      return raw["statePayload"] as CanonicalSessionLifecycle;
+    }
+    if (typeof raw["statePayload"] === "string") {
+      try {
+        return JSON.parse(raw["statePayload"]) as CanonicalSessionLifecycle;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Parse a runtimeHandle from raw metadata (may be object or JSON string). */
+function parseRuntimeHandleField(value: unknown): RuntimeHandle | undefined {
+  if (typeof value === "object" && value !== null) {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj["id"] === "string" && typeof obj["runtimeName"] === "string") {
+      return value as RuntimeHandle;
+    }
+    return undefined;
+  }
+  if (typeof value === "string" && value) {
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>;
+      if (typeof parsed["id"] === "string" && typeof parsed["runtimeName"] === "string") {
+        return parsed as unknown as RuntimeHandle;
+      }
+    } catch { /* not valid JSON */ }
+  }
+  return undefined;
+}
+
+function parseDashboardField(raw: Record<string, unknown>): SessionMetadata["dashboard"] {
+  // New format: nested dashboard object
+  if (typeof raw["dashboard"] === "object" && raw["dashboard"] !== null) {
+    const d = raw["dashboard"] as Record<string, unknown>;
+    return {
+      port: typeof d["port"] === "number" ? d["port"] : undefined,
+      terminalWsPort: typeof d["terminalWsPort"] === "number" ? d["terminalWsPort"] : undefined,
+      directTerminalWsPort: typeof d["directTerminalWsPort"] === "number" ? d["directTerminalWsPort"] : undefined,
+    };
+  }
+  // Legacy format: flat fields
+  const port = typeof raw["dashboardPort"] === "number" ? raw["dashboardPort"] : undefined;
+  const terminalWsPort = typeof raw["terminalWsPort"] === "number" ? raw["terminalWsPort"] : undefined;
+  const directTerminalWsPort = typeof raw["directTerminalWsPort"] === "number" ? raw["directTerminalWsPort"] : undefined;
+  if (port !== undefined || terminalWsPort !== undefined || directTerminalWsPort !== undefined) {
+    return { port, terminalWsPort, directTerminalWsPort };
+  }
+  return undefined;
 }
 
 function validateSessionId(sessionId: SessionId): void {
@@ -74,25 +139,17 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
     issue: raw["issue"] as string | undefined,
     pr: raw["pr"] as string | undefined,
     prAutoDetect:
-      raw["prAutoDetect"] === "off" ? "off" : raw["prAutoDetect"] === "on" ? "on" : undefined,
+      raw["prAutoDetect"] === "off" || raw["prAutoDetect"] === false ? false :
+      raw["prAutoDetect"] === "on" || raw["prAutoDetect"] === true ? true : undefined,
     summary: raw["summary"] as string | undefined,
     project: raw["project"] as string | undefined,
     agent: raw["agent"] as string | undefined,
     createdAt: raw["createdAt"] as string | undefined,
-    runtimeHandle: typeof raw["runtimeHandle"] === "object" && raw["runtimeHandle"] !== null
-      ? JSON.stringify(raw["runtimeHandle"])
-      : raw["runtimeHandle"] as string | undefined,
-    stateVersion: raw["stateVersion"] as string | undefined,
-    statePayload: typeof raw["statePayload"] === "object" && raw["statePayload"] !== null
-      ? JSON.stringify(raw["statePayload"])
-      : raw["statePayload"] as string | undefined,
+    runtimeHandle: parseRuntimeHandleField(raw["runtimeHandle"]),
+    lifecycle: parseLifecycleField(raw),
     restoredAt: raw["restoredAt"] as string | undefined,
     role: raw["role"] as string | undefined,
-    dashboardPort: typeof raw["dashboardPort"] === "number" ? raw["dashboardPort"] : undefined,
-    terminalWsPort: typeof raw["terminalWsPort"] === "number" ? raw["terminalWsPort"] : undefined,
-    directTerminalWsPort: typeof raw["directTerminalWsPort"] === "number"
-      ? raw["directTerminalWsPort"]
-      : undefined,
+    dashboard: parseDashboardField(raw),
     opencodeSessionId: raw["opencodeSessionId"] as string | undefined,
     pinnedSummary: raw["pinnedSummary"] as string | undefined,
     userPrompt: raw["userPrompt"] as string | undefined,
@@ -133,12 +190,15 @@ function flattenToStringRecord(data: Record<string, unknown>): Record<string, st
 /** Unflatten a Record<string, string> to proper types for JSON storage. */
 function unflattenFromStringRecord(data: Record<string, string>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
-  const jsonFields = new Set(["runtimeHandle", "statePayload"]);
+  const jsonFields = new Set(["runtimeHandle", "lifecycle", "statePayload", "dashboard"]);
   const numberFields = new Set(["dashboardPort", "terminalWsPort", "directTerminalWsPort"]);
+  const booleanFields = new Set(["prAutoDetect"]);
 
   for (const [key, value] of Object.entries(data)) {
     if (value === undefined || value === "") continue;
-    if (jsonFields.has(key)) {
+    if (booleanFields.has(key)) {
+      result[key] = value === "on" || value === "true" ? true : value === "off" || value === "false" ? false : value;
+    } else if (jsonFields.has(key)) {
       try {
         result[key] = JSON.parse(value);
       } catch {
@@ -174,32 +234,16 @@ export function writeMetadata(
   if (metadata.tmuxName) data["tmuxName"] = metadata.tmuxName;
   if (metadata.issue) data["issue"] = metadata.issue;
   if (metadata.pr) data["pr"] = metadata.pr;
-  if (metadata.prAutoDetect) data["prAutoDetect"] = metadata.prAutoDetect;
+  if (metadata.prAutoDetect !== undefined) data["prAutoDetect"] = metadata.prAutoDetect;
   if (metadata.summary) data["summary"] = metadata.summary;
   if (metadata.project) data["project"] = metadata.project;
   if (metadata.agent) data["agent"] = metadata.agent;
   if (metadata.createdAt) data["createdAt"] = metadata.createdAt;
-  if (metadata.runtimeHandle) {
-    try {
-      data["runtimeHandle"] = JSON.parse(metadata.runtimeHandle);
-    } catch {
-      data["runtimeHandle"] = metadata.runtimeHandle;
-    }
-  }
-  if (metadata.stateVersion) data["stateVersion"] = metadata.stateVersion;
-  if (metadata.statePayload) {
-    try {
-      data["statePayload"] = JSON.parse(metadata.statePayload);
-    } catch {
-      data["statePayload"] = metadata.statePayload;
-    }
-  }
+  if (metadata.runtimeHandle) data["runtimeHandle"] = metadata.runtimeHandle;
+  if (metadata.lifecycle) data["lifecycle"] = metadata.lifecycle;
   if (metadata.restoredAt) data["restoredAt"] = metadata.restoredAt;
   if (metadata.role) data["role"] = metadata.role;
-  if (metadata.dashboardPort !== undefined) data["dashboardPort"] = metadata.dashboardPort;
-  if (metadata.terminalWsPort !== undefined) data["terminalWsPort"] = metadata.terminalWsPort;
-  if (metadata.directTerminalWsPort !== undefined)
-    data["directTerminalWsPort"] = metadata.directTerminalWsPort;
+  if (metadata.dashboard) data["dashboard"] = metadata.dashboard;
   if (metadata.opencodeSessionId) data["opencodeSessionId"] = metadata.opencodeSessionId;
   if (metadata.pinnedSummary) data["pinnedSummary"] = metadata.pinnedSummary;
   if (metadata.userPrompt) data["userPrompt"] = metadata.userPrompt;

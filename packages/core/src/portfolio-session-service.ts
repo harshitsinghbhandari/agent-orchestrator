@@ -7,11 +7,15 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { isOrchestratorSession, type PortfolioProject, type PortfolioSession, type Session, type SessionMetadata } from "./types.js";
+import { isOrchestratorSession, type CanonicalSessionLifecycle, type PortfolioProject, type PortfolioSession, type RuntimeHandle, type Session, type SessionMetadata } from "./types.js";
 import { getProjectSessionsDir } from "./paths.js";
 import { sessionFromMetadata } from "./utils/session-from-metadata.js";
 
 const JSON_EXTENSION = ".json";
+
+function tryParseJson<T>(value: string): T | undefined {
+  try { return JSON.parse(value) as T; } catch { return undefined; }
+}
 
 /** Flatten a JSON object to Record<string, string> for backward compat with metadata consumers. */
 function flattenToStringRecord(data: Record<string, unknown>): Record<string, string> {
@@ -110,11 +114,10 @@ function rawToMetadata(raw: Record<string, string>): SessionMetadata {
     project: raw["project"],
     agent: raw["agent"],
     createdAt: raw["createdAt"],
-    runtimeHandle: raw["runtimeHandle"],
+    runtimeHandle: raw["runtimeHandle"] ? tryParseJson<RuntimeHandle>(raw["runtimeHandle"]) : undefined,
     restoredAt: raw["restoredAt"],
     role: raw["role"],
-    stateVersion: raw["stateVersion"],
-    statePayload: raw["statePayload"],
+    lifecycle: raw["lifecycle"] ? tryParseJson<CanonicalSessionLifecycle>(raw["lifecycle"]) : undefined,
   };
 }
 
@@ -124,6 +127,10 @@ function metadataToRecord(metadata: SessionMetadata): Record<string, string> {
   for (const [key, value] of Object.entries(metadata)) {
     if (typeof value === "string") {
       record[key] = value;
+    } else if (typeof value === "object" && value !== null) {
+      record[key] = JSON.stringify(value);
+    } else if (typeof value === "number") {
+      record[key] = String(value);
     }
   }
 
@@ -144,9 +151,7 @@ function metadataToSession(sessionId: string, project: PortfolioProject, metadat
     projectId: project.id,
     status: (metadata.status as Session["status"]) || "spawning",
     activity: null,
-    runtimeHandle: metadata.runtimeHandle
-      ? { id: metadata.runtimeHandle, runtimeName: "tmux", data: {} }
-      : null,
+    runtimeHandle: metadata.runtimeHandle ?? null,
     createdAt: metadata.createdAt ? new Date(metadata.createdAt) : new Date(),
     lastActivityAt: lastActivity,
     restoredAt: metadata.restoredAt ? new Date(metadata.restoredAt) : undefined,

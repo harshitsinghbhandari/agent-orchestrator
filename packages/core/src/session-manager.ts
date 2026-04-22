@@ -43,6 +43,7 @@ import {
   type PluginRegistry,
   type RuntimeHandle,
   type Issue,
+  type CanonicalSessionLifecycle,
   PR_STATE,
 } from "./types.js";
 import {
@@ -244,6 +245,19 @@ async function getTmuxForegroundCommand(sessionName: string): Promise<string | n
     return command.length > 0 ? command : null;
   } catch {
     return null;
+  }
+}
+
+/** Parse lifecycle from raw metadata for writeMetadata (restore path). */
+function parseLifecycleFromRaw(
+  raw: Record<string, string>,
+): CanonicalSessionLifecycle | undefined {
+  const source = raw["lifecycle"] ?? raw["statePayload"];
+  if (!source) return undefined;
+  try {
+    return JSON.parse(source) as CanonicalSessionLifecycle;
+  } catch {
+    return undefined;
   }
 }
 
@@ -465,7 +479,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     if (repaired.raw["pr"]) {
       updates["pr"] = "";
     }
-    if (repaired.raw["prAutoDetect"] !== "off") {
+    if (repaired.raw["prAutoDetect"] !== "off" && repaired.raw["prAutoDetect"] !== "false") {
       updates["prAutoDetect"] = "off";
     }
     if (STALE_PR_OWNERSHIP_STATUSES.has(repaired.raw["status"] ?? "")) {
@@ -515,7 +529,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const duplicatePRAttachments = new Map<string, ActiveSessionRecord[]>();
 
     for (const record of repaired) {
-      if (record.raw["stateVersion"] !== "2" || !record.raw["statePayload"]) {
+      if (!record.raw["lifecycle"] && (!record.raw["statePayload"] || record.raw["stateVersion"] !== "2")) {
         const lifecycle = cloneLifecycle(
           parseCanonicalLifecycle(record.raw, {
             sessionId: record.sessionName,
@@ -1310,7 +1324,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         project: spawnConfig.projectId,
         agent: selection.agentName, // Persist agent name for lifecycle manager
         createdAt: createdAt.toISOString(),
-        runtimeHandle: JSON.stringify(handle),
+        runtimeHandle: handle,
         opencodeSessionId: reusedOpenCodeSessionId,
         userPrompt: spawnConfig.prompt,
       });
@@ -1645,7 +1659,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         project: orchestratorConfig.projectId,
         agent: selection.agentName,
         createdAt: createdAt.toISOString(),
-        runtimeHandle: JSON.stringify(handle),
+        runtimeHandle: handle,
         opencodeSessionId: reusableOpenCodeSessionId,
       });
 
@@ -2425,7 +2439,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
       const samePr = otherRaw["pr"] === pr.url;
       const sameBranch =
-        otherRaw["branch"] === pr.branch && (otherRaw["prAutoDetect"] ?? "on") !== "off";
+        otherRaw["branch"] === pr.branch && (otherRaw["prAutoDetect"] ?? "on") !== "off" && otherRaw["prAutoDetect"] !== "false";
 
       if (samePr || sameBranch) {
         conflictingSessions.add(sessionName);
@@ -2610,19 +2624,19 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         worktree: raw["worktree"] ?? "",
         branch: raw["branch"] ?? "",
         status: raw["status"] ?? "terminated",
-        stateVersion: raw["stateVersion"],
-        statePayload: raw["statePayload"],
+        lifecycle: parseLifecycleFromRaw(raw),
         role: raw["role"],
         tmuxName: raw["tmuxName"],
         issue: raw["issue"],
         pr: raw["pr"],
         prAutoDetect:
-          raw["prAutoDetect"] === "off" ? "off" : raw["prAutoDetect"] === "on" ? "on" : undefined,
+          raw["prAutoDetect"] === "off" || raw["prAutoDetect"] === "false" ? false :
+          raw["prAutoDetect"] === "on" || raw["prAutoDetect"] === "true" ? true : undefined,
         summary: raw["summary"],
         project: raw["project"],
         agent: raw["agent"],
         createdAt: raw["createdAt"],
-        runtimeHandle: raw["runtimeHandle"],
+        runtimeHandle: raw["runtimeHandle"] ? safeJsonParse<RuntimeHandle>(raw["runtimeHandle"]) ?? undefined : undefined,
         opencodeSessionId: raw["opencodeSessionId"],
         pinnedSummary: raw["pinnedSummary"],
       });

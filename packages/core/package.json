@@ -58,6 +58,10 @@
     "./session-manager": {
       "types": "./dist/session-manager.d.ts",
       "import": "./dist/session-manager.js"
+    },
+    "./migration": {
+      "types": "./dist/migration/storage-v2.d.ts",
+      "import": "./dist/migration/storage-v2.js"
     }
   },
   "files": [

@@ -55,7 +55,7 @@ describe("kill", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -72,7 +72,7 @@ describe("kill", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -88,7 +88,7 @@ describe("kill", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -103,7 +103,7 @@ describe("kill", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -121,7 +121,7 @@ describe("kill", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -154,7 +154,7 @@ describe("kill", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithFail });
@@ -177,7 +177,7 @@ describe("kill", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_keep",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -198,7 +198,7 @@ describe("kill", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_purge",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -220,7 +220,7 @@ describe("kill", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses bad id",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -264,7 +264,7 @@ describe("cleanup", () => {
       status: "pr_open",
       project: "my-app",
       pr: "https://github.com/org/repo/pull/10",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithSCM });
@@ -313,7 +313,7 @@ describe("cleanup", () => {
       agent: "opencode",
       opencodeSessionId: "ses_cleanup",
       pr: "https://github.com/org/repo/pull/10",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithSCM });
@@ -362,7 +362,7 @@ describe("cleanup", () => {
       agent: "opencode",
       opencodeSessionId: "ses_missing",
       pr: "https://github.com/org/repo/pull/10",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithSCM });
@@ -384,7 +384,7 @@ describe("cleanup", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_archived",
-      runtimeHandle: JSON.stringify(makeHandle("rt-6")),
+      runtimeHandle: makeHandle("rt-6"),
     });
     deleteMetadata(sessionsDir, "app-6", true);
 
@@ -425,7 +425,7 @@ describe("cleanup", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     writeMetadata(sessionsDir2, "app-1", {
@@ -435,7 +435,7 @@ describe("cleanup", () => {
       project: "my-app-2",
       agent: "opencode",
       opencodeSessionId: "ses_archived_project2",
-      runtimeHandle: JSON.stringify(makeHandle("rt-2")),
+      runtimeHandle: makeHandle("rt-2"),
     });
     deleteMetadata(sessionsDir2, "app-1", true);
 
@@ -460,7 +460,7 @@ describe("cleanup", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses bad id",
-      runtimeHandle: JSON.stringify(makeHandle("rt-8")),
+      runtimeHandle: makeHandle("rt-8"),
     });
     deleteMetadata(sessionsDir, "app-8", true);
 
@@ -485,7 +485,7 @@ describe("cleanup", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_archived_dry_run",
-      runtimeHandle: JSON.stringify(makeHandle("rt-7")),
+      runtimeHandle: makeHandle("rt-7"),
     });
     deleteMetadata(sessionsDir, "app-7", true);
 
@@ -534,7 +534,7 @@ describe("cleanup", () => {
       status: "working",
       role: "orchestrator",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-orch")),
+      runtimeHandle: makeHandle("rt-orch"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithDead });
@@ -565,7 +565,7 @@ describe("cleanup", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-orch")),
+      runtimeHandle: makeHandle("rt-orch"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithDead });
@@ -634,7 +634,7 @@ describe("cleanup", () => {
       pr: "https://github.com/org/repo/pull/10",
       agent: "opencode",
       opencodeSessionId: "ses_orchestrator_active",
-      runtimeHandle: JSON.stringify(makeHandle("rt-orchestrator")),
+      runtimeHandle: makeHandle("rt-orchestrator"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithSignals });
@@ -658,7 +658,7 @@ describe("cleanup", () => {
       agent: "opencode",
       opencodeSessionId: "ses_orchestrator_archived",
       pr: "https://github.com/org/repo/pull/88",
-      runtimeHandle: JSON.stringify(makeHandle("rt-orchestrator")),
+      runtimeHandle: makeHandle("rt-orchestrator"),
     });
     deleteMetadata(sessionsDir, "app-orchestrator", true);
 
@@ -690,7 +690,7 @@ describe("cleanup", () => {
       branch: "main",
       status: "working",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      runtimeHandle: makeHandle("rt-1"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithDead });

@@ -48,27 +48,30 @@ describe("writeMetadata + readMetadata", () => {
       status: "pr_open",
       issue: "https://linear.app/team/issue/INT-100",
       pr: "https://github.com/org/repo/pull/42",
-      prAutoDetect: "off",
+      prAutoDetect: false,
       summary: "Implementing feature X",
       project: "my-app",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: '{"id":"tmux-1","runtimeName":"tmux"}',
-      stateVersion: "2",
-      statePayload:
-        '{"version":2,"session":{"kind":"worker","state":"working","reason":"task_in_progress","startedAt":"2025-01-01T00:00:00.000Z","completedAt":null,"terminatedAt":null,"lastTransitionAt":"2025-01-01T00:00:00.000Z"},"pr":{"state":"none","reason":"not_created","number":null,"url":null,"lastObservedAt":null},"runtime":{"state":"alive","reason":"process_running","lastObservedAt":"2025-01-01T00:00:00.000Z","handle":{"id":"tmux-1","runtimeName":"tmux","data":{}},"tmuxName":null}}',
+      runtimeHandle: { id: "tmux-1", runtimeName: "tmux", data: {} },
+      lifecycle: {
+        version: 2,
+        session: { kind: "worker", state: "working", reason: "task_in_progress", startedAt: "2025-01-01T00:00:00.000Z", completedAt: null, terminatedAt: null, lastTransitionAt: "2025-01-01T00:00:00.000Z" },
+        pr: { state: "none", reason: "not_created", number: null, url: null, lastObservedAt: null },
+        runtime: { state: "alive", reason: "process_running", lastObservedAt: "2025-01-01T00:00:00.000Z", handle: { id: "tmux-1", runtimeName: "tmux", data: {} }, tmuxName: null },
+      },
     });
 
     const meta = readMetadata(dataDir, "app-2");
     expect(meta).not.toBeNull();
     expect(meta!.issue).toBe("https://linear.app/team/issue/INT-100");
     expect(meta!.pr).toBe("https://github.com/org/repo/pull/42");
-    expect(meta!.prAutoDetect).toBe("off");
+    expect(meta!.prAutoDetect).toBe(false);
     expect(meta!.summary).toBe("Implementing feature X");
     expect(meta!.project).toBe("my-app");
     expect(meta!.createdAt).toBe("2025-01-01T00:00:00.000Z");
-    expect(meta!.runtimeHandle).toBe('{"id":"tmux-1","runtimeName":"tmux"}');
-    expect(meta!.stateVersion).toBe("2");
-    expect(meta!.statePayload).toContain('"version":2');
+    expect(meta!.runtimeHandle?.id).toBe("tmux-1");
+    expect(meta!.lifecycle).toBeDefined();
+    expect(meta!.lifecycle?.version).toBe(2);
   });
 
   it("returns null for nonexistent session", () => {
@@ -97,7 +100,7 @@ describe("writeMetadata + readMetadata", () => {
       worktree: "/tmp/w",
       branch: "main",
       status: "working",
-      runtimeHandle: '{"id":"tmux-1","runtimeName":"tmux"}',
+      runtimeHandle: { id: "tmux-1", runtimeName: "tmux", data: {} },
     });
 
     const content = readFileSync(join(dataDir, "app-json.json"), "utf-8");
@@ -250,14 +253,17 @@ describe("updateMetadata", () => {
 });
 
 describe("readCanonicalLifecycle", () => {
-  it("reads canonical lifecycle from statePayload", () => {
+  it("reads canonical lifecycle from lifecycle field", () => {
     writeMetadata(dataDir, "lifecycle-1", {
       worktree: "/tmp/w",
       branch: "main",
       status: "working",
-      stateVersion: "2",
-      statePayload:
-        '{"version":2,"session":{"kind":"worker","state":"working","reason":"task_in_progress","startedAt":"2025-01-01T00:00:00.000Z","completedAt":null,"terminatedAt":null,"lastTransitionAt":"2025-01-01T00:00:00.000Z"},"pr":{"state":"open","reason":"in_progress","number":42,"url":"https://github.com/org/repo/pull/42","lastObservedAt":"2025-01-01T00:00:00.000Z"},"runtime":{"state":"alive","reason":"process_running","lastObservedAt":"2025-01-01T00:00:00.000Z","handle":{"id":"tmux-1","runtimeName":"tmux","data":{}},"tmuxName":"tmux-1"}}',
+      lifecycle: {
+        version: 2,
+        session: { kind: "worker", state: "working", reason: "task_in_progress", startedAt: "2025-01-01T00:00:00.000Z", completedAt: null, terminatedAt: null, lastTransitionAt: "2025-01-01T00:00:00.000Z" },
+        pr: { state: "open", reason: "in_progress", number: 42, url: "https://github.com/org/repo/pull/42", lastObservedAt: "2025-01-01T00:00:00.000Z" },
+        runtime: { state: "alive", reason: "process_running", lastObservedAt: "2025-01-01T00:00:00.000Z", handle: { id: "tmux-1", runtimeName: "tmux", data: {} }, tmuxName: "tmux-1" },
+      },
     });
 
     const lifecycle = readCanonicalLifecycle(dataDir, "lifecycle-1");

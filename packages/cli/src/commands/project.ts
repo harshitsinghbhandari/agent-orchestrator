@@ -18,7 +18,7 @@ import {
   formatPortfolioProjectName,
   formatPortfolioProjectStatus,
 } from "../lib/portfolio-display.js";
-import { isHumanCaller } from "../lib/caller-context.js";
+
 
 function assertPortfolioEnabled(): void {
   if (isPortfolioEnabled()) return;

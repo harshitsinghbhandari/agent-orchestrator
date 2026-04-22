@@ -17,6 +17,7 @@ paths = [
   ".next/",
   "coverage/",
   "pnpm-lock.yaml",
+  "packages/core/src/__tests__/migration-storage-v2.test.ts",
 ]
 
 regexes = [

@@ -257,7 +257,7 @@ describe("applyAgentReport", () => {
     expect(meta[AGENT_REPORT_METADATA_KEYS.PR_NUMBER]).toBe("42");
     expect(meta[AGENT_REPORT_METADATA_KEYS.PR_IS_DRAFT]).toBe("false");
 
-    const payload = JSON.parse(meta["statePayload"]);
+    const payload = JSON.parse(meta["lifecycle"]);
     expect(payload.session.state).toBe("idle");
     expect(payload.session.reason).toBe("pr_created");
     expect(payload.pr.state).toBe("open");
@@ -277,7 +277,7 @@ describe("applyAgentReport", () => {
     expect(result.legacyStatus).toBe("idle");
 
     const meta = readMetadataRaw(dataDir, sessionId)!;
-    const payload = JSON.parse(meta["statePayload"]);
+    const payload = JSON.parse(meta["lifecycle"]);
     expect(payload.pr.state).toBe("none");
     expect(payload.pr.reason).toBe("not_created");
     expect(meta[AGENT_REPORT_METADATA_KEYS.PR_URL]).toBeUndefined();
@@ -298,7 +298,7 @@ describe("applyAgentReport", () => {
 
     const meta = readMetadataRaw(dataDir, sessionId)!;
     expect(meta[AGENT_REPORT_METADATA_KEYS.PR_IS_DRAFT]).toBe("true");
-    const payload = JSON.parse(meta["statePayload"]);
+    const payload = JSON.parse(meta["lifecycle"]);
     expect(payload.session.state).toBe("working");
     expect(payload.pr.state).toBe("open");
     expect(payload.pr.reason).toBe("in_progress");
@@ -322,7 +322,7 @@ describe("applyAgentReport", () => {
 
     const meta = readMetadataRaw(dataDir, sessionId)!;
     expect(meta[AGENT_REPORT_METADATA_KEYS.PR_IS_DRAFT]).toBe("false");
-    const payload = JSON.parse(meta["statePayload"]);
+    const payload = JSON.parse(meta["lifecycle"]);
     expect(payload.session.state).toBe("idle");
     expect(payload.pr.state).toBe("open");
     expect(payload.pr.reason).toBe("review_pending");
@@ -388,8 +388,8 @@ describe("applyAgentReport", () => {
     applyAgentReport(dataDir, sessionId, { state: "started", now });
     const meta = readMetadataRaw(dataDir, sessionId);
     expect(meta).not.toBeNull();
-    // The canonical payload is stored in statePayload as JSON.
-    const payload = JSON.parse(meta!["statePayload"]);
+    // The canonical payload is stored in lifecycle as JSON.
+    const payload = JSON.parse(meta!["lifecycle"]);
     expect(payload.session.state).toBe("working");
     expect(payload.session.reason).toBe("agent_acknowledged");
     expect(payload.session.startedAt).toBe(now.toISOString());
