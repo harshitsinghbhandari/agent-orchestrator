@@ -1531,10 +1531,27 @@ export function registerStart(program: Command): void {
               console.log(`  PID: ${running.pid} | Up since: ${running.startedAt}`);
               console.log(`  Projects: ${running.projects.join(", ")}\n`);
 
+              // Check if cwd is an unregistered git repo — offer to add it
+              const cwdResolved = resolve(cwd());
+              const cwdIsRegistered = running.projects.some((p) => {
+                try {
+                  const loadedCfg = loadConfig();
+                  const proj = loadedCfg.projects[p];
+                  return proj && resolve(proj.path.replace(/^~/, process.env["HOME"] || "")) === cwdResolved;
+                } catch {
+                  return false;
+                }
+              });
+              const cwdHasGit = existsSync(resolve(cwdResolved, ".git"));
+              const addCwdOption = !cwdIsRegistered && cwdHasGit
+                ? [{ value: "add", label: `Add ${basename(cwdResolved)}`, hint: "register this directory and start" }]
+                : [];
+
               const choice = await promptSelect(
                 "AO is already running. What do you want to do?",
                 [
                   { value: "open", label: "Open dashboard", hint: "Keep the current instance" },
+                  ...addCwdOption,
                   { value: "new", label: "Start new orchestrator", hint: "Add a new session for this project" },
                   { value: "restart", label: "Restart everything", hint: "Stop the current instance first" },
                   { value: "quit", label: "Quit" },
@@ -1545,6 +1562,13 @@ export function registerStart(program: Command): void {
               if (choice === "open") {
                 const url = `http://localhost:${running.port}`;
                 openUrl(url);
+                unlockStartup();
+                process.exit(0);
+              } else if (choice === "add") {
+                const loadedCfg = loadConfig();
+                const addedId = await addProjectToConfig(loadedCfg, cwdResolved);
+                console.log(chalk.green(`\n✓ Added "${addedId}" — open the dashboard to start an orchestrator.\n`));
+                openUrl(`http://localhost:${running.port}`);
                 unlockStartup();
                 process.exit(0);
               } else if (choice === "new") {
