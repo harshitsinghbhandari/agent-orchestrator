@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import {
@@ -259,7 +259,11 @@ export async function DELETE(
     const workspacePluginName = state.project?.workspace ?? state.config.defaults.workspace ?? "worktree";
     await cleanupManagedWorkspaces(id, workspacePluginName);
 
-    rmSync(getProjectDir(id), { recursive: true, force: true });
+    const projectDir = getProjectDir(id);
+    const hadStorageDir = existsSync(projectDir);
+    if (hadStorageDir) {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
     unregisterProject(id);
     invalidatePortfolioServicesCache();
     revalidateProjectPaths(id);
@@ -267,7 +271,7 @@ export async function DELETE(
     return NextResponse.json({
       ok: true,
       projectId: id,
-      removedStorageDir: true,
+      removedStorageDir: hadStorageDir,
     });
   } catch (error) {
     return NextResponse.json(

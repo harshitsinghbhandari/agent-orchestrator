@@ -129,6 +129,8 @@ describe("parseTmuxNameV2", () => {
   it("parses V2 format {prefix}-{num}", () => {
     expect(parseTmuxNameV2("ao-84")).toEqual({ prefix: "ao", num: 84 });
     expect(parseTmuxNameV2("my_app-1")).toEqual({ prefix: "my_app", num: 1 });
+    expect(parseTmuxNameV2("my-app-1")).toEqual({ prefix: "my-app", num: 1 });
+    expect(parseTmuxNameV2("my-app-orchestrator-5")).toEqual({ prefix: "my-app-orchestrator", num: 5 });
   });
 
   it("returns null for invalid formats", () => {

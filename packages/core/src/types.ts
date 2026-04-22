@@ -1616,23 +1616,21 @@ export interface PluginModule<T = unknown> {
 }
 
 // =============================================================================
-// SESSION METADATA (flat file format)
+// SESSION METADATA
 // =============================================================================
 
 /**
- * Session metadata stored as flat key=value files.
- * Matches the existing bash script format for backwards compatibility.
+ * Session metadata stored as JSON files under projects/{projectId}/sessions/.
  *
- * Note: In the new architecture, session files are named with user-facing names
- * (e.g., "int-1") and contain a tmuxName field for the globally unique tmux name
- * (e.g., "a3b4c5d6e7f8-int-1").
+ * Session files are named with user-facing session IDs (e.g., "ao-1.json").
+ * The tmuxName field matches the session ID (e.g., "ao-1") — no hash prefix.
  */
 export interface SessionMetadata {
   worktree: string;
   branch: string;
   status: string;
   lifecycle?: CanonicalSessionLifecycle;
-  tmuxName?: string; // Globally unique tmux session name (includes hash)
+  tmuxName?: string; // Tmux session name (matches session ID, e.g. "ao-1")
   issue?: string;
   pr?: string;
   prAutoDetect?: boolean;

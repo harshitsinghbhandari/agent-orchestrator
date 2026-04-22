@@ -126,7 +126,10 @@ async function registerFlatConfig(configPath: string): Promise<string | null> {
   const defaultBranch = typeof parsed["defaultBranch"] === "string"
     ? parsed["defaultBranch"]
     : await detectDefaultBranch(projectPath, repo ?? null);
-  const prefix = generateSessionPrefix(projectId);
+  // Strip characters invalid in sessionPrefix (Zod: [a-zA-Z0-9_-]+)
+  // so folder names like "my.app" don't produce invalid prefixes.
+  const prefixInput = projectId.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+  const prefix = generateSessionPrefix(prefixInput || projectId);
 
   console.log(chalk.dim(`\n  Registering project "${projectId}" in global config...\n`));
 

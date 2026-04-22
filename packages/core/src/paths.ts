@@ -254,13 +254,15 @@ export function parseTmuxName(tmuxName: string): {
 
 /**
  * Parse a V2 tmux session name (no hash prefix, same as session name).
- * Format: {prefix}-{num} e.g. "ao-84"
+ * Format: {prefix}-{num} e.g. "ao-84", "my-app-1"
+ * Prefix must match sessionPrefix validation: [a-zA-Z][a-zA-Z0-9_-]*
  */
 export function parseTmuxNameV2(tmuxName: string): {
   prefix: string;
   num: number;
 } | null {
-  const match = tmuxName.match(/^([a-zA-Z][a-zA-Z0-9_]*)-(\d+)$/);
+  // Greedy match: prefix is everything up to the last -{num}
+  const match = tmuxName.match(/^([a-zA-Z][a-zA-Z0-9_-]*)-(\d+)$/);
   if (!match) return null;
   return { prefix: match[1], num: parseInt(match[2], 10) };
 }
