@@ -67,7 +67,8 @@ export type CanonicalPRReason =
   | "approved"
   | "merge_ready"
   | "merged"
-  | "closed_unmerged";
+  | "closed_unmerged"
+  | "cleared_on_restore";
 
 export type CanonicalRuntimeState = "unknown" | "alive" | "exited" | "missing" | "probe_failed";
 

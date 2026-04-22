@@ -2837,9 +2837,22 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     restoredLifecycle.runtime.reason = "process_running";
     restoredLifecycle.runtime.handle = handle;
     restoredLifecycle.runtime.lastObservedAt = now;
+
+    // Reset terminal PR state so the lifecycle manager doesn't immediately
+    // re-terminate the session. The old PR is done — if the agent creates
+    // a new one, PR auto-detect will pick it up.
+    if (restoredLifecycle.pr.state === "merged" || restoredLifecycle.pr.state === "closed") {
+      restoredLifecycle.pr.state = "none";
+      restoredLifecycle.pr.reason = "cleared_on_restore";
+      restoredLifecycle.pr.number = null;
+      restoredLifecycle.pr.url = null;
+      restoredLifecycle.pr.lastObservedAt = null;
+    }
+
     updateMetadata(sessionsDir, sessionId, {
       ...buildLifecycleMetadataPatch(restoredLifecycle),
       restoredAt: now,
+      mergedPendingCleanupSince: "",
     });
     invalidateCache();
 
