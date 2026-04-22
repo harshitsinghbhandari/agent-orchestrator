@@ -144,11 +144,12 @@ describe("writeMetadata + readMetadata", () => {
       displayName: "Refactor session manager",
     });
 
-    const content = readFileSync(join(dataDir, "app-6"), "utf-8");
-    expect(content).toContain("displayName=Refactor session manager\n");
+    const content = readFileSync(join(dataDir, "app-6.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(parsed.displayName).toBe("Refactor session manager");
 
-    const parsed = readMetadata(dataDir, "app-6");
-    expect(parsed?.displayName).toBe("Refactor session manager");
+    const meta = readMetadata(dataDir, "app-6");
+    expect(meta?.displayName).toBe("Refactor session manager");
   });
 });
 
