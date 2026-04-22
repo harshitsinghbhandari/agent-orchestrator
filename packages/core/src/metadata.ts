@@ -23,7 +23,7 @@ import {
   constants,
 } from "node:fs";
 import { join, dirname } from "node:path";
-import type { CanonicalSessionLifecycle, RuntimeHandle, SessionId, SessionMetadata, SessionStatus } from "./types.js";
+import type { CanonicalSessionLifecycle, RuntimeHandle, SessionId, SessionMetadata } from "./types.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
 import {
   buildLifecycleMetadataPatch,

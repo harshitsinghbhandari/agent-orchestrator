@@ -830,7 +830,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               reason: mapped.sessionReason,
             },
           },
-          session.status,
         ),
         evidence: `agent_report:${agentReport.state}`,
         detecting: { attempts: 0 },
@@ -1062,7 +1061,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const sessionsDir = getProjectSessionsDir(session.projectId);
     const lifecycleUpdates = buildLifecycleMetadataPatch(
       cloneLifecycle(session.lifecycle),
-      session.status,
     );
     const mergedUpdates = { ...updates, ...lifecycleUpdates };
     updateMetadata(sessionsDir, session.id, mergedUpdates);
