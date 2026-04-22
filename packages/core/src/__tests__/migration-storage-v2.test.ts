@@ -158,8 +158,8 @@ describe("convertKeyValueToJson", () => {
     expect(result["agent"]).toBe("claude-code");
     expect(result["createdAt"]).toBe("2026-04-21T12:00:00.000Z");
     expect(result["branch"]).toBe("session/ao-1");
-    // status is NOT included (computed on read)
-    expect(result).not.toHaveProperty("status");
+    // status preserved for pre-lifecycle sessions (no statePayload)
+    expect(result["status"]).toBe("working");
   });
 
   it("converts statePayload to lifecycle object", () => {
@@ -324,8 +324,8 @@ describe("migrateStorage", () => {
     expect(session.project).toBe("myproject");
     expect(session.agent).toBe("claude-code");
     expect(session.worktree).toBe(join(aoBaseDir, "projects", "myproject", "worktrees", "ao-1"));
-    // status should not be stored
-    expect(session).not.toHaveProperty("status");
+    // status preserved for pre-lifecycle sessions (no statePayload)
+    expect(session.status).toBe("working");
 
     // Old dir should be renamed to .migrated
     expect(existsSync(`${hashDir}.migrated`)).toBe(true);
@@ -336,7 +336,7 @@ describe("migrateStorage", () => {
     expect(configContent).not.toContain("storageKey");
   });
 
-  it("extracts orchestrator session to orchestrator.json", async () => {
+  it("writes orchestrator sessions to sessions/ alongside workers", async () => {
     const hashDir = join(aoBaseDir, "aaaaaa000000-myproject");
     mkdirSync(join(hashDir, "sessions"), { recursive: true });
 
@@ -371,16 +371,14 @@ describe("migrateStorage", () => {
     });
 
     expect(result.projects).toBe(1);
-    expect(result.sessions).toBe(1);
+    // Both orchestrator and worker are counted as sessions
+    expect(result.sessions).toBe(2);
 
-    // Orchestrator file should exist
-    const orchPath = join(aoBaseDir, "projects", "myproject", "orchestrator.json");
-    expect(existsSync(orchPath)).toBe(true);
-    const orch = JSON.parse(readFileSync(orchPath, "utf-8"));
+    // Orchestrator should be in sessions/ (not orchestrator.json)
+    const orchSessionPath = join(aoBaseDir, "projects", "myproject", "sessions", "ao-orchestrator-1.json");
+    expect(existsSync(orchSessionPath)).toBe(true);
+    const orch = JSON.parse(readFileSync(orchSessionPath, "utf-8"));
     expect(orch.role).toBe("orchestrator");
-    // Orchestrator should not have worktree/branch
-    expect(orch).not.toHaveProperty("worktree");
-    expect(orch).not.toHaveProperty("branch");
   });
 
   it("merges multiple hash dirs for the same project", async () => {

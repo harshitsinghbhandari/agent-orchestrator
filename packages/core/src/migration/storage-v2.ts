@@ -334,7 +334,12 @@ export function convertKeyValueToJson(kvContent: string): Record<string, unknown
       result["statePayload"] = kv["statePayload"];
     }
   }
-  // Drop "status" (computed on read) and "stateVersion" (inside lifecycle)
+  // Drop "stateVersion" (inside lifecycle).
+  // Preserve status for pre-lifecycle sessions that have no statePayload —
+  // without it, readMetadata falls through to "unknown".
+  if (!result["lifecycle"] && kv["status"]) {
+    result["status"] = kv["status"];
+  }
 
   // Port fields: string → number
   const portFields: Record<string, string> = {
@@ -430,12 +435,6 @@ interface ProjectMigrationResult {
   sessions: number;
   archives: number;
   worktrees: number;
-  orchestratorExtracted: boolean;
-}
-
-function isOrchestratorSession(metadata: Record<string, unknown>, sessionId: string): boolean {
-  if (metadata["role"] === "orchestrator") return true;
-  return /[-_]orchestrator[-_]\d+$/.test(sessionId);
 }
 
 /**
@@ -489,12 +488,11 @@ function migrateProject(
     sessions: 0,
     archives: 0,
     worktrees: 0,
-    orchestratorExtracted: false,
   };
 
-  // Collect all sessions across hash dirs, tracking best orchestrator
+  // Collect all sessions across hash dirs
   const allSessions = new Map<string, { metadata: Record<string, unknown>; sourcePath: string }>();
-  let bestOrchestrator: { id: string; metadata: Record<string, unknown>; createdAt: string } | null = null;
+  let archiveCounter = 0;
 
   for (const hashDir of hashDirs) {
     const oldSessionsDir = join(hashDir.path, "sessions");
@@ -526,7 +524,7 @@ function migrateProject(
           // Archive the older one
           if (!dryRun) {
             const ts = compactTimestamp(new Date());
-            const archivePath = join(archiveDir, `${sessionId}_${ts}.json`);
+            const archivePath = join(archiveDir, `${sessionId}_${ts}-${archiveCounter++}.json`);
             writeFileSync(archivePath, JSON.stringify(existing.metadata, null, 2) + "\n");
           }
           result.archives++;
@@ -535,7 +533,7 @@ function migrateProject(
           // Archive the newer one (keep existing)
           if (!dryRun) {
             const ts = compactTimestamp(new Date());
-            const archivePath = join(archiveDir, `${sessionId}_${ts}.json`);
+            const archivePath = join(archiveDir, `${sessionId}_${ts}-${archiveCounter++}.json`);
             writeFileSync(archivePath, JSON.stringify(metadata, null, 2) + "\n");
           }
           result.archives++;
@@ -558,7 +556,7 @@ function migrateProject(
         }
 
         const metadata = readAndConvertMetadata(filePath);
-        const fixedName = fixArchiveFilename(file.endsWith(".json") ? file : file);
+        const fixedName = fixArchiveFilename(file);
         const destName = fixedName.endsWith(".json") ? fixedName : `${fixedName}.json`;
         const destPath = join(archiveDir, destName);
 
@@ -594,58 +592,21 @@ function migrateProject(
     }
   }
 
-  // Identify orchestrators and write sessions
+  // Write all sessions to sessions/ (including orchestrators — runtime reads from sessions/)
   for (const [sessionId, { metadata }] of allSessions) {
-    if (isOrchestratorSession(metadata, sessionId)) {
-      const createdAt = String(metadata["createdAt"] ?? "");
-      if (!bestOrchestrator || createdAt > bestOrchestrator.createdAt) {
-        // Archive previous best orchestrator
-        if (bestOrchestrator && !dryRun) {
-          const ts = compactTimestamp(new Date());
-          const archivePath = join(archiveDir, `${bestOrchestrator.id}_${ts}.json`);
-          writeFileSync(archivePath, JSON.stringify(bestOrchestrator.metadata, null, 2) + "\n");
-          result.archives++;
-        }
-        bestOrchestrator = { id: sessionId, metadata, createdAt };
-      } else {
-        // Archive this orchestrator
-        if (!dryRun) {
-          const ts = compactTimestamp(new Date());
-          const archivePath = join(archiveDir, `${sessionId}_${ts}.json`);
-          writeFileSync(archivePath, JSON.stringify(metadata, null, 2) + "\n");
-        }
-        result.archives++;
+    // Update worktree path to new V2 location
+    if (typeof metadata["worktree"] === "string" && metadata["worktree"]) {
+      const worktreePath = metadata["worktree"];
+      if (worktreePath.startsWith("/") || worktreePath.startsWith("~")) {
+        metadata["worktree"] = join(worktreesDir, sessionId);
       }
-    } else {
-      // Worker session — update worktree path to new V2 location
-      if (typeof metadata["worktree"] === "string" && metadata["worktree"]) {
-        const worktreePath = metadata["worktree"];
-        if (worktreePath.startsWith("/") || worktreePath.startsWith("~")) {
-          metadata["worktree"] = join(worktreesDir, sessionId);
-        }
-      }
-
-      if (!dryRun) {
-        const destPath = join(sessionsDir, `${sessionId}.json`);
-        writeFileSync(destPath, JSON.stringify(metadata, null, 2) + "\n");
-      }
-      result.sessions++;
     }
-  }
-
-  // Write orchestrator
-  if (bestOrchestrator) {
-    const orchMetadata = bestOrchestrator.metadata;
-    // Orchestrators don't have worktrees
-    delete orchMetadata["worktree"];
-    delete orchMetadata["branch"];
 
     if (!dryRun) {
-      const orchPath = join(projectDir, "orchestrator.json");
-      writeFileSync(orchPath, JSON.stringify(orchMetadata, null, 2) + "\n");
+      const destPath = join(sessionsDir, `${sessionId}.json`);
+      writeFileSync(destPath, JSON.stringify(metadata, null, 2) + "\n");
     }
-    result.orchestratorExtracted = true;
-    log(`  Extracted orchestrator: ${bestOrchestrator.id}`);
+    result.sessions++;
   }
 
   return result;
