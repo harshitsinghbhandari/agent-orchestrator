@@ -1865,20 +1865,36 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     }
     const { raw, sessionsDir, project, projectId } = located;
 
-    // Idempotency: if lifecycle already says terminated, don't re-run destroys
-    // (which could double-purge opencode or race with concurrent archives).
+    // Idempotency: if lifecycle already says terminated, don't re-run runtime
+    // destroys or opencode purges (which could double-purge or race).
+    // Workspace destruction IS safe to retry (idempotent) and is needed to
+    // drain sessions preserved by a prior skipArchive kill.
     const existingLifecycle = parseCanonicalLifecycle(raw);
     if (existingLifecycle?.session.state === "terminated") {
-      // Lifecycle says terminated but metadata is still in active dir — finish
-      // the archive and return alreadyTerminated so the caller logs a no-op.
       // Skip archiving when skipArchive is set (the session was intentionally
       // kept in the active dir by a prior skipArchive kill).
       if (!options?.skipArchive) {
+        // Destroy workspace if it was preserved by a prior skipArchive kill.
+        // This is idempotent — destroy on an already-gone workspace is a no-op.
+        const worktree = raw["worktree"];
+        if (worktree && shouldDestroyWorkspacePath(project, projectId, worktree)) {
+          const workspacePlugin = project
+            ? resolvePlugins(project).workspace
+            : registry.get<Workspace>("workspace", config.defaults.workspace);
+          if (workspacePlugin) {
+            try {
+              await workspacePlugin.destroy(worktree);
+            } catch {
+              // Workspace might already be gone
+            }
+          }
+        }
         try {
           deleteMetadata(sessionsDir, sessionId, true);
         } catch {
           // Already archived by a racing caller.
         }
+        invalidateCache();
       }
       return { cleaned: false, alreadyTerminated: true };
     }

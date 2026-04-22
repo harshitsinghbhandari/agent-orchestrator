@@ -175,12 +175,13 @@ describe("kill", () => {
     expect(readMetadata(sessionsDir, "app-1")).not.toBeNull();
   });
 
-  it("normal kill after skipArchive kill archives the session", async () => {
-    const wsPath = join(tmpDir, "ws-app-1");
-    mkdirSync(wsPath, { recursive: true });
-
+  it("normal kill after skipArchive kill archives the session and destroys workspace", async () => {
+    const managedWorktree = join(
+      getWorktreesDir(config.projects["my-app"]!.storageKey),
+      "app-1",
+    );
     writeMetadata(sessionsDir, "app-1", {
-      worktree: wsPath,
+      worktree: managedWorktree,
       branch: "feat/work",
       status: "working",
       project: "my-app",
@@ -189,15 +190,21 @@ describe("kill", () => {
 
     const sm = createSessionManager({ config, registry: mockRegistry });
 
-    // First: skipArchive kill — keeps in active dir
+    // First: skipArchive kill — keeps in active dir, workspace preserved
     await sm.kill("app-1", { skipArchive: true });
     expect(readMetadata(sessionsDir, "app-1")).not.toBeNull();
+    expect(mockWorkspace.destroy).not.toHaveBeenCalled();
+
+    // Reset mocks to verify the second kill's side effects
+    vi.mocked(mockWorkspace.destroy).mockClear();
 
     // Second: normal kill (no skipArchive) — drains the preserved session
     const result = await sm.kill("app-1");
     expect(result).toEqual({ cleaned: false, alreadyTerminated: true });
     // Metadata now archived (removed from active dir)
     expect(readMetadata(sessionsDir, "app-1")).toBeNull();
+    // Workspace destroyed by the drain path
+    expect(mockWorkspace.destroy).toHaveBeenCalledWith(managedWorktree);
   });
 
   it("does not destroy workspace paths outside managed roots", async () => {
