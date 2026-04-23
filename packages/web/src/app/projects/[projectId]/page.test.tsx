@@ -44,7 +44,6 @@ describe("ProjectPage", () => {
       degradedProject: {
         projectId: "broken",
         path: "/tmp/broken",
-        storageKey: "local://broken",
         resolveError: "Local config failed validation",
       },
     });

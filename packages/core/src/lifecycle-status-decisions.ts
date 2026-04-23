@@ -28,11 +28,13 @@ type LifecyclePRReason = CanonicalPRReason;
 interface LifecycleDecision {
   status: SessionStatus;
   evidence: string;
-  detectingAttempts: number;
-  /** ISO timestamp when detecting state was first entered (for time-based escalation). */
-  detectingStartedAt?: string;
-  /** Hash of evidence to detect unchanged evidence across polls. */
-  detectingEvidenceHash?: string;
+  detecting: {
+    attempts: number;
+    /** ISO timestamp when detecting state was first entered (for time-based escalation). */
+    startedAt?: string;
+    /** Hash of evidence to detect unchanged evidence across polls. */
+    evidenceHash?: string;
+  };
   sessionState?: LifecycleSessionState;
   sessionReason?: LifecycleSessionReason;
   prState?: LifecyclePRState;
@@ -148,9 +150,7 @@ export function createDetectingDecision(
     return createLifecycleDecision({
       status: SESSION_STATUS.STUCK,
       evidence: input.evidence,
-      detectingAttempts: attempts,
-      detectingStartedAt,
-      detectingEvidenceHash: evidenceHash,
+      detecting: { attempts, startedAt: detectingStartedAt, evidenceHash },
       sessionState: "stuck",
       sessionReason: input.idleWasBlocked ? "error_in_process" : "probe_failure",
     });
@@ -159,9 +159,7 @@ export function createDetectingDecision(
   return createLifecycleDecision({
     status: SESSION_STATUS.DETECTING,
     evidence: input.evidence,
-    detectingAttempts: attempts,
-    detectingStartedAt,
-    detectingEvidenceHash: evidenceHash,
+    detecting: { attempts, startedAt: detectingStartedAt, evidenceHash },
     sessionState: "detecting",
     sessionReason: input.reason ?? "probe_failure",
   });
@@ -174,7 +172,7 @@ function resolveTerminalPRStateDecision(
     return createLifecycleDecision({
       status: SESSION_STATUS.MERGED,
       evidence: "pr_merged",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "merged",
       prReason: "merged",
       sessionState: "idle",
@@ -186,7 +184,7 @@ function resolveTerminalPRStateDecision(
     return createLifecycleDecision({
       status: SESSION_STATUS.IDLE,
       evidence: "pr_closed",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "closed",
       prReason: "closed_unmerged",
       sessionState: "idle",
@@ -202,7 +200,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
     return createLifecycleDecision({
       status: SESSION_STATUS.CI_FAILED,
       evidence: "ci_failing",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "open",
       prReason: "ci_failing",
       sessionState: "working",
@@ -214,7 +212,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
     return createLifecycleDecision({
       status: SESSION_STATUS.CHANGES_REQUESTED,
       evidence: "review_changes_requested",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "open",
       prReason: "changes_requested",
       sessionState: "working",
@@ -227,7 +225,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
       return createLifecycleDecision({
         status: SESSION_STATUS.MERGEABLE,
         evidence: "merge_ready",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         prState: "open",
         prReason: "merge_ready",
         sessionState: "idle",
@@ -239,7 +237,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
       return createLifecycleDecision({
         status: SESSION_STATUS.APPROVED,
         evidence: "review_approved",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         prState: "open",
         prReason: "approved",
         sessionState: "idle",
@@ -252,7 +250,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
     return createLifecycleDecision({
       status: SESSION_STATUS.REVIEW_PENDING,
       evidence: "review_pending",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "open",
       prReason: "review_pending",
       sessionState: "idle",
@@ -264,7 +262,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
     return createLifecycleDecision({
       status: SESSION_STATUS.STUCK,
       evidence: `idle_beyond_threshold ${input.activityEvidence}`,
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "open",
       prReason: "in_progress",
       sessionState: "stuck",
@@ -275,7 +273,7 @@ function resolveOpenPRDecision(input: OpenPRDecisionInput): LifecycleDecision {
   return createLifecycleDecision({
     status: SESSION_STATUS.PR_OPEN,
     evidence: "pr_open",
-    detectingAttempts: 0,
+    detecting: { attempts: 0 },
     prState: "open",
     prReason: "in_progress",
     sessionState: "idle",
@@ -340,7 +338,7 @@ export function resolveProbeDecision(input: ProbeDecisionInput): LifecycleDecisi
     return createLifecycleDecision({
       status: SESSION_STATUS.KILLED,
       evidence: `runtime_dead process_dead ${input.activityEvidence}`,
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "terminated",
       sessionReason: "runtime_lost",
     });

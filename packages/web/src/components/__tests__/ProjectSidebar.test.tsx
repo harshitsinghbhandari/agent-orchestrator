@@ -164,7 +164,6 @@ describe("ProjectSidebar", () => {
           id: "project-2",
           name: "Project Two",
           path: "/tmp/project-2",
-          storageKey: "storage/project-2",
           repo: "org/project-2",
           defaultBranch: "main",
           agent: "claude-code",

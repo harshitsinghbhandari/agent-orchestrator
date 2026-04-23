@@ -2,14 +2,14 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getSessionsDir } from "../paths.js";
+import { getProjectSessionsDir } from "../paths.js";
 import { getPortfolioSessionCounts, listPortfolioSessions } from "../portfolio-session-service.js";
 import type { PortfolioProject } from "../types.js";
 
-function writeSessionFile(storageKey: string, sessionId: string, lines: string[]): void {
-  const sessionsDir = getSessionsDir(storageKey);
+function writeSessionFile(projectId: string, sessionId: string, data: Record<string, string>): void {
+  const sessionsDir = getProjectSessionsDir(projectId);
   mkdirSync(sessionsDir, { recursive: true });
-  writeFileSync(join(sessionsDir, sessionId), `${lines.join("\n")}\n`, "utf-8");
+  writeFileSync(join(sessionsDir, `${sessionId}.json`), JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
 describe("portfolio-session-service", () => {
@@ -36,7 +36,6 @@ describe("portfolio-session-service", () => {
       configPath: "/tmp/global-config.yaml",
       configProjectKey: "docs",
       repoPath: "/tmp/docs",
-      storageKey: "storage-docs",
       sessionPrefix: "docs",
       source: "config",
       enabled: true,
@@ -47,45 +46,43 @@ describe("portfolio-session-service", () => {
       ...activeProject,
       id: "api",
       name: "API",
-      storageKey: "storage-api",
       enabled: false,
     };
     const degradedProject: PortfolioProject = {
       ...activeProject,
       id: "web",
       name: "Web",
-      storageKey: "storage-web",
       resolveError: "bad config",
     };
 
-    writeSessionFile("storage-docs", "docs-1", [
-      "status=working",
-      "project=docs",
-      "branch=feat/docs",
-      "createdAt=2026-01-01T00:00:00.000Z",
-    ]);
-    writeSessionFile("storage-docs", "docs-2", [
-      "status=merged",
-      "project=docs",
-      "branch=feat/merged",
-      "createdAt=2026-01-02T00:00:00.000Z",
-    ]);
-    writeSessionFile("storage-docs", "docs-orchestrator-1", [
-      "status=working",
-      "project=docs",
-      "role=orchestrator",
-      "createdAt=2026-01-03T00:00:00.000Z",
-    ]);
-    writeSessionFile("storage-api", "api-1", [
-      "status=working",
-      "project=api",
-      "createdAt=2026-01-01T00:00:00.000Z",
-    ]);
-    writeSessionFile("storage-web", "web-1", [
-      "status=working",
-      "project=web",
-      "createdAt=2026-01-01T00:00:00.000Z",
-    ]);
+    writeSessionFile("docs", "docs-1", {
+      status: "working",
+      project: "docs",
+      branch: "feat/docs",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    writeSessionFile("docs", "docs-2", {
+      status: "merged",
+      project: "docs",
+      branch: "feat/merged",
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    writeSessionFile("docs", "docs-orchestrator-1", {
+      status: "working",
+      project: "docs",
+      role: "orchestrator",
+      createdAt: "2026-01-03T00:00:00.000Z",
+    });
+    writeSessionFile("api", "api-1", {
+      status: "working",
+      project: "api",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    writeSessionFile("web", "web-1", {
+      status: "working",
+      project: "web",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
 
     const sessions = await listPortfolioSessions([activeProject, disabledProject, degradedProject]);
 
@@ -100,7 +97,6 @@ describe("portfolio-session-service", () => {
       configPath: "/tmp/global-config.yaml",
       configProjectKey: "docs",
       repoPath: "/tmp/docs",
-      storageKey: "storage-docs",
       sessionPrefix: "docs",
       source: "config",
       enabled: true,
@@ -110,13 +106,12 @@ describe("portfolio-session-service", () => {
     const degraded: PortfolioProject = {
       ...project,
       id: "broken",
-      storageKey: "storage-broken",
       resolveError: "bad config",
     };
 
-    writeSessionFile("storage-docs", "docs-1", ["status=working", "project=docs"]);
-    writeSessionFile("storage-docs", "docs-2", ["status=done", "project=docs"]);
-    writeSessionFile("storage-docs", "docs-orchestrator-1", ["status=working", "project=docs", "role=orchestrator"]);
+    writeSessionFile("docs", "docs-1", { status: "working", project: "docs" });
+    writeSessionFile("docs", "docs-2", { status: "done", project: "docs" });
+    writeSessionFile("docs", "docs-orchestrator-1", { status: "working", project: "docs", role: "orchestrator" });
 
     const counts = await getPortfolioSessionCounts([project, degraded]);
 

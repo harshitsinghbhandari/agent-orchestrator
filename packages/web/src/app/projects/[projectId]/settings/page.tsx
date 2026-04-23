@@ -72,7 +72,6 @@ export default async function ProjectSettingsPage(props: {
             identity: {
               projectId,
               path: project.path,
-              storageKey: project.storageKey ?? "",
               repo: project.repo ?? "",
               defaultBranch: project.defaultBranch,
             },

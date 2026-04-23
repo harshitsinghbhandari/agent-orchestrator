@@ -58,7 +58,6 @@ describe("portfolio-registry", () => {
         canonical: {
           projectId: "canonical",
           path: canonicalRepo,
-          storageKey: "storage-canonical",
           displayName: "Canonical",
         },
       }),
@@ -95,9 +94,9 @@ describe("portfolio-registry", () => {
 
     saveGlobalConfig(
       makeGlobalConfig({
-        docs: { projectId: "docs", path: docsRepo, storageKey: "storage-docs", displayName: "Docs" },
-        api: { projectId: "api", path: apiRepo, storageKey: "storage-api", displayName: "API" },
-        web: { projectId: "web", path: webRepo, storageKey: "storage-web", displayName: "Web" },
+        docs: { projectId: "docs", path: docsRepo, displayName: "Docs" },
+        api: { projectId: "api", path: apiRepo, displayName: "API" },
+        web: { projectId: "web", path: webRepo, displayName: "Web" },
       }),
       globalConfigPath,
     );

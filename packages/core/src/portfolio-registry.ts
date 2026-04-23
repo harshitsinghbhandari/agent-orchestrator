@@ -24,10 +24,8 @@ import {
   loadGlobalConfig,
   loadLocalProjectConfig,
   registerProjectInGlobalConfig,
-  relinkProjectInGlobalConfig,
   saveGlobalConfig,
   type RegisterProjectOptions,
-  type RelinkProjectOptions,
 } from "./global-config.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
 import { loadConfig } from "./config.js";
@@ -238,7 +236,7 @@ function projectFromGlobalConfig(): PortfolioProject[] {
         configPath: config.configPath,
         configProjectKey: id,
         repoPath: project.path,
-        storageKey: project.storageKey,
+
         repo: project.repo,
         defaultBranch: project.defaultBranch,
         sessionPrefix: project.sessionPrefix ?? generateSessionPrefix(id),
@@ -253,7 +251,7 @@ function projectFromGlobalConfig(): PortfolioProject[] {
         configPath: config.configPath,
         configProjectKey: id,
         repoPath: project.path,
-        storageKey: project.storageKey,
+
         sessionPrefix: generateSessionPrefix(id),
         source: "config" as const,
         enabled: true,
@@ -278,7 +276,7 @@ function fallbackPortfolioFromLoadedConfig(): PortfolioProject[] {
         configPath: config.configPath,
         configProjectKey: id,
         repoPath: project.path,
-        storageKey: project.storageKey,
+
         repo: project.repo,
         defaultBranch: project.defaultBranch,
         sessionPrefix: project.sessionPrefix ?? generateSessionPrefix(id),
@@ -293,7 +291,7 @@ function fallbackPortfolioFromLoadedConfig(): PortfolioProject[] {
         configPath: config.configPath,
         configProjectKey: id,
         repoPath: project.path,
-        storageKey: project.storageKey,
+
         sessionPrefix: generateSessionPrefix(id),
         source: "config" as const,
         enabled: true,
@@ -347,14 +345,6 @@ export function registerProject(
 
   const projectId = configProjectKey ?? basename(normalizedRepoPath);
   registerProjectInGlobalConfig(projectId, displayName ?? projectId, normalizedRepoPath, localConfig, options);
-}
-
-export function relinkProject(projectId: string, options?: RelinkProjectOptions): {
-  oldStorageKey: string;
-  storageKey: string;
-  originUrl: string;
-} {
-  return relinkProjectInGlobalConfig(projectId, options);
 }
 
 /** Remove a project from the canonical global config registry. */

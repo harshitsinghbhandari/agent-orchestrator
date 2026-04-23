@@ -8,7 +8,7 @@ import {
 import { join } from "node:path";
 import { createSessionManager } from "../../session-manager.js";
 import { getWorkspaceAgentsMdPath } from "../../opencode-agents-md.js";
-import { getProjectBaseDir } from "../../paths.js";
+import { getProjectDir } from "../../paths.js";
 import {
   writeMetadata,
   readMetadataRaw,
@@ -59,14 +59,14 @@ describe("restore", () => {
       issue: "TEST-1",
       pr: "https://github.com/org/my-app/pull/10",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     const restored = await sm.restore("app-1");
 
     expect(restored.id).toBe("app-1");
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("pr_open");
     expect(restored.activity).toBe("active");
     expect(restored.workspacePath).toBe(wsPath);
     expect(restored.branch).toBe("feat/TEST-1");
@@ -78,7 +78,7 @@ describe("restore", () => {
     expect(mockRuntime.create).toHaveBeenCalled();
     // Verify metadata was updated (not rewritten)
     const meta = readMetadataRaw(sessionsDir, "app-1");
-    expect(meta!["status"]).toBe("spawning");
+    expect(meta!["status"]).toBe("pr_open");
     expect(meta!["restoredAt"]).toBeDefined();
     // Verify original fields are preserved
     expect(meta!["issue"]).toBe("TEST-1");
@@ -112,13 +112,13 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithFailingDestroy });
     const restored = await sm.restore("app-1");
 
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("working");
     expect(failingRuntime.destroy).toHaveBeenCalled();
     expect(failingRuntime.create).toHaveBeenCalled();
   });
@@ -153,7 +153,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "terminated",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithRestore });
@@ -226,7 +226,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryNoRestore });
@@ -246,7 +246,7 @@ describe("restore", () => {
       issue: "TEST-1",
       pr: "https://github.com/org/my-app/pull/10",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     // Archive it (deleteMetadata with archive=true is the default)
@@ -260,7 +260,7 @@ describe("restore", () => {
     const restored = await sm.restore("app-1");
 
     expect(restored.id).toBe("app-1");
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("pr_open");
     expect(restored.branch).toBe("feat/TEST-1");
     expect(restored.workspacePath).toBe(wsPath);
 
@@ -282,7 +282,7 @@ describe("restore", () => {
       project: "my-app",
       issue: "TEST-1",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
       displayName: "Refactor session manager to use flat metadata files",
     });
 
@@ -309,19 +309,20 @@ describe("restore", () => {
 
     // Older archive — has stale branch
     writeFileSync(
-      join(archiveDir, "app-1_2025-01-01T00-00-00-000Z"),
-      "worktree=" + wsPath + "\nbranch=old-branch\nstatus=killed\nproject=my-app\n",
+      join(archiveDir, "app-1_2025-01-01T00-00-00-000Z.json"),
+      JSON.stringify({ worktree: wsPath, branch: "old-branch", status: "killed", project: "my-app" }, null, 2) + "\n",
     );
 
     // Newer archive — has correct branch
     writeFileSync(
-      join(archiveDir, "app-1_2025-06-15T12-00-00-000Z"),
-      "worktree=" +
-        wsPath +
-        "\nbranch=feat/latest\nstatus=killed\nproject=my-app\n" +
-        "runtimeHandle=" +
-        JSON.stringify(makeHandle("rt-old")) +
-        "\n",
+      join(archiveDir, "app-1_2025-06-15T12-00-00-000Z.json"),
+      JSON.stringify({
+        worktree: wsPath,
+        branch: "feat/latest",
+        status: "killed",
+        project: "my-app",
+        runtimeHandle: makeHandle("rt-old"),
+      }, null, 2) + "\n",
     );
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -348,7 +349,7 @@ describe("restore", () => {
       status: "killed",
       project: "my-app",
       agent: "opencode",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
     deleteMetadata(sessionsDir, "app-1");
 
@@ -369,7 +370,7 @@ describe("restore", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_archive_valid",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
     deleteMetadata(sessionsDir, "app-1", true);
 
@@ -402,13 +403,13 @@ describe("restore", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses bad id",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     const restored = await sm.restore("app-1");
 
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("working");
     const meta = readMetadataRaw(sessionsDir, "app-1");
     expect(meta?.["opencodeSessionId"]).toBe("ses_restore_discovered");
   }, 15000);
@@ -437,7 +438,7 @@ describe("restore", () => {
       status: "killed",
       project: "my-app",
       role: "orchestrator",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({
@@ -473,7 +474,7 @@ describe("restore", () => {
       branch: "feat/TEST-SUBAGENT",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config: configWithSubagent, registry: mockRegistry });
@@ -508,7 +509,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "errored",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithAgentRestore });
@@ -544,7 +545,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithNullRestore });
@@ -585,7 +586,7 @@ describe("restore", () => {
       role: "orchestrator",
       agent: "opencode",
       opencodeSessionId: "ses_restore",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const configWithOpenCode: OrchestratorConfig = {
@@ -619,9 +620,9 @@ describe("restore", () => {
     const wsPath = join(tmpDir, "ws-app-orchestrator-opencode-agentsmd");
     mkdirSync(wsPath, { recursive: true });
 
-    const baseDir = getProjectBaseDir(ctx.config.projects["my-app"]!.storageKey);
-    mkdirSync(baseDir, { recursive: true });
-    const promptFile = join(baseDir, "orchestrator-prompt-app-orchestrator.md");
+    const projectDir = getProjectDir("my-app");
+    mkdirSync(projectDir, { recursive: true });
+    const promptFile = join(projectDir, "orchestrator-prompt-app-orchestrator.md");
     const promptContent = "You are the AO orchestrator. Delegate tasks.";
     writeFileSync(promptFile, promptContent, "utf-8");
 
@@ -652,7 +653,7 @@ describe("restore", () => {
       role: "orchestrator",
       agent: "opencode",
       opencodeSessionId: "ses_restore",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const configWithOpenCode: OrchestratorConfig = {
@@ -693,7 +694,7 @@ describe("restore", () => {
       pr: "https://github.com/org/my-app/pull/99",
       summary: "Implementing feature X",
       createdAt: originalCreatedAt,
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -731,14 +732,14 @@ describe("restore", () => {
       branch: "feat/TEST-77",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithNoopPostLaunch });
     await sm.restore("app-1");
 
     const meta = readMetadataRaw(sessionsDir, "app-1");
-    expect(meta!["status"]).toBe("spawning");
+    expect(meta!["status"]).toBe("working");
     expect(meta!["runtimeHandle"]).toBe(JSON.stringify(makeHandle("rt-1")));
     expect(meta!["restoredAt"]).toBeDefined();
   });
@@ -772,14 +773,14 @@ describe("restore", () => {
       branch: "feat/TEST-78",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithMetadataUpdate });
     await sm.restore("app-1");
 
     const meta = readMetadataRaw(sessionsDir, "app-1");
-    expect(meta!["status"]).toBe("spawning");
+    expect(meta!["status"]).toBe("working");
     expect(meta!["runtimeHandle"]).toBe(JSON.stringify(makeHandle("rt-1")));
     expect(meta!["opencodeSessionId"]).toBe("ses_from_post_launch");
   });

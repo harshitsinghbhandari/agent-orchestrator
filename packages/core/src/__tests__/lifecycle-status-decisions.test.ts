@@ -78,7 +78,7 @@ describe("createDetectingDecision", () => {
         ...baseInput,
         currentAttempts: 1,
       });
-      expect(result.detectingAttempts).toBe(2);
+      expect(result.detecting.attempts).toBe(2);
       expect(result.status).toBe("detecting");
     });
 
@@ -90,7 +90,7 @@ describe("createDetectingDecision", () => {
         evidence: "same evidence",
         previousEvidenceHash: evidenceHash,
       });
-      expect(result.detectingAttempts).toBe(3);
+      expect(result.detecting.attempts).toBe(3);
     });
 
     it("resets attempts to 1 when evidence changes", () => {
@@ -101,7 +101,7 @@ describe("createDetectingDecision", () => {
         evidence: "new evidence",
         previousEvidenceHash: oldEvidenceHash,
       });
-      expect(result.detectingAttempts).toBe(1);
+      expect(result.detecting.attempts).toBe(1);
       expect(result.status).toBe("detecting");
     });
   });
@@ -115,7 +115,7 @@ describe("createDetectingDecision", () => {
         previousEvidenceHash: evidenceHash,
       });
       expect(result.status).toBe("stuck");
-      expect(result.detectingAttempts).toBe(DETECTING_MAX_ATTEMPTS + 1);
+      expect(result.detecting.attempts).toBe(DETECTING_MAX_ATTEMPTS + 1);
       expect(result.sessionState).toBe("stuck");
       expect(result.sessionReason).toBe("probe_failure");
     });
@@ -183,21 +183,21 @@ describe("createDetectingDecision", () => {
 
       // Should NOT escalate because evidence changed, resetting the timer
       expect(result.status).toBe("detecting");
-      expect(result.detectingAttempts).toBe(1);
-      expect(result.detectingStartedAt).not.toBe(oldStartedAt);
+      expect(result.detecting.attempts).toBe(1);
+      expect(result.detecting.startedAt).not.toBe(oldStartedAt);
     });
   });
 
   describe("metadata tracking", () => {
     it("includes detectingEvidenceHash in the result", () => {
       const result = createDetectingDecision(baseInput);
-      expect(result.detectingEvidenceHash).toBe(hashEvidence("test evidence"));
+      expect(result.detecting.evidenceHash).toBe(hashEvidence("test evidence"));
     });
 
     it("includes detectingStartedAt in the result", () => {
       const result = createDetectingDecision(baseInput);
-      expect(result.detectingStartedAt).toBeDefined();
-      expect(Date.parse(result.detectingStartedAt!)).not.toBeNaN();
+      expect(result.detecting.startedAt).toBeDefined();
+      expect(Date.parse(result.detecting.startedAt!)).not.toBeNaN();
     });
 
     it("preserves detectingStartedAt when evidence is unchanged", () => {
@@ -212,7 +212,7 @@ describe("createDetectingDecision", () => {
         now,
       });
 
-      expect(result.detectingStartedAt).toBe(previousStartedAt);
+      expect(result.detecting.startedAt).toBe(previousStartedAt);
     });
   });
 });

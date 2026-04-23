@@ -48,27 +48,30 @@ describe("writeMetadata + readMetadata", () => {
       status: "pr_open",
       issue: "https://linear.app/team/issue/INT-100",
       pr: "https://github.com/org/repo/pull/42",
-      prAutoDetect: "off",
+      prAutoDetect: false,
       summary: "Implementing feature X",
       project: "my-app",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: '{"id":"tmux-1","runtimeName":"tmux"}',
-      stateVersion: "2",
-      statePayload:
-        '{"version":2,"session":{"kind":"worker","state":"working","reason":"task_in_progress","startedAt":"2025-01-01T00:00:00.000Z","completedAt":null,"terminatedAt":null,"lastTransitionAt":"2025-01-01T00:00:00.000Z"},"pr":{"state":"none","reason":"not_created","number":null,"url":null,"lastObservedAt":null},"runtime":{"state":"alive","reason":"process_running","lastObservedAt":"2025-01-01T00:00:00.000Z","handle":{"id":"tmux-1","runtimeName":"tmux","data":{}},"tmuxName":null}}',
+      runtimeHandle: { id: "tmux-1", runtimeName: "tmux", data: {} },
+      lifecycle: {
+        version: 2,
+        session: { kind: "worker", state: "working", reason: "task_in_progress", startedAt: "2025-01-01T00:00:00.000Z", completedAt: null, terminatedAt: null, lastTransitionAt: "2025-01-01T00:00:00.000Z" },
+        pr: { state: "none", reason: "not_created", number: null, url: null, lastObservedAt: null },
+        runtime: { state: "alive", reason: "process_running", lastObservedAt: "2025-01-01T00:00:00.000Z", handle: { id: "tmux-1", runtimeName: "tmux", data: {} }, tmuxName: null },
+      },
     });
 
     const meta = readMetadata(dataDir, "app-2");
     expect(meta).not.toBeNull();
     expect(meta!.issue).toBe("https://linear.app/team/issue/INT-100");
     expect(meta!.pr).toBe("https://github.com/org/repo/pull/42");
-    expect(meta!.prAutoDetect).toBe("off");
+    expect(meta!.prAutoDetect).toBe(false);
     expect(meta!.summary).toBe("Implementing feature X");
     expect(meta!.project).toBe("my-app");
     expect(meta!.createdAt).toBe("2025-01-01T00:00:00.000Z");
-    expect(meta!.runtimeHandle).toBe('{"id":"tmux-1","runtimeName":"tmux"}');
-    expect(meta!.stateVersion).toBe("2");
-    expect(meta!.statePayload).toContain('"version":2');
+    expect(meta!.runtimeHandle?.id).toBe("tmux-1");
+    expect(meta!.lifecycle).toBeDefined();
+    expect(meta!.lifecycle?.version).toBe(2);
   });
 
   it("returns null for nonexistent session", () => {
@@ -76,7 +79,7 @@ describe("writeMetadata + readMetadata", () => {
     expect(meta).toBeNull();
   });
 
-  it("produces key=value format matching bash scripts", () => {
+  it("produces JSON format", () => {
     writeMetadata(dataDir, "app-3", {
       worktree: "/tmp/w",
       branch: "feat/INT-123",
@@ -84,11 +87,26 @@ describe("writeMetadata + readMetadata", () => {
       issue: "https://linear.app/team/issue/INT-123",
     });
 
-    const content = readFileSync(join(dataDir, "app-3"), "utf-8");
-    expect(content).toContain("worktree=/tmp/w\n");
-    expect(content).toContain("branch=feat/INT-123\n");
-    expect(content).toContain("status=working\n");
-    expect(content).toContain("issue=https://linear.app/team/issue/INT-123\n");
+    const content = readFileSync(join(dataDir, "app-3.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(parsed.worktree).toBe("/tmp/w");
+    expect(parsed.branch).toBe("feat/INT-123");
+    expect(parsed.status).toBe("working");
+    expect(parsed.issue).toBe("https://linear.app/team/issue/INT-123");
+  });
+
+  it("stores runtimeHandle as an object in JSON (not stringified)", () => {
+    writeMetadata(dataDir, "app-json", {
+      worktree: "/tmp/w",
+      branch: "main",
+      status: "working",
+      runtimeHandle: { id: "tmux-1", runtimeName: "tmux", data: {} },
+    });
+
+    const content = readFileSync(join(dataDir, "app-json.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(typeof parsed.runtimeHandle).toBe("object");
+    expect(parsed.runtimeHandle.id).toBe("tmux-1");
   });
 
   it("omits optional fields that are undefined", () => {
@@ -98,10 +116,11 @@ describe("writeMetadata + readMetadata", () => {
       status: "spawning",
     });
 
-    const content = readFileSync(join(dataDir, "app-4"), "utf-8");
-    expect(content).not.toContain("issue=");
-    expect(content).not.toContain("pr=");
-    expect(content).not.toContain("summary=");
+    const content = readFileSync(join(dataDir, "app-4.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(parsed.issue).toBeUndefined();
+    expect(parsed.pr).toBeUndefined();
+    expect(parsed.summary).toBeUndefined();
   });
 
   it("serializes pinnedSummary field when present", () => {
@@ -112,8 +131,9 @@ describe("writeMetadata + readMetadata", () => {
       pinnedSummary: "First quality summary",
     });
 
-    const content = readFileSync(join(dataDir, "app-5"), "utf-8");
-    expect(content).toContain("pinnedSummary=First quality summary\n");
+    const content = readFileSync(join(dataDir, "app-5.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(parsed.pinnedSummary).toBe("First quality summary");
   });
 
   it("serializes and reads back displayName", () => {
@@ -124,19 +144,20 @@ describe("writeMetadata + readMetadata", () => {
       displayName: "Refactor session manager",
     });
 
-    const content = readFileSync(join(dataDir, "app-6"), "utf-8");
-    expect(content).toContain("displayName=Refactor session manager\n");
+    const content = readFileSync(join(dataDir, "app-6.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(parsed.displayName).toBe("Refactor session manager");
 
-    const parsed = readMetadata(dataDir, "app-6");
-    expect(parsed?.displayName).toBe("Refactor session manager");
+    const meta = readMetadata(dataDir, "app-6");
+    expect(meta?.displayName).toBe("Refactor session manager");
   });
 });
 
 describe("readMetadataRaw", () => {
-  it("reads arbitrary key=value pairs", () => {
+  it("reads arbitrary JSON fields as strings", () => {
     writeFileSync(
-      join(dataDir, "raw-1"),
-      "worktree=/tmp/w\nbranch=main\ncustom_key=custom_value\n",
+      join(dataDir, "raw-1.json"),
+      JSON.stringify({ worktree: "/tmp/w", branch: "main", custom_key: "custom_value" }),
       "utf-8",
     );
 
@@ -150,21 +171,15 @@ describe("readMetadataRaw", () => {
     expect(readMetadataRaw(dataDir, "nope")).toBeNull();
   });
 
-  it("handles comments and empty lines", () => {
-    writeFileSync(
-      join(dataDir, "raw-2"),
-      "# This is a comment\n\nkey1=value1\n\n# Another comment\nkey2=value2\n",
-      "utf-8",
-    );
-
-    const raw = readMetadataRaw(dataDir, "raw-2");
-    expect(raw).toEqual({ key1: "value1", key2: "value2" });
+  it("returns null for empty file (from reserveSessionId)", () => {
+    writeFileSync(join(dataDir, "empty.json"), "", "utf-8");
+    expect(readMetadataRaw(dataDir, "empty")).toBeNull();
   });
 
-  it("handles values containing equals signs", () => {
+  it("flattens nested objects to JSON strings", () => {
     writeFileSync(
-      join(dataDir, "raw-3"),
-      'runtimeHandle={"id":"foo","data":{"key":"val"}}\n',
+      join(dataDir, "raw-3.json"),
+      JSON.stringify({ runtimeHandle: { id: "foo", data: { key: "val" } } }),
       "utf-8",
     );
 
@@ -251,17 +266,37 @@ describe("updateMetadata", () => {
     });
     expect(readMetadataRaw(dataDir, "upd-5")).toEqual(next);
   });
+
+  it("does not auto-parse string fields that look like JSON", () => {
+    writeMetadata(dataDir, "upd-json-safe", {
+      worktree: "/tmp/w",
+      branch: "main",
+      status: "working",
+      summary: '["step1","step2"]',
+      userPrompt: '{"fix": "bug"}',
+    });
+
+    const raw = readMetadataRaw(dataDir, "upd-json-safe");
+    // summary and userPrompt must stay as strings, not parsed into objects
+    expect(typeof raw!["summary"]).toBe("string");
+    expect(typeof raw!["userPrompt"]).toBe("string");
+    expect(raw!["summary"]).toBe('["step1","step2"]');
+    expect(raw!["userPrompt"]).toBe('{"fix": "bug"}');
+  });
 });
 
 describe("readCanonicalLifecycle", () => {
-  it("reads canonical lifecycle from statePayload", () => {
+  it("reads canonical lifecycle from lifecycle field", () => {
     writeMetadata(dataDir, "lifecycle-1", {
       worktree: "/tmp/w",
       branch: "main",
       status: "working",
-      stateVersion: "2",
-      statePayload:
-        '{"version":2,"session":{"kind":"worker","state":"working","reason":"task_in_progress","startedAt":"2025-01-01T00:00:00.000Z","completedAt":null,"terminatedAt":null,"lastTransitionAt":"2025-01-01T00:00:00.000Z"},"pr":{"state":"open","reason":"in_progress","number":42,"url":"https://github.com/org/repo/pull/42","lastObservedAt":"2025-01-01T00:00:00.000Z"},"runtime":{"state":"alive","reason":"process_running","lastObservedAt":"2025-01-01T00:00:00.000Z","handle":{"id":"tmux-1","runtimeName":"tmux","data":{}},"tmuxName":"tmux-1"}}',
+      lifecycle: {
+        version: 2,
+        session: { kind: "worker", state: "working", reason: "task_in_progress", startedAt: "2025-01-01T00:00:00.000Z", completedAt: null, terminatedAt: null, lastTransitionAt: "2025-01-01T00:00:00.000Z" },
+        pr: { state: "open", reason: "in_progress", number: 42, url: "https://github.com/org/repo/pull/42", lastObservedAt: "2025-01-01T00:00:00.000Z" },
+        runtime: { state: "alive", reason: "process_running", lastObservedAt: "2025-01-01T00:00:00.000Z", handle: { id: "tmux-1", runtimeName: "tmux", data: {} }, tmuxName: "tmux-1" },
+      },
     });
 
     const lifecycle = readCanonicalLifecycle(dataDir, "lifecycle-1");
@@ -295,12 +330,12 @@ describe("deleteMetadata", () => {
 
     deleteMetadata(dataDir, "del-1", true);
 
-    expect(existsSync(join(dataDir, "del-1"))).toBe(false);
+    expect(existsSync(join(dataDir, "del-1.json"))).toBe(false);
     const archiveDir = join(dataDir, "archive");
     expect(existsSync(archiveDir)).toBe(true);
     const files = readdirSync(archiveDir);
     expect(files.length).toBe(1);
-    expect(files[0]).toMatch(/^del-1_/);
+    expect(files[0]).toMatch(/^del-1_.*\.json$/);
   });
 
   it("deletes without archiving when archive=false", () => {
@@ -312,7 +347,7 @@ describe("deleteMetadata", () => {
 
     deleteMetadata(dataDir, "del-2", false);
 
-    expect(existsSync(join(dataDir, "del-2"))).toBe(false);
+    expect(existsSync(join(dataDir, "del-2.json"))).toBe(false);
     expect(existsSync(join(dataDir, "archive"))).toBe(false);
   });
 
@@ -327,12 +362,12 @@ describe("readArchivedMetadataRaw", () => {
     mkdirSync(archiveDir, { recursive: true });
 
     writeFileSync(
-      join(archiveDir, "app-1_2025-01-01T00-00-00-000Z"),
-      "branch=old-branch\nstatus=killed\n",
+      join(archiveDir, "app-1_20250101T000000Z.json"),
+      JSON.stringify({ branch: "old-branch", status: "killed" }),
     );
     writeFileSync(
-      join(archiveDir, "app-1_2025-06-15T12-00-00-000Z"),
-      "branch=new-branch\nstatus=killed\n",
+      join(archiveDir, "app-1_20250615T120000Z.json"),
+      JSON.stringify({ branch: "new-branch", status: "killed" }),
     );
 
     const raw = readArchivedMetadataRaw(dataDir, "app-1");
@@ -346,8 +381,8 @@ describe("readArchivedMetadataRaw", () => {
 
     // "app" should NOT match "app_v2_..." (belongs to session "app_v2")
     writeFileSync(
-      join(archiveDir, "app_v2_2025-01-01T00-00-00-000Z"),
-      "branch=wrong\nstatus=killed\n",
+      join(archiveDir, "app_v2_20250101T000000Z.json"),
+      JSON.stringify({ branch: "wrong", status: "killed" }),
     );
 
     expect(readArchivedMetadataRaw(dataDir, "app")).toBeNull();
@@ -359,13 +394,13 @@ describe("readArchivedMetadataRaw", () => {
 
     // Archive for "app" — timestamp starts with digit
     writeFileSync(
-      join(archiveDir, "app_2025-06-15T12-00-00-000Z"),
-      "branch=correct\nstatus=killed\n",
+      join(archiveDir, "app_20250615T120000Z.json"),
+      JSON.stringify({ branch: "correct", status: "killed" }),
     );
     // Archive for "app_v2" — should not be matched by "app"
     writeFileSync(
-      join(archiveDir, "app_v2_2025-01-01T00-00-00-000Z"),
-      "branch=wrong\nstatus=killed\n",
+      join(archiveDir, "app_v2_20250101T000000Z.json"),
+      JSON.stringify({ branch: "wrong", status: "killed" }),
     );
 
     const raw = readArchivedMetadataRaw(dataDir, "app");
@@ -382,8 +417,8 @@ describe("readArchivedMetadataRaw", () => {
     mkdirSync(archiveDir, { recursive: true });
 
     writeFileSync(
-      join(archiveDir, "other-session_2025-01-01T00-00-00-000Z"),
-      "branch=main\nstatus=killed\n",
+      join(archiveDir, "other-session_20250101T000000Z.json"),
+      JSON.stringify({ branch: "main", status: "killed" }),
     );
 
     expect(readArchivedMetadataRaw(dataDir, "app-1")).toBeNull();
@@ -447,8 +482,6 @@ describe("atomic writes", () => {
   });
 
   it("concurrent writeMetadata calls do not produce corrupt files", () => {
-    // Simulate rapid sequential writes (synchronous, so they serialize naturally,
-    // but each individual write must be atomic — no partial content)
     for (let i = 0; i < 20; i++) {
       writeMetadata(dataDir, "atomic-3", {
         worktree: "/tmp/w",
@@ -485,7 +518,7 @@ describe("restoredAt persistence", () => {
     expect(meta!.restoredAt).toBe(now);
   });
 
-  it("restoredAt is persisted in the key=value file", () => {
+  it("restoredAt is persisted in the JSON file", () => {
     const now = "2026-03-01T12:00:00.000Z";
     writeMetadata(dataDir, "restore-2", {
       worktree: "/tmp/w",
@@ -494,8 +527,9 @@ describe("restoredAt persistence", () => {
       restoredAt: now,
     });
 
-    const content = readFileSync(join(dataDir, "restore-2"), "utf-8");
-    expect(content).toContain(`restoredAt=${now}`);
+    const content = readFileSync(join(dataDir, "restore-2.json"), "utf-8");
+    const parsed = JSON.parse(content);
+    expect(parsed.restoredAt).toBe(now);
   });
 
   it("restoredAt is undefined when not set", () => {
@@ -548,6 +582,82 @@ describe("listMetadata", () => {
     const emptyDir = join(tmpdir(), `ao-test-empty-${randomUUID()}`);
     const list = listMetadata(emptyDir);
     expect(list).toEqual([]);
-    // no cleanup needed since dir was never created
+  });
+});
+
+describe("status derivation from lifecycle", () => {
+  it("readMetadata derives status from lifecycle when status is absent", () => {
+    // Simulate migrated JSON: has lifecycle but no status field
+    writeFileSync(
+      join(dataDir, "no-status.json"),
+      JSON.stringify({
+        worktree: "/tmp/w",
+        branch: "main",
+        project: "myproject",
+        lifecycle: {
+          version: 2,
+          session: { kind: "worker", state: "working", reason: "task_in_progress", startedAt: "2025-01-01T00:00:00.000Z", completedAt: null, terminatedAt: null, lastTransitionAt: "2025-01-01T00:00:00.000Z" },
+          pr: { state: "open", reason: "review_pending", number: 42, url: "https://github.com/org/repo/pull/42", lastObservedAt: "2025-01-01T00:00:00.000Z" },
+          runtime: { state: "alive", reason: "process_running", lastObservedAt: "2025-01-01T00:00:00.000Z", handle: null, tmuxName: null },
+        },
+      }),
+    );
+
+    const meta = readMetadata(dataDir, "no-status");
+    expect(meta).not.toBeNull();
+    expect(meta!.status).toBe("review_pending");
+  });
+
+  it("readMetadataRaw derives status from lifecycle when status is absent", () => {
+    writeFileSync(
+      join(dataDir, "raw-no-status.json"),
+      JSON.stringify({
+        worktree: "/tmp/w",
+        branch: "main",
+        lifecycle: {
+          version: 2,
+          session: { kind: "worker", state: "done", reason: "research_complete", startedAt: "2025-01-01T00:00:00.000Z", completedAt: "2025-01-01T01:00:00.000Z", terminatedAt: null, lastTransitionAt: "2025-01-01T01:00:00.000Z" },
+          pr: { state: "merged", reason: "merge_complete", number: 42, url: null, lastObservedAt: null },
+          runtime: { state: "dead", reason: "process_exited", lastObservedAt: null, handle: null, tmuxName: null },
+        },
+      }),
+    );
+
+    const raw = readMetadataRaw(dataDir, "raw-no-status");
+    expect(raw).not.toBeNull();
+    expect(raw!["status"]).toBe("done");
+  });
+
+  it("readMetadata falls back to 'unknown' when no status and no lifecycle", () => {
+    writeFileSync(
+      join(dataDir, "bare.json"),
+      JSON.stringify({ worktree: "/tmp/w", branch: "main" }),
+    );
+
+    const meta = readMetadata(dataDir, "bare");
+    expect(meta).not.toBeNull();
+    expect(meta!.status).toBe("unknown");
+  });
+
+  it("readMetadata prefers lifecycle-derived status over stored status", () => {
+    writeFileSync(
+      join(dataDir, "has-both.json"),
+      JSON.stringify({
+        worktree: "/tmp/w",
+        branch: "main",
+        status: "working",
+        lifecycle: {
+          version: 2,
+          session: { kind: "worker", state: "done", reason: "research_complete", startedAt: null, completedAt: null, terminatedAt: null, lastTransitionAt: null },
+          pr: { state: "none", reason: "not_created", number: null, url: null, lastObservedAt: null },
+          runtime: { state: "unknown", reason: "not_checked", lastObservedAt: null, handle: null, tmuxName: null },
+        },
+      }),
+    );
+
+    const meta = readMetadata(dataDir, "has-both");
+    expect(meta).not.toBeNull();
+    // Lifecycle-derived status wins over stored (lifecycle is source of truth)
+    expect(meta!.status).toBe("done");
   });
 });

@@ -36,7 +36,6 @@ describe("ProjectSettingsPage", () => {
       project: {
         name: "Docs",
         path: "/tmp/docs",
-        storageKey: "github.com/org/repo",
         repo: "org/repo",
         defaultBranch: "main",
         sessionPrefix: "docs",
@@ -56,7 +55,7 @@ describe("ProjectSettingsPage", () => {
     expect(screen.getByLabelText("Tracker plugin")).toHaveValue("github");
     expect(screen.getByLabelText("SCM plugin")).toHaveValue("github");
     expect(screen.getByDisplayValue("/tmp/docs")).toBeDisabled();
-    expect(screen.getByDisplayValue("github.com/org/repo")).toBeDisabled();
+    expect(screen.getByDisplayValue("org/repo")).toBeDisabled();
   });
 
   it("renders degraded state instead of the form for degraded projects", async () => {
@@ -67,7 +66,6 @@ describe("ProjectSettingsPage", () => {
       degradedProject: {
         projectId: "broken",
         path: "/tmp/broken",
-        storageKey: "local://broken",
         resolveError: "Local config failed validation",
       },
     });

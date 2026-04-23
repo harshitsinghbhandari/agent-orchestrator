@@ -11,7 +11,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve, basename, dirname } from "node:path";
 import { cwd } from "node:process";
 import chalk from "chalk";
 import ora from "ora";
@@ -107,6 +107,44 @@ function writeProjectBehaviorConfig(projectPath: string, config: LocalProjectCon
 }
 
 /**
+ * Register a flat local config (agent-orchestrator.yaml without `projects:`)
+ * into the global config so loadConfig can resolve it.
+ * Returns the registered project ID, or null if registration failed.
+ */
+async function registerFlatConfig(configPath: string): Promise<string | null> {
+  const projectPath = resolve(dirname(configPath));
+  const projectId = basename(projectPath);
+
+  // Read flat config fields
+  const raw = readFileSync(configPath, "utf-8");
+  const parsed = yamlParse(raw) as Record<string, unknown> | null;
+  if (!parsed || typeof parsed !== "object") return null;
+  // If it has a projects key, it's not a flat config
+  if ("projects" in parsed) return null;
+
+  const repo = typeof parsed["repo"] === "string" ? parsed["repo"] : undefined;
+  const defaultBranch = typeof parsed["defaultBranch"] === "string"
+    ? parsed["defaultBranch"]
+    : await detectDefaultBranch(projectPath, repo ?? null);
+  // Strip characters invalid in sessionPrefix (Zod: [a-zA-Z0-9_-]+)
+  // so folder names like "my.app" don't produce invalid prefixes.
+  const prefixInput = projectId.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+  const prefix = generateSessionPrefix(prefixInput || projectId);
+
+  console.log(chalk.dim(`\n  Registering project "${projectId}" in global config...\n`));
+
+  registerProjectInGlobalConfig(
+    projectId,
+    projectId,
+    projectPath,
+    { defaultBranch, sessionPrefix: prefix, ...(repo ? { repo } : {}) },
+  );
+
+  console.log(chalk.green(`  ✓ Registered "${projectId}"\n`));
+  return projectId;
+}
+
+/**
  * Resolve project from config.
  * If projectArg is provided, use it. If only one project exists, use that.
  * Otherwise, error with helpful message.
@@ -149,14 +187,38 @@ async function resolveProject(
 
   // No match — prompt if interactive, otherwise error
   if (isHumanCaller()) {
+    // Check if cwd is a git repo not yet in the config — offer to add it
+    const currentDirResolved = resolve(cwd());
+    const cwdAlreadyInConfig = projectIds.some((id) => {
+      try {
+        return resolve(config.projects[id].path.replace(/^~/, process.env["HOME"] || "")) === currentDirResolved;
+      } catch {
+        return false;
+      }
+    });
+    const cwdIsGitRepo = existsSync(resolve(currentDirResolved, ".git"));
+    const addOption = !cwdAlreadyInConfig && cwdIsGitRepo
+      ? [{ value: "__add_cwd__", label: `Add ${basename(currentDirResolved)}`, hint: "register this directory as a new project" }]
+      : [];
+
     const projectId = await promptSelect(
       `Choose project to ${action}:`,
-      projectIds.map((id) => ({
-        value: id,
-        label: config.projects[id].name ?? id,
-        hint: id,
-      })),
+      [
+        ...projectIds.map((id) => ({
+          value: id,
+          label: config.projects[id].name ?? id,
+          hint: id,
+        })),
+        ...addOption,
+      ],
     );
+
+    if (projectId === "__add_cwd__") {
+      const addedId = await addProjectToConfig(config, currentDirResolved);
+      const reloadedConfig = loadConfig(config.configPath);
+      return { projectId: addedId, project: reloadedConfig.projects[addedId] };
+    }
+
     return { projectId, project: config.projects[projectId] };
   } else {
     throw new Error(
@@ -1469,10 +1531,27 @@ export function registerStart(program: Command): void {
               console.log(`  PID: ${running.pid} | Up since: ${running.startedAt}`);
               console.log(`  Projects: ${running.projects.join(", ")}\n`);
 
+              // Check if cwd is an unregistered git repo — offer to add it
+              const cwdResolved = resolve(cwd());
+              const cwdIsRegistered = running.projects.some((p) => {
+                try {
+                  const loadedCfg = loadConfig();
+                  const proj = loadedCfg.projects[p];
+                  return proj && resolve(proj.path.replace(/^~/, process.env["HOME"] || "")) === cwdResolved;
+                } catch {
+                  return false;
+                }
+              });
+              const cwdHasGit = existsSync(resolve(cwdResolved, ".git"));
+              const addCwdOption = !cwdIsRegistered && cwdHasGit
+                ? [{ value: "add", label: `Add ${basename(cwdResolved)}`, hint: "register this directory and start" }]
+                : [];
+
               const choice = await promptSelect(
                 "AO is already running. What do you want to do?",
                 [
                   { value: "open", label: "Open dashboard", hint: "Keep the current instance" },
+                  ...addCwdOption,
                   { value: "new", label: "Start new orchestrator", hint: "Add a new session for this project" },
                   { value: "restart", label: "Restart everything", hint: "Stop the current instance first" },
                   { value: "quit", label: "Quit" },
@@ -1483,6 +1562,13 @@ export function registerStart(program: Command): void {
               if (choice === "open") {
                 const url = `http://localhost:${running.port}`;
                 openUrl(url);
+                unlockStartup();
+                process.exit(0);
+              } else if (choice === "add") {
+                const loadedCfg = loadConfig();
+                const addedId = await addProjectToConfig(loadedCfg, cwdResolved);
+                console.log(chalk.green(`\n✓ Added "${addedId}" — open the dashboard to start an orchestrator.\n`));
+                openUrl(`http://localhost:${running.port}`);
                 unlockStartup();
                 process.exit(0);
               } else if (choice === "new") {
@@ -1575,7 +1661,20 @@ export function registerStart(program: Command): void {
                 // First run — auto-create config
                 loadedConfig = await autoCreateConfig(cwd());
               } else {
-                throw err;
+                // A config file exists but failed to load — likely a flat local
+                // config whose project isn't registered in the global config yet.
+                // Register it and retry.
+                const foundConfig = findConfigFile() ?? undefined;
+                if (foundConfig) {
+                  const addedId = await registerFlatConfig(foundConfig);
+                  if (addedId) {
+                    loadedConfig = loadConfig(foundConfig);
+                  } else {
+                    throw err;
+                  }
+                } else {
+                  throw err;
+                }
               }
             }
             config = loadedConfig;

@@ -7,10 +7,17 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { isOrchestratorSession, type PortfolioProject, type PortfolioSession, type Session, type SessionMetadata } from "./types.js";
-import { getSessionsDir } from "./paths.js";
-import { parseKeyValueContent } from "./key-value.js";
+import { isOrchestratorSession, type CanonicalSessionLifecycle, type PortfolioProject, type PortfolioSession, type RuntimeHandle, type Session, type SessionMetadata } from "./types.js";
+import { getProjectSessionsDir } from "./paths.js";
+import { deriveLegacyStatus } from "./lifecycle-state.js";
+import { flattenToStringRecord } from "./utils/metadata-flatten.js";
 import { sessionFromMetadata } from "./utils/session-from-metadata.js";
+
+const JSON_EXTENSION = ".json";
+
+function tryParseJson<T>(value: string): T | undefined {
+  try { return JSON.parse(value) as T; } catch { return undefined; }
+}
 
 const DEFAULT_PER_PROJECT_TIMEOUT_MS = 3_000;
 const VALID_SESSION_ID = /^[a-zA-Z0-9_-]+$/;
@@ -46,7 +53,7 @@ export async function listPortfolioSessions(
 
 async function loadProjectSessions(project: PortfolioProject): Promise<PortfolioSession[]> {
   const results: PortfolioSession[] = [];
-  const sessionsDir = getSessionsDir(project.storageKey);
+  const sessionsDir = getProjectSessionsDir(project.id);
 
   let entries: string[];
   try {
@@ -56,8 +63,10 @@ async function loadProjectSessions(project: PortfolioProject): Promise<Portfolio
   }
 
   for (const name of entries) {
+    if (!name.endsWith(JSON_EXTENSION)) continue;
     if (name === "archive" || name.startsWith(".")) continue;
-    if (!VALID_SESSION_ID.test(name)) continue;
+    const sessionId = name.slice(0, -JSON_EXTENSION.length);
+    if (!VALID_SESSION_ID.test(sessionId)) continue;
 
     try {
       const filePath = join(sessionsDir, name);
@@ -65,13 +74,13 @@ async function loadProjectSessions(project: PortfolioProject): Promise<Portfolio
       if (!fileStat.isFile()) continue;
 
       const content = await readFile(filePath, "utf-8");
-      const raw = parseKeyValueContent(content);
+      const raw = flattenToStringRecord(JSON.parse(content) as Record<string, unknown>);
 
       // Exclude orchestrator sessions from portfolio listings
-      if (isOrchestratorSession({ id: name, metadata: raw })) continue;
+      if (isOrchestratorSession({ id: sessionId, metadata: raw })) continue;
 
       const metadata = rawToMetadata(raw);
-      const session = metadataToSession(name, project, metadata);
+      const session = metadataToSession(sessionId, project, metadata);
       results.push({ session, project });
     } catch {
       continue;
@@ -82,10 +91,14 @@ async function loadProjectSessions(project: PortfolioProject): Promise<Portfolio
 }
 
 function rawToMetadata(raw: Record<string, string>): SessionMetadata {
+  const lifecycle = raw["lifecycle"] ? tryParseJson<CanonicalSessionLifecycle>(raw["lifecycle"]) : undefined;
+  const storedStatus = raw["status"];
+  const status = storedStatus ?? (lifecycle ? deriveLegacyStatus(lifecycle) : "unknown");
+
   return {
     worktree: raw["worktree"] ?? "",
     branch: raw["branch"] ?? "",
-    status: raw["status"] ?? "unknown",
+    status,
     tmuxName: raw["tmuxName"],
     issue: raw["issue"],
     pr: raw["pr"],
@@ -93,11 +106,10 @@ function rawToMetadata(raw: Record<string, string>): SessionMetadata {
     project: raw["project"],
     agent: raw["agent"],
     createdAt: raw["createdAt"],
-    runtimeHandle: raw["runtimeHandle"],
+    runtimeHandle: raw["runtimeHandle"] ? tryParseJson<RuntimeHandle>(raw["runtimeHandle"]) : undefined,
     restoredAt: raw["restoredAt"],
     role: raw["role"],
-    stateVersion: raw["stateVersion"],
-    statePayload: raw["statePayload"],
+    lifecycle,
   };
 }
 
@@ -107,6 +119,10 @@ function metadataToRecord(metadata: SessionMetadata): Record<string, string> {
   for (const [key, value] of Object.entries(metadata)) {
     if (typeof value === "string") {
       record[key] = value;
+    } else if (typeof value === "object" && value !== null) {
+      record[key] = JSON.stringify(value);
+    } else if (typeof value === "number") {
+      record[key] = String(value);
     }
   }
 
@@ -127,9 +143,7 @@ function metadataToSession(sessionId: string, project: PortfolioProject, metadat
     projectId: project.id,
     status: (metadata.status as Session["status"]) || "spawning",
     activity: null,
-    runtimeHandle: metadata.runtimeHandle
-      ? { id: metadata.runtimeHandle, runtimeName: "tmux", data: {} }
-      : null,
+    runtimeHandle: metadata.runtimeHandle ?? null,
     createdAt: metadata.createdAt ? new Date(metadata.createdAt) : new Date(),
     lastActivityAt: lastActivity,
     restoredAt: metadata.restoredAt ? new Date(metadata.restoredAt) : undefined,
@@ -147,7 +161,7 @@ export async function getPortfolioSessionCounts(portfolio: PortfolioProject[]): 
     }
 
     try {
-      const sessionsDir = getSessionsDir(project.storageKey);
+      const sessionsDir = getProjectSessionsDir(project.id);
       let entries: string[];
       try {
         entries = await readdir(sessionsDir);
@@ -160,8 +174,10 @@ export async function getPortfolioSessionCounts(portfolio: PortfolioProject[]): 
       let active = 0;
 
       for (const name of entries) {
+        if (!name.endsWith(JSON_EXTENSION)) continue;
         if (name === "archive" || name.startsWith(".")) continue;
-        if (!VALID_SESSION_ID.test(name)) continue;
+        const sessionId = name.slice(0, -JSON_EXTENSION.length);
+        if (!VALID_SESSION_ID.test(sessionId)) continue;
 
         try {
           const filePath = join(sessionsDir, name);
@@ -169,13 +185,19 @@ export async function getPortfolioSessionCounts(portfolio: PortfolioProject[]): 
           if (!fileStat.isFile()) continue;
 
           const content = await readFile(filePath, "utf-8");
-          const raw = parseKeyValueContent(content);
+          const raw = flattenToStringRecord(JSON.parse(content) as Record<string, unknown>);
 
           // Exclude orchestrator sessions from portfolio counts
-          if (isOrchestratorSession({ id: name, metadata: raw })) continue;
+          if (isOrchestratorSession({ id: sessionId, metadata: raw })) continue;
 
           total++;
-          if (!TERMINAL.has(raw["status"] ?? "")) active++;
+          // Derive status from lifecycle when not stored (post-migration JSON)
+          let sessionStatus = raw["status"];
+          if (!sessionStatus && raw["lifecycle"]) {
+            const lifecycle = tryParseJson<CanonicalSessionLifecycle>(raw["lifecycle"]);
+            if (lifecycle) sessionStatus = deriveLegacyStatus(lifecycle);
+          }
+          if (!TERMINAL.has(sessionStatus ?? "")) active++;
         } catch {
           continue;
         }

@@ -223,6 +223,18 @@ export type {
 
 // Path utilities — hash-based directory structure
 export {
+  // V2 path functions (projects/{projectId}/ layout)
+  getProjectDir,
+  getProjectSessionsDir,
+  getProjectArchiveDir,
+  getProjectWorktreesDir,
+  getProjectFeedbackReportsDir,
+  getOrchestratorPath,
+  getSessionPath,
+  getArchiveFilePath,
+  compactTimestamp,
+  parseTmuxNameV2,
+  // Legacy path functions (deprecated — migration only)
   generateConfigHash,
   generateProjectId,
   generateSessionPrefix,
@@ -243,7 +255,6 @@ export {
 export {
   normalizeOriginUrl,
   relativeSubdir,
-  deriveStorageKey,
 } from "./storage-key.js";
 
 // Global config — Option C hybrid architecture (global registry + local behavior)
@@ -257,8 +268,6 @@ export {
   getLocalProjectConfigPath,
   repairWrappedLocalProjectConfig,
   registerProjectInGlobalConfig,
-  relinkProjectInGlobalConfig,
-  StorageKeyCollisionError,
   buildEffectiveProjectConfig,
   resolveProjectIdentity,
   isOldConfigFormat,
@@ -271,7 +280,6 @@ export type {
   LocalProjectConfig,
   LocalProjectConfigLoadResult,
   RegisterProjectOptions,
-  RelinkProjectOptions,
 } from "./global-config.js";
 
 export {
@@ -324,7 +332,6 @@ export {
   saveRegistered,
   getPortfolio,
   registerProject,
-  relinkProject,
   unregisterProject,
   refreshProject,
 } from "./portfolio-registry.js";
@@ -344,3 +351,17 @@ export {
   resolvePortfolioSession,
   derivePortfolioProjectId,
 } from "./portfolio-routing.js";
+
+// Storage V2 migration — one-time converter from hash-based to projectId-based layout
+export {
+  migrateStorage,
+  rollbackStorage,
+  inventoryHashDirs,
+  convertKeyValueToJson,
+} from "./migration/storage-v2.js";
+export type {
+  MigrationOptions,
+  MigrationResult,
+  RollbackOptions,
+  HashDirEntry,
+} from "./migration/storage-v2.js";

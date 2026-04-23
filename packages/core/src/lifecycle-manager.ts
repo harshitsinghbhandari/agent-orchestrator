@@ -42,7 +42,7 @@ import { formatAutomatedCommentsMessage } from "./format-automated-comments.js";
 import { DEFAULT_BUGBOT_COMMENTS_MESSAGE } from "./config.js";
 import { buildLifecycleMetadataPatch, cloneLifecycle, deriveLegacyStatus } from "./lifecycle-state.js";
 import { updateMetadata } from "./metadata.js";
-import { getSessionsDir } from "./paths.js";
+import { getProjectSessionsDir } from "./paths.js";
 import { applyDecisionToLifecycle as commitLifecycleDecisionInPlace } from "./lifecycle-transition.js";
 import {
   classifyActivitySignal,
@@ -494,9 +494,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     const commit = (
       decision: LifecycleDecision = {
-        status: deriveLegacyStatus(lifecycle, session.status),
+        status: deriveLegacyStatus(lifecycle),
         evidence: "lifecycle_commit",
-        detectingAttempts: currentDetectingAttempts,
+        detecting: { attempts: currentDetectingAttempts },
       },
     ): DeterminedStatus => {
       commitLifecycleDecisionInPlace(lifecycle, decision, nowIso);
@@ -506,9 +506,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return {
         status: decision.status,
         evidence: decision.evidence,
-        detectingAttempts: decision.detectingAttempts,
-        detectingStartedAt: decision.detectingStartedAt,
-        detectingEvidenceHash: decision.detectingEvidenceHash,
+        detectingAttempts: decision.detecting.attempts,
+        detectingStartedAt: decision.detecting.startedAt,
+        detectingEvidenceHash: decision.detecting.evidenceHash,
       };
     };
 
@@ -582,7 +582,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             return commit({
               status: SESSION_STATUS.NEEDS_INPUT,
               evidence: activityEvidence,
-              detectingAttempts: 0,
+              detecting: { attempts: 0 },
               sessionState: "needs_input",
               sessionReason: "awaiting_user_input",
             });
@@ -610,7 +610,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               return commit({
                 status: SESSION_STATUS.NEEDS_INPUT,
                 evidence: activityEvidence,
-                detectingAttempts: 0,
+                detecting: { attempts: 0 },
                 sessionState: "needs_input",
                 sessionReason: "awaiting_user_input",
               });
@@ -643,7 +643,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           return commit({
             status: session.status,
             evidence: activityEvidence,
-            detectingAttempts: currentDetectingAttempts,
+            detecting: { attempts: currentDetectingAttempts },
           });
         }
         return commit(
@@ -696,7 +696,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       !session.pr &&
       scm &&
       session.branch &&
-      session.metadata["prAutoDetect"] !== "off" &&
+      session.metadata["prAutoDetect"] !== "off" && session.metadata["prAutoDetect"] !== "false" &&
       session.metadata["role"] !== "orchestrator" &&
       !session.id.endsWith("-orchestrator")
     ) {
@@ -709,7 +709,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           lifecycle.pr.number = detectedPR.number;
           lifecycle.pr.url = detectedPR.url;
           lifecycle.pr.lastObservedAt = nowIso;
-          const sessionsDir = getSessionsDir(project.storageKey);
+          const sessionsDir = getProjectSessionsDir(session.projectId);
           updateMetadata(sessionsDir, session.id, { pr: detectedPR.url });
         }
       } catch (error) {
@@ -832,10 +832,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               reason: mapped.sessionReason,
             },
           },
-          session.status,
         ),
         evidence: `agent_report:${agentReport.state}`,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: mapped.sessionState,
         sessionReason: mapped.sessionReason,
       });
@@ -849,7 +848,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return commit({
         status: SESSION_STATUS.STUCK,
         evidence: `idle_beyond_threshold ${activityEvidence}`,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "stuck",
         sessionReason: idleWasBlocked ? "error_in_process" : "probe_failure",
       });
@@ -875,16 +874,16 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         return commit({
           status: SESSION_STATUS.DETECTING,
           evidence: activityEvidence,
-          detectingAttempts: 0,
+          detecting: { attempts: 0 },
           sessionState: "detecting",
           sessionReason: "probe_failure",
         });
       }
 
       return commit({
-        status: deriveLegacyStatus(lifecycle, session.status),
+        status: deriveLegacyStatus(lifecycle),
         evidence: activityEvidence,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
       });
     }
 
@@ -897,7 +896,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       return commit({
         status: SESSION_STATUS.WORKING,
         evidence: activityEvidence,
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "working",
         sessionReason: "task_in_progress",
       });
@@ -906,7 +905,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     return commit({
       status: session.status,
       evidence: activityEvidence,
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
     });
   }
 
@@ -1061,10 +1060,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const project = config.projects[session.projectId];
     if (!project) return;
 
-    const sessionsDir = getSessionsDir(project.storageKey);
+    const sessionsDir = getProjectSessionsDir(session.projectId);
     const lifecycleUpdates = buildLifecycleMetadataPatch(
       cloneLifecycle(session.lifecycle),
-      session.status,
     );
     const mergedUpdates = { ...updates, ...lifecycleUpdates };
     updateMetadata(sessionsDir, session.id, mergedUpdates);
@@ -1081,7 +1079,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       cleaned[key] = value;
     }
     session.metadata = cleaned;
-    session.status = deriveLegacyStatus(session.lifecycle, session.status);
+    session.status = deriveLegacyStatus(session.lifecycle);
   }
 
   function makeFingerprint(ids: string[]): string {
@@ -1659,7 +1657,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const previousPRState = session.lifecycle.pr.state;
     const assessment = await determineStatus(session);
     const newStatus = assessment.status;
-    const lifecycleChanged = session.metadata["statePayload"] !== JSON.stringify(session.lifecycle);
+    const lifecycleChanged = session.metadata["lifecycle"] !== JSON.stringify(session.lifecycle);
     let transitionReaction: { key: string; result: ReactionResult | null } | undefined;
 
     const nextLifecycleEvidence = assessment.evidence;

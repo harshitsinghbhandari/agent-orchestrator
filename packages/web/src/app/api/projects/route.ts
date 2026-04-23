@@ -8,7 +8,6 @@ import {
   loadConfig,
   migrateToGlobalConfig,
   registerProjectInGlobalConfig,
-  StorageKeyCollisionError,
 } from "@aoagents/ao-core";
 import { revalidatePath } from "next/cache";
 import { getAllProjects } from "@/lib/project-name";
@@ -87,7 +86,6 @@ export async function POST(request: NextRequest) {
   const projectId = sanitizeString(body["projectId"]);
   const name = sanitizeString(body["name"]) ?? projectId;
   const rawPath = sanitizeString(body["path"]);
-  const allowStorageKeyReuse = body["allowStorageKeyReuse"] === true;
   if (!projectId) {
     return NextResponse.json({ error: "Project ID is required." }, { status: 400 });
   }
@@ -109,22 +107,11 @@ export async function POST(request: NextRequest) {
       name ?? projectId,
       resolvedPath,
       buildSeedLocalConfig(resolvedPath),
-      allowStorageKeyReuse ? { allowStorageKeyReuse: true } : undefined,
     );
     invalidatePortfolioServicesCache();
     revalidatePortfolioPaths(projectId);
     return NextResponse.json({ ok: true, projectId }, { status: 201 });
   } catch (err) {
-    if (err instanceof StorageKeyCollisionError) {
-      return NextResponse.json(
-        {
-          error: err.message,
-          existingProjectId: err.existingProjectId,
-          suggestion: "confirm-reuse",
-        },
-        { status: 409 },
-      );
-    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to add project" },
       { status: 400 },

@@ -81,37 +81,48 @@ fi
 
 # Construct metadata file path
 # AO_DATA_DIR is already set to the project-specific sessions directory
-metadata_file="$AO_DATA_DIR/$AO_SESSION"
+# V2 storage uses .json extension
+metadata_file="$AO_DATA_DIR/\${AO_SESSION}.json"
+
+# Fallback to bare filename for pre-migration layouts
+if [[ ! -f "$metadata_file" ]]; then
+  metadata_file="$AO_DATA_DIR/$AO_SESSION"
+fi
 
 # Ensure metadata file exists
 if [[ ! -f "$metadata_file" ]]; then
-  echo '{"systemMessage": "Metadata file not found: '"$metadata_file"'"}'
+  echo '{"systemMessage": "Metadata file not found: '"$AO_DATA_DIR/\${AO_SESSION}"'"}'
   exit 0
 fi
 
-# Update a single key in metadata
+# Detect if metadata file is JSON format
+is_json_metadata() {
+  local first_char
+  first_char=$(head -c1 "$metadata_file" 2>/dev/null)
+  [[ "$first_char" == "{" ]]
+}
+
+# Update a single key in metadata (handles both JSON and key=value formats)
 update_metadata_key() {
   local key="$1"
   local value="$2"
-
-  # Create temp file
   local temp_file="\${metadata_file}.tmp"
 
-  # Escape special sed characters in value (& | / \\)
-  local escaped_value=$(echo "$value" | sed 's/[&|\\/]/\\\\&/g')
-
-  # Check if key already exists
-  if grep -q "^$key=" "$metadata_file" 2>/dev/null; then
-    # Update existing key
-    sed "s|^$key=.*|$key=$escaped_value|" "$metadata_file" > "$temp_file"
+  if is_json_metadata && command -v jq &>/dev/null; then
+    # JSON format: use jq to update
+    jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$metadata_file" > "$temp_file"
+    mv "$temp_file" "$metadata_file"
   else
-    # Append new key
-    cp "$metadata_file" "$temp_file"
-    echo "$key=$value" >> "$temp_file"
+    # Key=value format (legacy)
+    local escaped_value=$(echo "$value" | sed 's/[&|\\/]/\\\\&/g')
+    if grep -q "^$key=" "$metadata_file" 2>/dev/null; then
+      sed "s|^$key=.*|$key=$escaped_value|" "$metadata_file" > "$temp_file"
+    else
+      cp "$metadata_file" "$temp_file"
+      echo "$key=$value" >> "$temp_file"
+    fi
+    mv "$temp_file" "$metadata_file"
   fi
-
-  # Atomic replace
-  mv "$temp_file" "$metadata_file"
 }
 
 # ============================================================================
@@ -828,11 +839,7 @@ function createClaudeCodeAgent(): Agent {
       const parts: string[] = ["claude", "--resume", shellEscape(sessionUuid)];
 
       const permissionMode = normalizeAgentPermissionMode(project.agentConfig?.permissions);
-      const isOrchestrator = session.metadata?.["role"] === "orchestrator";
-      if (
-        isOrchestrator &&
-        (permissionMode === "permissionless" || permissionMode === "auto-edit")
-      ) {
+      if (permissionMode === "permissionless" || permissionMode === "auto-edit") {
         parts.push("--dangerously-skip-permissions");
       }
 

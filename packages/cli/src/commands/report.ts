@@ -19,7 +19,7 @@ import type { Command } from "commander";
 import {
   AGENT_REPORTED_STATES,
   applyAgentReport,
-  getSessionsDir,
+  getProjectSessionsDir,
   loadConfig,
   normalizeAgentReportedState,
   type AgentReportedState,
@@ -59,7 +59,7 @@ async function writeReport(
     console.error(chalk.red(`Project not found for session: ${sessionName}`));
     process.exit(1);
   }
-  const sessionsDir = getSessionsDir(project.storageKey);
+  const sessionsDir = getProjectSessionsDir(session.projectId);
   try {
     const result = applyAgentReport(sessionsDir, sessionName, {
       state,
