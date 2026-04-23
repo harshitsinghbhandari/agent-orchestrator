@@ -106,6 +106,7 @@ const GLOBAL_PROJECT_ENTRY_FIELDS = new Set([
   "registeredAt",
   "displayName",
   "sessionPrefix",
+  "storageKey", // Preserved until `ao migrate-storage` strips it
 ]);
 
 const LOCAL_CONFIG_FILENAMES = ["agent-orchestrator.yaml", "agent-orchestrator.yml"] as const;
@@ -120,6 +121,7 @@ export const GlobalProjectEntrySchema = z.object({
   registeredAt: z.number().optional(),
   displayName: z.string().optional(),
   sessionPrefix: z.string().optional(),
+  storageKey: z.string().optional(),
 });
 
 export type GlobalProjectEntry = z.infer<typeof GlobalProjectEntrySchema>;
