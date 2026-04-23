@@ -93,7 +93,7 @@ async function loadProjectSessions(project: PortfolioProject): Promise<Portfolio
 function rawToMetadata(raw: Record<string, string>): SessionMetadata {
   const lifecycle = raw["lifecycle"] ? tryParseJson<CanonicalSessionLifecycle>(raw["lifecycle"]) : undefined;
   const storedStatus = raw["status"];
-  const status = storedStatus ?? (lifecycle ? deriveLegacyStatus(lifecycle) : "unknown");
+  const status = (lifecycle ? deriveLegacyStatus(lifecycle) : undefined) ?? storedStatus ?? "unknown";
 
   return {
     worktree: raw["worktree"] ?? "",

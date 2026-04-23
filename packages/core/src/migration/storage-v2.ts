@@ -977,7 +977,7 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
   totals.strayWorktreesMoved = moveStrayWorktrees(aoBaseDir, dryRun, log);
 
   // Repair git worktree references broken by directory moves
-  if (!dryRun && totals.worktrees > 0) {
+  if (!dryRun && (totals.worktrees > 0 || totals.strayWorktreesMoved > 0)) {
     await repairGitWorktrees(aoBaseDir, effectiveConfigPath, log);
   }
 
@@ -1043,6 +1043,20 @@ function countPostMigrationSessions(
       count++;
     }
   }
+
+  // Also count archived sessions that don't exist in .migrated dirs
+  const archiveDir = join(sessionsDir, "archive");
+  if (existsSync(archiveDir)) {
+    for (const file of readdirSync(archiveDir)) {
+      if (!file.endsWith(".json") || file.startsWith(".")) continue;
+      // Extract session ID from archive filename: {sessionId}_{timestamp}.json
+      const sessionId = file.split("_")[0];
+      if (sessionId && !migratedSessionIds.has(sessionId)) {
+        count++;
+      }
+    }
+  }
+
   return count;
 }
 

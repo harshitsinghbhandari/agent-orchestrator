@@ -121,6 +121,7 @@ export const GlobalProjectEntrySchema = z.object({
   registeredAt: z.number().optional(),
   displayName: z.string().optional(),
   sessionPrefix: z.string().optional(),
+  storageKey: z.string().optional(),
 });
 
 export type GlobalProjectEntry = z.infer<typeof GlobalProjectEntrySchema>;
