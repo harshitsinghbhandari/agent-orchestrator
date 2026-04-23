@@ -882,7 +882,7 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
   }
 
   // Pre-flight: detect active sessions (include V2 prefix patterns from config)
-  if (!options.force) {
+  if (!options.force && !dryRun) {
     const knownPrefixes = extractProjectPrefixes(effectiveConfigPath);
     const activeSessions = await detectActiveSessions(knownPrefixes);
     if (activeSessions.length > 0) {
