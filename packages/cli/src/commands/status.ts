@@ -16,7 +16,7 @@ import {
   isOrchestratorSession,
   isTerminalSession,
   loadConfig,
-  getSessionsDir,
+  getProjectSessionsDir,
   readAgentReportAuditTrailAsync,
 } from "@aoagents/ao-core";
 import { git, getTmuxSessions, getTmuxActivity } from "../lib/shell.js";
@@ -173,7 +173,7 @@ async function gatherSessionInfo(
     try {
       const project = projectConfig.projects[session.projectId];
       if (project) {
-        const sessionsDir = getSessionsDir(project.storageKey);
+        const sessionsDir = getProjectSessionsDir(session.projectId);
         const trail = await readAgentReportAuditTrailAsync(sessionsDir, session.id);
         // trail is already reverse-chronological (newest first)
         reports = reportsLimit === Infinity ? trail : trail.slice(0, reportsLimit);
