@@ -89,15 +89,20 @@ export function generateSessionPrefix(projectId: string): string {
 // V2 PATH FUNCTIONS (projects/{projectId}/ layout)
 // =============================================================================
 
-/** Validate a projectId is safe for use as a directory name. */
+/** Maximum allowed length for a project ID. */
+const MAX_PROJECT_ID_LENGTH = 128;
+
+/** Pattern for safe project IDs — alphanumeric, dots, hyphens, underscores only. */
+const SAFE_PROJECT_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+/** Validate a projectId is safe for use as a directory name, shell commands, and tmux sessions. */
 function assertSafeProjectId(projectId: string): void {
   if (
     !projectId ||
     projectId === "." ||
     projectId === ".." ||
-    projectId.includes("/") ||
-    projectId.includes("\\") ||
-    projectId.includes("\0")
+    projectId.length > MAX_PROJECT_ID_LENGTH ||
+    !SAFE_PROJECT_ID_PATTERN.test(projectId)
   ) {
     throw new Error(`Unsafe project ID: "${projectId}"`);
   }

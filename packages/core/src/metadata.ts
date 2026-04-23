@@ -36,6 +36,7 @@ import { assertValidSessionIdComponent, SESSION_ID_COMPONENT_PATTERN } from "./u
 import { flattenToStringRecord } from "./utils/metadata-flatten.js";
 import { validateStatus } from "./utils/validation.js";
 import { compactTimestamp } from "./paths.js";
+import { withFileLockSync } from "./file-lock.js";
 
 const JSON_EXTENSION = ".json";
 
@@ -135,9 +136,13 @@ function metadataPath(dataDir: string, sessionId: SessionId): string {
  */
 export function readMetadata(dataDir: string, sessionId: SessionId): SessionMetadata | null {
   const path = metadataPath(dataDir, sessionId);
-  if (!existsSync(path)) return null;
 
-  const content = readFileSync(path, "utf-8").trim();
+  let content: string;
+  try {
+    content = readFileSync(path, "utf-8").trim();
+  } catch {
+    return null; // file doesn't exist or was concurrently deleted
+  }
   if (!content) return null; // empty file (e.g. from reserveSessionId)
   const raw = parseMetadataContent(content);
   if (!raw) return null; // corrupt JSON — treat as missing
@@ -181,13 +186,19 @@ export function readMetadataRaw(
   sessionId: SessionId,
 ): Record<string, string> | null {
   const path = metadataPath(dataDir, sessionId);
-  if (!existsSync(path)) return null;
-  const content = readFileSync(path, "utf-8").trim();
+
+  let content: string;
+  try {
+    content = readFileSync(path, "utf-8").trim();
+  } catch {
+    return null; // file doesn't exist or was concurrently deleted
+  }
   if (!content) return null; // empty file (e.g. from reserveSessionId)
   const raw = parseMetadataContent(content);
   if (!raw) return null; // corrupt JSON — treat as missing
-  // Lifecycle is the single source of truth for status — always override stored status
-  if (raw["lifecycle"]) {
+  // Lifecycle is the single source of truth for status — always override stored status.
+  // Check both V2 "lifecycle" key and legacy "statePayload" + "stateVersion" format.
+  if (raw["lifecycle"] || (raw["statePayload"] && raw["stateVersion"] === "2")) {
     const lifecycle = parseLifecycleField(raw);
     if (lifecycle) {
       raw["status"] = deriveLegacyStatus(lifecycle);
@@ -317,24 +328,34 @@ export function mutateMetadata(
   options: { createIfMissing?: boolean } = {},
 ): Record<string, string> | null {
   const path = metadataPath(dataDir, sessionId);
-  let existing: Record<string, string> = {};
+  const lockPath = `${path}.lock`;
 
-  if (existsSync(path)) {
-    const content = readFileSync(path, "utf-8").trim();
-    if (content) {
-      const raw = parseMetadataContent(content);
-      if (raw) existing = flattenToStringRecord(raw);
-      // corrupt JSON → treat as empty record (preserves createIfMissing semantics)
+  return withFileLockSync(lockPath, () => {
+    let existing: Record<string, string> = {};
+
+    let content: string | undefined;
+    try {
+      content = readFileSync(path, "utf-8").trim();
+    } catch {
+      // File doesn't exist
     }
-  } else if (!options.createIfMissing) {
-    return null;
-  }
 
-  const next = normalizeMetadataRecord(updater({ ...existing }));
+    if (content !== undefined) {
+      if (content) {
+        const raw = parseMetadataContent(content);
+        if (raw) existing = flattenToStringRecord(raw);
+        // corrupt JSON → treat as empty record (preserves createIfMissing semantics)
+      }
+    } else if (!options.createIfMissing) {
+      return null;
+    }
 
-  mkdirSync(dirname(path), { recursive: true });
-  atomicWriteFileSync(path, serializeMetadata(unflattenFromStringRecord(next)));
-  return next;
+    const next = normalizeMetadataRecord(updater({ ...existing }));
+
+    mkdirSync(dirname(path), { recursive: true });
+    atomicWriteFileSync(path, serializeMetadata(unflattenFromStringRecord(next)));
+    return next;
+  }, { timeoutMs: 5_000, staleMs: 30_000 });
 }
 
 export function readCanonicalLifecycle(
@@ -377,6 +398,7 @@ export function updateCanonicalLifecycle(
 /**
  * Delete a session's metadata file.
  * Optionally archive it to a sibling `archive/` directory.
+ * Archive filenames include PID to prevent same-second collision between concurrent processes.
  */
 export function deleteMetadata(dataDir: string, sessionId: SessionId, archive = true): void {
   const path = metadataPath(dataDir, sessionId);
@@ -386,7 +408,7 @@ export function deleteMetadata(dataDir: string, sessionId: SessionId, archive = 
     const archiveDir = join(dataDir, "archive");
     mkdirSync(archiveDir, { recursive: true });
     const timestamp = compactTimestamp(new Date());
-    const archivePath = join(archiveDir, `${sessionId}_${timestamp}${JSON_EXTENSION}`);
+    const archivePath = join(archiveDir, `${sessionId}_${timestamp}-p${process.pid}${JSON_EXTENSION}`);
     // Use rename for atomic archival — avoids TOCTOU race between concurrent deletes
     try {
       renameSync(path, archivePath);

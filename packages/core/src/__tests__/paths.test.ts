@@ -99,12 +99,23 @@ describe("V2 paths", () => {
     expect(() => getProjectDir("foo/bar")).toThrow("Unsafe project ID");
     expect(() => getProjectDir("foo\\bar")).toThrow("Unsafe project ID");
     expect(() => getProjectDir("foo\0bar")).toThrow("Unsafe project ID");
+    // Shell-unsafe characters
+    expect(() => getProjectDir("my app")).toThrow("Unsafe project ID");
+    expect(() => getProjectDir("proj:v2")).toThrow("Unsafe project ID");
+    expect(() => getProjectDir("test$var")).toThrow("Unsafe project ID");
+    expect(() => getProjectDir("a`b")).toThrow("Unsafe project ID");
+    // Starts with dot
+    expect(() => getProjectDir("...")).toThrow("Unsafe project ID");
+    expect(() => getProjectDir(".hidden")).toThrow("Unsafe project ID");
+    // Too long
+    expect(() => getProjectDir("a".repeat(129))).toThrow("Unsafe project ID");
   });
 
   it("accepts valid project IDs", () => {
     expect(() => getProjectDir("my-app")).not.toThrow();
     expect(() => getProjectDir("app_v2")).not.toThrow();
-    expect(() => getProjectDir("...")).not.toThrow();
+    expect(() => getProjectDir("MyApp.v3")).not.toThrow();
+    expect(() => getProjectDir("a".repeat(128))).not.toThrow();
   });
 });
 

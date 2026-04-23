@@ -20,6 +20,7 @@ import {
   statSync,
   writeFileSync,
   copyFileSync,
+  cpSync,
   unlinkSync,
 } from "node:fs";
 import { basename, join } from "node:path";
@@ -486,6 +487,33 @@ function fixArchiveFilename(filename: string): string {
   }
 }
 
+/** Get file mtime as epoch ms, returning 0 on error. */
+function fileMtime(filePath: string): number {
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Move a directory, falling back to recursive copy + delete on EXDEV
+ * (cross-device rename failure, e.g. Docker volumes, NFS mounts).
+ */
+function crossDeviceMove(src: string, dest: string, log: (message: string) => void): void {
+  try {
+    renameSync(src, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+      log(`    Cross-device move detected, copying: ${basename(src)}`);
+      cpSync(src, dest, { recursive: true });
+      rmSync(src, { recursive: true, force: true });
+    } else {
+      throw err;
+    }
+  }
+}
+
 function migrateProject(
   projectId: string,
   hashDirs: HashDirEntry[],
@@ -540,7 +568,12 @@ function migrateProject(
       if (existing) {
         const existingCreated = new Date(String(existing.metadata["createdAt"] ?? "")).getTime() || 0;
         const newCreated = new Date(String(metadata["createdAt"] ?? "")).getTime() || 0;
-        if (newCreated > existingCreated) {
+        // Tiebreaker: if timestamps are equal (both 0 or same date), prefer
+        // the file with the more recent mtime, then alphabetical source path.
+        const newIsNewer = newCreated > existingCreated
+          || (newCreated === existingCreated && fileMtime(filePath) > fileMtime(existing.sourcePath))
+          || (newCreated === existingCreated && fileMtime(filePath) === fileMtime(existing.sourcePath) && filePath > existing.sourcePath);
+        if (newIsNewer) {
           // Archive the older one
           if (!dryRun) {
             const ts = compactTimestamp(new Date());
@@ -605,7 +638,7 @@ function migrateProject(
 
         const destWorktree = join(worktreesDir, worktreeName);
         if (!existsSync(destWorktree) && !dryRun) {
-          renameSync(srcWorktree, destWorktree);
+          crossDeviceMove(srcWorktree, destWorktree, log);
         }
         result.worktrees++;
       }
@@ -696,7 +729,7 @@ function tryMoveWorktree(
         log(`  Moving stray worktree ${sessionId} → projects/${projectId}/worktrees/`);
         if (!dryRun) {
           mkdirSync(join(projectsDir, projectId, "worktrees"), { recursive: true });
-          renameSync(srcPath, destPath);
+          crossDeviceMove(srcPath, destPath, log);
         }
         return true;
       }
@@ -794,7 +827,7 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
   // Crash-safety: detect incomplete previous migration
   const markerPath = join(aoBaseDir, MIGRATION_MARKER);
   if (existsSync(markerPath)) {
-    log("WARNING: Previous migration was interrupted. Resuming — some data may already be migrated.\n");
+    log("WARNING: Previous migration was interrupted. Re-running — already-migrated directories will be skipped.\n");
   }
 
   // Pre-flight: detect active sessions (include V2 prefix patterns from config)
@@ -1040,6 +1073,10 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
   // Rename .migrated back to original
   for (const dir of migratedDirs) {
     const originalPath = dir.path.replace(/\.migrated$/, "");
+    if (existsSync(originalPath)) {
+      log(`  Warning: ${basename(originalPath)} already exists — skipping restore of ${basename(dir.path)}. Resolve manually.`);
+      continue;
+    }
     log(`  Restoring: ${basename(dir.path)} → ${basename(originalPath)}`);
     if (!dryRun) {
       renameSync(dir.path, originalPath);
@@ -1070,7 +1107,7 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
             const dest = join(oldWorktreesDir, wt);
             if (!existsSync(dest)) {
               log(`  Moving worktree back: projects/${projectId}/worktrees/${wt} → ${basename(targetHashDir)}/worktrees/${wt}`);
-              if (!dryRun) renameSync(src, dest);
+              if (!dryRun) crossDeviceMove(src, dest, log);
             }
           }
         }
