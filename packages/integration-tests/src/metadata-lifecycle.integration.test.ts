@@ -191,7 +191,7 @@ describe("metadata lifecycle (real filesystem)", () => {
     expect(existsSync(archiveDir)).toBe(true);
     const archived = readdirSync(archiveDir);
     expect(archived.length).toBe(1);
-    expect(archived[0]).toMatch(/^session-del_\d{8}T\d{6}Z\.json$/);
+    expect(archived[0]).toMatch(/^session-del_\d{8}T\d{6}Z-p\d+\.json$/);
 
     // Archive content matches original (JSON format)
     const content = readFileSync(join(archiveDir, archived[0]), "utf-8");
