@@ -25,7 +25,8 @@ interface BrowseEntry {
 interface CollisionState {
   error: string;
   existingProjectId: string;
-  suggestion: "confirm-reuse";
+  suggestedProjectId: string;
+  suggestion: "choose-project-id";
 }
 
 interface AddProjectModalProps {
@@ -203,7 +204,7 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [browsePath, canSubmit, directoryEntries, onClose, open, selectedBrowsePath, selectedIndex]);
 
-  const submit = async (allowStorageKeyReuse = false) => {
+  const submit = async (useDefaultProjectId = false) => {
     setInlineError(null);
     setNetworkError(null);
     setCollision(null);
@@ -215,17 +216,25 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, name, path: resolvedPath, allowStorageKeyReuse }),
+        body: JSON.stringify({ projectId, name, path: resolvedPath, useDefaultProjectId }),
       });
       const body = (await response.json().catch(() => null)) as
-        | { error?: string; projectId?: string; existingProjectId?: string; suggestion?: "confirm-reuse" }
+        | {
+            error?: string;
+            projectId?: string;
+            existingProjectId?: string;
+            suggestedProjectId?: string;
+            suggestion?: "choose-project-id";
+          }
         | null;
-      if (response.status === 409 && body?.existingProjectId && body?.suggestion) {
+      if (response.status === 409 && body?.existingProjectId && body?.suggestedProjectId && body?.suggestion) {
         setCollision({
-          error: body.error ?? "A project with the same storage key already exists.",
+          error: body.error ?? "A project with that ID already exists.",
           existingProjectId: body.existingProjectId,
+          suggestedProjectId: body.suggestedProjectId,
           suggestion: body.suggestion,
         });
+        setProjectIdInput(body.suggestedProjectId);
         return;
       }
       if (!response.ok) {
@@ -258,10 +267,11 @@ export function AddProjectModal({ open, onClose }: AddProjectModalProps) {
     <div className="add-project-modal__notice add-project-modal__notice--warning">
       <p className="add-project-modal__notice-title">{collision.error}</p>
       <p className="add-project-modal__notice-copy">Existing project: <code>{collision.existingProjectId}</code></p>
+      <p className="add-project-modal__notice-copy">Suggested project ID: <code>{collision.suggestedProjectId}</code></p>
       <div className="add-project-modal__notice-actions">
         <button type="button" onClick={() => { onClose(); router.push(`/projects/${encodeURIComponent(collision.existingProjectId)}`); }} className="add-project-modal__ghostbtn">Open existing</button>
-        <button type="button" onClick={() => void submit(true)} className="add-project-modal__ghostbtn">Reuse shared storage</button>
-        <span className="add-project-modal__notice-hint">Open the existing project or confirm shared storage reuse.</span>
+        <button type="button" onClick={() => void submit(true)} className="add-project-modal__ghostbtn">Use suggested ID</button>
+        <span className="add-project-modal__notice-hint">Edit the Project ID field or accept the suggested suffix.</span>
       </div>
     </div>
   ) : inlineError ? (

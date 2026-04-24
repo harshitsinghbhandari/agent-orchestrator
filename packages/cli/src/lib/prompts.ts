@@ -33,10 +33,12 @@ export async function promptSelect<T extends string>(
 export async function promptText(
   message: string,
   placeholder?: string,
+  initialValue?: string,
 ): Promise<string> {
   const result = await text({
     message,
     ...(placeholder ? { placeholder } : {}),
+    ...(initialValue ? { initialValue } : {}),
   });
   if (isCancel(result)) {
     console.log(chalk.yellow("\nCancelled."));

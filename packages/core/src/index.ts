@@ -268,6 +268,7 @@ export {
   getLocalProjectConfigPath,
   repairWrappedLocalProjectConfig,
   registerProjectInGlobalConfig,
+  deriveAvailableProjectId,
   buildEffectiveProjectConfig,
   resolveProjectIdentity,
   isOldConfigFormat,

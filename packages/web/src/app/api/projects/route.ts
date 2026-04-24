@@ -3,8 +3,10 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import {
+  deriveAvailableProjectId,
   detectDefaultBranchFromDir,
   getGlobalConfigPath,
+  loadGlobalConfig,
   loadConfig,
   migrateToGlobalConfig,
   registerProjectInGlobalConfig,
@@ -86,6 +88,7 @@ export async function POST(request: NextRequest) {
   const projectId = sanitizeString(body["projectId"]);
   const name = sanitizeString(body["name"]) ?? projectId;
   const rawPath = sanitizeString(body["path"]);
+  const useDefaultProjectId = body["useDefaultProjectId"] === true;
   if (!projectId) {
     return NextResponse.json({ error: "Project ID is required." }, { status: 400 });
   }
@@ -102,15 +105,29 @@ export async function POST(request: NextRequest) {
 
   try {
     seedGlobalRegistryFromCurrentConfig();
+    const globalConfig = loadGlobalConfig() ?? { projects: {} };
+    const allocation = deriveAvailableProjectId(projectId, resolvedPath, globalConfig);
+    if (allocation.collision && !useDefaultProjectId) {
+      return NextResponse.json(
+        {
+          error: `Project ID "${projectId}" is already registered. Use "${allocation.projectId}" or enter a different project ID.`,
+          existingProjectId: allocation.existingProjectId,
+          suggestedProjectId: allocation.projectId,
+          suggestion: "choose-project-id",
+        },
+        { status: 409 },
+      );
+    }
+    const finalProjectId = useDefaultProjectId ? allocation.projectId : projectId;
     registerProjectInGlobalConfig(
-      projectId,
-      name ?? projectId,
+      finalProjectId,
+      name ?? finalProjectId,
       resolvedPath,
       buildSeedLocalConfig(resolvedPath),
     );
     invalidatePortfolioServicesCache();
-    revalidatePortfolioPaths(projectId);
-    return NextResponse.json({ ok: true, projectId }, { status: 201 });
+    revalidatePortfolioPaths(finalProjectId);
+    return NextResponse.json({ ok: true, projectId: finalProjectId }, { status: 201 });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to add project" },

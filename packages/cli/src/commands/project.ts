@@ -1,10 +1,12 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import chalk from "chalk";
 import type { Command } from "commander";
 import {
+  deriveAvailableProjectId,
   getPortfolio,
   getPortfolioSessionCounts,
+  loadGlobalConfig,
   isPortfolioEnabled,
   registerProject,
   unregisterProject,
@@ -18,6 +20,8 @@ import {
   formatPortfolioProjectName,
   formatPortfolioProjectStatus,
 } from "../lib/portfolio-display.js";
+import { isHumanCaller } from "../lib/caller-context.js";
+import { promptText } from "../lib/prompts.js";
 
 
 function assertPortfolioEnabled(): void {
@@ -78,7 +82,8 @@ export function registerProject_cmd(program: Command): void {
       "-k, --key <key>",
       "Legacy only: the project key under `projects:` in a wrapped agent-orchestrator.yaml. Omit for flat configs.",
     )
-    .action(async (path: string, opts: { key?: string }) => {
+    .option("--default", "Use the default project ID, adding a numeric suffix if needed")
+    .action(async (path: string, opts: { key?: string; default?: boolean }) => {
       assertPortfolioEnabled();
       const resolvedPath = resolve(path);
       const candidatePaths = [
@@ -111,8 +116,36 @@ export function registerProject_cmd(program: Command): void {
         process.exit(1);
       }
 
-      registerProject(resolvedPath, opts.key);
-      console.log(chalk.green(`Registered project at ${resolvedPath}`));
+      let projectId = opts.key;
+      if (!projectId) {
+        const baseProjectId = basename(resolvedPath) || "project";
+        const globalConfig = loadGlobalConfig();
+        const allocation = deriveAvailableProjectId(baseProjectId, resolvedPath, globalConfig ?? { projects: {} });
+        if (allocation.collision) {
+          if (opts.default) {
+            projectId = allocation.projectId;
+          } else if (!isHumanCaller()) {
+            console.error(
+              chalk.red(
+                `Project ID "${baseProjectId}" is already registered. Use --default to register as "${allocation.projectId}" or pass --key <id>.`,
+              ),
+            );
+            process.exit(1);
+          } else {
+            const entered = await promptText(
+              `Project ID "${baseProjectId}" already exists. Choose a project ID:`,
+              allocation.projectId,
+              allocation.projectId,
+            );
+            projectId = entered.trim() || allocation.projectId;
+          }
+        } else {
+          projectId = allocation.projectId;
+        }
+      }
+
+      registerProject(resolvedPath, projectId);
+      console.log(chalk.green(`Registered project "${projectId}" at ${resolvedPath}`));
     });
 
   // ao project rm <id>

@@ -6,17 +6,23 @@ const {
   mockGetPortfolioSessionCounts,
   mockRegisterProject,
   mockUnregisterProject,
+  mockLoadGlobalConfig,
   mockLoadPreferences,
   mockSavePreferences,
   mockLoadLocalProjectConfig,
+  mockDeriveAvailableProjectId,
+  mockPromptText,
 } = vi.hoisted(() => ({
   mockGetPortfolio: vi.fn(),
   mockGetPortfolioSessionCounts: vi.fn(),
   mockRegisterProject: vi.fn(),
   mockUnregisterProject: vi.fn(),
+  mockLoadGlobalConfig: vi.fn(),
   mockLoadPreferences: vi.fn(),
   mockSavePreferences: vi.fn(),
   mockLoadLocalProjectConfig: vi.fn(),
+  mockDeriveAvailableProjectId: vi.fn(),
+  mockPromptText: vi.fn(),
 }));
 
 vi.mock("@aoagents/ao-core", () => ({
@@ -25,9 +31,11 @@ vi.mock("@aoagents/ao-core", () => ({
   getPortfolioSessionCounts: mockGetPortfolioSessionCounts,
   registerProject: mockRegisterProject,
   unregisterProject: mockUnregisterProject,
+  loadGlobalConfig: mockLoadGlobalConfig,
   loadPreferences: mockLoadPreferences,
   savePreferences: mockSavePreferences,
   loadLocalProjectConfig: mockLoadLocalProjectConfig,
+  deriveAvailableProjectId: mockDeriveAvailableProjectId,
   loadConfig: vi.fn(),
 }));
 
@@ -43,6 +51,7 @@ vi.mock("../../src/lib/caller-context.js", () => ({
 
 vi.mock("../../src/lib/prompts.js", () => ({
   promptConfirm: vi.fn(async () => true),
+  promptText: mockPromptText,
 }));
 
 import { registerProject_cmd } from "../../src/commands/project.js";
@@ -62,6 +71,12 @@ beforeEach(() => {
   _exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
     throw new Error(`EXIT:${code}`);
   }) as typeof process.exit);
+  mockLoadGlobalConfig.mockReturnValue({ projects: {} });
+  mockDeriveAvailableProjectId.mockImplementation((projectId: string) => ({
+    projectId,
+    collision: false,
+  }));
+  mockPromptText.mockResolvedValue("");
 });
 
 describe("ao project ls", () => {
@@ -113,7 +128,7 @@ describe("ao project add", () => {
 
     expect(mockRegisterProject).toHaveBeenCalledWith(
       expect.stringContaining("my-project"),
-      undefined,
+      "my-project",
     );
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Registered"));
   });
@@ -140,6 +155,45 @@ describe("ao project add", () => {
     expect(mockRegisterProject).toHaveBeenCalledWith(
       expect.stringContaining("my-project"),
       "custom-key",
+    );
+  });
+
+  it("prompts with a suffixed project ID when the derived ID already exists", async () => {
+    mockLoadLocalProjectConfig.mockReturnValue({ projects: {} });
+    mockDeriveAvailableProjectId.mockReturnValueOnce({
+      projectId: "agent-orchestrator-1",
+      collision: true,
+      existingProjectId: "agent-orchestrator",
+    });
+    mockPromptText.mockResolvedValueOnce("agent-orchestrator-client");
+
+    await program.parseAsync(["node", "ao", "project", "add", "/tmp/agent-orchestrator"]);
+
+    expect(mockPromptText).toHaveBeenCalledWith(
+      expect.stringContaining('Project ID "agent-orchestrator" already exists'),
+      "agent-orchestrator-1",
+      "agent-orchestrator-1",
+    );
+    expect(mockRegisterProject).toHaveBeenCalledWith(
+      expect.stringContaining("agent-orchestrator"),
+      "agent-orchestrator-client",
+    );
+  });
+
+  it("uses the suffixed project ID without prompting when --default is provided", async () => {
+    mockLoadLocalProjectConfig.mockReturnValue({ projects: {} });
+    mockDeriveAvailableProjectId.mockReturnValueOnce({
+      projectId: "agent-orchestrator-1",
+      collision: true,
+      existingProjectId: "agent-orchestrator",
+    });
+
+    await program.parseAsync(["node", "ao", "project", "add", "/tmp/agent-orchestrator", "--default"]);
+
+    expect(mockPromptText).not.toHaveBeenCalled();
+    expect(mockRegisterProject).toHaveBeenCalledWith(
+      expect.stringContaining("agent-orchestrator"),
+      "agent-orchestrator-1",
     );
   });
 

@@ -82,7 +82,7 @@ describe("AddProjectModal", () => {
     expect(screen.getByRole("button", { name: /^add project$/i })).toBeDisabled();
   });
 
-  it("offers opening the existing project or confirming shared storage reuse when the server returns 409", async () => {
+  it("offers opening the existing project or using a suffixed project ID when the server returns 409", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -99,9 +99,10 @@ describe("AddProjectModal", () => {
       ok: false,
       status: 409,
       json: async () => ({
-        error: 'Project "existing-app" already owns this storage key.',
+        error: 'Project ID "second-app" is already registered.',
         existingProjectId: "existing-app",
-        suggestion: "confirm-reuse",
+        suggestedProjectId: "second-app-1",
+        suggestion: "choose-project-id",
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -114,10 +115,11 @@ describe("AddProjectModal", () => {
     expect(
       await screen.findByRole("button", { name: /open existing/i }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /reuse shared storage/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /use suggested id/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/project id/i)).toHaveValue("second-app-1");
   });
 
-  it("retries with shared storage confirmation when requested", async () => {
+  it("retries with the suggested project ID when requested", async () => {
     const onClose = vi.fn();
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValueOnce({
@@ -130,15 +132,16 @@ describe("AddProjectModal", () => {
       ok: false,
       status: 409,
       json: async () => ({
-        error: 'Project "existing-app" already owns this storage key.',
+        error: 'Project ID "my-app" is already registered.',
         existingProjectId: "existing-app",
-        suggestion: "confirm-reuse",
+        suggestedProjectId: "my-app-1",
+        suggestion: "choose-project-id",
       }),
     });
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 201,
-      json: async () => ({ ok: true, projectId: "my-app" }),
+      json: async () => ({ ok: true, projectId: "my-app-1" }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -146,18 +149,18 @@ describe("AddProjectModal", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /my-app/i }));
     fireEvent.click(screen.getByRole("button", { name: /^add project$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /reuse shared storage/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /use suggested id/i }));
 
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/projects/my-app"));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/projects/my-app-1"));
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/projects",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          projectId: "my-app",
+          projectId: "my-app-1",
           name: "My App",
           path: "~/my-app",
-          allowStorageKeyReuse: true,
+          useDefaultProjectId: true,
         }),
       }),
     );
@@ -222,7 +225,7 @@ describe("AddProjectModal", () => {
           projectId: "docs-app-alt",
           name: "Docs App Alt",
           path: "~/my-app",
-          allowStorageKeyReuse: false,
+          useDefaultProjectId: false,
         }),
       }),
     );

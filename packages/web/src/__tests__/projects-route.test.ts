@@ -220,6 +220,73 @@ describe("POST /api/projects", () => {
       error: expect.stringContaining("already registered"),
     });
   });
+
+  it("returns a suffixed project ID suggestion when the requested ID belongs to another path", async () => {
+    const repoA = path.join(tempRoot, "company-a", "agent-orchestrator");
+    const repoB = path.join(tempRoot, "company-b", "agent-orchestrator");
+    mkdirSync(path.join(repoA, ".git"), { recursive: true });
+    mkdirSync(path.join(repoB, ".git"), { recursive: true });
+    writeFileSync(
+      path.join(repoA, ".git", "config"),
+      '[remote "origin"]\n  url = git@github.com:acme/agent-orchestrator-a.git\n',
+    );
+    writeFileSync(
+      path.join(repoB, ".git", "config"),
+      '[remote "origin"]\n  url = git@github.com:acme/agent-orchestrator-b.git\n',
+    );
+
+    const { POST } = await import("@/app/api/projects/route");
+    await POST(makeRequest({ projectId: "agent-orchestrator", name: "AO A", path: repoA }));
+
+    const response = await POST(
+      makeRequest({ projectId: "agent-orchestrator", name: "AO B", path: repoB }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      existingProjectId: "agent-orchestrator",
+      suggestedProjectId: "agent-orchestrator-1",
+      suggestion: "choose-project-id",
+    });
+  });
+
+  it("uses the suffixed project ID when useDefaultProjectId is true", async () => {
+    const repoA = path.join(tempRoot, "company-a", "agent-orchestrator");
+    const repoB = path.join(tempRoot, "company-b", "agent-orchestrator");
+    mkdirSync(path.join(repoA, ".git"), { recursive: true });
+    mkdirSync(path.join(repoB, ".git"), { recursive: true });
+    writeFileSync(
+      path.join(repoA, ".git", "config"),
+      '[remote "origin"]\n  url = git@github.com:acme/agent-orchestrator-a.git\n',
+    );
+    writeFileSync(
+      path.join(repoB, ".git", "config"),
+      '[remote "origin"]\n  url = git@github.com:acme/agent-orchestrator-b.git\n',
+    );
+
+    const { POST } = await import("@/app/api/projects/route");
+    await POST(makeRequest({ projectId: "agent-orchestrator", name: "AO A", path: repoA }));
+
+    const response = await POST(
+      makeRequest({
+        projectId: "agent-orchestrator",
+        name: "AO B",
+        path: repoB,
+        useDefaultProjectId: true,
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      projectId: "agent-orchestrator-1",
+    });
+    const saved = loadGlobalConfig(configPath);
+    expect(saved?.projects["agent-orchestrator-1"]).toMatchObject({
+      path: realpathSync(repoB),
+      displayName: "AO B",
+      sessionPrefix: "ao-1",
+    });
+  });
 });
 
 describe("POST /api/projects/reload", () => {

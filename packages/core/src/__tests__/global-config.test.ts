@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
   loadGlobalConfig,
+  deriveAvailableProjectId,
   migrateToGlobalConfig,
   repairWrappedLocalProjectConfig,
   registerProjectInGlobalConfig,
@@ -79,8 +80,53 @@ describe("global-config storage identity", () => {
     registerProjectInGlobalConfig("web", "Web", repoPath, undefined, configPath);
 
     expect(() =>
-      registerProjectInGlobalConfig("web-fixtures", "Web Fixtures", clonePath, undefined, configPath),
+      registerProjectInGlobalConfig("web-fixtures", "Web Fixtures", clonePath, { sessionPrefix: "web" }, configPath),
     ).toThrow(/Duplicate session prefix detected: "web"/);
+  });
+
+  it("allocates a suffixed project ID when the derived ID is already used by another path", () => {
+    const repoA = createRepo(join("company-a", "agent-orchestrator"));
+    const repoB = createRepo(join("company-b", "agent-orchestrator"));
+    const repoC = createRepo(join("company-c", "agent-orchestrator"));
+
+    registerProjectInGlobalConfig("agent-orchestrator", "AO A", repoA, { sessionPrefix: "aoa" }, configPath);
+    registerProjectInGlobalConfig("agent-orchestrator-1", "AO B", repoB, { sessionPrefix: "aob" }, configPath);
+
+    const allocation = deriveAvailableProjectId(
+      "agent-orchestrator",
+      repoC,
+      loadGlobalConfig(configPath)!,
+    );
+
+    expect(allocation).toEqual({
+      projectId: "agent-orchestrator-2",
+      collision: true,
+      existingProjectId: "agent-orchestrator",
+    });
+  });
+
+  it("keeps re-adding the same path idempotent instead of allocating a suffix", () => {
+    const repoPath = createRepo("agent-orchestrator");
+    registerProjectInGlobalConfig("agent-orchestrator", "AO", repoPath, undefined, configPath);
+
+    expect(
+      deriveAvailableProjectId("agent-orchestrator", repoPath, loadGlobalConfig(configPath)!),
+    ).toEqual({
+      projectId: "agent-orchestrator",
+      collision: false,
+    });
+  });
+
+  it("allocates a suffixed generated session prefix for same-basename projects", () => {
+    const repoA = createRepo(join("company-a", "agent-orchestrator"));
+    const repoB = createRepo(join("company-b", "agent-orchestrator"));
+
+    registerProjectInGlobalConfig("agent-orchestrator", "AO A", repoA, undefined, configPath);
+    registerProjectInGlobalConfig("agent-orchestrator-1", "AO B", repoB, undefined, configPath);
+
+    const config = loadGlobalConfig(configPath);
+    expect(config?.projects["agent-orchestrator"]?.sessionPrefix).toBe("ao");
+    expect(config?.projects["agent-orchestrator-1"]?.sessionPrefix).toBe("ao-1");
   });
 
   it("strips stale shadow fields from legacy entries and rewrites the config", () => {

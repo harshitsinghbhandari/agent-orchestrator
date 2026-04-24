@@ -575,6 +575,62 @@ function findSessionPrefixOwner(
   return null;
 }
 
+function deriveAvailableSessionPrefix(
+  requestedPrefix: string,
+  globalConfig: GlobalConfig,
+  excludeProjectId?: string,
+): string {
+  if (!findSessionPrefixOwner(globalConfig, requestedPrefix, excludeProjectId)) {
+    return requestedPrefix;
+  }
+
+  for (let suffix = 1; suffix < 10_000; suffix += 1) {
+    const candidate = `${requestedPrefix}-${suffix}`;
+    if (!findSessionPrefixOwner(globalConfig, candidate, excludeProjectId)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Could not allocate a session prefix for "${requestedPrefix}" after 9999 attempts.`);
+}
+
+export function deriveAvailableProjectId(
+  requestedProjectId: string,
+  projectPath: string,
+  globalConfig: { projects: Record<string, GlobalProjectEntry> },
+): { projectId: string; collision: boolean; existingProjectId?: string } {
+  const normalizedProjectPath = normalizeRegisteredProjectPath(projectPath);
+  const existing = globalConfig.projects[requestedProjectId];
+
+  if (!existing) {
+    return { projectId: requestedProjectId, collision: false };
+  }
+
+  if (existing.path && resolve(existing.path) === normalizedProjectPath) {
+    return { projectId: requestedProjectId, collision: false };
+  }
+
+  for (let suffix = 1; suffix < 10_000; suffix += 1) {
+    const candidate = `${requestedProjectId}-${suffix}`;
+    const candidateEntry = globalConfig.projects[candidate];
+    if (!candidateEntry) {
+      return {
+        projectId: candidate,
+        collision: true,
+        existingProjectId: requestedProjectId,
+      };
+    }
+    if (candidateEntry.path && resolve(candidateEntry.path) === normalizedProjectPath) {
+      return {
+        projectId: candidate,
+        collision: false,
+      };
+    }
+  }
+
+  throw new Error(`Could not allocate a project ID for "${requestedProjectId}" after 9999 attempts.`);
+}
+
 
 // =============================================================================
 // REGISTRATION
@@ -630,21 +686,25 @@ export function registerProjectInGlobalConfig(
     const originUrl = readOriginUrlFromGitConfig(normalizedProjectPath);
     const repoIdentity = existing?.repo ?? normalizeRepoIdentity(originUrl);
     const defaultBranch = existing?.defaultBranch ?? localConfig?.defaultBranch ?? "main";
-    const sessionPrefix =
+    const requestedSessionPrefix =
       existing?.sessionPrefix ??
       localConfig?.sessionPrefix ??
       generateSessionPrefix(basename(requestedProjectPath));
     const source = existing?.source ?? (repoIdentity ? "ao-project-add" : "local");
     const registeredAt = existing?.registeredAt ?? Math.floor(Date.now() / 1000);
-    const prefixOwner = findSessionPrefixOwner(globalConfig, sessionPrefix, projectId);
+    const explicitSessionPrefix = !existing?.sessionPrefix && Boolean(localConfig?.sessionPrefix);
+    const prefixOwner = findSessionPrefixOwner(globalConfig, requestedSessionPrefix, projectId);
 
-    if (prefixOwner) {
+    if (prefixOwner && explicitSessionPrefix) {
       throw new Error(
-        `Duplicate session prefix detected: "${sessionPrefix}"\n` +
+        `Duplicate session prefix detected: "${requestedSessionPrefix}"\n` +
           `Projects "${prefixOwner}" and "${projectId}" would generate the same prefix.\n\n` +
           `Choose a different configProjectKey or add an explicit sessionPrefix before registering the project.`,
       );
     }
+    const sessionPrefix = prefixOwner
+      ? deriveAvailableSessionPrefix(requestedSessionPrefix, globalConfig, projectId)
+      : requestedSessionPrefix;
 
     globalConfig.projects[projectId] = {
       projectId,
