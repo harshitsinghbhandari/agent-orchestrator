@@ -13,14 +13,16 @@ import {
   deleteMetadata,
 } from "../../metadata.js";
 import { getSessionsDir, getWorktreesDir } from "../../paths.js";
-import type {
-  OrchestratorConfig,
-  PluginRegistry,
-  Runtime,
-  Agent,
-  Workspace,
-  Tracker,
-  SCM,
+import {
+  isTerminalSession,
+  isRestorable,
+  type OrchestratorConfig,
+  type PluginRegistry,
+  type Runtime,
+  type Agent,
+  type Workspace,
+  type Tracker,
+  type SCM,
 } from "../../types.js";
 import { setupTestContext, teardownTestContext, makeHandle, type TestContext } from "../test-utils.js";
 import { installMockOpencode, installMockOpencodeWithNotFoundDelete } from "./opencode-helpers.js";
@@ -64,6 +66,145 @@ describe("kill", () => {
     expect(mockRuntime.destroy).toHaveBeenCalledWith(makeHandle("rt-1"));
     expect(mockWorkspace.destroy).toHaveBeenCalledWith(managedWorktree);
     expect(readMetadata(sessionsDir, "app-1")).toBeNull(); // archived + deleted
+  });
+
+  it("skipArchive destroys runtime but keeps metadata and workspace", async () => {
+    const managedWorktree = join(
+      getWorktreesDir(config.projects["my-app"]!.storageKey),
+      "app-1",
+    );
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: managedWorktree,
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const result = await sm.kill("app-1", { skipArchive: true });
+
+    expect(result).toEqual({ cleaned: true, alreadyTerminated: false });
+    // Runtime destroyed
+    expect(mockRuntime.destroy).toHaveBeenCalledWith(makeHandle("rt-1"));
+    // Workspace NOT destroyed
+    expect(mockWorkspace.destroy).not.toHaveBeenCalled();
+    // Metadata still in active dir (not archived)
+    const meta = readMetadata(sessionsDir, "app-1");
+    expect(meta).not.toBeNull();
+    const lifecycle = JSON.parse(meta!["statePayload"]!);
+    expect(lifecycle.session.state).toBe("terminated");
+    expect(lifecycle.runtime.state).toBe("missing");
+  });
+
+  it("preserved session remains in list() and is restorable", async () => {
+    const wsPath = join(tmpDir, "ws-app-1");
+    mkdirSync(wsPath, { recursive: true });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/work",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+
+    // Kill with skipArchive — simulates ao stop for orchestrators
+    await sm.kill("app-1", { skipArchive: true });
+
+    // Session must still appear in list()
+    const sessions = await sm.list("my-app");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].id).toBe("app-1");
+
+    // Session must be terminal (runtime gone) and restorable (not merged)
+    expect(isTerminalSession(sessions[0])).toBe(true);
+    expect(isRestorable(sessions[0])).toBe(true);
+  });
+
+  it("preserved session can be restored after kill", async () => {
+    const wsPath = join(tmpDir, "ws-app-1");
+    mkdirSync(wsPath, { recursive: true });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/work",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+
+    // Kill with skipArchive, then restore — simulates ao stop → ao start
+    await sm.kill("app-1", { skipArchive: true });
+    const restored = await sm.restore("app-1");
+
+    expect(restored.id).toBe("app-1");
+    expect(restored.status).toBe("spawning");
+    expect(restored.workspacePath).toBe(wsPath);
+    expect(restored.branch).toBe("feat/work");
+    // New runtime was created
+    expect(mockRuntime.create).toHaveBeenCalled();
+  });
+
+  it("idempotent second skipArchive kill returns alreadyTerminated without archiving", async () => {
+    const wsPath = join(tmpDir, "ws-app-1");
+    mkdirSync(wsPath, { recursive: true });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/work",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+
+    // First kill — terminates and keeps in active dir
+    const first = await sm.kill("app-1", { skipArchive: true });
+    expect(first).toEqual({ cleaned: true, alreadyTerminated: false });
+
+    // Second kill — idempotent, still not archived
+    const second = await sm.kill("app-1", { skipArchive: true });
+    expect(second).toEqual({ cleaned: false, alreadyTerminated: true });
+    // Metadata must still be in active dir
+    expect(readMetadata(sessionsDir, "app-1")).not.toBeNull();
+  });
+
+  it("normal kill after skipArchive kill archives the session and destroys workspace", async () => {
+    const managedWorktree = join(
+      getWorktreesDir(config.projects["my-app"]!.storageKey),
+      "app-1",
+    );
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: managedWorktree,
+      branch: "feat/work",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+
+    // First: skipArchive kill — keeps in active dir, workspace preserved
+    await sm.kill("app-1", { skipArchive: true });
+    expect(readMetadata(sessionsDir, "app-1")).not.toBeNull();
+    expect(mockWorkspace.destroy).not.toHaveBeenCalled();
+
+    // Reset mocks to verify the second kill's side effects
+    vi.mocked(mockWorkspace.destroy).mockClear();
+
+    // Second: normal kill (no skipArchive) — drains the preserved session
+    const result = await sm.kill("app-1");
+    expect(result).toEqual({ cleaned: false, alreadyTerminated: true });
+    // Metadata now archived (removed from active dir)
+    expect(readMetadata(sessionsDir, "app-1")).toBeNull();
+    // Workspace destroyed by the drain path
+    expect(mockWorkspace.destroy).toHaveBeenCalledWith(managedWorktree);
   });
 
   it("does not destroy workspace paths outside managed roots", async () => {

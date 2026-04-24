@@ -1477,6 +1477,7 @@ describe("stop command", () => {
 
     expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator-3", {
       purgeOpenCode: false,
+      skipArchive: true,
     });
     const output = vi
       .mocked(console.log)
@@ -1515,6 +1516,7 @@ describe("stop command", () => {
 
     expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator-2", {
       purgeOpenCode: false,
+      skipArchive: true,
     });
   });
 
@@ -1553,6 +1555,7 @@ describe("stop command", () => {
 
     expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator-1", {
       purgeOpenCode: true,
+      skipArchive: true,
     });
   });
 
@@ -1635,6 +1638,85 @@ describe("stop command", () => {
       .mock.calls.map((c) => c.join(" "))
       .join("\n");
     expect(output).toContain("Dashboard stopped");
+  });
+
+  it("skipArchive keeps orchestrator metadata in active dir so ao start restores it", async () => {
+    mockConfigRef.current = makeConfig({ "my-app": makeProject() });
+    mockSessionManager.list.mockResolvedValue([
+      {
+        id: "app-orchestrator-1",
+        projectId: "my-app",
+        status: "working",
+        activity: "active",
+        metadata: { role: "orchestrator" },
+        lastActivityAt: new Date(),
+        runtimeHandle: { id: "tmux-1" },
+      },
+    ]);
+    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockDashboardOnPort(3000);
+
+    // ao stop — should pass skipArchive: true
+    await program.parseAsync(["node", "test", "stop"]);
+    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-orchestrator-1", {
+      purgeOpenCode: false,
+      skipArchive: true,
+    });
+
+    // Simulate the state after ao stop with skipArchive: the session stays
+    // in the active dir with terminated lifecycle + runtime missing.
+    vi.mocked(console.log).mockReset();
+    mockSessionManager.list.mockResolvedValue([
+      {
+        id: "app-orchestrator-1",
+        projectId: "my-app",
+        status: "killed",
+        activity: "exited",
+        metadata: { role: "orchestrator" },
+        lastActivityAt: new Date(),
+        lifecycle: {
+          version: 2,
+          session: {
+            kind: "orchestrator",
+            state: "terminated",
+            reason: "manually_killed",
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+            terminatedAt: new Date().toISOString(),
+            lastTransitionAt: new Date().toISOString(),
+          },
+          pr: {
+            state: "none",
+            reason: "not_created",
+            number: null,
+            url: null,
+            lastObservedAt: null,
+          },
+          runtime: {
+            state: "missing",
+            reason: "manual_kill_requested",
+            lastObservedAt: new Date().toISOString(),
+            handle: null,
+            tmuxName: "tmux-1",
+          },
+        },
+      },
+    ]);
+    mockSessionManager.restore.mockResolvedValue({
+      id: "app-orchestrator-1",
+      runtimeHandle: { id: "tmux-restored-1" },
+    });
+
+    // ao start — should find the terminated orchestrator and restore it
+    await program.parseAsync(["node", "test", "start", "--no-dashboard"]);
+
+    expect(mockSessionManager.restore).toHaveBeenCalledWith("app-orchestrator-1");
+    expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
+    const output = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => c.join(" "))
+      .join("\n");
+    expect(output).toContain("app-orchestrator-1");
   });
 });
 
