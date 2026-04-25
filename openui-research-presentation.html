@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenUI x Agent Orchestrator — Integration Research</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#1a1714;--bg-deep:#13110e;--surface:#231f1b;--surface-raised:#2c2722;
+  --surface-hover:#352f29;--border:#3a332c;--border-subtle:#2c2722;
+  --text:#e8e0d4;--text-muted:#a89e90;--text-dim:#6b6259;
+  --accent:#8b9cf7;--accent-dim:#5c64b5;--accent-glow:rgba(139,156,247,0.15);
+  --green:#7bc47f;--amber:#d4a54a;--red:#c75050;--cyan:#5bb8c9;
+  --font-mono:'JetBrains Mono',monospace;--font-body:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+html{scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:var(--border) var(--bg)}
+body{background:var(--bg);color:var(--text);font-family:var(--font-body);line-height:1.65;overflow-x:hidden}
+::selection{background:var(--accent);color:var(--bg)}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(26,23,20,0.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--border-subtle);padding:0 32px;height:48px;display:flex;align-items:center;gap:24px;transition:transform .3s}
+nav.hidden{transform:translateY(-100%)}
+.nav-logo{font-family:var(--font-mono);font-weight:600;font-size:13px;color:var(--accent);letter-spacing:0.5px;white-space:nowrap}
+.nav-links{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
+.nav-links::-webkit-scrollbar{display:none}
+.nav-link{font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-decoration:none;padding:6px 12px;letter-spacing:0.3px;white-space:nowrap;position:relative;transition:color .2s}
+.nav-link:hover,.nav-link.active{color:var(--accent)}
+.nav-link.active::after{content:'';position:absolute;bottom:0;left:12px;right:12px;height:1px;background:var(--accent)}
+
+/* SECTIONS */
+section{padding:120px 32px 80px;max-width:1100px;margin:0 auto}
+section:first-of-type{padding-top:140px}
+.section-label{font-family:var(--font-mono);font-size:10px;font-weight:500;color:var(--accent);letter-spacing:2px;text-transform:uppercase;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.section-label::before{content:'';width:24px;height:1px;background:var(--accent)}
+h1{font-family:var(--font-mono);font-size:clamp(36px,6vw,64px);font-weight:300;line-height:1.1;letter-spacing:-1px;margin-bottom:24px}
+h1 em{font-style:normal;color:var(--accent);font-weight:500}
+h2{font-family:var(--font-mono);font-size:clamp(24px,3.5vw,36px);font-weight:300;line-height:1.2;letter-spacing:-0.5px;margin-bottom:32px}
+h3{font-family:var(--font-mono);font-size:16px;font-weight:500;margin-bottom:12px}
+p{color:var(--text-muted);max-width:640px;margin-bottom:16px;font-size:15px}
+p.lead{font-size:18px;line-height:1.7;color:var(--text);max-width:720px}
+
+/* HERO */
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;position:relative;padding-bottom:120px}
+.hero-grid{position:absolute;inset:0;background-image:
+  linear-gradient(var(--border-subtle) 1px,transparent 1px),
+  linear-gradient(90deg,var(--border-subtle) 1px,transparent 1px);
+  background-size:80px 80px;opacity:0.3;mask:radial-gradient(ellipse 60% 50% at 50% 50%,black,transparent)}
+.hero-glow{position:absolute;top:30%;left:50%;width:600px;height:400px;transform:translate(-50%,-50%);background:radial-gradient(ellipse,rgba(139,156,247,0.06),transparent 70%);pointer-events:none}
+.hero-tag{display:inline-block;font-family:var(--font-mono);font-size:11px;color:var(--bg);background:var(--accent);padding:4px 12px;letter-spacing:1px;text-transform:uppercase;font-weight:600;margin-bottom:32px}
+.hero-sub{font-family:var(--font-mono);font-size:13px;color:var(--text-dim);margin-top:32px;display:flex;gap:32px;flex-wrap:wrap}
+.hero-sub span{display:flex;align-items:center;gap:8px}
+.hero-sub span::before{content:'';width:6px;height:6px;background:var(--accent-dim);display:block}
+.hero-scroll{position:absolute;bottom:48px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--text-dim);font-family:var(--font-mono);font-size:10px;letter-spacing:1px;animation:float 2s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(8px)}}
+.scroll-line{width:1px;height:32px;background:linear-gradient(var(--text-dim),transparent)}
+
+/* PIPELINE */
+.pipeline{display:flex;align-items:center;gap:0;margin:48px 0 32px;overflow-x:auto;padding:24px 0;scrollbar-width:none}
+.pipeline::-webkit-scrollbar{display:none}
+.pipe-node{flex-shrink:0;padding:14px 20px;background:var(--surface);border:1px solid var(--border);font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--text);position:relative;opacity:0;animation:pipeIn .5s forwards;white-space:nowrap}
+.pipe-node:nth-child(1){animation-delay:.1s}.pipe-node:nth-child(2){animation-delay:.3s}
+.pipe-node:nth-child(3){animation-delay:.5s}.pipe-node:nth-child(4){animation-delay:.7s}
+.pipe-node:nth-child(5){animation-delay:.9s}.pipe-node:nth-child(6){animation-delay:1.1s}
+@keyframes pipeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.pipe-arrow{flex-shrink:0;width:40px;height:1px;background:var(--border);position:relative;opacity:0;animation:pipeIn .4s forwards}
+.pipe-arrow:nth-child(2){animation-delay:.2s}.pipe-arrow:nth-child(4){animation-delay:.4s}
+.pipe-arrow:nth-child(6){animation-delay:.6s}.pipe-arrow:nth-child(8){animation-delay:.8s}
+.pipe-arrow:nth-child(10){animation-delay:1.0s}
+.pipe-arrow::after{content:'';position:absolute;right:-1px;top:-4px;border:4px solid transparent;border-left:6px solid var(--border)}
+.pipe-node .pipe-sub{display:block;font-size:10px;color:var(--text-dim);font-weight:300;margin-top:4px}
+.pipe-node.highlight{border-color:var(--accent);background:var(--accent-glow)}
+.pipe-node.highlight .pipe-sub{color:var(--accent-dim)}
+
+/* KEY INSIGHT */
+.insight-box{background:var(--surface);border:1px solid var(--border);border-left:2px solid var(--accent);padding:24px 28px;margin:32px 0;max-width:640px}
+.insight-box h4{font-family:var(--font-mono);font-size:11px;color:var(--accent);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px}
+.insight-box p{margin:0;color:var(--text);font-size:14px}
+
+/* OPPORTUNITY CARDS */
+.opp-grid{display:flex;flex-direction:column;gap:2px;margin-top:32px}
+.opp-card{background:var(--surface);border:1px solid var(--border);overflow:hidden;transition:background .2s,border-color .2s;cursor:pointer}
+.opp-card:hover{background:var(--surface-hover);border-color:var(--border)}
+.opp-card.expanded{border-color:var(--accent)}
+.opp-header{display:flex;align-items:center;gap:16px;padding:20px 24px}
+.opp-rank{font-family:var(--font-mono);font-size:11px;color:var(--text-dim);min-width:24px}
+.opp-title{font-family:var(--font-mono);font-size:14px;font-weight:500;flex:1}
+.opp-badges{display:flex;gap:8px;flex-shrink:0}
+.badge{font-family:var(--font-mono);font-size:10px;font-weight:600;padding:3px 10px;letter-spacing:0.5px;text-transform:uppercase;border:1px solid}
+.badge-high{color:var(--green);border-color:rgba(123,196,127,0.3);background:rgba(123,196,127,0.08)}
+.badge-medium{color:var(--amber);border-color:rgba(212,165,74,0.3);background:rgba(212,165,74,0.08)}
+.badge-easy{color:var(--cyan);border-color:rgba(91,184,201,0.3);background:rgba(91,184,201,0.08)}
+.badge-hard{color:var(--red);border-color:rgba(199,80,80,0.3);background:rgba(199,80,80,0.08)}
+.opp-chevron{color:var(--text-dim);font-size:18px;transition:transform .3s;font-family:var(--font-mono)}
+.opp-card.expanded .opp-chevron{transform:rotate(90deg);color:var(--accent)}
+.opp-body{max-height:0;overflow:hidden;transition:max-height .4s cubic-bezier(0.16,1,0.3,1)}
+.opp-card.expanded .opp-body{max-height:800px}
+.opp-content{padding:0 24px 24px 64px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.opp-desc{font-size:14px;color:var(--text-muted);line-height:1.7}
+.opp-mockup{background:var(--bg-deep);border:1px solid var(--border-subtle);padding:16px;font-family:var(--font-mono);font-size:11px;line-height:1.6;color:var(--text-dim);white-space:pre;overflow-x:auto}
+.opp-mockup .mock-accent{color:var(--accent)}
+.opp-mockup .mock-green{color:var(--green)}
+.opp-mockup .mock-amber{color:var(--amber)}
+.opp-mockup .mock-red{color:var(--red)}
+.opp-mockup .mock-text{color:var(--text)}
+
+/* ARCHITECTURE */
+.arch-tabs{display:flex;gap:2px;margin-bottom:0}
+.arch-tab{font-family:var(--font-mono);font-size:12px;padding:12px 20px;background:var(--surface);border:1px solid var(--border);border-bottom:none;color:var(--text-muted);cursor:pointer;transition:all .2s}
+.arch-tab.active{background:var(--surface-raised);color:var(--accent);border-color:var(--accent);border-bottom-color:var(--surface-raised);position:relative;z-index:1}
+.arch-panel{background:var(--surface-raised);border:1px solid var(--border);padding:40px;display:none}
+.arch-panel.active{display:block}
+.flow{display:flex;flex-direction:column;gap:0;align-items:flex-start}
+.flow-node{background:var(--surface);border:1px solid var(--border);padding:14px 20px;font-family:var(--font-mono);font-size:12px;position:relative;min-width:280px}
+.flow-node .flow-label{font-size:10px;color:var(--text-dim);margin-top:4px}
+.flow-node.flow-highlight{border-left:2px solid var(--accent)}
+.flow-connector{width:1px;height:28px;background:var(--border);margin-left:40px;position:relative}
+.flow-connector::after{content:'';position:absolute;bottom:-1px;left:-4px;border:4px solid transparent;border-top:5px solid var(--border)}
+.flow-connector-label{font-family:var(--font-mono);font-size:10px;color:var(--text-dim);margin-left:12px;position:absolute;top:4px;left:1px;white-space:nowrap}
+
+/* ROADMAP */
+.roadmap{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:32px}
+.phase{background:var(--surface);border:1px solid var(--border);padding:28px 24px;position:relative;transition:all .3s}
+.phase:hover{background:var(--surface-hover);border-color:var(--accent)}
+.phase::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;transition:background .3s}
+.phase:nth-child(1)::before{background:var(--green)}.phase:nth-child(2)::before{background:var(--cyan)}
+.phase:nth-child(3)::before{background:var(--amber)}.phase:nth-child(4)::before{background:var(--red)}
+.phase-num{font-family:var(--font-mono);font-size:10px;color:var(--text-dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px}
+.phase-title{font-family:var(--font-mono);font-size:14px;font-weight:500;margin-bottom:8px}
+.phase-meta{font-family:var(--font-mono);font-size:11px;color:var(--text-dim);margin-bottom:16px;display:flex;gap:12px}
+.phase-desc{font-size:13px;color:var(--text-muted);line-height:1.6}
+.phase-bar{height:3px;background:var(--border-subtle);margin-top:20px;position:relative;overflow:hidden}
+.phase-bar-fill{height:100%;position:absolute;left:0;top:0;transition:width 1s cubic-bezier(0.16,1,0.3,1)}
+.phase:nth-child(1) .phase-bar-fill{background:var(--green);width:0}
+.phase:nth-child(2) .phase-bar-fill{background:var(--cyan);width:0}
+.phase:nth-child(3) .phase-bar-fill{background:var(--amber);width:0}
+.phase:nth-child(4) .phase-bar-fill{background:var(--red);width:0}
+.phase.visible:nth-child(1) .phase-bar-fill{width:100%}
+.phase.visible:nth-child(2) .phase-bar-fill{width:70%}
+.phase.visible:nth-child(3) .phase-bar-fill{width:45%}
+.phase.visible:nth-child(4) .phase-bar-fill{width:25%}
+
+/* COMPAT TABLE */
+.compat{width:100%;border-collapse:collapse;margin-top:24px;font-size:14px}
+.compat th{font-family:var(--font-mono);font-size:11px;font-weight:500;color:var(--text-dim);text-align:left;padding:12px 16px;border-bottom:1px solid var(--border);letter-spacing:0.5px;text-transform:uppercase}
+.compat td{padding:14px 16px;border-bottom:1px solid var(--border-subtle);color:var(--text-muted)}
+.compat tr:hover td{background:var(--surface);color:var(--text)}
+.compat .status{font-family:var(--font-mono);font-size:12px;font-weight:500;display:flex;align-items:center;gap:8px}
+.compat .dot{width:7px;height:7px;display:inline-block}
+.dot-green{background:var(--green)}.dot-amber{background:var(--amber)}.dot-red{background:var(--red)}
+
+/* CTA SECTION */
+.cta{background:var(--surface);border:1px solid var(--accent);padding:48px;margin-top:48px;position:relative;overflow:hidden}
+.cta::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent)}
+.cta-glow{position:absolute;top:-40px;right:-40px;width:200px;height:200px;background:radial-gradient(circle,rgba(139,156,247,0.08),transparent 70%);pointer-events:none}
+.cta h3{font-family:var(--font-mono);font-size:20px;font-weight:400;margin-bottom:16px}
+.cta p{font-size:14px}
+.cta-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:24px}
+.cta-step{background:var(--bg);border:1px solid var(--border-subtle);padding:16px;font-family:var(--font-mono);font-size:12px}
+.cta-step-num{color:var(--accent);font-size:10px;margin-bottom:6px;letter-spacing:1px}
+
+/* FOOTER */
+footer{text-align:center;padding:48px 32px;font-family:var(--font-mono);font-size:11px;color:var(--text-dim);border-top:1px solid var(--border-subtle)}
+
+/* FADE IN */
+.fade{opacity:0;transform:translateY(20px);transition:opacity .6s,transform .6s cubic-bezier(0.16,1,0.3,1)}
+.fade.visible{opacity:1;transform:translateY(0)}
+.fade-d1{transition-delay:.1s}.fade-d2{transition-delay:.2s}.fade-d3{transition-delay:.3s}
+
+/* RESPONSIVE */
+@media(max-width:768px){
+  section{padding:80px 20px 60px}
+  .opp-content{grid-template-columns:1fr}
+  .roadmap{grid-template-columns:1fr 1fr}
+  .hero-sub{flex-direction:column;gap:12px}
+  nav{padding:0 16px}
+  .opp-header{padding:16px}
+  .cta{padding:32px 24px}
+}
+@media(max-width:480px){
+  .roadmap{grid-template-columns:1fr}
+  .opp-badges{flex-direction:column;gap:4px}
+  .nav-links{display:none}
+}
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <span class="nav-logo">AO / RESEARCH</span>
+  <div class="nav-links">
+    <a href="#hero" class="nav-link active" data-section="hero">Overview</a>
+    <a href="#openui" class="nav-link" data-section="openui">OpenUI</a>
+    <a href="#opportunities" class="nav-link" data-section="opportunities">Opportunities</a>
+    <a href="#architecture" class="nav-link" data-section="architecture">Architecture</a>
+    <a href="#roadmap" class="nav-link" data-section="roadmap">Roadmap</a>
+    <a href="#compat" class="nav-link" data-section="compat">Compat</a>
+    <a href="#start" class="nav-link" data-section="start">Start Here</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero" id="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-glow"></div>
+  <div style="position:relative;z-index:1">
+    <span class="hero-tag">Research Document</span>
+    <h1>Open<em>UI</em> <span style="color:var(--text-dim);font-weight:200">&times;</span><br>Agent Orchestrator</h1>
+    <p class="lead">Generative UI for agent supervision. Let LLMs produce interactive, structured dashboards instead of raw terminal output.</p>
+    <div class="hero-sub">
+      <span>7 Integration Opportunities</span>
+      <span>4-Phase Implementation</span>
+      <span>Generate Once, Execute Forever</span>
+    </div>
+  </div>
+  <div class="hero-scroll">
+    SCROLL
+    <div class="scroll-line"></div>
+  </div>
+</section>
+
+<!-- WHAT IS OPENUI -->
+<section id="openui">
+  <div class="section-label fade">01 &mdash; Foundation</div>
+  <h2 class="fade fade-d1">What is OpenUI?</h2>
+  <p class="lead fade fade-d2">A full-stack Generative UI framework. LLMs output a declarative language instead of JSON or HTML. The runtime handles all interactivity without calling the LLM again.</p>
+
+  <div class="pipeline fade fade-d3" id="pipeline">
+    <div class="pipe-node highlight">LLM Output<span class="pipe-sub">OpenUI Lang</span></div>
+    <div class="pipe-arrow"></div>
+    <div class="pipe-node">Lexer<span class="pipe-sub">Token stream</span></div>
+    <div class="pipe-arrow"></div>
+    <div class="pipe-node">Parser<span class="pipe-sub">Streaming AST</span></div>
+    <div class="pipe-arrow"></div>
+    <div class="pipe-node">Materializer<span class="pipe-sub">Resolve refs</span></div>
+    <div class="pipe-arrow"></div>
+    <div class="pipe-node">Evaluator<span class="pipe-sub">$vars, Query()</span></div>
+    <div class="pipe-arrow"></div>
+    <div class="pipe-node highlight">Renderer<span class="pipe-sub">React Components</span></div>
+  </div>
+
+  <div class="insight-box fade">
+    <h4>Key Insight</h4>
+    <p>Generate once, execute forever. The LLM produces a declarative program with Query(), Mutation(), $variables, and Action(). The runtime handles data fetching, form interactions, and re-rendering with zero additional LLM calls.</p>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:32px">
+    <div class="fade" style="background:var(--surface);border:1px solid var(--border);padding:20px">
+      <h3 style="font-size:13px;color:var(--accent)">defineComponent()</h3>
+      <p style="font-size:13px;margin:0">Register components with Zod v4 schema + React renderer</p>
+    </div>
+    <div class="fade fade-d1" style="background:var(--surface);border:1px solid var(--border);padding:20px">
+      <h3 style="font-size:13px;color:var(--accent)">createLibrary()</h3>
+      <p style="font-size:13px;margin:0">Auto-generates system prompts teaching the LLM your components</p>
+    </div>
+    <div class="fade fade-d2" style="background:var(--surface);border:1px solid var(--border);padding:20px">
+      <h3 style="font-size:13px;color:var(--accent)">&lt;Renderer /&gt;</h3>
+      <p style="font-size:13px;margin:0">Standalone embed &mdash; no chat interface required</p>
+    </div>
+  </div>
+</section>
+
+<!-- INTEGRATION OPPORTUNITIES -->
+<section id="opportunities">
+  <div class="section-label fade">02 &mdash; Opportunities</div>
+  <h2 class="fade fade-d1">Integration Opportunities</h2>
+  <p class="fade fade-d2">Seven ways OpenUI can transform the agent orchestration experience, ranked by impact.</p>
+
+  <div class="opp-grid fade fade-d3">
+
+    <div class="opp-card" data-opp="1">
+      <div class="opp-header">
+        <span class="opp-rank">01</span>
+        <span class="opp-title">Agent-Generated Insight Cards</span>
+        <div class="opp-badges"><span class="badge badge-high">High Impact</span><span class="badge badge-medium">Medium</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">Agents produce rich, interactive summaries of their work instead of plain-text strings. Decision logs, file change maps, test results, and cost metrics &mdash; all generated by the agent's LLM using OpenUI components.<br><br>Each card is unique because the LLM generates it from what actually happened in the session.</div>
+          <div class="opp-mockup"><span class="mock-text">Session: fix-auth-middleware (#1234)</span>
+
+<span class="mock-accent">--- Decision Log ---</span>
+ 1. Analyzed 3 approaches
+    <span class="mock-text">[+ Expand reasoning]</span>
+ 2. Chose sliding-window refresh
+    <span class="mock-text">[+ Trade-offs]</span>
+ 3. Modified 4 files, added 12 tests
+
+<span class="mock-accent">--- Files Modified ---</span>
+ <span class="mock-green">+</span> src/auth/refresh.ts    <span class="mock-green">+47</span> <span class="mock-red">-12</span>
+ <span class="mock-green">+</span> src/auth/middleware.ts <span class="mock-green">+8</span>  <span class="mock-red">-3</span>
+ <span class="mock-green">+</span> tests/auth.test.ts    <span class="mock-green">+89</span>  [new]
+
+<span class="mock-text">Cost: $0.47  Duration: 12m  Commits: 3</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opp-card" data-opp="2">
+      <div class="opp-header">
+        <span class="opp-rank">02</span>
+        <span class="opp-title">Interactive Session Timeline</span>
+        <div class="opp-badges"><span class="badge badge-high">High Impact</span><span class="badge badge-medium">Medium</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">The dashboard shows state (working/done) but not the journey. Build an OpenUI timeline from lifecycle events: spawned, analyzed, coded, tests failed, fixed, PR created, CI passed, merged.<br><br>Timelines are inherently variable &mdash; some sessions have 5 events, others 50. The LLM generates contextually appropriate layouts each time.</div>
+          <div class="opp-mockup"><span class="mock-accent">10:32</span> <span class="mock-green">&#x25cf;</span> <span class="mock-text">Spawned</span> &mdash; issue #1234
+  <span class="mock-text">|</span>
+<span class="mock-accent">10:33</span> <span class="mock-green">&#x25cf;</span> <span class="mock-text">Analyzed</span> &mdash; read 4 files
+  <span class="mock-text">|</span>  [+ Root cause reasoning]
+  <span class="mock-text">|</span>
+<span class="mock-accent">10:35</span> <span class="mock-green">&#x25cf;</span> <span class="mock-text">Implemented</span> &mdash; refresh.ts
+  <span class="mock-text">|</span>  [+ View diff]
+  <span class="mock-text">|</span>
+<span class="mock-accent">10:38</span> <span class="mock-red">&#x2717;</span> <span class="mock-red">Tests failed</span> &mdash; 2 failures
+  <span class="mock-text">|</span>
+<span class="mock-accent">10:40</span> <span class="mock-green">&#x25cf;</span> <span class="mock-text">Fix applied</span>
+  <span class="mock-text">|</span>
+<span class="mock-accent">10:42</span> <span class="mock-green">&#x2713;</span> <span class="mock-green">PR created</span> &mdash; #456
+  <span class="mock-text">|</span>
+<span class="mock-accent">11:02</span> <span class="mock-green">&#x2713;</span> <span class="mock-green">Merged</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opp-card" data-opp="3">
+      <div class="opp-header">
+        <span class="opp-rank">03</span>
+        <span class="opp-title">Agent Copilot Panel</span>
+        <div class="opp-badges"><span class="badge badge-high">High Impact</span><span class="badge badge-hard">Hard</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">An OpenUI-powered panel alongside the terminal. Ask natural-language questions &mdash; "what files did you change?", "why did CI fail?" &mdash; and get interactive UI responses, not text. File trees are expandable, diffs are navigable, checklists have progress bars.<br><br>This is OpenUI's sweet spot: natural-language queries producing interactive UIs.</div>
+          <div class="opp-mockup"><span class="mock-accent">Terminal</span>              <span class="mock-accent">Copilot</span>
+<span class="mock-text">&#x250c;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;&#x250c;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;</span>
+<span class="mock-text">&#x2502;</span> $ claude --resume  <span class="mock-text">&#x2502;&#x2502;</span> <span class="mock-amber">You:</span> "What did  <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2502;</span> Analyzing auth... <span class="mock-text">&#x2502;&#x2502;</span>  you change?"    <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2502;</span>                   <span class="mock-text">&#x2502;&#x2502;</span>                  <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2502;</span>                   <span class="mock-text">&#x2502;&#x2502;</span> <span class="mock-accent">[Changes]</span>        <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2502;</span>                   <span class="mock-text">&#x2502;&#x2502;</span> <span class="mock-green">&#x25b8;</span> refresh.ts     <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2502;</span>                   <span class="mock-text">&#x2502;&#x2502;</span> <span class="mock-green">&#x25b8;</span> types.ts       <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2502;</span>                   <span class="mock-text">&#x2502;&#x2502;</span>                  <span class="mock-text">&#x2502;</span>
+<span class="mock-text">&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opp-card" data-opp="4">
+      <div class="opp-header">
+        <span class="opp-rank">04</span>
+        <span class="opp-title">On-Demand Analytics Dashboards</span>
+        <div class="opp-badges"><span class="badge badge-medium">Medium Impact</span><span class="badge badge-easy">Easy</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">A "Generate Report" button that sends session data to an LLM producing OpenUI analytics. Ask for any analysis: "agent performance this week", "common failure modes", "Claude Code vs Codex comparison".<br><br>Easiest integration &mdash; standalone modal, no changes to existing data flows.</div>
+          <div class="opp-mockup"><span class="mock-accent">Agent Performance &mdash; This Week</span>
+
+ <span class="mock-text">Sessions</span>  <span class="mock-green">&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;</span> 47
+ <span class="mock-text">Merged</span>    <span class="mock-green">&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;</span>    38
+ <span class="mock-text">Failed</span>    <span class="mock-red">&#x2588;&#x2588;</span>              5
+ <span class="mock-text">Active</span>    <span class="mock-amber">&#x2588;</span>               4
+
+ <span class="mock-accent">Success Rate:</span> <span class="mock-green">81%</span>  (+7% vs last week)
+ <span class="mock-accent">Avg Cost:</span>     $0.52
+ <span class="mock-accent">Avg Time:</span>     18m to first PR</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opp-card" data-opp="5">
+      <div class="opp-header">
+        <span class="opp-rank">05</span>
+        <span class="opp-title">PR Review Preparation View</span>
+        <div class="opp-badges"><span class="badge badge-medium">Medium Impact</span><span class="badge badge-medium">Medium</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">Agent-generated "review briefings" that render in the dashboard: change narrative, risk assessment, test coverage map, attention markers, and rollback plans. Reviewers see structured context, not just raw diffs.</div>
+          <div class="opp-mockup"><span class="mock-accent">Review Briefing: PR #456</span>
+
+ <span class="mock-text">Risk:</span>       <span class="mock-green">LOW</span>  <span class="mock-green">&#x25a0;&#x25a0;</span><span class="mock-text">&#x25a1;&#x25a1;&#x25a1;</span>
+ <span class="mock-text">Confidence:</span> <span class="mock-green">HIGH</span> <span class="mock-green">&#x25a0;&#x25a0;&#x25a0;&#x25a0;</span><span class="mock-text">&#x25a1;</span>
+
+ <span class="mock-accent">1.</span> refresh.ts <span class="mock-text">(core change)</span>
+    <span class="mock-amber">Attention: L45-67</span>
+ <span class="mock-accent">2.</span> middleware.ts <span class="mock-text">(wiring)</span>
+    Risk: NONE (mechanical)
+
+ Test Coverage: <span class="mock-green">94%</span> of changed lines</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opp-card" data-opp="6">
+      <div class="opp-header">
+        <span class="opp-rank">06</span>
+        <span class="opp-title">Schema / Architecture Visualization</span>
+        <div class="opp-badges"><span class="badge badge-medium">Medium Impact</span><span class="badge badge-medium">Medium</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">Agents generate interactive diagrams for database migrations, API changes, and architectural refactors. Schema diffs, endpoint maps, dependency graphs, and state machine diagrams &mdash; all contextual to the actual changes made.</div>
+          <div class="opp-mockup"><span class="mock-accent">Schema Diff: users table</span>
+
+ <span class="mock-text">BEFORE</span>            <span class="mock-text">AFTER</span>
+ id       INT       id        INT
+ email    VARCHAR   email     VARCHAR
+ token    VARCHAR   <span class="mock-red">-token    VARCHAR</span>
+                    <span class="mock-green">+refresh  JSONB</span>
+                    <span class="mock-green">+window   INT</span>
+                    <span class="mock-green">+expires  TIMESTAMP</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opp-card" data-opp="7">
+      <div class="opp-header">
+        <span class="opp-rank">07</span>
+        <span class="opp-title">Multi-Agent Comparison View</span>
+        <div class="opp-badges"><span class="badge badge-medium">Medium Impact</span><span class="badge badge-hard">Hard</span></div>
+        <span class="opp-chevron">&#9656;</span>
+      </div>
+      <div class="opp-body">
+        <div class="opp-content">
+          <div class="opp-desc">Side-by-side comparison when multiple agents tackle the same issue: approach comparison, code diff between agents, decision divergence points, performance metrics, and AI-generated recommendation of which approach is better.</div>
+          <div class="opp-mockup"><span class="mock-accent">Agent Comparison: Issue #1234</span>
+
+           <span class="mock-text">Claude Code</span>    <span class="mock-text">Codex</span>
+ <span class="mock-text">Approach</span>  Refactor      Patch
+ <span class="mock-text">Files</span>    4 modified    2 modified
+ <span class="mock-text">Tests</span>    <span class="mock-green">+12 new</span>       <span class="mock-amber">+3 new</span>
+ <span class="mock-text">Time</span>     18m           7m
+ <span class="mock-text">Cost</span>     $0.52         $0.18
+ <span class="mock-text">Quality</span>  <span class="mock-green">&#x25a0;&#x25a0;&#x25a0;&#x25a0;</span><span class="mock-text">&#x25a1;</span>      <span class="mock-amber">&#x25a0;&#x25a0;&#x25a0;</span><span class="mock-text">&#x25a1;&#x25a1;</span>
+
+ <span class="mock-accent">Recommendation:</span> <span class="mock-green">Claude Code</span>
+ More thorough, better test coverage</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- TECHNICAL ARCHITECTURE -->
+<section id="architecture">
+  <div class="section-label fade">03 &mdash; Architecture</div>
+  <h2 class="fade fade-d1">Technical Architecture</h2>
+  <p class="fade fade-d2">Data flow diagrams for the top three integrations.</p>
+
+  <div class="fade fade-d3">
+    <div class="arch-tabs">
+      <div class="arch-tab active" data-tab="insight">Insight Cards</div>
+      <div class="arch-tab" data-tab="timeline">Timeline</div>
+      <div class="arch-tab" data-tab="copilot">Copilot Panel</div>
+    </div>
+
+    <div class="arch-panel active" data-panel="insight">
+      <div class="flow">
+        <div class="flow-node flow-highlight">Agent Plugin (claude-code, codex, etc.)<div class="flow-label">At session completion, generates OpenUI Lang using AO component library</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">Store OpenUI code string</span></div>
+        <div class="flow-node">Session Metadata<div class="flow-label">Key: "insightCard" &rarr; OpenUI Lang string (already supports arbitrary strings)</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">GET /api/sessions/[id]/insight</span></div>
+        <div class="flow-node">API Route<div class="flow-label">Returns stored OpenUI Lang for the session</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">&lt;Renderer /&gt; embed</span></div>
+        <div class="flow-node flow-highlight">Dashboard: SessionCard / SessionDetail<div class="flow-label">Expandable panel renders interactive insight card</div></div>
+      </div>
+    </div>
+
+    <div class="arch-panel" data-panel="timeline">
+      <div class="flow">
+        <div class="flow-node flow-highlight">Lifecycle Manager (polling loop)<div class="flow-label">Already tracks state transitions &mdash; add structured event emission</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">Emit events to JSONL</span></div>
+        <div class="flow-node">Session Event Log (new)<div class="flow-label">~/.agent-orchestrator/{hash}/sessions/{id}/events.jsonl</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">Read events + send to LLM</span></div>
+        <div class="flow-node">API Route: /api/sessions/[id]/timeline<div class="flow-label">LLM generates OpenUI Lang from structured events + timeline component library</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">Render timeline</span></div>
+        <div class="flow-node flow-highlight">Dashboard: TimelineView.tsx<div class="flow-label">&lt;Renderer /&gt; displays interactive session timeline</div></div>
+      </div>
+    </div>
+
+    <div class="arch-panel" data-panel="copilot">
+      <div class="flow">
+        <div class="flow-node">User types question in Copilot panel<div class="flow-label">"What files did you change?", "Why did CI fail?"</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">POST /api/copilot/ask</span></div>
+        <div class="flow-node flow-highlight">Context Gathering Pipeline<div class="flow-label">Session metadata + recent events + terminal output + PR data + git state</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">Context + question + component library</span></div>
+        <div class="flow-node">LLM generates OpenUI Lang<div class="flow-label">Streaming response with contextually appropriate components</div></div>
+        <div class="flow-connector"><span class="flow-connector-label">Stream to client</span></div>
+        <div class="flow-node flow-highlight">CopilotPanel.tsx<div class="flow-label">Streaming &lt;Renderer /&gt; alongside DirectTerminal</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ROADMAP -->
+<section id="roadmap">
+  <div class="section-label fade">04 &mdash; Roadmap</div>
+  <h2 class="fade fade-d1">Implementation Roadmap</h2>
+  <p class="fade fade-d2">Four phases, ordered by risk and dependency. Start with the safest, highest-signal integration.</p>
+
+  <div class="roadmap fade fade-d3">
+    <div class="phase">
+      <div class="phase-num">Phase 1</div>
+      <div class="phase-title">On-Demand Analytics</div>
+      <div class="phase-meta"><span>2-3 days</span><span style="color:var(--cyan)">Easy</span></div>
+      <div class="phase-desc">Standalone modal. Add @openui/react, create analytics component library, wire LLM API route. Zero risk to existing dashboard.</div>
+      <div class="phase-bar"><div class="phase-bar-fill"></div></div>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Phase 2</div>
+      <div class="phase-title">Agent Insight Cards</div>
+      <div class="phase-meta"><span>1 week</span><span style="color:var(--amber)">Medium</span></div>
+      <div class="phase-desc">Build on Phase 1 library. Add insight generation to agent plugins, store in metadata, render in SessionCard.</div>
+      <div class="phase-bar"><div class="phase-bar-fill"></div></div>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Phase 3</div>
+      <div class="phase-title">Interactive Timeline</div>
+      <div class="phase-meta"><span>1-2 weeks</span><span style="color:var(--amber)">Medium</span></div>
+      <div class="phase-desc">Core changes: event logging in lifecycle manager, SessionEvent type, timeline components, LLM generation route.</div>
+      <div class="phase-bar"><div class="phase-bar-fill"></div></div>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Phase 4</div>
+      <div class="phase-title">Copilot Panel</div>
+      <div class="phase-meta"><span>2-3 weeks</span><span style="color:var(--red)">Hard</span></div>
+      <div class="phase-desc">Context-gathering pipeline, streaming LLM endpoint, split-pane layout alongside terminal, conversation history.</div>
+      <div class="phase-bar"><div class="phase-bar-fill"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPATIBILITY -->
+<section id="compat">
+  <div class="section-label fade">05 &mdash; Compatibility</div>
+  <h2 class="fade fade-d1">Compatibility Matrix</h2>
+  <p class="fade fade-d2">How OpenUI fits with AO's existing stack.</p>
+
+  <table class="compat fade fade-d3">
+    <thead>
+      <tr><th>Dependency</th><th>AO Version</th><th>OpenUI Needs</th><th>Status</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">React</td>
+        <td>19</td>
+        <td>18+</td>
+        <td><span class="status"><span class="dot dot-green"></span>Compatible</span></td>
+        <td>React 19 is a superset of 18 API</td>
+      </tr>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">Next.js</td>
+        <td>15 (App Router)</td>
+        <td>Any</td>
+        <td><span class="status"><span class="dot dot-green"></span>Compatible</span></td>
+        <td>Client-side only; use "use client" directive</td>
+      </tr>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">Zod</td>
+        <td>v3</td>
+        <td>v4</td>
+        <td><span class="status"><span class="dot dot-amber"></span>Friction</span></td>
+        <td>Can coexist with separate imports (zod/v4)</td>
+      </tr>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">Tailwind CSS</td>
+        <td>v4</td>
+        <td>Optional</td>
+        <td><span class="status"><span class="dot dot-green"></span>Compatible</span></td>
+        <td>OpenUI components can use Tailwind classes</td>
+      </tr>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">SSR</td>
+        <td>App Router SSR</td>
+        <td>Client-only</td>
+        <td><span class="status"><span class="dot dot-green"></span>N/A</span></td>
+        <td>AO already uses "use client" for interactive components</td>
+      </tr>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">Bundle Size</td>
+        <td>&mdash;</td>
+        <td>Lexer + Parser + Evaluator</td>
+        <td><span class="status"><span class="dot dot-amber"></span>Monitor</span></td>
+        <td>Dynamic import to lazy-load only when needed</td>
+      </tr>
+      <tr>
+        <td style="font-family:var(--font-mono);font-size:13px">Real-time (SSE)</td>
+        <td>5s interval</td>
+        <td>REST Query() only</td>
+        <td><span class="status"><span class="dot dot-amber"></span>Friction</span></td>
+        <td>OpenUI lacks push support; keep SSE in hand-built dashboard</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- RECOMMENDED START -->
+<section id="start">
+  <div class="section-label fade">06 &mdash; Start Here</div>
+  <h2 class="fade fade-d1">Recommended Starting Point</h2>
+  <p class="lead fade fade-d2">Phase 1: On-Demand Analytics. Lowest risk, highest signal, validates the entire integration path.</p>
+
+  <div class="cta fade fade-d3">
+    <div class="cta-glow"></div>
+    <h3>Why start with analytics?</h3>
+    <p>It's a standalone modal &mdash; zero changes to the existing dashboard, SSE data flow, or terminal. It proves OpenUI works with AO's design system and validates the LLM-to-Renderer pipeline. Users immediately see the power of generated UIs. And it takes only 2-3 days.</p>
+    <div class="cta-steps">
+      <div class="cta-step">
+        <div class="cta-step-num">Step 1</div>
+        Add @openui/react to packages/web
+      </div>
+      <div class="cta-step">
+        <div class="cta-step-num">Step 2</div>
+        Create analytics component library with AO design tokens
+      </div>
+      <div class="cta-step">
+        <div class="cta-step-num">Step 3</div>
+        Build POST /api/analytics/generate route with LLM call
+      </div>
+      <div class="cta-step">
+        <div class="cta-step-num">Step 4</div>
+        Create AnalyticsModal.tsx with &lt;Renderer /&gt;
+      </div>
+      <div class="cta-step">
+        <div class="cta-step-num">Step 5</div>
+        Add "Generate Report" button to Dashboard.tsx
+      </div>
+      <div class="cta-step">
+        <div class="cta-step-num">Step 6</div>
+        Ship it. Iterate based on what users ask for.
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  OpenUI x Agent Orchestrator &mdash; Research Document &mdash; April 2026
+</footer>
+
+<script>
+// Intersection Observer for fade-in animations
+const fadeObserver = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+}, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.fade, .phase').forEach(el => fadeObserver.observe(el));
+
+// Nav scroll tracking
+let lastScroll = 0;
+const nav = document.getElementById('nav');
+const sections = document.querySelectorAll('section[id]');
+const navLinks = document.querySelectorAll('.nav-link');
+
+window.addEventListener('scroll', () => {
+  const st = window.scrollY;
+  // Hide/show nav
+  if (st > lastScroll && st > 100) nav.classList.add('hidden');
+  else nav.classList.remove('hidden');
+  lastScroll = st;
+
+  // Active section
+  let current = '';
+  sections.forEach(s => {
+    if (st >= s.offsetTop - 200) current = s.id;
+  });
+  navLinks.forEach(l => {
+    l.classList.toggle('active', l.dataset.section === current);
+  });
+}, { passive: true });
+
+// Opportunity cards expand/collapse
+document.querySelectorAll('.opp-card').forEach(card => {
+  card.querySelector('.opp-header').addEventListener('click', () => {
+    const wasExpanded = card.classList.contains('expanded');
+    // Close all
+    document.querySelectorAll('.opp-card').forEach(c => c.classList.remove('expanded'));
+    // Toggle clicked
+    if (!wasExpanded) card.classList.add('expanded');
+  });
+});
+
+// Architecture tabs
+document.querySelectorAll('.arch-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.arch-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.arch-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelector(`.arch-panel[data-panel="${tab.dataset.tab}"]`).classList.add('active');
+  });
+});
+</script>
+</body>
+</html>
