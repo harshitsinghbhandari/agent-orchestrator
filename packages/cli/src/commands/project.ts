@@ -3,10 +3,8 @@ import { existsSync } from "node:fs";
 import chalk from "chalk";
 import type { Command } from "commander";
 import {
-  deriveAvailableProjectId,
   getPortfolio,
   getPortfolioSessionCounts,
-  loadGlobalConfig,
   isPortfolioEnabled,
   registerProject,
   unregisterProject,
@@ -20,20 +18,19 @@ import {
   formatPortfolioProjectName,
   formatPortfolioProjectStatus,
 } from "../lib/portfolio-display.js";
-import { isHumanCaller } from "../lib/caller-context.js";
-import { promptText } from "../lib/prompts.js";
-
 
 function assertPortfolioEnabled(): void {
   if (isPortfolioEnabled()) return;
-  console.error(chalk.red("Portfolio mode is disabled. Unset AO_ENABLE_PORTFOLIO or set it to 1 to use `ao project`."));
+  console.error(
+    chalk.red(
+      "Portfolio mode is disabled. Unset AO_ENABLE_PORTFOLIO or set it to 1 to use `ao project`.",
+    ),
+  );
   process.exit(1);
 }
 
 export function registerProject_cmd(program: Command): void {
-  const project = program
-    .command("project")
-    .description("Manage portfolio projects");
+  const project = program.command("project").description("Manage portfolio projects");
 
   // ao project ls
   project
@@ -45,7 +42,9 @@ export function registerProject_cmd(program: Command): void {
 
       if (portfolio.length === 0) {
         console.log(chalk.dim("No projects in portfolio."));
-        console.log(chalk.dim("Run `ao start` in a project or `ao project add <path>` to register one."));
+        console.log(
+          chalk.dim("Run `ao start` in a project or `ao project add <path>` to register one."),
+        );
         return;
       }
 
@@ -118,33 +117,10 @@ export function registerProject_cmd(program: Command): void {
 
       let projectId = opts.key;
       if (!projectId) {
-        const baseProjectId = basename(resolvedPath) || "project";
-        const globalConfig = loadGlobalConfig();
-        const allocation = deriveAvailableProjectId(baseProjectId, resolvedPath, globalConfig ?? { projects: {} });
-        if (allocation.collision) {
-          if (opts.default) {
-            projectId = allocation.projectId;
-          } else if (!isHumanCaller()) {
-            console.error(
-              chalk.red(
-                `Project ID "${baseProjectId}" is already registered. Use --default to register as "${allocation.projectId}" or pass --key <id>.`,
-              ),
-            );
-            process.exit(1);
-          } else {
-            const entered = await promptText(
-              `Project ID "${baseProjectId}" already exists. Choose a project ID:`,
-              allocation.projectId,
-              allocation.projectId,
-            );
-            projectId = entered.trim() || allocation.projectId;
-          }
-        } else {
-          projectId = allocation.projectId;
-        }
+        projectId = basename(resolvedPath) || "project";
       }
 
-      registerProject(resolvedPath, projectId);
+      registerProject(resolvedPath, projectId, basename(resolvedPath) || projectId);
       console.log(chalk.green(`Registered project "${projectId}" at ${resolvedPath}`));
     });
 

@@ -46,6 +46,8 @@ export function generateConfigHash(configPath: string): string {
 /**
  * Generate project ID from project path (basename of the path).
  * Example: ~/repos/integrator → "integrator"
+ *
+ * @deprecated New project registrations use generateExternalId() from global-config.ts.
  */
 export function generateProjectId(projectPath: string): string {
   return basename(projectPath);
@@ -152,7 +154,10 @@ export function getArchiveFilePath(projectId: string, sessionId: string, date?: 
 
 /** Compact ISO timestamp for archive filenames: 20260420T143052Z */
 export function compactTimestamp(date: Date): string {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.(\d{3})Z$/, "Z");
+  return date
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.(\d{3})Z$/, "Z");
 }
 
 // =============================================================================
@@ -234,7 +239,11 @@ export function generateSessionName(prefix: string, num: number): string {
  * Format: {storageKey}-{prefix}-{num}
  * Example: "a3b4c5d6e7f8-int-1"
  */
-export function generateTmuxName(storageKey: string | undefined, prefix: string, num: number): string {
+export function generateTmuxName(
+  storageKey: string | undefined,
+  prefix: string,
+  num: number,
+): string {
   return `${requireStorageKey(storageKey)}-${prefix}-${num}`;
 }
 

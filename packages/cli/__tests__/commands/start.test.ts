@@ -6,7 +6,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -58,7 +66,13 @@ const { mockPromptSelect, mockPromptConfirm } = vi.hoisted(() => ({
   mockPromptConfirm: vi.fn().mockResolvedValue(true),
 }));
 
-const { mockAcquireStartupLock, mockIsAlreadyRunning, mockRegister, mockUnregister, mockWaitForExit } = vi.hoisted(() => ({
+const {
+  mockAcquireStartupLock,
+  mockIsAlreadyRunning,
+  mockRegister,
+  mockUnregister,
+  mockWaitForExit,
+} = vi.hoisted(() => ({
   mockAcquireStartupLock: vi.fn().mockResolvedValue(() => {}),
   mockIsAlreadyRunning: vi.fn().mockReturnValue(null),
   mockRegister: vi.fn(),
@@ -160,7 +174,13 @@ vi.mock("../../src/lib/caller-context.js", () => ({
 
 vi.mock("../../src/lib/detect-env.js", () => ({
   detectEnvironment: vi.fn().mockResolvedValue({
-    git: { isRepo: true, remoteUrl: null, ownerRepo: null, currentBranch: "main", defaultBranch: "main" },
+    git: {
+      isRepo: true,
+      remoteUrl: null,
+      ownerRepo: null,
+      currentBranch: "main",
+      defaultBranch: "main",
+    },
     tools: { hasTmux: true, hasGh: false, ghAuthed: false },
     apiKeys: { hasLinear: false, hasSlack: false },
   }),
@@ -1596,7 +1616,8 @@ describe("stop command", () => {
       if (cmd === "ps") {
         const pid = args[1];
         if (pid === "11111") return { stdout: "python -m http.server 3001", stderr: "" };
-        if (pid === "22222") return { stdout: "node /fake/web/dist-server/start-all.js", stderr: "" };
+        if (pid === "22222")
+          return { stdout: "node /fake/web/dist-server/start-all.js", stderr: "" };
         return { stdout: "", stderr: "" };
       }
       if (cmd === "lsof") {
@@ -1630,7 +1651,8 @@ describe("stop command", () => {
       }
       if (cmd === "ps") {
         const pid = args[1];
-        if (pid === "11111") return { stdout: "node /fake/web/dist-server/start-all.js", stderr: "" };
+        if (pid === "11111")
+          return { stdout: "node /fake/web/dist-server/start-all.js", stderr: "" };
         if (pid === "22222") return { stdout: "nginx: worker process", stderr: "" };
         return { stdout: "", stderr: "" };
       }
@@ -1674,7 +1696,8 @@ describe("start command — autoCreateConfig", () => {
     const { detectProjectType } = await import("../../src/lib/project-detection.js");
     vi.mocked(detectProjectType).mockReturnValue({ languages: [], frameworks: [] });
 
-    const { detectAvailableAgents, detectAgentRuntime } = await import("../../src/lib/detect-agent.js");
+    const { detectAvailableAgents, detectAgentRuntime } =
+      await import("../../src/lib/detect-agent.js");
     vi.mocked(detectAvailableAgents).mockResolvedValue([]);
     vi.mocked(detectAgentRuntime).mockResolvedValue("claude-code");
 
@@ -2081,12 +2104,20 @@ describe("start command — global registry mutations", () => {
 
     const shell = await import("../../src/lib/shell.js");
     vi.mocked(shell.git).mockImplementation(async (args: string[], workingDir?: string) => {
-      if (args[0] === "rev-parse" && args[1] === "--git-dir" && workingDir === addedRepoDir) return ".git";
-      if (args[0] === "remote" && args[1] === "get-url" && args[2] === "origin" && workingDir === addedRepoDir) {
+      if (args[0] === "rev-parse" && args[1] === "--git-dir" && workingDir === addedRepoDir)
+        return ".git";
+      if (
+        args[0] === "remote" &&
+        args[1] === "get-url" &&
+        args[2] === "origin" &&
+        workingDir === addedRepoDir
+      ) {
         return "https://github.com/org/added.git";
       }
-      if (args[0] === "symbolic-ref" && workingDir === addedRepoDir) return "refs/remotes/origin/master";
-      if (args[0] === "rev-parse" && args[1] === "--verify" && workingDir === addedRepoDir) return "abc";
+      if (args[0] === "symbolic-ref" && workingDir === addedRepoDir)
+        return "refs/remotes/origin/master";
+      if (args[0] === "rev-parse" && args[1] === "--verify" && workingDir === addedRepoDir)
+        return "abc";
       return null;
     });
 
@@ -2114,12 +2145,15 @@ describe("start command — global registry mutations", () => {
       const globalConfig = parseYaml(readFileSync(globalConfigPath, "utf-8")) as {
         projects: Record<string, Record<string, unknown>>;
       };
-      expect(globalConfig.projects["added"]).toMatchObject({
+      const addedEntry = Object.values(globalConfig.projects).find(
+        (entry) => entry.path === realpathSync(addedRepoDir),
+      );
+      expect(addedEntry).toMatchObject({
         path: realpathSync(addedRepoDir),
         defaultBranch: "master",
         sessionPrefix: "add",
       });
-      expect(globalConfig.projects["added"]).not.toHaveProperty("agentRules");
+      expect(addedEntry).not.toHaveProperty("agentRules");
 
       const localAddedConfig = readFileSync(join(addedRepoDir, "agent-orchestrator.yaml"), "utf-8");
       expect(localAddedConfig).not.toContain("projects:");
@@ -2200,8 +2234,14 @@ describe("start command — global registry mutations", () => {
       expect(globalConfig).not.toContain("orchestrator:");
       expect(globalConfig).not.toContain("worker:");
     } finally {
-      Object.defineProperty(process.stdin, "isTTY", { value: originalStdinTty, configurable: true });
-      Object.defineProperty(process.stdout, "isTTY", { value: originalStdoutTty, configurable: true });
+      Object.defineProperty(process.stdin, "isTTY", {
+        value: originalStdinTty,
+        configurable: true,
+      });
+      Object.defineProperty(process.stdout, "isTTY", {
+        value: originalStdoutTty,
+        configurable: true,
+      });
       if (origEnv === undefined) delete process.env["AO_CONFIG_PATH"];
       else process.env["AO_CONFIG_PATH"] = origEnv;
       if (origGlobalEnv === undefined) delete process.env["AO_GLOBAL_CONFIG"];

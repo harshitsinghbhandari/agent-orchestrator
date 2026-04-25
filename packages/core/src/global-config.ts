@@ -1,10 +1,5 @@
-import {
-  existsSync,
-  mkdirSync,
-  realpathSync,
-  readFileSync,
-  statSync,
-} from "node:fs";
+import { existsSync, mkdirSync, realpathSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -13,9 +8,7 @@ import { atomicWriteFileSync } from "./atomic-write.js";
 import { detectScmPlatform } from "./config-generator.js";
 import { withFileLockSync } from "./file-lock.js";
 import { ProjectResolveError } from "./types.js";
-import {
-  generateSessionPrefix,
-} from "./paths.js";
+import { generateSessionPrefix } from "./paths.js";
 import { normalizeOriginUrl } from "./storage-key.js";
 
 function globalConfigLockPath(configPath: string): string {
@@ -49,6 +42,23 @@ function normalizeRegistryProjectPath(projectId: string, rawPath: string): strin
 
 function normalizeRegisteredProjectPath(projectPath: string): string {
   return realpathSync(resolve(projectPath));
+}
+
+export function generateExternalId(projectPath: string, originUrl?: string | null): string {
+  const resolvedProjectPath = resolve(projectPath);
+  const name = sanitizeBasename(basename(resolvedProjectPath));
+  const raw = `${resolvedProjectPath}:${originUrl ?? ""}`;
+  const hash = createHash("sha256").update(raw).digest("hex").slice(0, 10);
+  return `${name}_${hash}`;
+}
+
+function sanitizeBasename(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/^[^a-z0-9]/, "x")
+    .replace(/-+/g, "-")
+    .slice(0, 30);
 }
 
 export interface RegisterProjectOptions {
@@ -312,7 +322,7 @@ export function saveGlobalConfig(config: GlobalConfig, configPath?: string): voi
  */
 export function loadLocalProjectConfig(projectPath: string): LocalProjectConfig | null {
   const result = loadLocalProjectConfigDetailed(projectPath);
-  return result.kind === "loaded" ? result.config ?? null : null;
+  return result.kind === "loaded" ? (result.config ?? null) : null;
 }
 
 export function loadLocalProjectConfigDetailed(projectPath: string): LocalProjectConfigLoadResult {
@@ -414,7 +424,9 @@ export function repairWrappedLocalProjectConfig(projectId: string, projectPath: 
   const projects = (parsed["projects"] ?? {}) as Record<string, Record<string, unknown>>;
   const project = projects[projectId];
   if (!project || typeof project !== "object") {
-    throw new Error(`Wrapped local config at ${configPath} does not contain project "${projectId}".`);
+    throw new Error(
+      `Wrapped local config at ${configPath} does not contain project "${projectId}".`,
+    );
   }
 
   const {
@@ -495,8 +507,9 @@ function readOriginUrlFromGitConfig(projectPath: string): string | null {
   return null;
 }
 
-
-function normalizeRepoIdentity(originUrl: string | null): z.infer<typeof GlobalRepoIdentitySchema> | undefined {
+function normalizeRepoIdentity(
+  originUrl: string | null,
+): z.infer<typeof GlobalRepoIdentitySchema> | undefined {
   if (!originUrl) return undefined;
 
   const normalizedOriginUrl = normalizeOriginUrl(originUrl);
@@ -556,7 +569,6 @@ function normalizeLegacyRepoValue(
   return undefined;
 }
 
-
 function getRegisteredSessionPrefix(entry: GlobalProjectEntry, projectId: string): string {
   return entry.sessionPrefix ?? generateSessionPrefix(basename(entry.path ?? projectId));
 }
@@ -591,46 +603,10 @@ function deriveAvailableSessionPrefix(
     }
   }
 
-  throw new Error(`Could not allocate a session prefix for "${requestedPrefix}" after 9999 attempts.`);
+  throw new Error(
+    `Could not allocate a session prefix for "${requestedPrefix}" after 9999 attempts.`,
+  );
 }
-
-export function deriveAvailableProjectId(
-  requestedProjectId: string,
-  projectPath: string,
-  globalConfig: { projects: Record<string, GlobalProjectEntry> },
-): { projectId: string; collision: boolean; existingProjectId?: string } {
-  const normalizedProjectPath = normalizeRegisteredProjectPath(projectPath);
-  const existing = globalConfig.projects[requestedProjectId];
-
-  if (!existing) {
-    return { projectId: requestedProjectId, collision: false };
-  }
-
-  if (existing.path && resolve(existing.path) === normalizedProjectPath) {
-    return { projectId: requestedProjectId, collision: false };
-  }
-
-  for (let suffix = 1; suffix < 10_000; suffix += 1) {
-    const candidate = `${requestedProjectId}-${suffix}`;
-    const candidateEntry = globalConfig.projects[candidate];
-    if (!candidateEntry) {
-      return {
-        projectId: candidate,
-        collision: true,
-        existingProjectId: requestedProjectId,
-      };
-    }
-    if (candidateEntry.path && resolve(candidateEntry.path) === normalizedProjectPath) {
-      return {
-        projectId: candidate,
-        collision: false,
-      };
-    }
-  }
-
-  throw new Error(`Could not allocate a project ID for "${requestedProjectId}" after 9999 attempts.`);
-}
-
 
 // =============================================================================
 // REGISTRATION
@@ -651,31 +627,53 @@ export function registerProjectInGlobalConfig(
   localConfig?: (LocalProjectConfig & { sessionPrefix?: string }) | undefined,
   optionsOrGlobalConfigPath?: RegisterProjectOptions | string,
   globalConfigPath?: string,
-): void {
+): string {
   const configPath =
     typeof optionsOrGlobalConfigPath === "string"
       ? optionsOrGlobalConfigPath
       : (globalConfigPath ?? getGlobalConfigPath());
   const requestedProjectPath = resolve(projectPath);
   const normalizedProjectPath = normalizeRegisteredProjectPath(projectPath);
+  const originUrl = readOriginUrlFromGitConfig(normalizedProjectPath);
 
-  withFileLockSync(globalConfigLockPath(configPath), () => {
-    const globalConfig = loadGlobalConfig(configPath, { alreadyLocked: true }) ?? makeEmptyGlobalConfig();
+  return withFileLockSync(globalConfigLockPath(configPath), () => {
+    const globalConfig =
+      loadGlobalConfig(configPath, { alreadyLocked: true }) ?? makeEmptyGlobalConfig();
 
-    const existing = globalConfig.projects[projectId] as
+    let effectiveProjectId = projectId;
+    let existing = globalConfig.projects[projectId] as
       | (GlobalProjectEntry & Record<string, unknown>)
       | undefined;
 
+    if (!existing) {
+      const hashedId = generateExternalId(normalizedProjectPath, originUrl);
+      const hashedExisting = globalConfig.projects[hashedId] as
+        | (GlobalProjectEntry & Record<string, unknown>)
+        | undefined;
+
+      if (hashedExisting?.path && resolve(hashedExisting.path) === normalizedProjectPath) {
+        effectiveProjectId = hashedId;
+        existing = hashedExisting;
+      } else if (!hashedExisting) {
+        effectiveProjectId = hashedId;
+      } else {
+        throw new Error(
+          `Project ID collision: "${hashedId}" already registered at a different path (${hashedExisting.path}). ` +
+            "This is extremely unlikely — please file a bug.",
+        );
+      }
+    }
+
     if (existing?.path && resolve(existing.path) !== normalizedProjectPath) {
       throw new Error(
-        `Project id "${projectId}" is already registered for "${existing.path}". ` +
+        `Project id "${effectiveProjectId}" is already registered for "${existing.path}". ` +
           `Choose a different configProjectKey to add "${normalizedProjectPath}" as a separate project.`,
       );
     }
 
     for (const [existingProjectId, entry] of Object.entries(globalConfig.projects)) {
-      if (existingProjectId === projectId) continue;
-      if (entry.path === normalizedProjectPath) {
+      if (existingProjectId === effectiveProjectId) continue;
+      if (resolve(entry.path) === normalizedProjectPath) {
         throw new Error(
           `Project "${existingProjectId}" is already registered at "${normalizedProjectPath}". ` +
             `Choose a different project ID or path.`,
@@ -683,7 +681,6 @@ export function registerProjectInGlobalConfig(
       }
     }
 
-    const originUrl = readOriginUrlFromGitConfig(normalizedProjectPath);
     const repoIdentity = existing?.repo ?? normalizeRepoIdentity(originUrl);
     const defaultBranch = existing?.defaultBranch ?? localConfig?.defaultBranch ?? "main";
     const requestedSessionPrefix =
@@ -693,21 +690,25 @@ export function registerProjectInGlobalConfig(
     const source = existing?.source ?? (repoIdentity ? "ao-project-add" : "local");
     const registeredAt = existing?.registeredAt ?? Math.floor(Date.now() / 1000);
     const explicitSessionPrefix = !existing?.sessionPrefix && Boolean(localConfig?.sessionPrefix);
-    const prefixOwner = findSessionPrefixOwner(globalConfig, requestedSessionPrefix, projectId);
+    const prefixOwner = findSessionPrefixOwner(
+      globalConfig,
+      requestedSessionPrefix,
+      effectiveProjectId,
+    );
 
     if (prefixOwner && explicitSessionPrefix) {
       throw new Error(
         `Duplicate session prefix detected: "${requestedSessionPrefix}"\n` +
-          `Projects "${prefixOwner}" and "${projectId}" would generate the same prefix.\n\n` +
+          `Projects "${prefixOwner}" and "${effectiveProjectId}" would generate the same prefix.\n\n` +
           `Choose a different configProjectKey or add an explicit sessionPrefix before registering the project.`,
       );
     }
     const sessionPrefix = prefixOwner
-      ? deriveAvailableSessionPrefix(requestedSessionPrefix, globalConfig, projectId)
+      ? deriveAvailableSessionPrefix(requestedSessionPrefix, globalConfig, effectiveProjectId)
       : requestedSessionPrefix;
 
-    globalConfig.projects[projectId] = {
-      projectId,
+    globalConfig.projects[effectiveProjectId] = {
+      projectId: effectiveProjectId,
       path: normalizedProjectPath,
       ...(repoIdentity ? { repo: repoIdentity } : {}),
       defaultBranch,
@@ -718,6 +719,7 @@ export function registerProjectInGlobalConfig(
     };
 
     saveGlobalConfig(globalConfig, configPath);
+    return effectiveProjectId;
   });
 }
 
@@ -759,14 +761,16 @@ export function resolveProjectIdentity(
   projectId: string,
   globalConfig: GlobalConfig,
   _globalConfigPath?: string,
-): (Record<string, unknown> & {
-  name: string;
-  path: string;
-  repo?: string;
-  defaultBranch: string;
-  sessionPrefix: string;
-  resolveError?: string;
-}) | null {
+):
+  | (Record<string, unknown> & {
+      name: string;
+      path: string;
+      repo?: string;
+      defaultBranch: string;
+      sessionPrefix: string;
+      resolveError?: string;
+    })
+  | null {
   const entry = globalConfig.projects[projectId] as
     | (GlobalProjectEntry & Record<string, unknown>)
     | undefined;
@@ -783,9 +787,7 @@ export function resolveProjectIdentity(
       ? entry.defaultBranch
       : "main";
   const repoString =
-    entry.repo &&
-    typeof entry.repo.owner === "string" &&
-    typeof entry.repo.name === "string"
+    entry.repo && typeof entry.repo.owner === "string" && typeof entry.repo.name === "string"
       ? `${entry.repo.owner}/${entry.repo.name}`
       : undefined;
   const identityFields = {
@@ -846,7 +848,9 @@ export function resolveProjectIdentity(
   }
 
   const resolveError =
-    localConfigResult.kind !== "missing" ? localConfigResult.error ?? "Failed to load local config" : undefined;
+    localConfigResult.kind !== "missing"
+      ? (localConfigResult.error ?? "Failed to load local config")
+      : undefined;
 
   return {
     ...(resolveError ? {} : applyBehaviorDefaults({})),
@@ -872,7 +876,10 @@ export function isOldConfigFormat(raw: unknown): boolean {
   const projects = obj["projects"] as Record<string, unknown>;
   return Object.values(projects).some(
     (entry) =>
-      entry !== null && entry !== undefined && typeof entry === "object" && "path" in (entry as Record<string, unknown>),
+      entry !== null &&
+      entry !== undefined &&
+      typeof entry === "object" &&
+      "path" in (entry as Record<string, unknown>),
   );
 }
 
@@ -911,7 +918,8 @@ export function migrateToGlobalConfig(oldConfigPath: string, globalConfigPath?: 
 
   // Preserve global operational settings
   if (typeof parsed["port"] === "number") newGlobal.port = parsed["port"];
-  if (parsed["terminalPort"] !== null && parsed["terminalPort"] !== undefined) newGlobal.terminalPort = parsed["terminalPort"] as number;
+  if (parsed["terminalPort"] !== null && parsed["terminalPort"] !== undefined)
+    newGlobal.terminalPort = parsed["terminalPort"] as number;
   if (parsed["directTerminalPort"] !== null && parsed["directTerminalPort"] !== undefined)
     newGlobal.directTerminalPort = parsed["directTerminalPort"] as number;
   if (parsed["readyThresholdMs"] !== null && parsed["readyThresholdMs"] !== undefined)
@@ -970,12 +978,7 @@ export function migrateToGlobalConfig(oldConfigPath: string, globalConfigPath?: 
         ? join(homedir(), (project["path"] as string).slice(2))
         : (project["path"] as string);
 
-    const {
-      name: _name,
-      path: _path,
-      sessionPrefix: _sessionPrefix,
-      ...behaviorFields
-    } = project;
+    const { name: _name, path: _path, sessionPrefix: _sessionPrefix, ...behaviorFields } = project;
     void _name;
     void _path;
     void _sessionPrefix;
@@ -1015,9 +1018,7 @@ function makeEmptyGlobalConfig(): GlobalConfig {
   };
 }
 
-function sanitizeRawGlobalConfig(
-  raw: Record<string, unknown>,
-): RawGlobalConfigSanitization {
+function sanitizeRawGlobalConfig(raw: Record<string, unknown>): RawGlobalConfigSanitization {
   const projects = raw["projects"];
   if (!projects || typeof projects !== "object") {
     return { changed: false, strippedProjects: [] };
