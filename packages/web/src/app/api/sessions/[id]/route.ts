@@ -1,13 +1,17 @@
 import { type NextRequest } from "next/server";
 import { getProjectSessionsDir, readAgentReportAuditTrailAsync } from "@aoagents/ao-core";
-import { getServices, getSCM } from "@/lib/services";
+import { getServices } from "@/lib/services";
 import {
   sessionToDashboard,
   resolveProject,
   enrichSessionPR,
   enrichSessionsMetadata,
 } from "@/lib/serialize";
+import { settlesWithin } from "@/lib/async-utils";
 import { getCorrelationId, jsonWithCorrelation, recordApiObservation } from "@/lib/observability";
+
+const AGENT_REPORT_AUDIT_TIMEOUT_MS = 1000;
+const METADATA_ENRICH_TIMEOUT_MS = 3000;
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const correlationId = getCorrelationId(_request);
@@ -25,27 +29,21 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const project = resolveProject(coreSession, config.projects);
     if (project) {
       const sessionsDir = getProjectSessionsDir(coreSession.projectId);
-      dashboardSession.agentReportAudit = await readAgentReportAuditTrailAsync(
-        sessionsDir,
-        coreSession.id,
-      );
+      const auditPromise = readAgentReportAuditTrailAsync(sessionsDir, coreSession.id).then((audit) => {
+        dashboardSession.agentReportAudit = audit;
+      });
+      await settlesWithin(auditPromise, AGENT_REPORT_AUDIT_TIMEOUT_MS);
     }
 
     // Enrich metadata (issue labels, agent summaries, issue titles)
-    await enrichSessionsMetadata([coreSession], [dashboardSession], config, registry);
+    await settlesWithin(
+      enrichSessionsMetadata([coreSession], [dashboardSession], config, registry),
+      METADATA_ENRICH_TIMEOUT_MS,
+    );
 
-    // Enrich PR — serve cache immediately, refresh in background if stale
+    // Enrich PR from session metadata (written by CLI lifecycle)
     if (coreSession.pr) {
-      const scm = getSCM(registry, project);
-      if (scm) {
-        const cached = await enrichSessionPR(dashboardSession, scm, coreSession.pr, {
-          cacheOnly: true,
-        });
-        if (!cached) {
-          // Nothing cached yet — block once to populate, then future calls use cache
-          await enrichSessionPR(dashboardSession, scm, coreSession.pr);
-        }
-      }
+      enrichSessionPR(dashboardSession);
     }
 
     recordApiObservation({

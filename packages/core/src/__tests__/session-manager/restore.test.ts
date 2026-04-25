@@ -86,6 +86,39 @@ describe("restore", () => {
     expect(meta!["createdAt"]).toBe("2025-01-01T00:00:00.000Z");
   });
 
+  it("forwards AO_AGENT_GH_TRACE into restored agent runtime env when configured", async () => {
+    const wsPath = join(tmpDir, "ws-app-1-trace");
+    mkdirSync(wsPath, { recursive: true });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
+    });
+
+    const previousTrace = process.env["AO_AGENT_GH_TRACE"];
+    process.env["AO_AGENT_GH_TRACE"] = "/tmp/restored-agent-gh-trace-test.jsonl";
+
+    try {
+      const sm = createSessionManager({ config, registry: mockRegistry });
+      await sm.restore("app-1");
+
+      expect(mockRuntime.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environment: expect.objectContaining({
+            AO_AGENT_GH_TRACE: "/tmp/restored-agent-gh-trace-test.jsonl",
+            AO_CALLER_TYPE: "agent",
+          }),
+        }),
+      );
+    } finally {
+      if (previousTrace === undefined) delete process.env["AO_AGENT_GH_TRACE"];
+      else process.env["AO_AGENT_GH_TRACE"] = previousTrace;
+    }
+  });
+
   it("continues restore even if old runtime destroy fails", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
@@ -164,30 +197,33 @@ describe("restore", () => {
     expect(mockRuntime.create).toHaveBeenCalled();
   });
 
-  it("throws SessionNotRestorableError for merged sessions", async () => {
+  it("allows restoring merged sessions", async () => {
+    const ws = "/tmp/mock-ws/app-1";
     writeMetadata(sessionsDir, "app-1", {
-      worktree: "/tmp",
+      worktree: ws,
       branch: "main",
       status: "merged",
       project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
     });
 
-    const sm = createSessionManager({ config, registry: mockRegistry });
-    await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
-  });
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return {
+          ...mockWorkspace,
+          exists: vi.fn().mockResolvedValue(true),
+          restore: vi.fn().mockResolvedValue({ path: ws, branch: "main", sessionId: "app-1", projectId: "my-app" }),
+        };
+        return null;
+      }),
+    };
 
-  it("throws SessionNotRestorableError for legacy merged sessions with a PR URL", async () => {
-    writeMetadata(sessionsDir, "app-1", {
-      worktree: "/tmp",
-      branch: "main",
-      status: "merged",
-      pr: "https://github.com/org/my-app/pull/10",
-      project: "my-app",
-      createdAt: "2025-01-01T00:00:00.000Z",
-    });
-
-    const sm = createSessionManager({ config, registry: mockRegistry });
-    await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
+    const sm = createSessionManager({ config, registry });
+    const restored = await sm.restore("app-1");
+    expect(restored.id).toBe("app-1");
   });
 
   it("throws SessionNotRestorableError for working sessions", async () => {

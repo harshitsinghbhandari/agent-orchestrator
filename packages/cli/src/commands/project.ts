@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import chalk from "chalk";
 import type { Command } from "commander";
@@ -19,17 +19,18 @@ import {
   formatPortfolioProjectStatus,
 } from "../lib/portfolio-display.js";
 
-
 function assertPortfolioEnabled(): void {
   if (isPortfolioEnabled()) return;
-  console.error(chalk.red("Portfolio mode is disabled. Unset AO_ENABLE_PORTFOLIO or set it to 1 to use `ao project`."));
+  console.error(
+    chalk.red(
+      "Portfolio mode is disabled. Unset AO_ENABLE_PORTFOLIO or set it to 1 to use `ao project`.",
+    ),
+  );
   process.exit(1);
 }
 
 export function registerProject_cmd(program: Command): void {
-  const project = program
-    .command("project")
-    .description("Manage portfolio projects");
+  const project = program.command("project").description("Manage portfolio projects");
 
   // ao project ls
   project
@@ -41,7 +42,9 @@ export function registerProject_cmd(program: Command): void {
 
       if (portfolio.length === 0) {
         console.log(chalk.dim("No projects in portfolio."));
-        console.log(chalk.dim("Run `ao start` in a project or `ao project add <path>` to register one."));
+        console.log(
+          chalk.dim("Run `ao start` in a project or `ao project add <path>` to register one."),
+        );
         return;
       }
 
@@ -78,7 +81,8 @@ export function registerProject_cmd(program: Command): void {
       "-k, --key <key>",
       "Legacy only: the project key under `projects:` in a wrapped agent-orchestrator.yaml. Omit for flat configs.",
     )
-    .action(async (path: string, opts: { key?: string }) => {
+    .option("--default", "Use the default project ID, adding a numeric suffix if needed")
+    .action(async (path: string, opts: { key?: string; default?: boolean }) => {
       assertPortfolioEnabled();
       const resolvedPath = resolve(path);
       const candidatePaths = [
@@ -111,8 +115,13 @@ export function registerProject_cmd(program: Command): void {
         process.exit(1);
       }
 
-      registerProject(resolvedPath, opts.key);
-      console.log(chalk.green(`Registered project at ${resolvedPath}`));
+      let projectId = opts.key;
+      if (!projectId) {
+        projectId = basename(resolvedPath) || "project";
+      }
+
+      registerProject(resolvedPath, projectId, basename(resolvedPath) || projectId);
+      console.log(chalk.green(`Registered project "${projectId}" at ${resolvedPath}`));
     });
 
   // ao project rm <id>

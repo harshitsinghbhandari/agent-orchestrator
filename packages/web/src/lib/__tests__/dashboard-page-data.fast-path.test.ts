@@ -73,7 +73,7 @@ describe("getDashboardPageData fast path", () => {
     hoisted.getServicesMock.mockResolvedValue({
       config: { projects: { docs: { id: "docs" } } },
       registry: { scm: "registry" },
-      sessionManager: { list: vi.fn().mockResolvedValue(allSessions) },
+      sessionManager: { listCached: vi.fn().mockResolvedValue(allSessions) },
     });
     hoisted.filterProjectSessionsMock.mockReturnValue(allSessions);
     hoisted.filterWorkerSessionsMock.mockReturnValue(allSessions);
@@ -94,15 +94,9 @@ describe("getDashboardPageData fast path", () => {
       { projects: { docs: { id: "docs" } } },
       { scm: "registry" },
     );
-    expect(hoisted.enrichSessionPRMock).toHaveBeenCalledTimes(1);
-    expect(hoisted.enrichSessionPRMock).toHaveBeenCalledWith(
-      dashboardMerged,
-      { provider: "github" },
-      mergedCore.pr,
-      { cacheOnly: true },
-    );
-    expect(dashboardClosed.pr.state).toBe("closed");
-    expect(dashboardMerged.pr.state).toBe("merged");
+    expect(hoisted.enrichSessionPRMock).toHaveBeenCalledTimes(2);
+    expect(hoisted.enrichSessionPRMock).toHaveBeenCalledWith(dashboardClosed);
+    expect(hoisted.enrichSessionPRMock).toHaveBeenCalledWith(dashboardMerged);
     expect(pageData.sessions).toEqual([dashboardNoPr, dashboardClosed, dashboardMerged]);
   });
 
@@ -116,7 +110,7 @@ describe("getDashboardPageData fast path", () => {
       hoisted.getServicesMock.mockResolvedValue({
         config: { projects: { mono: { id: "mono" } } },
         registry: { scm: "registry" },
-        sessionManager: { list: vi.fn().mockResolvedValue([core]) },
+        sessionManager: { listCached: vi.fn().mockResolvedValue([core]) },
       });
       hoisted.filterProjectSessionsMock.mockReturnValue([core]);
       hoisted.filterWorkerSessionsMock.mockReturnValue([core]);
@@ -147,7 +141,7 @@ describe("getDashboardPageData fast path", () => {
     hoisted.getServicesMock.mockResolvedValue({
       config: { projects: { mono: { id: "mono" } } },
       registry: { scm: "registry" },
-      sessionManager: { list: vi.fn().mockResolvedValue([core]) },
+      sessionManager: { listCached: vi.fn().mockResolvedValue([core]) },
     });
     hoisted.filterProjectSessionsMock.mockReturnValue([core]);
     hoisted.filterWorkerSessionsMock.mockReturnValue([core]);
@@ -181,7 +175,7 @@ describe("getDashboardPageData fast path", () => {
         dashboard: { attentionZones: "detailed" },
       },
       registry: { scm: "registry" },
-      sessionManager: { list: vi.fn().mockRejectedValue(new Error("list boom")) },
+      sessionManager: { listCached: vi.fn().mockRejectedValue(new Error("list boom")) },
     });
 
     const pageData = await getDashboardPageData("docs");
@@ -198,7 +192,7 @@ describe("getDashboardPageData fast path", () => {
     hoisted.getServicesMock.mockResolvedValue({
       config: { projects: { docs: { id: "docs" } } },
       registry: { scm: "registry" },
-      sessionManager: { list: vi.fn().mockResolvedValue([core]) },
+      sessionManager: { listCached: vi.fn().mockResolvedValue([core]) },
     });
     hoisted.filterProjectSessionsMock.mockReturnValue([core]);
     hoisted.filterWorkerSessionsMock.mockReturnValue([core]);

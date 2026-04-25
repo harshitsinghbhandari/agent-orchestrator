@@ -27,7 +27,7 @@ import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { parseKeyValueContent } from "../key-value.js";
-import { compactTimestamp } from "../paths.js";
+import { compactTimestamp, generateSessionPrefix } from "../paths.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -199,8 +199,15 @@ function extractProjectPrefixes(globalConfigPath?: string): string[] {
     const projects = parsed?.["projects"] as Record<string, Record<string, unknown>> | undefined;
     if (!projects || typeof projects !== "object") return [];
 
-    // Project IDs themselves are often used as tmux prefixes
-    return Object.keys(projects);
+    return Array.from(new Set(Object.entries(projects).map(([projectId, entry]) => {
+      if (entry && typeof entry["sessionPrefix"] === "string" && entry["sessionPrefix"].trim()) {
+        return entry["sessionPrefix"].trim();
+      }
+      if (entry && typeof entry["path"] === "string" && entry["path"].trim()) {
+        return generateSessionPrefix(basename(entry["path"].trim()));
+      }
+      return generateSessionPrefix(projectId);
+    })));
   } catch {
     return [];
   }
@@ -933,6 +940,7 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
   };
 
   // Migrate each project
+  const projectErrors: Array<{ projectId: string; error: string }> = [];
   for (const [projectId, dirs] of projectGroups) {
     const nonEmpty = dirs.filter((d) => !d.empty);
     if (nonEmpty.length === 0) {
@@ -948,12 +956,20 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
     }
 
     log(`\nMigrating project: ${projectId} (${dirs.length} hash dir${dirs.length > 1 ? "s" : ""})`);
-    const projectResult = migrateProject(projectId, dirs, aoBaseDir, dryRun, log);
 
-    totals.projects++;
-    totals.sessions += projectResult.sessions;
-    totals.archives += projectResult.archives;
-    totals.worktrees += projectResult.worktrees;
+    try {
+      const projectResult = migrateProject(projectId, dirs, aoBaseDir, dryRun, log);
+
+      totals.projects++;
+      totals.sessions += projectResult.sessions;
+      totals.archives += projectResult.archives;
+      totals.worktrees += projectResult.worktrees;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`  ERROR migrating project ${projectId}: ${msg}`);
+      projectErrors.push({ projectId, error: msg });
+      continue;
+    }
 
     // Rename old directories to .migrated
     for (const dir of dirs) {
@@ -967,7 +983,17 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
         const migratedPath = `${dir.path}.migrated`;
         log(`  Renaming: ${basename(dir.path)} → ${basename(dir.path)}.migrated`);
         if (!dryRun) {
-          renameSync(dir.path, migratedPath);
+          try {
+            renameSync(dir.path, migratedPath);
+          } catch (err) {
+            // .migrated target may already exist from a previous interrupted run
+            if ((err as NodeJS.ErrnoException).code === "ENOTEMPTY" && existsSync(migratedPath)) {
+              log(`  WARNING: ${basename(migratedPath)} already exists — removing source directory`);
+              rmSync(dir.path, { recursive: true, force: true });
+            } else {
+              log(`  WARNING: Failed to rename ${basename(dir.path)}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
         }
       }
     }
@@ -996,6 +1022,12 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
   }
   if (totals.emptyDirsDeleted > 0) {
     log(`Deleted ${totals.emptyDirsDeleted} empty director${totals.emptyDirsDeleted !== 1 ? "ies" : "y"}.`);
+  }
+  if (projectErrors.length > 0) {
+    log(`\nFailed to migrate ${projectErrors.length} project${projectErrors.length !== 1 ? "s" : ""}:`);
+    for (const { projectId, error } of projectErrors) {
+      log(`  - ${projectId}: ${error}`);
+    }
   }
   log("Old directories renamed to *.migrated — verify and rm -rf when ready.");
 
@@ -1060,6 +1092,46 @@ function countPostMigrationSessions(
   return count;
 }
 
+function collectSessionIds(dirPath: string): Set<string> {
+  const sessionIds = new Set<string>();
+  const sessionsDir = join(dirPath, "sessions");
+  if (!existsSync(sessionsDir)) return sessionIds;
+
+  for (const file of readdirSync(sessionsDir)) {
+    if (file === "archive" || file.startsWith(".")) continue;
+    sessionIds.add(file.endsWith(".json") ? file.slice(0, -5) : file);
+  }
+
+  return sessionIds;
+}
+
+function resolveRollbackProjectId(aoBaseDir: string, migratedDirPath: string, hash: string): string {
+  const derivedProjectId = deriveProjectIdFromDir(migratedDirPath);
+  if (derivedProjectId) return derivedProjectId;
+
+  const migratedSessionIds = collectSessionIds(migratedDirPath);
+  if (migratedSessionIds.size === 0) return hash;
+
+  const projectsDir = join(aoBaseDir, "projects");
+  if (!existsSync(projectsDir)) return hash;
+
+  for (const projectId of readdirSync(projectsDir)) {
+    const projectDir = join(projectsDir, projectId);
+    try {
+      if (!statSync(projectDir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    const projectSessionIds = collectSessionIds(projectDir);
+    for (const sessionId of migratedSessionIds) {
+      if (projectSessionIds.has(sessionId)) return projectId;
+    }
+  }
+
+  return hash;
+}
+
 export async function rollbackStorage(options: RollbackOptions = {}): Promise<void> {
   const aoBaseDir = options.aoBaseDir ?? join(homedir(), ".agent-orchestrator");
   const dryRun = options.dryRun ?? false;
@@ -1106,7 +1178,7 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
       migratedDirs.push({
         path: dirPath,
         hash: bareHashMatch[1],
-        projectId: bareHashMatch[1], // bare hash — storageKey restoral uses hash
+        projectId: resolveRollbackProjectId(aoBaseDir, dirPath, bareHashMatch[1]),
       });
     }
   }
@@ -1122,6 +1194,7 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
   // (we need to read the .migrated dir contents to compare).
   const projectsDir = join(aoBaseDir, "projects");
   const safeToDeleteProjects = new Set<string>();
+  const restoredProjects = new Set<string>();
   const migratedProjectIds = new Set(migratedDirs.map((d) => d.projectId));
   if (existsSync(projectsDir)) {
     for (const projectId of migratedProjectIds) {
@@ -1145,17 +1218,20 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
     const originalPath = dir.path.replace(/\.migrated$/, "");
     if (existsSync(originalPath)) {
       log(`  Warning: ${basename(originalPath)} already exists — skipping restore of ${basename(dir.path)}. Resolve manually.`);
+      safeToDeleteProjects.delete(dir.projectId);
       continue;
     }
     log(`  Restoring: ${basename(dir.path)} → ${basename(originalPath)}`);
     if (!dryRun) {
       renameSync(dir.path, originalPath);
     }
+    restoredProjects.add(dir.projectId);
   }
 
   // Move worktrees back to restored hash dirs, then remove project directories
   if (existsSync(projectsDir)) {
     for (const projectId of safeToDeleteProjects) {
+      if (!restoredProjects.has(projectId)) continue;
       const projectDir = join(projectsDir, projectId);
       if (!existsSync(projectDir)) continue;
 

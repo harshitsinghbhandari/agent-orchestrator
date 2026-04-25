@@ -232,19 +232,8 @@ export const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set([
 /** Activity states that indicate the session is no longer running. */
 export const TERMINAL_ACTIVITIES: ReadonlySet<ActivityState> = new Set(["exited"]);
 
-/** Statuses that must never be restored (e.g. already merged). */
-export const NON_RESTORABLE_STATUSES: ReadonlySet<SessionStatus> = new Set(["merged"]);
-
-/** Check whether lifecycle metadata indicates the session's PR is already merged. */
-function hasMergedLifecyclePR(lifecycle: CanonicalSessionLifecycle): boolean {
-  return (
-    (
-      lifecycle as CanonicalSessionLifecycle & {
-        pr?: { state?: string | null } | null;
-      }
-    ).pr?.state === "merged"
-  );
-}
+/** Statuses that must never be restored. */
+export const NON_RESTORABLE_STATUSES: ReadonlySet<SessionStatus> = new Set([]);
 
 /** Check if a session is in a terminal (dead) state. */
 export function isTerminalSession(session: {
@@ -276,8 +265,7 @@ export function isRestorable(session: {
   if (session.lifecycle) {
     return (
       isTerminalSession(session) &&
-      !NON_RESTORABLE_STATUSES.has(session.status) &&
-      !hasMergedLifecyclePR(session.lifecycle)
+      !NON_RESTORABLE_STATUSES.has(session.status)
     );
   }
   return isTerminalSession(session) && !NON_RESTORABLE_STATUSES.has(session.status);
@@ -346,6 +334,9 @@ export function isOrchestratorSession(
     return false;
   }
   const escaped = sessionPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (session.id === `${sessionPrefix}-orchestrator`) {
+    return true;
+  }
   if (!new RegExp(`^${escaped}-orchestrator-\\d+$`).test(session.id)) {
     return false;
   }
@@ -785,8 +776,18 @@ export interface SCM {
   /** Get pending (unresolved) review comments */
   getPendingComments(pr: PRInfo): Promise<ReviewComment[]>;
 
-  /** Get automated review comments (bots, linters, security scanners) */
-  getAutomatedComments(pr: PRInfo): Promise<AutomatedComment[]>;
+  /**
+   * Get all review threads (human + bot) with isBot flag.
+   * Single GraphQL call for all review threads (human + bot) with review summaries.
+   * Returns unresolved threads only.
+   *
+   * Optional — plugins that do not implement this method will fall back to
+   * `getPendingComments()` (which lacks `isBot` classification and review
+   * summaries). New SCM plugins should prefer implementing this method.
+   *
+   * @since 0.6.0 — replaces the removed `getAutomatedComments` method.
+   */
+  getReviewThreads?(pr: PRInfo): Promise<ReviewThreadsResult>;
 
   // --- Merge Readiness ---
 
@@ -806,7 +807,7 @@ export interface SCM {
    * @param observer - Optional observer for batch operation metrics
    * @returns Map keyed by "${owner}/${repo}#${number}" containing enrichment data
    */
-  enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver): Promise<Map<string, PREnrichmentData>>;
+  enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver, repos?: string[]): Promise<Map<string, PREnrichmentData>>;
 }
 
 /**
@@ -860,6 +861,8 @@ export interface BatchObserver {
   }): void;
   /** Log a message at a specific level */
   log(level: ObservabilityLevel, message: string): void;
+  /** Called after ETag guards with repos where Guard 1 returned 304 (no PR list changes). */
+  reportPRListUnchangedRepos?(repos: Set<string>): void;
 }
 
 // --- PR Types ---
@@ -956,6 +959,8 @@ export type ReviewDecision = "approved" | "changes_requested" | "pending" | "non
 
 export interface ReviewComment {
   id: string;
+  /** GraphQL node ID of the review thread (for resolveReviewThread mutation). */
+  threadId?: string;
   author: string;
   body: string;
   path?: string;
@@ -963,6 +968,20 @@ export interface ReviewComment {
   isResolved: boolean;
   createdAt: Date;
   url: string;
+  /** Whether the comment was authored by a known bot */
+  isBot?: boolean;
+}
+
+export interface ReviewSummary {
+  author: string;
+  state: string;
+  body: string;
+  submittedAt: Date;
+}
+
+export interface ReviewThreadsResult {
+  threads: ReviewComment[];
+  reviews: ReviewSummary[];
 }
 
 export interface AutomatedComment {
@@ -1688,6 +1707,7 @@ export interface KillOptions {
 export interface SessionManager {
   spawn(config: SessionSpawnConfig): Promise<Session>;
   spawnOrchestrator(config: OrchestratorSpawnConfig): Promise<Session>;
+  ensureOrchestrator(config: OrchestratorSpawnConfig): Promise<Session>;
   restore(sessionId: SessionId): Promise<Session>;
   list(projectId?: string): Promise<Session[]>;
   get(sessionId: SessionId): Promise<Session | null>;

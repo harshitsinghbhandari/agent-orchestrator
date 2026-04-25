@@ -151,11 +151,11 @@ export {
   parseWebhookBranchRef,
 } from "./scm-webhook-utils.js";
 export { asValidOpenCodeSessionId } from "./opencode-session-id.js";
+export { getWorkspaceAgentsMdPath, writeWorkspaceOpenCodeAgentsMd } from "./opencode-agents-md.js";
 export {
-  getWorkspaceAgentsMdPath,
-  writeWorkspaceOpenCodeAgentsMd,
-} from "./opencode-agents-md.js";
-export { normalizeOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
+  getOrchestratorSessionId,
+  normalizeOrchestratorSessionStrategy,
+} from "./orchestrator-session-strategy.js";
 export { resolveSpawnTarget } from "./spawn-target.js";
 export type { SpawnTarget } from "./spawn-target.js";
 
@@ -193,6 +193,7 @@ export {
   createProjectObserver,
   readObservabilitySummary,
 } from "./observability.js";
+export { execGhObserved, getGhTraceFilePath } from "./gh-trace.js";
 export { resolveNotifierTarget } from "./notifier-resolution.js";
 export type {
   ObservabilityLevel,
@@ -201,6 +202,7 @@ export type {
   ObservabilitySummary,
   ProjectObserver,
 } from "./observability.js";
+export type { GhTraceContext, GhTraceEntry } from "./gh-trace.js";
 
 // Feedback tools — contracts, validation, and report storage
 export {
@@ -247,15 +249,13 @@ export {
   getOriginFilePath,
   generateSessionName,
   generateTmuxName,
+  requireStorageKey,
   parseTmuxName,
   expandHome,
   validateAndStoreOrigin,
 } from "./paths.js";
 
-export {
-  normalizeOriginUrl,
-  relativeSubdir,
-} from "./storage-key.js";
+export { normalizeOriginUrl, relativeSubdir } from "./storage-key.js";
 
 // Global config — Option C hybrid architecture (global registry + local behavior)
 export {
@@ -268,6 +268,7 @@ export {
   getLocalProjectConfigPath,
   repairWrappedLocalProjectConfig,
   registerProjectInGlobalConfig,
+  generateExternalId,
   buildEffectiveProjectConfig,
   resolveProjectIdentity,
   isOldConfigFormat,
@@ -282,10 +283,7 @@ export type {
   RegisterProjectOptions,
 } from "./global-config.js";
 
-export {
-  loadEffectiveProjectConfig,
-  iterateAllProjects,
-} from "./project-resolver.js";
+export { loadEffectiveProjectConfig, iterateAllProjects } from "./project-resolver.js";
 
 // Config generator — auto-generate config from repo URL
 export {
@@ -316,12 +314,7 @@ export type {
   PortfolioSession,
 } from "./types.js";
 
-export {
-  getAoBaseDir,
-  getPortfolioDir,
-  getPreferencesPath,
-  getRegisteredPath,
-} from "./paths.js";
+export { getAoBaseDir, getPortfolioDir, getPreferencesPath, getRegisteredPath } from "./paths.js";
 
 export {
   discoverProjects,
@@ -336,15 +329,9 @@ export {
   refreshProject,
 } from "./portfolio-registry.js";
 
-export {
-  resolveProjectConfig,
-  clearConfigCache,
-} from "./portfolio-projects.js";
+export { resolveProjectConfig, clearConfigCache } from "./portfolio-projects.js";
 
-export {
-  listPortfolioSessions,
-  getPortfolioSessionCounts,
-} from "./portfolio-session-service.js";
+export { listPortfolioSessions, getPortfolioSessionCounts } from "./portfolio-session-service.js";
 
 export {
   resolvePortfolioProject,

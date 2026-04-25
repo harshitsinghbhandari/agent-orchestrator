@@ -37,10 +37,6 @@ vi.mock("../../src/lib/portfolio-display.js", () => ({
   formatPortfolioProjectStatus: vi.fn().mockReturnValue("idle"),
 }));
 
-vi.mock("../../src/lib/caller-context.js", () => ({
-  isHumanCaller: vi.fn(() => true),
-}));
-
 vi.mock("../../src/lib/prompts.js", () => ({
   promptConfirm: vi.fn(async () => true),
 }));
@@ -70,9 +66,7 @@ describe("ao project ls", () => {
 
     await program.parseAsync(["node", "ao", "project", "ls"]);
 
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining("No projects in portfolio"),
-    );
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("No projects in portfolio"));
   });
 
   it("lists projects with session counts", async () => {
@@ -113,7 +107,8 @@ describe("ao project add", () => {
 
     expect(mockRegisterProject).toHaveBeenCalledWith(
       expect.stringContaining("my-project"),
-      undefined,
+      "my-project",
+      "my-project",
     );
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Registered"));
   });
@@ -125,28 +120,54 @@ describe("ao project add", () => {
       program.parseAsync(["node", "ao", "project", "add", "/tmp/no-config"]),
     ).rejects.toThrow();
 
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("No agent-orchestrator.yaml"),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("No agent-orchestrator.yaml"));
   });
 
   it("passes --key option to registerProject", async () => {
     mockLoadLocalProjectConfig.mockReturnValue({ projects: {} });
 
     await program.parseAsync([
-      "node", "ao", "project", "add", "/tmp/my-project", "-k", "custom-key",
+      "node",
+      "ao",
+      "project",
+      "add",
+      "/tmp/my-project",
+      "-k",
+      "custom-key",
     ]);
 
     expect(mockRegisterProject).toHaveBeenCalledWith(
       expect.stringContaining("my-project"),
       "custom-key",
+      "my-project",
+    );
+  });
+
+  it("passes the basename when --default is provided", async () => {
+    mockLoadLocalProjectConfig.mockReturnValue({ projects: {} });
+
+    await program.parseAsync([
+      "node",
+      "ao",
+      "project",
+      "add",
+      "/tmp/agent-orchestrator",
+      "--default",
+    ]);
+
+    expect(mockRegisterProject).toHaveBeenCalledWith(
+      expect.stringContaining("agent-orchestrator"),
+      "agent-orchestrator",
+      "agent-orchestrator",
     );
   });
 
   it("surfaces duplicate path collisions as errors", async () => {
     mockLoadLocalProjectConfig.mockReturnValue({ projects: {} });
     mockRegisterProject.mockImplementationOnce(() => {
-      throw new Error('Project "existing-proj" is already registered at "/tmp/my-project". Choose a different project ID or path.');
+      throw new Error(
+        'Project "existing-proj" is already registered at "/tmp/my-project". Choose a different project ID or path.',
+      );
     });
 
     await expect(
@@ -159,9 +180,7 @@ describe("ao project add", () => {
 
 describe("ao project rm", () => {
   it("removes an existing project", async () => {
-    mockGetPortfolio.mockReturnValue([
-      { id: "app-1", name: "App One", source: "/tmp/app-1" },
-    ]);
+    mockGetPortfolio.mockReturnValue([{ id: "app-1", name: "App One", source: "/tmp/app-1" }]);
 
     await program.parseAsync(["node", "ao", "project", "rm", "app-1"]);
 
@@ -176,17 +195,13 @@ describe("ao project rm", () => {
       program.parseAsync(["node", "ao", "project", "rm", "nonexistent"]),
     ).rejects.toThrow();
 
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("not found"),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("not found"));
   });
 });
 
 describe("ao project set-default", () => {
   it("sets default project", async () => {
-    mockGetPortfolio.mockReturnValue([
-      { id: "app-1", name: "App One", source: "/tmp/app-1" },
-    ]);
+    mockGetPortfolio.mockReturnValue([{ id: "app-1", name: "App One", source: "/tmp/app-1" }]);
     mockLoadPreferences.mockReturnValue({ defaultProjectId: null });
 
     await program.parseAsync(["node", "ao", "project", "set-default", "app-1"]);
@@ -202,8 +217,6 @@ describe("ao project set-default", () => {
       program.parseAsync(["node", "ao", "project", "set-default", "nonexistent"]),
     ).rejects.toThrow();
 
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("not found"),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("not found"));
   });
 });
