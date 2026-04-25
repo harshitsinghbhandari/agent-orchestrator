@@ -121,7 +121,7 @@ function DoneCard({
           </a>
         ) : null}
         <span className="done-card__age">{formatRelativeTimeCompact(session.lastActivityAt)}</span>
-        {canRestore && !isMerged ? (
+        {canRestore ? (
           <button
             type="button"
             className="done-card__restore"

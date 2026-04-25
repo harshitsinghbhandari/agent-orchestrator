@@ -20,6 +20,7 @@ import {
   isIssueNotFoundError,
   isRestorable,
   isTerminalSession,
+  NON_RESTORABLE_STATUSES,
   SessionNotFoundError,
   SessionNotRestorableError,
   WorkspaceMissingError,
@@ -2741,13 +2742,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     // 3. Validate restorability
     if (!isRestorable(session)) {
-      if (session.lifecycle.session.state === "done") {
-        throw new SessionNotRestorableError(
-          sessionId,
-          `session state is "${session.lifecycle.session.state}"`,
-        );
-      }
-      throw new SessionNotRestorableError(sessionId, "session is not in a terminal state");
+      const reason = NON_RESTORABLE_STATUSES.has(session.status)
+        ? `status "${session.status}" is not restorable`
+        : `session is not in a terminal state (status: "${session.status}", activity: "${session.activity}")`;
+      throw new SessionNotRestorableError(sessionId, reason);
     }
 
     if (fromArchive) {
