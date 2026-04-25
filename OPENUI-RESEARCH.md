@@ -7,7 +7,8 @@
 3. [Technical Architecture for Each Integration](#3-technical-architecture-for-each-integration)
 4. [Required Changes](#4-required-changes)
 5. [Recommended Starting Point](#5-recommended-starting-point)
-6. [Appendix: Compatibility Analysis](#6-appendix-compatibility-analysis)
+6. [Risk Mitigations](#6-risk-mitigations)
+7. [Appendix: Compatibility Analysis](#7-appendix-compatibility-analysis)
 
 ---
 
@@ -69,11 +70,21 @@ function AgentInsightPanel({ openUICode }: { openUICode: string }) {
 
 ### Limitations
 
-- **Zod v4 required** — AO uses Zod v3 for config validation. The two can coexist but need separate imports.
-- **No WebSocket/push support** — Query() polls REST endpoints; no SSE or WebSocket integration out of the box.
-- **Generate-once model** — The generated UI doesn't update reactively from external events (e.g., SSE). Query() can refetch, but there's no push mechanism.
+- **Zod v4 required** — AO uses Zod v3 for config validation. See [Zod v4 Coexistence Plan](#zod-v4-coexistence-plan) for mitigation.
+- **No WebSocket/push support** — Query() polls REST endpoints; no SSE or WebSocket integration. **This is a hard blocker for any real-time integration.** OpenUI-rendered views cannot receive external push updates. Use OpenUI only for static/completed data (insight cards, post-session timelines), not live session views.
+- **Generate-once model** — The generated UI is a snapshot. It does not update when the underlying session state changes. This is acceptable for completed sessions, but means OpenUI is the wrong tool for active session monitoring.
 - **Chat-first architecture** — The default UX assumes a chat interface. Standalone Renderer usage is supported but less documented.
 - **No server-side rendering** — OpenUI renders client-side only.
+
+### Where OpenUI Fits vs. Where It Doesn't
+
+| Use case | OpenUI fit? | Why |
+|----------|-------------|-----|
+| Completed session summaries | Yes | Static data, variable structure, benefits from LLM composition |
+| PR review briefings | Yes | Same as above — snapshot of completed work |
+| Live session monitoring | No | Needs SSE/push updates; OpenUI can't receive them |
+| Real-time analytics | No | Stale the moment it renders; chart library is better |
+| Ad-hoc analytics queries | Maybe | Natural-language → generated dashboard is compelling, but a chart library handles structured data with less complexity |
 
 ---
 
@@ -83,12 +94,17 @@ function AgentInsightPanel({ openUICode }: { openUICode: string }) {
 
 **The Problem:** Agent sessions produce a wall of terminal output. Users can't quickly understand what an agent did, what decisions it made, or what trade-offs it considered. The `summary` field is a single string.
 
-**The Idea:** Agents use OpenUI to generate rich, structured insight cards about their own work. Instead of writing a plain-text summary, the agent outputs OpenUI Lang that renders as an interactive component:
+**The Idea:** Agents use OpenUI to generate rich, structured insight cards about their own work at session completion. Instead of writing a plain-text summary, the agent outputs OpenUI Lang that renders as an interactive component:
 
 - **Architecture decision cards** — "I chose Strategy A over Strategy B because..." with expandable reasoning
 - **File change summaries** — Interactive diff viewer showing what changed and why
 - **Test result dashboards** — Which tests passed/failed/were added, with drill-down
 - **Dependency impact maps** — "Changing X affected Y and Z" with visual connections
+- **PR review briefing** — Risk assessment, attention markers, test coverage map, rollback plan
+
+This subsumes what was previously listed as a separate "PR Review Preparation" opportunity — it's the same feature (agent generates structured work summary) surfaced in two places: the session card and the PR view.
+
+**Cost model:** One LLM call per completed session. Generated OpenUI Lang is cached in session metadata — never regenerated unless explicitly requested. No recurring LLM cost.
 
 **What it looks like:**
 
@@ -112,31 +128,29 @@ function AgentInsightPanel({ openUICode }: { openUICode: string }) {
 │  │ [▸ View inline diffs]                     │  │
 │  └───────────────────────────────────────────┘  │
 │                                                 │
+│  ┌─── Review Briefing ──────────────────────┐   │
+│  │ Risk: LOW ■■□□□   Confidence: HIGH ■■■■□ │   │
+│  │ ⚠ Attention: L45-67 in refresh.ts        │   │
+│  │ Test coverage: 94% of changed lines      │   │
+│  └───────────────────────────────────────────┘   │
+│                                                 │
 │  Cost: $0.47 │ Duration: 12m │ Commits: 3      │
 └─────────────────────────────────────────────────┘
 ```
 
-**Why OpenUI fits:** The agent already has an LLM — it just needs the OpenUI component library in its context and instructions to output OpenUI Lang alongside its work summary. The dashboard embeds a `<Renderer>` to display the result. Each agent session's insight card is unique because the LLM generates it based on what actually happened.
+**Why OpenUI fits here specifically:** Agent output is inherently variable — different issues produce different decisions, different file structures, different trade-offs. A static template either over-provisions (empty sections for decisions the agent didn't make) or under-provisions (no section for the unexpected thing the agent did). The LLM generates exactly the right layout for what actually happened. This is the one place where the "generate once" model is a feature, not a limitation — completed sessions don't change.
 
 ---
 
-### Opportunity 2: Interactive Session Timeline (Impact: HIGH, Feasibility: MEDIUM)
+### Opportunity 2: Session Timeline (Impact: MEDIUM, Feasibility: MEDIUM)
 
 **The Problem:** The dashboard shows session state (working/pending/done) but not the journey. There's no timeline of "spawned → analyzed issue → created branch → wrote code → ran tests → tests failed → fixed → PR created → CI passed → merged."
 
-**The Idea:** Build an OpenUI component library for timeline visualization. The lifecycle manager already tracks state transitions — feed them to an LLM that generates an annotated, interactive timeline using OpenUI components.
+**The Idea:** Build a timeline view for completed sessions using structured lifecycle events.
 
-**Key components in the library:**
+**Important constraint:** OpenUI has no push/SSE support. A timeline for an active session would be stale the moment it renders. **This integration only works for completed sessions** — generate the timeline once after the session reaches a terminal state (merged/done/terminated), cache it, and display it in the session detail view.
 
-| Component | Purpose |
-|-----------|---------|
-| `Timeline` | Container with vertical/horizontal layout |
-| `TimelineEvent` | Single event with timestamp, icon, description |
-| `EventDetail` | Expandable detail panel for an event |
-| `CodeBlock` | Syntax-highlighted code snippet |
-| `DiffView` | Side-by-side or unified diff display |
-| `MetricBar` | Visual metric (cost, duration, token usage) |
-| `DecisionTree` | Branching visualization for agent decisions |
+For active sessions, a static Tailwind timeline component driven by lifecycle events is the right tool. OpenUI adds value only for the post-hoc annotated timeline where the LLM can add narrative context ("the agent tried approach A, it failed because X, then pivoted to approach B").
 
 **What it looks like:**
 
@@ -155,145 +169,40 @@ function AgentInsightPanel({ openUICode }: { openUICode: string }) {
 10:40 ● Fix applied — edge case in token expiry
   │    [▸ View fix]
   │
-10:41 ✓ Tests passed — 14/14
+10:42 ✓ PR created — #456
   │
-10:42 ● PR created — #456 "fix: sliding-window token refresh"
-  │    [▸ PR description] [▸ Review readiness]
-  │
-10:55 ✓ CI passed — all checks green
-  │
-11:02 ✓ Merged — approved by @reviewer
+11:02 ✓ Merged
 ```
 
-**Why OpenUI fits:** Timelines are inherently variable — some sessions have 5 events, others have 50. Some need code snippets, others need decision trees. An LLM generating the timeline from structured event data produces contextually appropriate visualizations every time, rather than a rigid template that shows the same layout regardless of content.
+**Cost model:** One LLM call per completed session. Cached in session metadata.
 
 ---
 
-### Opportunity 3: Agent Copilot Panel (Impact: HIGH, Feasibility: HARD)
+### Opportunity 3: On-Demand Analytics (Impact: MEDIUM, Feasibility: EASY)
 
-**The Problem:** Users interact with agents through a raw terminal or quick-reply buttons. There's no way to ask "what are you working on?" or "why did you choose this approach?" without interrupting the agent's flow.
+**The Problem:** The dashboard shows individual session status but lacks aggregate analytics.
 
-**The Idea:** An OpenUI-powered copilot panel alongside the terminal. Users type natural-language questions about the session, and the LLM generates interactive UI responses using session context:
+**The Idea:** A "Generate Report" button that sends session data to an LLM with an OpenUI analytics component library.
 
-- "Show me what files you changed" → Renders an interactive file tree with diff previews
-- "Why did CI fail?" → Renders a failure analysis card with logs and suggested fixes
-- "Compare your approach to the other agent working on this" → Renders a side-by-side comparison
-- "What's left to do?" → Renders a checklist with completion percentages
+**Honest assessment:** This is the weakest OpenUI use case. Analytics data is structured and predictable — success rates, cost trends, time distributions. A standard chart library (Recharts, Nivo) handles 90% of this at 10% of the complexity without an LLM call. The only scenario where OpenUI adds value over a chart library is natural-language ad-hoc queries: "why did failure rates spike on Tuesday?" where the LLM can correlate session data with contextual explanations.
 
-**Key distinction from a chatbot:** The responses are interactive UIs, not text. The file tree is expandable. The diff is navigable. The checklist has progress bars. The comparison has toggle views. All generated on-the-fly by the LLM using OpenUI components.
-
-**What it looks like:**
-
-```
-┌──────────── Terminal ────────────┐┌─────── Copilot ──────────┐
-│ $ claude --resume session-abc    ││                           │
-│ Analyzing auth middleware...     ││ You: "What did you change │
-│ Reading src/auth/refresh.ts      ││       and why?"           │
-│ ...                              ││                           │
-│                                  ││ ┌── Changes ───────────┐ │
-│                                  ││ │ ▸ src/auth/refresh.ts │ │
-│                                  ││ │   +sliding window     │ │
-│                                  ││ │   -fixed expiry       │ │
-│                                  ││ │ ▸ src/auth/types.ts   │ │
-│                                  ││ │   +RefreshConfig type │ │
-│                                  ││ └──────────────────────┘ │
-│                                  ││                           │
-│                                  ││ Rationale: The existing   │
-│                                  ││ fixed-expiry approach...  │
-│                                  ││ [▸ Full reasoning]        │
-└──────────────────────────────────┘└───────────────────────────┘
-```
-
-**Why OpenUI fits:** This is OpenUI's sweet spot — natural-language queries producing interactive UIs. The component library defines the building blocks; the LLM composes them based on what the user asks. No two responses look the same because they're generated from actual session context.
+**Recommendation:** Build basic analytics with a chart library first. Reach for OpenUI only if users actually need the natural-language query UX and it proves valuable beyond what structured dashboards provide.
 
 ---
 
-### Opportunity 4: On-Demand Analytics Dashboards (Impact: MEDIUM, Feasibility: EASY)
+### Opportunity 4: Schema/Architecture Visualization (Impact: LOW, Feasibility: MEDIUM)
 
-**The Problem:** The dashboard shows individual session status but lacks aggregate analytics — success rates, cost trends, time-to-merge distributions, failure patterns, agent performance comparisons.
+**The Problem:** When agents work on database migrations or architectural refactors, the impact is hard to visualize from diffs alone.
 
-**The Idea:** A "Generate Report" button that sends session data to an LLM, which produces an OpenUI-powered analytics dashboard. The user can ask for specific analyses:
-
-- "Show me agent performance this week" → Bar charts, trend lines, percentile distributions
-- "Which types of issues take longest?" → Category breakdown with drill-down
-- "Compare Claude Code vs Codex on our repo" → Side-by-side metrics
-- "What are the most common failure modes?" → Categorized failure analysis
-
-**Why OpenUI fits:** Analytics requirements change constantly. Building static dashboards for every possible question is impractical. OpenUI lets the LLM generate the right visualization for the right question, using components designed for data display (charts, tables, metric cards).
-
-**Feasibility: EASY** because this is a standalone feature — it doesn't touch the existing dashboard's real-time data flow. It reads session data via API, sends it to an LLM with the OpenUI library, and renders the result in an overlay/modal.
+**The Idea:** Agents generate interactive diagrams as part of their insight cards (Opportunity 1): schema diffs, API endpoint maps, dependency graphs. These are specialized components in the same OpenUI library, not a separate integration.
 
 ---
 
-### Opportunity 5: PR Review Preparation View (Impact: MEDIUM, Feasibility: MEDIUM)
+### Dropped Opportunities
 
-**The Problem:** When a PR is ready for review, the reviewer sees raw GitHub diffs. There's no agent-generated context about what changed, why, what alternatives were considered, and what the reviewer should pay special attention to.
+**Copilot Panel (previously Opp 3):** Deferred. The streaming Renderer + layout overhaul + context-gathering pipeline is a 2-3 week build. The distinction from a chat interface with rich markdown rendering isn't strong enough to justify the complexity now. Revisit after the insight card pipeline is proven and if users request interactive query responses over formatted text.
 
-**The Idea:** The agent generates an OpenUI-powered "review briefing" that renders in the dashboard:
-
-- **Change narrative** — A structured walkthrough of the changes, file by file, explaining intent
-- **Risk assessment** — Which changes are mechanical (renames, formatting) vs. behavioral
-- **Test coverage map** — Which new/modified code has test coverage, which doesn't
-- **Attention markers** — "Pay extra attention to lines 45-67 in refresh.ts — this is the core logic change"
-- **Rollback plan** — If this breaks, here's what to revert and why
-
-**What it looks like:**
-
-```
-┌─── Review Briefing: PR #456 ─────────────────────┐
-│                                                    │
-│  Summary: Replaced fixed-expiry token refresh      │
-│  with sliding-window approach                      │
-│                                                    │
-│  Risk: LOW ■■□□□                                   │
-│  Confidence: HIGH ■■■■□                            │
-│                                                    │
-│  ┌─── Change Walkthrough ──────────────────────┐   │
-│  │ 1. src/auth/refresh.ts (core change)        │   │
-│  │    What: New RefreshManager class            │   │
-│  │    Why: Existing refresh() was stateless     │   │
-│  │    ⚠ Attention: Error handling in L45-67     │   │
-│  │    [▸ View annotated diff]                   │   │
-│  │                                              │   │
-│  │ 2. src/auth/middleware.ts (wiring)           │   │
-│  │    What: Import new RefreshManager           │   │
-│  │    Risk: NONE (mechanical)                   │   │
-│  │    [▸ View diff]                             │   │
-│  └──────────────────────────────────────────────┘   │
-│                                                    │
-│  Test Coverage: 94% of changed lines               │
-│  Uncovered: L52-54 in refresh.ts [▸ Details]       │
-└────────────────────────────────────────────────────┘
-```
-
----
-
-### Opportunity 6: Schema/Architecture Visualization (Impact: MEDIUM, Feasibility: MEDIUM)
-
-**The Problem:** When agents work on database migrations, API changes, or architectural refactors, the impact is hard to visualize from diffs alone.
-
-**The Idea:** Agents generate OpenUI-powered interactive diagrams:
-
-- **Schema diff views** — Before/after database schema with highlighted changes
-- **API endpoint maps** — Which endpoints changed, new parameters, breaking changes
-- **Dependency graphs** — How the changed module connects to the rest of the system
-- **State machine diagrams** — For lifecycle/state changes, show the before/after state machine
-
-**Why OpenUI fits:** These visualizations are inherently contextual — the right diagram depends on what changed. An LLM generating the visualization from actual code context produces more useful diagrams than a generic static tool.
-
----
-
-### Opportunity 7: Multi-Agent Comparison View (Impact: MEDIUM, Feasibility: HARD)
-
-**The Problem:** AO can spawn multiple agents on the same issue (or related issues). There's no way to compare their approaches, trade-offs, or outcomes side by side.
-
-**The Idea:** An OpenUI-powered comparison view that analyzes multiple sessions and renders:
-
-- **Approach comparison** — How each agent interpreted the task differently
-- **Code diff between agents** — What each agent changed, overlaps and divergences
-- **Decision divergence points** — Where agents made different choices, and what reasoning drove each
-- **Performance metrics** — Time, cost, code quality, test coverage per agent
-- **Recommendation** — Which approach is better and why (generated by a meta-LLM reviewing both)
+**Multi-Agent Comparison (previously Opp 7):** Deferred. High complexity, niche use case. The data needed (structured comparison of agent approaches) doesn't exist yet. Build the event logging and insight card infrastructure first — comparison views become feasible once there's structured data to compare.
 
 ---
 
@@ -315,11 +224,13 @@ Session Metadata
     ▼
 API Route: GET /api/sessions/[id]/insight
     │ Returns the stored OpenUI Lang
+    │ Fallback: returns plain-text summary if no insight card exists
     │
     ▼
 Dashboard: SessionCard.tsx / SessionDetail.tsx
     │ Embeds <Renderer library={aoLibrary} code={insightCode} />
     │ Renders inside an expandable panel
+    │ On Renderer error: falls back to plain-text summary
     │
     ▼
 User sees interactive insight card
@@ -330,7 +241,7 @@ User sees interactive insight card
 ```typescript
 // packages/web/src/lib/openui-components.ts
 import { defineComponent, createLibrary } from "@openui/react";
-import { z } from "zod/v4"; // Zod v4 for OpenUI
+import { z } from "zod/v4"; // Zod v4 — isolated to this file only
 
 export const DecisionCard = defineComponent({
   name: "DecisionCard",
@@ -341,16 +252,17 @@ export const DecisionCard = defineComponent({
     reasoning: z.string(),
   }),
   render: ({ title, chosen, alternatives, reasoning }) => (
-    // Render with AO design tokens
+    // Render with AO design tokens (var(--color-*))
   ),
 });
 
 export const FileChangeList = defineComponent({ ... });
 export const MetricRow = defineComponent({ ... });
 export const TestSummary = defineComponent({ ... });
+export const ReviewBriefing = defineComponent({ ... });
 
 export const aoLibrary = createLibrary([
-  DecisionCard, FileChangeList, MetricRow, TestSummary, ...
+  DecisionCard, FileChangeList, MetricRow, TestSummary, ReviewBriefing, ...
 ]);
 ```
 
@@ -360,12 +272,12 @@ export const aoLibrary = createLibrary([
 |-----------|--------|--------|
 | Agent plugins | Add post-completion insight generation step | Medium |
 | Session metadata | Store OpenUI Lang strings (already supports arbitrary strings) | Low |
-| API routes | New `/api/sessions/[id]/insight` endpoint | Low |
-| Dashboard | Add `<Renderer>` integration to SessionCard/SessionDetail | Medium |
-| New package | `packages/web/src/lib/openui-components.ts` | Medium |
+| API routes | New `/api/sessions/[id]/insight` endpoint with fallback | Low |
+| Dashboard | Add `<Renderer>` with error boundary to SessionCard/SessionDetail | Medium |
+| New module | `packages/web/src/lib/openui-components.ts` | Medium |
 | Dependencies | Add `@openui/react` to web package | Low |
 
-### Architecture B: Interactive Timeline (Opportunity 2)
+### Architecture B: Session Timeline (Opportunity 2)
 
 ```
 Lifecycle Manager (polling loop)
@@ -379,16 +291,22 @@ Session Event Log (new)
     │ Each line: { ts, type, state, detail, metadata }
     │
     ▼
+On session completion:
+    │ API Route reads event log, sends to LLM with timeline library
+    │ Caches generated OpenUI Lang in session metadata
+    │
+    ▼
 API Route: GET /api/sessions/[id]/timeline
-    │ Reads event log, sends to LLM with timeline component library
-    │ Returns generated OpenUI Lang
+    │ Returns cached OpenUI Lang
+    │ Fallback: returns raw event list for static rendering
     │
     ▼
-Dashboard: New TimelineView component
-    │ <Renderer library={timelineLibrary} code={timelineCode} />
+Dashboard: SessionDetail.tsx
+    │ Completed sessions: <Renderer /> with interactive timeline
+    │ Active sessions: static Tailwind timeline component from lifecycle events
     │
     ▼
-User sees interactive session timeline
+User sees session journey
 ```
 
 **Changes required:**
@@ -399,56 +317,8 @@ User sees interactive session timeline
 | Core types | Define `SessionEvent` type | Low |
 | Session manager | Read/write event log | Low |
 | API routes | New `/api/sessions/[id]/timeline` endpoint | Medium |
-| Dashboard | New `TimelineView.tsx` component | Medium |
-| OpenUI library | Timeline-specific components | Medium |
-
-### Architecture C: Copilot Panel (Opportunity 3)
-
-```
-User types question in Copilot panel
-    │
-    ▼
-API Route: POST /api/copilot/ask
-    │ Receives: { sessionId, question }
-    │ Gathers: session metadata, recent events, terminal output, PR data
-    │ Sends to LLM with: context + question + AO component library prompt
-    │ Returns: OpenUI Lang stream
-    │
-    ▼
-Dashboard: CopilotPanel.tsx
-    │ Streaming <Renderer> that builds UI incrementally
-    │ Alongside DirectTerminal
-    │
-    ▼
-User sees interactive answer
-```
-
-**This is the most complex integration** because it requires:
-1. A context-gathering pipeline (session data, terminal history, git state)
-2. A streaming LLM call from the API route
-3. A streaming Renderer on the client
-4. Layout changes to accommodate the panel alongside the terminal
-
-### Architecture D: On-Demand Analytics (Opportunity 4)
-
-```
-User clicks "Generate Report" or types a question
-    │
-    ▼
-API Route: POST /api/analytics/generate
-    │ Gathers: all session data, PR metrics, activity history
-    │ Sends to LLM with: data + question + analytics component library
-    │ Returns: OpenUI Lang
-    │
-    ▼
-Dashboard: AnalyticsPanel.tsx (modal/overlay)
-    │ <Renderer library={analyticsLibrary} code={reportCode} />
-    │
-    ▼
-User sees custom analytics dashboard
-```
-
-**Simplest integration** — it's a standalone modal that doesn't touch existing data flows.
+| Dashboard | Static timeline for active, OpenUI timeline for completed | Medium |
+| OpenUI library | Timeline-specific components (reuse some from Insight Cards) | Medium |
 
 ---
 
@@ -456,79 +326,167 @@ User sees custom analytics dashboard
 
 ### Changes to OpenUI
 
-| Change | Why | Effort |
-|--------|-----|--------|
-| SSE/push support in runtime | AO's real-time updates use SSE; OpenUI's Query() only supports REST polling | Hard |
-| Dark theme support in Renderer | AO uses a custom dark theme; Renderer needs to inherit CSS custom properties | Medium |
-| Standalone Renderer documentation | Currently under-documented for non-chat usage | Low |
-| Zod v3 compatibility layer (optional) | Allow component schemas to use Zod v3 alongside v4 | Medium |
-| Streaming Renderer improvements | Better incremental rendering for large generated UIs | Medium |
+| Change | Why | Effort | Blocking? |
+|--------|-----|--------|-----------|
+| Dark theme support in Renderer | AO uses a custom dark theme; Renderer needs to inherit CSS custom properties | Medium | No — can work around with component-level styling |
+| Standalone Renderer documentation | Currently under-documented for non-chat usage | Low | No — can read source |
+
+Note: SSE/push support is NOT listed here because we're scoping OpenUI to static/completed data where push isn't needed. If we later want real-time OpenUI views, that becomes a hard prerequisite.
 
 ### Changes to Agent Orchestrator
 
 | Change | Why | Priority | Effort |
 |--------|-----|----------|--------|
 | Add `@openui/react` dependency to web package | Core integration dependency | P0 | Low |
-| Create AO OpenUI component library | Define components matching AO's design system | P0 | Medium |
+| Create AO OpenUI component library (Zod v4 isolated) | Define components matching AO's design system | P0 | Medium |
+| Add insight generation to agent plugins | Agents produce OpenUI Lang summaries at completion | P0 | Medium |
+| New API route for insight with fallback | Serve OpenUI data to dashboard | P0 | Low |
+| Error boundary around Renderer | Graceful fallback to text summary | P0 | Low |
 | Add session event logging to lifecycle manager | Structured event data for timelines | P1 | Medium |
-| Add insight generation to agent plugins | Agents produce OpenUI Lang summaries | P1 | Medium |
-| New API routes for insight/timeline/analytics | Serve OpenUI data to dashboard | P1 | Medium |
-| Dashboard layout changes for new panels | Accommodate Renderer alongside existing UI | P2 | Medium |
-| Copilot context-gathering pipeline | Aggregate session data for copilot queries | P2 | Hard |
-| LLM integration in API routes | Send context to LLM, get OpenUI Lang back | P1 | Medium |
+| New API route for timeline | Serve timeline data | P1 | Medium |
+| Static timeline component for active sessions | Non-OpenUI timeline for live sessions | P1 | Medium |
+| LLM integration in API routes | Send context to LLM, get OpenUI Lang back | P0 | Medium |
 
 ---
 
 ## 5. Recommended Starting Point
 
-### Phase 1: On-Demand Analytics (2-3 days)
+### Phase 1: Agent Insight Cards (1 week)
 
 **Why start here:**
-- Lowest risk — it's a standalone modal, no changes to existing dashboard
-- Highest "wow factor" — users immediately see the power of generated UIs
-- Validates the integration path — proves OpenUI works with AO's design system
-- No agent plugin changes needed — works with existing session data
+- Tests the core thesis — LLM-generated UI handles variable agent output better than static templates
+- Works exclusively with completed sessions — the "generate once" model is a feature here, not a limitation
+- One LLM call per session, cached forever — predictable, bounded cost
+- Validates the full pipeline: agent → OpenUI Lang → metadata → API → Renderer → dashboard
+- Includes PR review briefing (merged Opp 1 + 5)
 
 **Steps:**
-1. Add `@openui/react` to `packages/web/`
-2. Create analytics component library (MetricCard, BarChart, Table, TrendLine, ComparisonGrid)
-3. Style components with AO's CSS custom properties
-4. Create `POST /api/analytics/generate` route
-5. Create `AnalyticsModal.tsx` with Renderer
-6. Add "Generate Report" button to Dashboard.tsx
-7. Wire up an LLM API call (Claude API) in the route
+1. Add `@openui/react` to `packages/web/` (Zod v4 as peer dep, isolated)
+2. Create insight component library styled with AO design tokens
+3. Add error boundary wrapper around `<Renderer>` with text summary fallback
+4. Add post-completion insight generation hook to claude-code agent plugin
+5. Store generated OpenUI code in session metadata
+6. Create `/api/sessions/[id]/insight` route
+7. Add expandable insight panel to SessionDetail.tsx
+8. Measure bundle size impact of `@openui/react`
 
-### Phase 2: Agent Insight Cards (1 week)
+### Phase 2: Session Timeline for Completed Sessions (1-2 weeks)
 
-**Build on Phase 1's component library:**
-1. Add insight-focused components (DecisionCard, FileChangeList, DiffView, TestSummary)
-2. Add insight generation as a post-completion step in agent plugins
-3. Store generated OpenUI code in session metadata
-4. Create `/api/sessions/[id]/insight` route
-5. Add expandable insight panel to SessionCard.tsx
+**Build on Phase 1's component library and Renderer integration:**
+1. Add structured event logging to lifecycle manager (JSONL)
+2. Define `SessionEvent` type in core
+3. Add timeline-specific components to OpenUI library
+4. Generate timeline OpenUI code on session completion (reuse LLM integration from Phase 1)
+5. Build static Tailwind timeline for active sessions (no OpenUI)
+6. Create `/api/sessions/[id]/timeline` route
+7. Integrate both views into SessionDetail.tsx
 
-### Phase 3: Interactive Timeline (1-2 weeks)
+### Phase 3: Evaluate Analytics (1 week, exploratory)
 
-**Requires core changes:**
-1. Add structured event logging to lifecycle manager
-2. Define SessionEvent type in core
-3. Create timeline component library
-4. Create `/api/sessions/[id]/timeline` route with LLM generation
-5. Create TimelineView.tsx component
-6. Integrate into SessionDetail.tsx
+**Don't commit to OpenUI for analytics yet:**
+1. Build basic analytics with a standard chart library (Recharts)
+2. Add a "Ask a question" input that sends natural-language queries to LLM
+3. Compare: does the OpenUI-generated response add value over the static charts?
+4. If yes, invest in the analytics component library. If no, ship the chart library version.
 
-### Phase 4: Copilot Panel (2-3 weeks)
+### Deferred: Copilot Panel, Multi-Agent Comparison
 
-**Most complex, save for last:**
-1. Build context-gathering pipeline
-2. Create streaming LLM endpoint
-3. Build CopilotPanel.tsx with streaming Renderer
-4. Layout changes for terminal + copilot side-by-side
-5. History management for copilot conversations
+Revisit after Phase 1-2 are shipped and validated. Prerequisites:
+- Proven insight card pipeline
+- User feedback on whether interactive UI responses (vs. formatted text) are worth the complexity
+- OpenUI push/SSE support (for copilot to show live data)
 
 ---
 
-## 6. Appendix: Compatibility Analysis
+## 6. Risk Mitigations
+
+### Error Handling: Invalid OpenUI Lang
+
+The LLM may generate malformed OpenUI Lang. The Renderer must never crash the dashboard.
+
+**Mitigation:** Wrap every `<Renderer>` in a React error boundary that catches parse/render failures and falls back to the existing plain-text summary. The insight card is an enhancement — if it fails, the user sees what they'd see today.
+
+```tsx
+<InsightErrorBoundary fallback={<TextSummary text={session.summary} />}>
+  <Renderer library={aoLibrary} code={insightCode} />
+</InsightErrorBoundary>
+```
+
+Additionally, validate the generated OpenUI Lang against the component library schema before storing it in session metadata. If validation fails, store the plain-text summary instead and log the failure for debugging.
+
+### Security: Renderer Trust Boundary
+
+The Renderer evaluates LLM-generated code. A compromised or adversarial agent prompt could inject malicious OpenUI Lang.
+
+**Mitigations:**
+1. **OpenUI Lang is not JavaScript.** It's a declarative language with a fixed grammar — no arbitrary code execution. The evaluator only resolves component references, `Query()`, `Mutation()`, `$variables`, and `Action()`. It cannot execute arbitrary functions.
+2. **Component library is the sandbox.** Only components defined in `aoLibrary` can be instantiated. The Renderer ignores unknown component names.
+3. **Query/Mutation allowlist.** Configure the Renderer to only allow `Query()` and `Mutation()` calls to AO's own API routes (`/api/*`). Block external URLs.
+4. **CSP headers.** The dashboard's Content-Security-Policy should prevent any injected content from loading external resources.
+
+**Residual risk:** A malicious agent could generate insight cards with misleading content (e.g., "all tests passed" when they didn't). This is a content trust issue, not a code execution issue — the same risk exists with plain-text summaries today.
+
+### Bundle Size Budget
+
+Adding `@openui/react` brings in the lexer, parser, materializer, evaluator, and Zod v4. This needs measurement before committing.
+
+**Budget:** The web dashboard currently loads ~300KB gzipped JS (estimate). The OpenUI addition should not exceed 50KB gzipped (15% increase). If it does, dynamic import is mandatory.
+
+**Mitigation plan:**
+1. After adding the dependency, measure with `next build` + bundle analyzer
+2. If under 50KB gzipped: static import is fine
+3. If over 50KB gzipped: dynamic import (`next/dynamic`) with loading skeleton
+4. If over 100KB gzipped: reconsider — the overhead may not justify the feature
+
+```tsx
+// Dynamic import path (if bundle too large)
+const InsightRenderer = dynamic(
+  () => import("@/components/InsightRenderer"),
+  { loading: () => <InsightSkeleton />, ssr: false }
+);
+```
+
+### Offline/Degraded Mode
+
+If the LLM call fails during insight generation, the dashboard must not break.
+
+**Invariant:** Every code path that displays an insight card must have a non-OpenUI fallback. The insight card is a progressive enhancement.
+
+**Degradation chain:**
+1. OpenUI insight card renders → show it
+2. OpenUI Renderer throws → error boundary catches → show plain-text summary
+3. No insight card in metadata → show existing summary string
+4. No summary at all → show "No summary available"
+
+The dashboard never depends on OpenUI being available or functional. If `@openui/react` fails to load, the dashboard works exactly as it does today.
+
+### Zod v4 Coexistence Plan
+
+Running Zod v3 and v4 in the same monorepo creates real friction: type confusion, transitive dependency conflicts, and developer confusion about which `z` to import.
+
+**Mitigation:**
+
+1. **Isolate Zod v4 to a single file.** Only `packages/web/src/lib/openui-components.ts` imports from `zod/v4`. No other file in the monorepo touches v4.
+
+2. **Lint rule enforcement.** Add an ESLint rule or a simple grep-based CI check that flags any import of `zod/v4` outside the OpenUI components file:
+   ```bash
+   # CI check
+   if grep -r "from ['\"]zod/v4" --include='*.ts' --include='*.tsx' \
+     | grep -v 'openui-components'; then
+     echo "ERROR: Zod v4 imports only allowed in openui-components.ts"
+     exit 1
+   fi
+   ```
+
+3. **No Zod v4 types in public interfaces.** The OpenUI component library file exports the `aoLibrary` object and nothing else. No Zod v4 schema types leak into the rest of the codebase.
+
+4. **Package.json isolation.** Add `zod@^4` as a dependency of `@aoagents/ao-web` only, not the root or any other package. Since `@aoagents/ao-core` uses `zod@^3`, pnpm's strict dependency resolution keeps them separate.
+
+5. **Document in CLAUDE.md.** Add a note: "Zod v4 is used exclusively for OpenUI component schemas in `packages/web/src/lib/openui-components.ts`. All other validation uses Zod v3. Do not import from `zod/v4` anywhere else."
+
+---
+
+## 7. Appendix: Compatibility Analysis
 
 ### Dependency Compatibility
 
@@ -536,19 +494,20 @@ User sees custom analytics dashboard
 |---------|--------|-------|
 | React version | Compatible | OpenUI targets React 18+; AO uses React 19 (should work) |
 | Next.js | Compatible | OpenUI is client-side only; works in "use client" components |
-| Zod version | Friction | OpenUI requires Zod v4; AO uses Zod v3. Can coexist with separate imports |
+| Zod version | Managed friction | See [Zod v4 Coexistence Plan](#zod-v4-coexistence-plan) |
 | Tailwind | Compatible | OpenUI components can use Tailwind classes |
-| Bundle size | Monitor | OpenUI adds lexer/parser/evaluator; measure impact |
+| Bundle size | Measure first | See [Bundle Size Budget](#bundle-size-budget) |
 | SSR | N/A | OpenUI is client-only; AO already uses "use client" for interactive components |
 
 ### Performance Considerations
 
 | Concern | Mitigation |
 |---------|------------|
-| LLM latency for generation | Cache generated OpenUI code in session metadata; regenerate only on request |
-| Streaming parser overhead | OpenUI's parser is optimized for streaming; should be fine |
+| LLM cost per insight card | One call per completed session, cached forever. No recurring cost. |
+| LLM latency | Generate asynchronously post-completion. User never waits for generation. |
+| Streaming parser overhead | OpenUI's parser is optimized for streaming; should be fine for cached content |
 | Multiple Renderers on page | Lazy-load Renderer; only mount when panel is expanded |
-| Bundle size | Dynamic import `@openui/react` only in components that use it |
+| Bundle size | Dynamic import if over 50KB gzipped (see budget above) |
 
 ### Design System Integration
 
@@ -565,12 +524,12 @@ This means **custom components**, not OpenUI's defaults. The component library I
 
 ### Alternatives Considered
 
-| Alternative | Why OpenUI is better for AO |
-|------------|---------------------------|
-| Static React components | Can't adapt to variable agent output; need pre-built components for every scenario |
-| Markdown rendering | No interactivity; can't expand/collapse, filter, or navigate |
-| JSON → React mapping | Rigid schema; LLM must produce exact JSON; no compositional flexibility |
-| iframe-based widgets | Poor integration with dashboard theme/layout; cross-origin issues |
-| Custom DSL | Reinventing what OpenUI already solves; maintenance burden |
+| Alternative | Verdict |
+|------------|---------|
+| Static React components | Better for structured/predictable data (analytics, active session monitoring). Worse for variable agent output (insight cards). |
+| Markdown rendering | No interactivity; can't expand/collapse, filter, or navigate. Acceptable fallback. |
+| JSON → React mapping | Rigid schema; LLM must produce exact JSON; no compositional flexibility. |
+| Chart library (Recharts/Nivo) | Better for analytics. Use this for structured data, OpenUI for variable narrative data. |
+| Custom DSL | Reinventing what OpenUI already solves; maintenance burden. |
 
-**OpenUI's unique value proposition for AO:** Agent sessions are inherently variable — different issues, different approaches, different outcomes. A framework that lets LLMs generate contextually appropriate UIs from a component library is exactly what's needed to surface this variability in a structured, interactive way.
+**Bottom line:** OpenUI's unique value for AO is surfacing variable agent output (decisions, trade-offs, file changes, test results) as interactive, navigable components. For structured data (analytics, live session state), use standard React components and chart libraries. Don't force OpenUI where static components are simpler and better.
