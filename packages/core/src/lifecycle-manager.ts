@@ -276,6 +276,7 @@ function prStateToEventType(
 /** PR context for event enrichment. */
 interface EventPRContext {
   url: string;
+  /** Actual PR title from enrichment cache. null until cache is populated. */
   title: string | null;
   number: number;
   branch: string;
@@ -286,6 +287,8 @@ interface EventContext {
   pr: EventPRContext | null;
   issueId: string | null;
   issueTitle: string | null;
+  /** Agent task summary (NOT the PR title). May describe the work before a PR exists. */
+  summary: string | null;
   branch: string | null;
 }
 
@@ -320,9 +323,7 @@ function buildEventContext(
 
     pr = {
       url: session.pr.url,
-      // agentInfo.summary is a best-effort fallback — it's the task summary
-      // (not necessarily the PR title) and may be absent early in the session.
-      title: cached?.title ?? session.agentInfo?.summary ?? null,
+      title: cached?.title ?? null,
       number: session.pr.number,
       branch: session.pr.branch,
     };
@@ -332,6 +333,7 @@ function buildEventContext(
     pr,
     issueId: session.issueId,
     issueTitle: session.metadata["issueTitle"] ?? null,
+    summary: session.agentInfo?.summary ?? null,
     branch: session.branch,
   };
 }
@@ -1283,7 +1285,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         sessionId,
         projectId,
         message: `Reaction '${reactionKey}' escalated after ${tracker.attempts} attempts`,
-        data: { reactionKey, attempts: tracker.attempts, ...context },
+        data: { reactionKey, attempts: tracker.attempts, context, schemaVersion: 2 },
       });
       await notifyHuman(event, reactionConfig.priority ?? "urgent");
 
@@ -1334,7 +1336,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           sessionId,
           projectId,
           message: `Reaction '${reactionKey}' triggered notification`,
-          data: { reactionKey, ...context },
+          data: { reactionKey, context, schemaVersion: 2 },
         });
         await notifyHuman(event, reactionConfig.priority ?? "info");
         return {
@@ -1353,7 +1355,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           sessionId,
           projectId,
           message: `Reaction '${reactionKey}' triggered auto-merge`,
-          data: { reactionKey, ...context },
+          data: { reactionKey, context, schemaVersion: 2 },
         });
         await notifyHuman(event, "action");
         return {
@@ -1788,7 +1790,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             sessionId: session.id,
             projectId: session.projectId,
             message: detailedMessage,
-            data: { failedChecks: failedChecks.map((c) => c.name), ...context },
+            data: { failedChecks: failedChecks.map((c) => c.name), context, schemaVersion: 2 },
           });
           await notifyHuman(event, reactionConfig.priority ?? "warning");
         }
@@ -2197,7 +2199,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             sessionId: session.id,
             projectId: session.projectId,
             message: `${session.id}: ${oldStatus} → ${newStatus}`,
-            data: { oldStatus, newStatus, ...context },
+            data: { oldStatus, newStatus, context, schemaVersion: 2 },
           });
           await notifyHuman(event, priority);
         }
@@ -2253,11 +2255,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           data: {
             oldPRState: previousPRState,
             newPRState: session.lifecycle.pr.state,
-            // prNumber/prUrl are intentionally duplicated alongside context.pr
-            // for backward compatibility with existing webhook consumers.
+            // prNumber/prUrl kept for backward compat — drop in schemaVersion 3
             prNumber: session.lifecycle.pr.number,
             prUrl: session.lifecycle.pr.url,
-            ...context,
+            context,
+            schemaVersion: 2,
           },
         });
         await notifyHuman(prEvent, inferPriority(prEventType));

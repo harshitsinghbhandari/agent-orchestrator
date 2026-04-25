@@ -6,6 +6,7 @@ import {
   openSync,
   closeSync,
   constants,
+  statSync,
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -72,6 +73,15 @@ function readLockMetadata(lockFile: string): LockMetadata | null {
   }
 }
 
+function isStaleUnparseableLock(lockFile: string): boolean {
+  try {
+    const mtimeMs = statSync(lockFile).mtimeMs;
+    return Date.now() - mtimeMs > UNPARSEABLE_LOCK_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
 /** Try to create the lockfile atomically. Returns a release function on success, null on failure. */
 function tryAcquire(lockFile: string): (() => void) | null {
   try {
@@ -116,7 +126,8 @@ async function acquireLock(
     if (release) return release;
 
     const owner = readLockMetadata(lockFile);
-    if (!owner || !isProcessAlive(owner.pid)) {
+    if ((!owner && isStaleUnparseableLock(lockFile))
+      || (owner && !isProcessAlive(owner.pid))) {
       try { unlinkSync(lockFile); } catch { /* ignore */ }
       const retryRelease = tryAcquire(lockFile);
       if (retryRelease) return retryRelease;
