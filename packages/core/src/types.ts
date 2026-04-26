@@ -623,6 +623,8 @@ export interface WorkspaceCreateConfig {
   project: ProjectConfig;
   sessionId: SessionId;
   branch: string;
+  /** Override the base directory for worktrees (e.g. V2 project-scoped dir). */
+  worktreeDir?: string;
 }
 
 export interface WorkspaceInfo {

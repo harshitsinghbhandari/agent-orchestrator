@@ -129,7 +129,10 @@ export function create(config?: Record<string, unknown>): Workspace {
       assertSafePathSegment(cfg.sessionId, "sessionId");
 
       const repoPath = expandPath(cfg.project.path);
-      const projectWorktreeDir = join(worktreeBaseDir, cfg.projectId);
+      const effectiveBaseDir = cfg.worktreeDir ?? worktreeBaseDir;
+      const projectWorktreeDir = cfg.worktreeDir
+        ? effectiveBaseDir
+        : join(effectiveBaseDir, cfg.projectId);
       const worktreePath = join(projectWorktreeDir, cfg.sessionId);
 
       mkdirSync(projectWorktreeDir, { recursive: true });

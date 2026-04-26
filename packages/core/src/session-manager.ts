@@ -1193,6 +1193,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           project,
           sessionId,
           branch,
+          worktreeDir: getProjectWorktreesDir(spawnConfig.projectId),
         });
         workspacePath = wsInfo.path;
 
@@ -1518,6 +1519,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         project,
         sessionId,
         branch,
+        worktreeDir: getProjectWorktreesDir(orchestratorConfig.projectId),
       });
       workspacePath = wsInfo.path;
     } catch (err) {
@@ -2801,6 +2803,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
             project,
             sessionId,
             branch: session.branch,
+            worktreeDir: getProjectWorktreesDir(projectId),
           },
           workspacePath,
         );

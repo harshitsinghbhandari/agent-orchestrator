@@ -147,6 +147,35 @@ describe("create() factory", () => {
 
     expect(info.path).toBe("/mock-home/custom-path/myproject/session-1");
   });
+
+  it("uses per-call worktreeDir override instead of plugin default", async () => {
+    const ws = create(); // default: ~/.worktrees
+
+    mockOriginRemote();
+    mockGitSuccess(""); // git rev-parse --verify --quiet origin/main
+    mockGitSuccess(""); // worktree add
+
+    const info = await ws.create(
+      makeCreateConfig({ worktreeDir: "/mock-home/.agent-orchestrator/projects/myproject/worktrees" }),
+    );
+
+    // worktreeDir is used directly (not joined with projectId) — session-manager passes the project-scoped dir
+    expect(info.path).toBe("/mock-home/.agent-orchestrator/projects/myproject/worktrees/session-1");
+  });
+
+  it("per-call worktreeDir overrides plugin-level worktreeDir", async () => {
+    const ws = create({ worktreeDir: "/old/worktrees" });
+
+    mockOriginRemote();
+    mockGitSuccess(""); // git rev-parse --verify --quiet origin/main
+    mockGitSuccess(""); // worktree add
+
+    const info = await ws.create(
+      makeCreateConfig({ worktreeDir: "/new/v2/worktrees" }),
+    );
+
+    expect(info.path).toBe("/new/v2/worktrees/session-1");
+  });
 });
 
 describe("workspace.create()", () => {
