@@ -68,8 +68,13 @@ describe("spawn", () => {
     expect(session.projectId).toBe("my-app");
     expect(session.runtimeHandle).toEqual(makeHandle("rt-1"));
 
-    // Verify workspace was created
-    expect(mockWorkspace.create).toHaveBeenCalled();
+    // Verify workspace was created with V2 worktreeDir
+    expect(mockWorkspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "my-app",
+        worktreeDir: expect.stringContaining("projects/my-app/worktrees"),
+      }),
+    );
     // Verify agent launch command was requested
     expect(mockAgent.getLaunchCommand).toHaveBeenCalled();
     // Verify runtime was created
