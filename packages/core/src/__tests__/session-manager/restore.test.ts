@@ -12,7 +12,7 @@ import { getProjectDir } from "../../paths.js";
 import {
   writeMetadata,
   readMetadataRaw,
-  deleteMetadata,
+  updateMetadata,
 } from "../../metadata.js";
 import {
   SessionNotRestorableError,
@@ -269,11 +269,10 @@ describe("restore", () => {
     await expect(sm.restore("app-1")).rejects.toThrow(WorkspaceMissingError);
   });
 
-  it("restores a session from archive when active metadata is deleted", async () => {
+  it("restores a terminated session with existing metadata", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
 
-    // Create metadata, then delete it (which archives it)
     writeMetadata(sessionsDir, "app-1", {
       worktree: wsPath,
       branch: "feat/TEST-1",
@@ -284,14 +283,10 @@ describe("restore", () => {
       createdAt: "2025-01-01T00:00:00.000Z",
       runtimeHandle: makeHandle("rt-old"),
     });
+    updateMetadata(sessionsDir, "app-1", {
+      lifecycle: JSON.stringify({ session: { state: "terminated", terminatedAt: new Date().toISOString() } }),
+    });
 
-    // Archive it (deleteMetadata with archive=true is the default)
-    deleteMetadata(sessionsDir, "app-1");
-
-    // Verify active metadata is gone
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
-
-    // Restore should find it in archive
     const sm = createSessionManager({ config, registry: mockRegistry });
     const restored = await sm.restore("app-1");
 
@@ -300,14 +295,14 @@ describe("restore", () => {
     expect(restored.branch).toBe("feat/TEST-1");
     expect(restored.workspacePath).toBe(wsPath);
 
-    // Verify active metadata was recreated
+    // Verify metadata is preserved
     const meta = readMetadataRaw(sessionsDir, "app-1");
     expect(meta).not.toBeNull();
     expect(meta!["issue"]).toBe("TEST-1");
     expect(meta!["pr"]).toBe("https://github.com/org/my-app/pull/10");
   });
 
-  it("preserves displayName when restoring from archive", async () => {
+  it("preserves displayName when restoring terminated session", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
 
@@ -322,9 +317,6 @@ describe("restore", () => {
       displayName: "Refactor session manager to use flat metadata files",
     });
 
-    deleteMetadata(sessionsDir, "app-1");
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
-
     const sm = createSessionManager({ config, registry: mockRegistry });
     await sm.restore("app-1");
 
@@ -335,44 +327,12 @@ describe("restore", () => {
     );
   });
 
-  it("restores from archive with multiple archived versions (picks latest)", async () => {
-    const wsPath = join(tmpDir, "ws-app-1");
-    mkdirSync(wsPath, { recursive: true });
-
-    // Manually create two archive entries with different timestamps
-    const archiveDir = join(sessionsDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-
-    // Older archive — has stale branch
-    writeFileSync(
-      join(archiveDir, "app-1_2025-01-01T00-00-00-000Z.json"),
-      JSON.stringify({ worktree: wsPath, branch: "old-branch", status: "killed", project: "my-app" }, null, 2) + "\n",
-    );
-
-    // Newer archive — has correct branch
-    writeFileSync(
-      join(archiveDir, "app-1_2025-06-15T12-00-00-000Z.json"),
-      JSON.stringify({
-        worktree: wsPath,
-        branch: "feat/latest",
-        status: "killed",
-        project: "my-app",
-        runtimeHandle: makeHandle("rt-old"),
-      }, null, 2) + "\n",
-    );
-
-    const sm = createSessionManager({ config, registry: mockRegistry });
-    const restored = await sm.restore("app-1");
-
-    expect(restored.branch).toBe("feat/latest");
-  });
-
-  it("throws for nonexistent session (not in active or archive)", async () => {
+  it("throws for nonexistent session", async () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("nonexistent")).rejects.toThrow("not found");
   });
 
-  it("does not recreate active metadata when archive restore fails validation", async () => {
+  it("throws SessionNotRestorableError when OpenCode mapping is missing", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
     const deleteLogPath = join(tmpDir, "opencode-restore-validation.log");
@@ -387,18 +347,17 @@ describe("restore", () => {
       agent: "opencode",
       runtimeHandle: makeHandle("rt-old"),
     });
-    deleteMetadata(sessionsDir, "app-1");
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
-
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
   });
 
-  it("does not recreate active metadata from archive when session is not restorable", async () => {
+  it("throws SessionNotRestorableError for non-restorable terminated session", async () => {
     const wsPath = join(tmpDir, "ws-app-archive-non-restorable");
     mkdirSync(wsPath, { recursive: true });
 
+    // A "working" session that isn't actually running is not restorable
+    // because restore only works on terminal statuses
     writeMetadata(sessionsDir, "app-1", {
       worktree: wsPath,
       branch: "main",
@@ -408,12 +367,9 @@ describe("restore", () => {
       opencodeSessionId: "ses_archive_valid",
       runtimeHandle: makeHandle("rt-old"),
     });
-    deleteMetadata(sessionsDir, "app-1", true);
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
-
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
   });
 
   it("re-discovers OpenCode mapping when stored mapping is invalid", async () => {
