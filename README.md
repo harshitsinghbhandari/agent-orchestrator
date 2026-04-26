@@ -176,7 +176,7 @@ Running one AI agent in a terminal is easy. Running 30 across different issues, 
 
 ```bash
 pnpm install && pnpm build    # Install and build all packages
-pnpm test                      # Run tests (3,288 test cases)
+pnpm test                      # Run tests (3,266 test cases)
 pnpm dev                       # Start web dashboard dev server
 ```
 
