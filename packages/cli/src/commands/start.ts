@@ -1454,7 +1454,7 @@ export function registerStart(program: Command): void {
                 }
               });
               const cwdHasGit = existsSync(resolve(cwdResolved, ".git"));
-              const addCwdOption =
+              const _addCwdOption =
                 !cwdIsRegistered && cwdHasGit
                   ? [
                       {
