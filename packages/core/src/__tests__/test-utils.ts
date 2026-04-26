@@ -43,10 +43,17 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
       lifecycle.session.startedAt = lifecycle.session.lastTransitionAt;
       break;
     case "stuck":
-    case "errored":
       lifecycle.session.state = "stuck";
-      lifecycle.session.reason = requestedStatus === "errored" ? "error_in_process" : "probe_failure";
+      lifecycle.session.reason = "probe_failure";
       lifecycle.session.startedAt = lifecycle.session.lastTransitionAt;
+      break;
+    case "errored":
+      lifecycle.session.state = "terminated";
+      lifecycle.session.reason = "error_in_process";
+      lifecycle.session.startedAt = lifecycle.session.lastTransitionAt;
+      lifecycle.session.terminatedAt = lifecycle.session.lastTransitionAt;
+      lifecycle.runtime.state = "missing";
+      lifecycle.runtime.reason = "process_missing";
       break;
     case "merged":
       lifecycle.session.state = "idle";
@@ -231,7 +238,10 @@ export interface RegistryPlugins {
   notifier?: Notifier;
 }
 
-export function createMockRegistry(plugins: RegistryPlugins, options: { strict?: boolean } = {}): PluginRegistry {
+export function createMockRegistry(
+  plugins: RegistryPlugins,
+  options: { strict?: boolean } = {},
+): PluginRegistry {
   return {
     register: vi.fn(),
     get: vi.fn().mockImplementation((slot: string, name?: string) => {
@@ -256,8 +266,6 @@ export function createMockRegistry(plugins: RegistryPlugins, options: { strict?:
         if (!name || name === plugins.notifier.name) return plugins.notifier;
         if (!options.strict) return plugins.notifier;
       }
-
-
 
       return null;
     }),
@@ -366,7 +374,11 @@ export function setupTestContext(): TestContext {
   writeFileSync(configPath, "projects: {}\n");
 
   const { runtime: mockRuntime, agent: mockAgent, workspace: mockWorkspace } = createMockPlugins();
-  const mockRegistry = createMockRegistry({ runtime: mockRuntime, agent: mockAgent, workspace: mockWorkspace });
+  const mockRegistry = createMockRegistry({
+    runtime: mockRuntime,
+    agent: mockAgent,
+    workspace: mockWorkspace,
+  });
 
   const config: OrchestratorConfig = {
     configPath,
@@ -438,8 +450,16 @@ export function teardownTestContext(ctx: TestContext): void {
 export function createMockSessionManager(): OpenCodeSessionManager {
   return {
     spawn: vi.fn().mockResolvedValue(makeSession()),
-    spawnOrchestrator: vi.fn().mockResolvedValue(makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } })),
-    ensureOrchestrator: vi.fn().mockResolvedValue(makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } })),
+    spawnOrchestrator: vi
+      .fn()
+      .mockResolvedValue(
+        makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } }),
+      ),
+    ensureOrchestrator: vi
+      .fn()
+      .mockResolvedValue(
+        makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } }),
+      ),
     restore: vi.fn().mockResolvedValue(makeSession()),
     list: vi.fn().mockResolvedValue([]),
     listCached: vi.fn().mockResolvedValue([]),
