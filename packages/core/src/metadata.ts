@@ -4,7 +4,6 @@
  * V2 storage layout:
  * - Session metadata: ~/.agent-orchestrator/projects/{projectId}/sessions/{sessionId}.json
  * - Orchestrator metadata: ~/.agent-orchestrator/projects/{projectId}/orchestrator.json
- * - Archives: ~/.agent-orchestrator/projects/{projectId}/archive/{sessionId}_{timestamp}.json
  *
  * Format: JSON (2-space indented), one object per file.
  * Status: computed on read from lifecycle via deriveLegacyStatus().
@@ -16,7 +15,6 @@ import {
   existsSync,
   mkdirSync,
   unlinkSync,
-  renameSync,
   readdirSync,
   statSync,
   openSync,
@@ -35,7 +33,6 @@ import {
 import { assertValidSessionIdComponent, SESSION_ID_COMPONENT_PATTERN } from "./utils/session-id.js";
 import { flattenToStringRecord } from "./utils/metadata-flatten.js";
 import { validateStatus } from "./utils/validation.js";
-import { compactTimestamp } from "./paths.js";
 import { withFileLockSync } from "./file-lock.js";
 
 const JSON_EXTENSION = ".json";
@@ -396,124 +393,17 @@ export function updateCanonicalLifecycle(
 }
 
 /**
- * Delete a session's metadata file.
- * Optionally archive it to a sibling `archive/` directory.
- * Archive filenames include PID to prevent same-second collision between concurrent processes.
+ * Delete a session's metadata file permanently.
  */
-export function deleteMetadata(dataDir: string, sessionId: SessionId, archive = true): void {
+export function deleteMetadata(dataDir: string, sessionId: SessionId): void {
   const path = metadataPath(dataDir, sessionId);
   if (!existsSync(path)) return;
-
-  if (archive) {
-    const archiveDir = join(dataDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-    const timestamp = compactTimestamp(new Date());
-    const archivePath = join(archiveDir, `${sessionId}_${timestamp}-p${process.pid}${JSON_EXTENSION}`);
-    // Use rename for atomic archival — avoids TOCTOU race between concurrent deletes
-    try {
-      renameSync(path, archivePath);
-      return; // rename succeeded, file is now archived
-    } catch {
-      // rename failed (cross-device, or file already gone) — fall through to unlink
-      if (!existsSync(path)) return; // already deleted by another process
-    }
-  }
 
   try {
     unlinkSync(path);
   } catch {
     // File may already be deleted by a concurrent process — not an error
   }
-
-  // NOTE: .ghcache/<sessionId>/ is intentionally NOT deleted here.
-  // Cache files are small and useful for post-mortem analysis of wrapper
-  // cache hit/miss behavior. listMetadata() already ignores hidden dirs.
-}
-
-/**
- * Read the latest archived metadata for a session.
- * Archive files are named `<sessionId>_<compact-timestamp>.json` inside `<sessionsDir>/archive/`.
- * Returns null if no archived metadata exists.
- */
-export function readArchivedMetadataRaw(
-  dataDir: string,
-  sessionId: SessionId,
-): Record<string, string> | null {
-  validateSessionId(sessionId);
-  const archiveDir = join(dataDir, "archive");
-  if (!existsSync(archiveDir)) return null;
-
-  const prefix = `${sessionId}_`;
-  let latest: string | null = null;
-
-  for (const file of readdirSync(archiveDir)) {
-    if (!file.startsWith(prefix)) continue;
-    // Verify the separator is followed by a digit (start of timestamp)
-    const charAfterPrefix = file[prefix.length];
-    if (!charAfterPrefix || charAfterPrefix < "0" || charAfterPrefix > "9") continue;
-    // Pick lexicographically last (timestamps sort correctly)
-    if (!latest || file > latest) {
-      latest = file;
-    }
-  }
-
-  if (!latest) return null;
-  try {
-    const content = readFileSync(join(archiveDir, latest), "utf-8").trim();
-    if (!content) return null;
-    const raw = parseMetadataContent(content);
-    if (!raw) return null;
-    return flattenToStringRecord(raw);
-  } catch {
-    return null;
-  }
-}
-
-export function updateArchivedMetadata(
-  dataDir: string,
-  sessionId: SessionId,
-  updates: Partial<Record<string, string>>,
-): boolean {
-  validateSessionId(sessionId);
-  const archiveDir = join(dataDir, "archive");
-  if (!existsSync(archiveDir)) return false;
-
-  const prefix = `${sessionId}_`;
-  let latest: string | null = null;
-
-  for (const file of readdirSync(archiveDir)) {
-    if (!file.startsWith(prefix)) continue;
-    const charAfterPrefix = file[prefix.length];
-    if (!charAfterPrefix || charAfterPrefix < "0" || charAfterPrefix > "9") continue;
-    if (!latest || file > latest) latest = file;
-  }
-
-  if (!latest) return false;
-
-  const archivePath = join(archiveDir, latest);
-  let existing: Record<string, string>;
-  try {
-    const content = readFileSync(archivePath, "utf-8").trim();
-    if (!content) return false;
-    const raw = parseMetadataContent(content);
-    if (!raw) return false;
-    existing = flattenToStringRecord(raw);
-  } catch {
-    return false;
-  }
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (value === undefined) continue;
-    if (value === "") {
-      const { [key]: _, ...rest } = existing;
-      existing = rest;
-    } else {
-      existing[key] = value;
-    }
-  }
-
-  atomicWriteFileSync(archivePath, serializeMetadata(unflattenFromStringRecord(existing)));
-  return true;
 }
 
 /**

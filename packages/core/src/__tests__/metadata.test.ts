@@ -7,7 +7,6 @@ import {
   readMetadata,
   readMetadataRaw,
   readCanonicalLifecycle,
-  readArchivedMetadataRaw,
   mutateMetadata,
   writeMetadata,
   updateMetadata,
@@ -321,131 +320,16 @@ describe("readCanonicalLifecycle", () => {
 });
 
 describe("deleteMetadata", () => {
-  it("deletes metadata file and archives it", () => {
-    writeMetadata(dataDir, "del-1", {
-      worktree: "/tmp/w",
-      branch: "main",
-      status: "working",
-    });
-
-    deleteMetadata(dataDir, "del-1", true);
-
-    expect(existsSync(join(dataDir, "del-1.json"))).toBe(false);
-    const archiveDir = join(dataDir, "archive");
-    expect(existsSync(archiveDir)).toBe(true);
-    const files = readdirSync(archiveDir);
-    expect(files.length).toBe(1);
-    expect(files[0]).toMatch(/^del-1_.*\.json$/);
-  });
-
-  it("deletes without archiving when archive=false", () => {
-    writeMetadata(dataDir, "del-2", {
-      worktree: "/tmp/w",
-      branch: "main",
-      status: "working",
-    });
-
-    deleteMetadata(dataDir, "del-2", false);
-
-    expect(existsSync(join(dataDir, "del-2.json"))).toBe(false);
+  it("deletes metadata file permanently", () => {
+    writeMetadata(dataDir, "del-1", { status: "working" });
+    deleteMetadata(dataDir, "del-1");
+    expect(readMetadataRaw(dataDir, "del-1")).toBeNull();
+    // No archive directory created
     expect(existsSync(join(dataDir, "archive"))).toBe(false);
   });
 
   it("is a no-op for nonexistent session", () => {
     expect(() => deleteMetadata(dataDir, "nope")).not.toThrow();
-  });
-});
-
-describe("readArchivedMetadataRaw", () => {
-  it("reads the latest archived metadata for a session", () => {
-    const archiveDir = join(dataDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-
-    writeFileSync(
-      join(archiveDir, "app-1_20250101T000000Z.json"),
-      JSON.stringify({ branch: "old-branch", status: "killed" }),
-    );
-    writeFileSync(
-      join(archiveDir, "app-1_20250615T120000Z.json"),
-      JSON.stringify({ branch: "new-branch", status: "killed" }),
-    );
-
-    const raw = readArchivedMetadataRaw(dataDir, "app-1");
-    expect(raw).not.toBeNull();
-    expect(raw!["branch"]).toBe("new-branch");
-  });
-
-  it("does not match archives of session IDs sharing a prefix", () => {
-    const archiveDir = join(dataDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-
-    // "app" should NOT match "app_v2_..." (belongs to session "app_v2")
-    writeFileSync(
-      join(archiveDir, "app_v2_20250101T000000Z.json"),
-      JSON.stringify({ branch: "wrong", status: "killed" }),
-    );
-
-    expect(readArchivedMetadataRaw(dataDir, "app")).toBeNull();
-  });
-
-  it("correctly matches when similar-prefix sessions coexist in archive", () => {
-    const archiveDir = join(dataDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-
-    // Archive for "app" — timestamp starts with digit
-    writeFileSync(
-      join(archiveDir, "app_20250615T120000Z.json"),
-      JSON.stringify({ branch: "correct", status: "killed" }),
-    );
-    // Archive for "app_v2" — should not be matched by "app"
-    writeFileSync(
-      join(archiveDir, "app_v2_20250101T000000Z.json"),
-      JSON.stringify({ branch: "wrong", status: "killed" }),
-    );
-
-    const raw = readArchivedMetadataRaw(dataDir, "app");
-    expect(raw).not.toBeNull();
-    expect(raw!["branch"]).toBe("correct");
-
-    const rawV2 = readArchivedMetadataRaw(dataDir, "app_v2");
-    expect(rawV2).not.toBeNull();
-    expect(rawV2!["branch"]).toBe("wrong");
-  });
-
-  it("returns null when no archive exists for session", () => {
-    const archiveDir = join(dataDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-
-    writeFileSync(
-      join(archiveDir, "other-session_20250101T000000Z.json"),
-      JSON.stringify({ branch: "main", status: "killed" }),
-    );
-
-    expect(readArchivedMetadataRaw(dataDir, "app-1")).toBeNull();
-  });
-
-  it("returns null when archive directory does not exist", () => {
-    expect(readArchivedMetadataRaw(dataDir, "app-1")).toBeNull();
-  });
-
-  it("integrates with deleteMetadata archive", () => {
-    writeMetadata(dataDir, "app-1", {
-      worktree: "/tmp/w",
-      branch: "feat/test",
-      status: "killed",
-      issue: "TEST-1",
-    });
-
-    deleteMetadata(dataDir, "app-1", true);
-
-    // Active metadata should be gone
-    expect(readMetadataRaw(dataDir, "app-1")).toBeNull();
-
-    // Archived metadata should be readable
-    const archived = readArchivedMetadataRaw(dataDir, "app-1");
-    expect(archived).not.toBeNull();
-    expect(archived!["branch"]).toBe("feat/test");
-    expect(archived!["issue"]).toBe("TEST-1");
   });
 });
 
