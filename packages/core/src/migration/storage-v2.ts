@@ -28,6 +28,8 @@ import { homedir } from "node:os";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { parseKeyValueContent } from "../key-value.js";
 import { compactTimestamp, generateSessionPrefix } from "../paths.js";
+import { atomicWriteFileSync } from "../atomic-write.js";
+import { withFileLockSync } from "../file-lock.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -617,7 +619,7 @@ function migrateProject(
           if (!dryRun) {
             const ts = compactTimestamp(new Date());
             const archivePath = join(archiveDir, `${sessionId}_${ts}-${archiveCounter++}.json`);
-            writeFileSync(archivePath, JSON.stringify(existing.metadata, null, 2) + "\n");
+            atomicWriteFileSync(archivePath, JSON.stringify(existing.metadata, null, 2) + "\n");
           }
           result.archives++;
           allSessions.set(sessionId, { metadata, sourcePath: filePath });
@@ -626,7 +628,7 @@ function migrateProject(
           if (!dryRun) {
             const ts = compactTimestamp(new Date());
             const archivePath = join(archiveDir, `${sessionId}_${ts}-${archiveCounter++}.json`);
-            writeFileSync(archivePath, JSON.stringify(metadata, null, 2) + "\n");
+            atomicWriteFileSync(archivePath, JSON.stringify(metadata, null, 2) + "\n");
           }
           result.archives++;
         }
@@ -654,7 +656,7 @@ function migrateProject(
 
         if (!dryRun) {
           if (metadata) {
-            writeFileSync(destPath, JSON.stringify(metadata, null, 2) + "\n");
+            atomicWriteFileSync(destPath, JSON.stringify(metadata, null, 2) + "\n");
           } else {
             // Can't parse — copy raw
             copyFileSync(filePath, destPath);
@@ -698,7 +700,7 @@ function migrateProject(
 
     if (!dryRun) {
       const destPath = join(sessionsDir, `${sessionId}.json`);
-      writeFileSync(destPath, JSON.stringify(metadata, null, 2) + "\n");
+      atomicWriteFileSync(destPath, JSON.stringify(metadata, null, 2) + "\n");
     }
     result.sessions++;
   }
@@ -782,13 +784,15 @@ function stripStorageKeysFromConfig(configPath: string, dryRun: boolean, log: (m
   if (stripped > 0) {
     log(`  Stripped storageKey from ${stripped} project(s) in config.`);
     if (!dryRun) {
-      // Backup the config before modifying
-      const backupPath = `${configPath}.pre-migration`;
-      if (!existsSync(backupPath)) {
-        writeFileSync(backupPath, content);
-        log(`  Config backed up to ${basename(backupPath)}`);
-      }
-      writeFileSync(configPath, stringifyYaml(parsed, { indent: 2 }));
+      withFileLockSync(`${configPath}.lock`, () => {
+        // Backup the config before modifying
+        const backupPath = `${configPath}.pre-migration`;
+        if (!existsSync(backupPath)) {
+          atomicWriteFileSync(backupPath, content);
+          log(`  Config backed up to ${basename(backupPath)}`);
+        }
+        atomicWriteFileSync(configPath, stringifyYaml(parsed, { indent: 2 }));
+      });
     }
   }
 }
@@ -807,8 +811,10 @@ function tryMoveWorktree(
   projectsDir: string,
   dryRun: boolean,
   log: (message: string) => void,
+  skipProjects?: ReadonlySet<string>,
 ): boolean {
   for (const projectId of readdirSync(projectsDir)) {
+    if (skipProjects?.has(projectId)) continue;
     const sessionsDir = join(projectsDir, projectId, "sessions");
     if (!existsSync(sessionsDir)) continue;
 
@@ -826,7 +832,7 @@ function tryMoveWorktree(
             const meta = JSON.parse(raw) as Record<string, unknown>;
             if (typeof meta["worktree"] === "string") {
               meta["worktree"] = destPath;
-              writeFileSync(sessionFile, JSON.stringify(meta, null, 2) + "\n");
+              atomicWriteFileSync(sessionFile, JSON.stringify(meta, null, 2) + "\n");
             }
           } catch {
             log(`  Warning: could not patch worktree path in ${sessionId}.json`);
@@ -843,6 +849,7 @@ function moveStrayWorktrees(
   aoBaseDir: string,
   dryRun: boolean,
   log: (message: string) => void,
+  skipProjects?: ReadonlySet<string>,
 ): number {
   const strayDir = join(homedir(), ".worktrees");
   if (!existsSync(strayDir)) return 0;
@@ -871,7 +878,7 @@ function moveStrayWorktrees(
         continue;
       }
       // If any child matches a session in any project, treat parent as a projectId dir
-      if (tryMoveWorktree(child, childPath, projectsDir, dryRun, log)) {
+      if (tryMoveWorktree(child, childPath, projectsDir, dryRun, log, skipProjects)) {
         moved++;
         isProjectDir = true;
       }
@@ -893,7 +900,7 @@ function moveStrayWorktrees(
     }
 
     // Not a projectId directory — treat as a flat session worktree
-    if (tryMoveWorktree(name, srcPath, projectsDir, dryRun, log)) {
+    if (tryMoveWorktree(name, srcPath, projectsDir, dryRun, log, skipProjects)) {
       moved++;
     } else {
       log(`  Warning: stray worktree ${name} in ~/.worktrees/ has no matching session — left in place.`);
@@ -966,6 +973,24 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
     const group = projectGroups.get(entry.projectId) ?? [];
     group.push(entry);
     projectGroups.set(entry.projectId, group);
+  }
+
+  // Detect case-insensitive projectId collisions (macOS HFS+/APFS is case-insensitive)
+  const lowerCaseIndex = new Map<string, string[]>();
+  for (const projectId of projectGroups.keys()) {
+    const lower = projectId.toLowerCase();
+    const existing = lowerCaseIndex.get(lower) ?? [];
+    existing.push(projectId);
+    lowerCaseIndex.set(lower, existing);
+  }
+  for (const [lower, ids] of lowerCaseIndex) {
+    if (ids.length > 1) {
+      log(`\nWARNING: Case-insensitive collision detected for projectIds: ${ids.join(", ")} (resolve to "${lower}" on case-insensitive filesystems).`);
+      log(`  Skipping colliding projects — rename them manually before re-running migration.`);
+      for (const id of ids) {
+        projectGroups.delete(id);
+      }
+    }
   }
 
   // Create projects/ directory
@@ -1042,8 +1067,9 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
     }
   }
 
-  // Move stray worktrees from ~/.worktrees/
-  totals.strayWorktreesMoved = moveStrayWorktrees(aoBaseDir, dryRun, log);
+  // Move stray worktrees from ~/.worktrees/ (skip projects that failed migration)
+  const failedProjects = new Set(projectErrors.map((e) => e.projectId));
+  totals.strayWorktreesMoved = moveStrayWorktrees(aoBaseDir, dryRun, log, failedProjects);
 
   // Repair git worktree references broken by directory moves
   if (!dryRun && (totals.worktrees > 0 || totals.strayWorktreesMoved > 0)) {
@@ -1280,6 +1306,7 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
   }
 
   // Move worktrees back to restored hash dirs, then remove project directories
+  let rollbackWorktreesMoved = false;
   if (existsSync(projectsDir)) {
     for (const projectId of safeToDeleteProjects) {
       if (!restoredProjects.has(projectId)) continue;
@@ -1305,16 +1332,30 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
             if (!existsSync(dest)) {
               log(`  Moving worktree back: projects/${projectId}/worktrees/${wt} → ${basename(targetHashDir)}/worktrees/${wt}`);
               if (!dryRun) crossDeviceMove(src, dest, log);
+              rollbackWorktreesMoved = true;
             }
           }
         }
       }
+    }
+
+    // Repair git worktree references broken by moving worktrees back
+    if (!dryRun && rollbackWorktreesMoved) {
+      await repairGitWorktrees(aoBaseDir, effectiveConfigPath, log);
+    }
+
+    // Remove project directories that are safe to delete
+    for (const projectId of safeToDeleteProjects) {
+      if (!restoredProjects.has(projectId)) continue;
+      const projectDir = join(projectsDir, projectId);
+      if (!existsSync(projectDir)) continue;
 
       log(`  Removing migrated project directory: projects/${projectId}`);
       if (!dryRun) {
         rmSync(projectDir, { recursive: true, force: true });
       }
     }
+
     // Remove projects/ only if it's now empty
     if (!dryRun) {
       try {
