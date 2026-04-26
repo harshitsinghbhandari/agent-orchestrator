@@ -10,6 +10,28 @@ import { join, resolve } from "node:path";
 import { stringify as yamlStringify } from "yaml";
 import { generateSessionPrefix } from "./paths.js";
 
+// Main is the canonical config-schema contract; schema evolution must remain
+// forward-compatible and additive for older CLIs that stamp this URL.
+export const CONFIG_SCHEMA_URL =
+  "https://raw.githubusercontent.com/ComposioHQ/agent-orchestrator/main/schema/config.schema.json";
+
+export function withConfigSchema<T extends Record<string, unknown>>(
+  config: T,
+): T & { $schema: string } {
+  const { $schema: providedSchema, ...rest } = config as {
+    $schema?: unknown;
+  };
+  const schema =
+    typeof providedSchema === "string" && providedSchema.trim().length > 0
+      ? providedSchema
+      : CONFIG_SCHEMA_URL;
+
+  return {
+    $schema: schema,
+    ...rest,
+  } as T & { $schema: string };
+}
+
 // =============================================================================
 // URL PARSING
 // =============================================================================
@@ -258,7 +280,7 @@ export function generateConfigFromUrl(options: GenerateConfigOptions): Record<st
     projectConfig.postCreate = [installCmd];
   }
 
-  return {
+  return withConfigSchema({
     port,
     defaults: {
       runtime: "tmux",
@@ -269,14 +291,14 @@ export function generateConfigFromUrl(options: GenerateConfigOptions): Record<st
     projects: {
       [projectId]: projectConfig,
     },
-  };
+  });
 }
 
 /**
  * Serialize a config object to YAML string.
  */
 export function configToYaml(config: Record<string, unknown>): string {
-  return yamlStringify(config, { indent: 2 });
+  return yamlStringify(withConfigSchema(config), { indent: 2 });
 }
 
 /**
@@ -302,7 +324,10 @@ export function isRepoAlreadyCloned(dir: string, expectedCloneUrl: string): bool
     if (sshMatch) {
       normalized = `https://${sshMatch[1]}/${sshMatch[2]}`;
     }
-    return normalized.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase();
+    return normalized
+      .replace(/\.git$/, "")
+      .replace(/\/$/, "")
+      .toLowerCase();
   };
 
   const expectedNorm = normalize(expectedCloneUrl);

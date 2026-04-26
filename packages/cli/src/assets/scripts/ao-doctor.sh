@@ -29,6 +29,14 @@ EOF
 done
 
 REPO_ROOT="${AO_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT_LAYOUT="${AO_SCRIPT_LAYOUT:-}"
+if [ -z "$SCRIPT_LAYOUT" ]; then
+  if [ -f "$REPO_ROOT/package.json" ] && [ -f "$REPO_ROOT/dist/index.js" ] && [ ! -d "$REPO_ROOT/packages" ]; then
+    SCRIPT_LAYOUT="package-install"
+  else
+    SCRIPT_LAYOUT="source-checkout"
+  fi
+fi
 DEFAULT_CONFIG_HOME="${HOME:-$REPO_ROOT}"
 PASS_COUNT=0
 WARN_COUNT=0
@@ -188,7 +196,14 @@ check_git() {
 }
 
 check_pnpm() {
-  if ! check_command "pnpm" "required" "enable corepack or run npm install -g pnpm"; then
+  local pnpm_requirement="required"
+  local fix_hint="enable corepack or run npm install -g pnpm"
+  if [ "$SCRIPT_LAYOUT" = "package-install" ]; then
+    pnpm_requirement="optional"
+    fix_hint="install pnpm if you plan to use pnpm-managed repos with AO"
+  fi
+
+  if ! check_command "pnpm" "$pnpm_requirement" "$fix_hint"; then
     return
   fi
   local version
@@ -204,7 +219,7 @@ check_launcher() {
     return
   fi
 
-  if [ "$FIX_MODE" = true ] && command -v npm >/dev/null 2>&1 && [ -d "$REPO_ROOT/packages/ao" ]; then
+  if [ "$SCRIPT_LAYOUT" = "source-checkout" ] && [ "$FIX_MODE" = true ] && command -v npm >/dev/null 2>&1 && [ -d "$REPO_ROOT/packages/ao" ]; then
     if (cd "$REPO_ROOT/packages/ao" && npm link >/dev/null 2>&1) && command -v ao >/dev/null 2>&1; then
       fixed "ao launcher refreshed with npm link"
       return
@@ -217,6 +232,11 @@ check_launcher() {
       fi
     fi
     warn "ao launcher refresh failed. Fix: cd $REPO_ROOT/packages/ao && sudo npm link"
+    return
+  fi
+
+  if [ "$SCRIPT_LAYOUT" = "package-install" ]; then
+    warn "ao launcher is not in PATH. Fix: reinstall with npm install -g @aoagents/ao@latest or run via pnpx @aoagents/ao@latest"
     return
   fi
 
@@ -248,6 +268,33 @@ check_gh() {
 }
 
 check_install_layout() {
+  if [ "$SCRIPT_LAYOUT" = "package-install" ]; then
+    if [ -f "$REPO_ROOT/package.json" ]; then
+      pass "CLI package metadata is present at $REPO_ROOT/package.json"
+    else
+      fail "CLI package metadata is missing at $REPO_ROOT/package.json. Fix: reinstall @aoagents/ao"
+    fi
+
+    if [ -f "$REPO_ROOT/dist/index.js" ]; then
+      pass "packaged CLI entrypoint exists"
+    else
+      fail "packaged CLI entrypoint is missing. Fix: reinstall @aoagents/ao"
+    fi
+
+    if [ -f "$REPO_ROOT/dist/assets/scripts/ao-doctor.sh" ]; then
+      pass "bundled doctor script is available"
+    else
+      fail "bundled doctor script is missing. Fix: reinstall @aoagents/ao"
+    fi
+
+    if [ -f "$REPO_ROOT/dist/assets/scripts/ao-update.sh" ]; then
+      pass "bundled update script is available"
+    else
+      fail "bundled update script is missing. Fix: reinstall @aoagents/ao"
+    fi
+    return
+  fi
+
   if [ -d "$REPO_ROOT/node_modules" ]; then
     pass "dependencies are installed at $REPO_ROOT/node_modules"
   else
@@ -268,12 +315,26 @@ check_install_layout() {
 }
 
 check_runtime_sanity() {
-  if [ ! -f "$REPO_ROOT/packages/agent-orchestrator/bin/ao.js" ]; then
+  if [ "$SCRIPT_LAYOUT" = "package-install" ]; then
+    if [ ! -f "$REPO_ROOT/dist/index.js" ]; then
+      fail "packaged CLI entrypoint is missing. Fix: reinstall @aoagents/ao"
+      return
+    fi
+
+    if node "$REPO_ROOT/dist/index.js" --version >/dev/null 2>&1; then
+      pass "packaged CLI runtime sanity check passed (ao --version)"
+    else
+      fail "packaged CLI runtime sanity check failed. Fix: reinstall @aoagents/ao"
+    fi
+    return
+  fi
+
+  if [ ! -f "$REPO_ROOT/packages/ao/bin/ao.js" ]; then
     fail "launcher entrypoint is missing. Fix: reinstall from a clean checkout"
     return
   fi
 
-  if node "$REPO_ROOT/packages/agent-orchestrator/bin/ao.js" --version >/dev/null 2>&1; then
+  if node "$REPO_ROOT/packages/ao/bin/ao.js" --version >/dev/null 2>&1; then
     pass "launcher runtime sanity check passed (ao --version)"
   else
     fail "launcher runtime sanity check failed. Fix: run pnpm build and refresh the launcher"

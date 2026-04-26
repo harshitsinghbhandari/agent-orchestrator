@@ -96,6 +96,11 @@ export function getGlobalConfigPath(): string {
   return join(homedir(), ".agent-orchestrator", "config.yaml");
 }
 
+export function isCanonicalGlobalConfigPath(configPath: string | undefined): boolean {
+  if (!configPath) return false;
+  return resolve(configPath) === resolve(getGlobalConfigPath());
+}
+
 // =============================================================================
 // GLOBAL CONFIG SCHEMA
 // =============================================================================
@@ -120,7 +125,14 @@ const GLOBAL_PROJECT_ENTRY_FIELDS = new Set([
 ]);
 
 const LOCAL_CONFIG_FILENAMES = ["agent-orchestrator.yaml", "agent-orchestrator.yml"] as const;
-const LOCAL_IDENTITY_FIELDS = new Set(["repo", "defaultBranch", "projectId", "path"]);
+const LOCAL_IDENTITY_FIELDS = new Set([
+  "repo",
+  "defaultBranch",
+  "originUrl",
+  "projectId",
+  "path",
+  "storageKey",
+]);
 
 export const GlobalProjectEntrySchema = z.object({
   projectId: z.string().optional(),

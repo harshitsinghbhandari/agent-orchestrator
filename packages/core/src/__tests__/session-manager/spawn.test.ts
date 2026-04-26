@@ -1002,6 +1002,113 @@ describe("spawn", () => {
     vi.useRealTimers();
   });
 
+  it("writes worker system prompt to file and passes only explicit task prompt to agent", async () => {
+    const sm = createSessionManager({ config, registry: mockRegistry });
+
+    await sm.spawn({
+      projectId: "my-app",
+      issueId: "INT-1343",
+      prompt: "Focus on the API layer only.",
+    });
+
+    expect(mockAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "app-1",
+        systemPromptFile: expect.stringContaining("worker-prompt-app-1.md"),
+        prompt: expect.stringContaining("Focus on the API layer only."),
+      }),
+    );
+
+    const callArgs = vi.mocked(mockAgent.getLaunchCommand).mock.calls[0][0];
+    expect(callArgs.prompt).toContain("Focus on the API layer only.");
+    expect(callArgs.prompt).not.toContain("## Task");
+    expect(callArgs.prompt).not.toContain("## Project Context");
+    expect(callArgs.prompt).not.toContain("Session Lifecycle");
+
+    const promptFile = callArgs.systemPromptFile!;
+    expect(existsSync(promptFile)).toBe(true);
+    const systemPrompt = readFileSync(promptFile, "utf-8");
+    expect(systemPrompt).toContain("Session Lifecycle");
+    expect(systemPrompt).toContain("## Project Context");
+    expect(systemPrompt).toContain("## Task");
+    expect(systemPrompt).toContain("Work on issue: INT-1343");
+    expect(systemPrompt).not.toContain("## Additional Instructions");
+  });
+
+  it("injects OPENCODE_CONFIG for OpenCode workers", async () => {
+    const workspacePath = join(tmpDir, "opencode-worker-ws");
+    vi.mocked(mockWorkspace.create).mockResolvedValueOnce({
+      path: workspacePath,
+      branch: "feat/INT-1343",
+      sessionId: "app-1",
+      projectId: "my-app",
+    });
+
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+    const configWithOpenCode: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          opencodeIssueSessionStrategy: "ignore",
+          worker: {
+            agent: "opencode",
+          },
+        },
+      },
+    };
+
+    const sm = createSessionManager({
+      config: configWithOpenCode,
+      registry: registryWithOpenCode,
+    });
+
+    await sm.spawn({
+      projectId: "my-app",
+      issueId: "INT-1343",
+      prompt: "Focus on the API layer only.",
+    });
+
+    expect(mockRuntime.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          OPENCODE_CONFIG: expect.stringContaining("opencode-config-app-1.json"),
+        }),
+      }),
+    );
+
+    const runtimeCreateCall = vi.mocked(mockRuntime.create).mock.calls[0][0];
+    const opencodeConfigPath = runtimeCreateCall.environment.OPENCODE_CONFIG;
+    expect(opencodeConfigPath).toBeTruthy();
+    expect(existsSync(opencodeConfigPath)).toBe(true);
+    const opencodeConfig = JSON.parse(readFileSync(opencodeConfigPath, "utf-8")) as {
+      instructions: string[];
+    };
+    expect(opencodeConfig.instructions).toHaveLength(1);
+    expect(opencodeConfig.instructions[0]).toContain("worker-prompt-app-1.md");
+
+    const systemPromptPath = opencodeConfig.instructions[0]!;
+    expect(readFileSync(systemPromptPath, "utf-8")).toContain("Work on issue: INT-1343");
+    expect(readFileSync(systemPromptPath, "utf-8")).not.toContain("## Additional Instructions");
+
+    const agentsMdPath = getWorkspaceAgentsMdPath(workspacePath);
+    expect(existsSync(agentsMdPath)).toBe(false);
+  });
+
   it("does not send prompt post-launch when agent.promptDelivery is not set", async () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
     await sm.spawn({ projectId: "my-app", prompt: "Fix the bug" });
@@ -1010,7 +1117,7 @@ describe("spawn", () => {
     expect(mockRuntime.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("sends AO guidance post-launch even when no explicit prompt is provided", async () => {
+  it("does not send a post-launch message when no task prompt is available", async () => {
     vi.useFakeTimers();
     const postLaunchAgent = {
       ...mockAgent,
@@ -1029,12 +1136,47 @@ describe("spawn", () => {
     const sm = createSessionManager({ config, registry: registryWithPostLaunch });
     const spawnPromise = sm.spawn({ projectId: "my-app" });
     await vi.advanceTimersByTimeAsync(5_000);
-    await spawnPromise;
+    const session = await spawnPromise;
+
+    expect(mockRuntime.sendMessage).not.toHaveBeenCalled();
+    expect(session.metadata.promptDelivered).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("sends a minimal post-launch task for issue-only spawns", async () => {
+    vi.useFakeTimers();
+    const postLaunchAgent = {
+      ...mockAgent,
+      promptDelivery: "post-launch" as const,
+    };
+    const registryWithPostLaunch: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return postLaunchAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const sm = createSessionManager({ config, registry: registryWithPostLaunch });
+    const spawnPromise = sm.spawn({ projectId: "my-app", issueId: "INT-1343" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    const session = await spawnPromise;
 
     expect(mockRuntime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ id: expect.any(String) }),
-      expect.stringContaining("ao session claim-pr"),
+      "Work on issue: INT-1343",
     );
+    expect(session.metadata.promptDelivered).toBe("true");
+
+    const callArgs = vi.mocked(postLaunchAgent.getLaunchCommand).mock.calls[0][0];
+    expect(callArgs.prompt).toBe("Work on issue: INT-1343");
+    expect(callArgs.systemPromptFile).toContain("worker-prompt-app-1.md");
+
+    const systemPrompt = readFileSync(callArgs.systemPromptFile!, "utf-8");
+    expect(systemPrompt).toContain("## Task");
+    expect(systemPrompt).toContain("Work on issue: INT-1343");
     vi.useRealTimers();
   });
 
@@ -2093,6 +2235,7 @@ describe("spawn", () => {
           "my-app": {
             ...config.projects["my-app"],
             agent: "opencode",
+            orchestratorSessionStrategy: "ignore",
           },
         },
       };
@@ -2109,9 +2252,10 @@ describe("spawn", () => {
 
       const agentsMdPath = getWorkspaceAgentsMdPath("/tmp/ws");
       expect(existsSync(agentsMdPath)).toBe(true);
-      expect(readFileSync(agentsMdPath, "utf-8")).toBe(
-        "<!-- AO_ORCHESTRATOR_PROMPT_START -->\n## Agent Orchestrator\n\nYou are the orchestrator.\n<!-- AO_ORCHESTRATOR_PROMPT_END -->\n",
-      );
+      const written = readFileSync(agentsMdPath, "utf-8");
+      expect(written).toContain("<!-- AO_ORCHESTRATOR_PROMPT_START -->");
+      expect(written).toContain("## Agent Orchestrator");
+      expect(written).toContain("You are the orchestrator.");
 
       expect(mockRuntime.create).toHaveBeenCalledWith(
         expect.objectContaining({

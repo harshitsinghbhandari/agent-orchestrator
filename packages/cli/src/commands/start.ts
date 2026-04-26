@@ -22,19 +22,20 @@ import {
   generateSessionPrefix,
   getOrchestratorSessionId,
   findConfigFile,
-  getGlobalConfigPath,
   isRepoUrl,
   parseRepoUrl,
   resolveCloneTarget,
   isRepoAlreadyCloned,
   generateConfigFromUrl,
   configToYaml,
+  isCanonicalGlobalConfigPath,
   isOrchestratorSession,
   isTerminalSession,
   ConfigNotFoundError,
   loadLocalProjectConfigDetailed,
   registerProjectInGlobalConfig,
   getAoBaseDir,
+  getGlobalConfigPath,
   inventoryHashDirs,
   type OrchestratorConfig,
   type LocalProjectConfig,
@@ -92,11 +93,6 @@ import { projectSessionUrl } from "../lib/routes.js";
 // =============================================================================
 // HELPERS
 // =============================================================================
-
-function isCanonicalGlobalConfigPath(configPath: string | undefined): boolean {
-  if (!configPath) return false;
-  return resolve(configPath) === resolve(getGlobalConfigPath());
-}
 
 function readProjectBehaviorConfig(projectPath: string): LocalProjectConfig {
   const localConfig = loadLocalProjectConfigDetailed(projectPath);
@@ -733,7 +729,7 @@ async function autoCreateConfig(workingDir: string): Promise<OrchestratorConfig>
     console.log(chalk.dim("  Use 'ao start' to start with the existing config.\n"));
     return loadConfig(outputPath);
   }
-  const yamlContent = yamlStringify(config, { indent: 2 });
+  const yamlContent = configToYaml(config);
   writeFileSync(outputPath, yamlContent);
 
   console.log(chalk.green(`✓ Config created: ${outputPath}\n`));
@@ -915,7 +911,7 @@ async function addProjectToConfig(
       ...(agentRules ? { agentRules } : {}),
     };
 
-    writeFileSync(config.configPath, yamlStringify(rawConfig, { indent: 2 }));
+    writeFileSync(config.configPath, configToYaml(rawConfig as Record<string, unknown>));
     console.log(chalk.green(`\n✓ Added "${projectId}" to ${config.configPath}\n`));
   }
 
@@ -1458,7 +1454,7 @@ export function registerStart(program: Command): void {
                 }
               });
               const cwdHasGit = existsSync(resolve(cwdResolved, ".git"));
-              const addCwdOption =
+              const _addCwdOption =
                 !cwdIsRegistered && cwdHasGit
                   ? [
                       {
@@ -1473,7 +1469,6 @@ export function registerStart(program: Command): void {
                 "AO is already running. What do you want to do?",
                 [
                   { value: "open", label: "Open dashboard", hint: "Keep the current instance" },
-                  ...addCwdOption,
                   {
                     value: "new",
                     label: "Start new orchestrator",
@@ -1648,7 +1643,10 @@ export function registerStart(program: Command): void {
               ...rawConfig.projects[projectId],
               sessionPrefix: newPrefix,
             };
-            writeFileSync(config.configPath, yamlStringify(rawConfig, { indent: 2 }));
+            const nextYaml = isCanonicalGlobalConfigPath(config.configPath)
+              ? yamlStringify(rawConfig, { indent: 2 })
+              : configToYaml(rawConfig as Record<string, unknown>);
+            writeFileSync(config.configPath, nextYaml);
             console.log(chalk.green(`\n✓ New orchestrator "${newId}" added to config\n`));
             config = loadConfig(config.configPath);
             projectId = newId;
@@ -1678,10 +1676,9 @@ export function registerStart(program: Command): void {
               const proj = rawConfig.projects[projectId];
               proj.orchestrator = { ...(proj.orchestrator ?? {}), agent: orchestratorAgent };
               proj.worker = { ...(proj.worker ?? {}), agent: workerAgent };
-              writeFileSync(config.configPath, yamlStringify(rawConfig, { indent: 2 }));
+              writeFileSync(config.configPath, configToYaml(rawConfig as Record<string, unknown>));
               console.log(chalk.dim(`  ✓ Saved to ${config.configPath}\n`));
             }
-
             config = loadConfig(config.configPath);
             project = config.projects[projectId];
           }

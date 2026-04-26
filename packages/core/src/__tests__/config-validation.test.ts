@@ -49,6 +49,31 @@ describe("Config Validation - Project Uniqueness", () => {
   });
 });
 
+describe("Config Validation - Numeric Fields", () => {
+  const baseConfig = {
+    projects: {
+      app: {
+        path: "/repos/app",
+      },
+    },
+  };
+
+  it("rejects fractional ports", () => {
+    expect(() => validateConfig({ ...baseConfig, port: 3000.5 })).toThrow();
+    expect(() => validateConfig({ ...baseConfig, terminalPort: 14800.5 })).toThrow();
+    expect(() => validateConfig({ ...baseConfig, directTerminalPort: 14801.5 })).toThrow();
+  });
+
+  it("rejects fractional lifecycle grace periods", () => {
+    expect(() =>
+      validateConfig({
+        ...baseConfig,
+        lifecycle: { mergeCleanupIdleGraceMs: 300_000.5 },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("Config Validation - Session Prefix Uniqueness", () => {
   it("rejects duplicate explicit prefixes", () => {
     const config = {

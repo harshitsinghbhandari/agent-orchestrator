@@ -151,7 +151,11 @@ export {
   parseWebhookBranchRef,
 } from "./scm-webhook-utils.js";
 export { asValidOpenCodeSessionId } from "./opencode-session-id.js";
-export { getWorkspaceAgentsMdPath, writeWorkspaceOpenCodeAgentsMd } from "./opencode-agents-md.js";
+export {
+  getWorkspaceAgentsMdPath,
+  writeWorkspaceOpenCodeAgentsMd,
+} from "./opencode-agents-md.js";
+export { writeOpenCodeConfig } from "./opencode-config.js";
 export {
   getOrchestratorSessionId,
   normalizeOrchestratorSessionStrategy,
@@ -255,11 +259,12 @@ export {
   validateAndStoreOrigin,
 } from "./paths.js";
 
-export { normalizeOriginUrl, relativeSubdir } from "./storage-key.js";
+export { normalizeOriginUrl, relativeSubdir, deriveStorageKey } from "./storage-key.js";
 
 // Global config — Option C hybrid architecture (global registry + local behavior)
 export {
   getGlobalConfigPath,
+  isCanonicalGlobalConfigPath,
   loadGlobalConfig,
   saveGlobalConfig,
   loadLocalProjectConfig,
@@ -287,6 +292,7 @@ export { loadEffectiveProjectConfig, iterateAllProjects } from "./project-resolv
 
 // Config generator — auto-generate config from repo URL
 export {
+  CONFIG_SCHEMA_URL,
   isRepoUrl,
   parseRepoUrl,
   detectScmPlatform,
@@ -294,6 +300,7 @@ export {
   detectProjectInfo,
   generateConfigFromUrl,
   configToYaml,
+  withConfigSchema,
   isRepoAlreadyCloned,
   resolveCloneTarget,
   sanitizeProjectId,
