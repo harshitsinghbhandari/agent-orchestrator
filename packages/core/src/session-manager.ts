@@ -884,7 +884,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     return {
       sessionId,
-      tmuxName: config.configPath ? `${project.sessionPrefix}-${sessionId}` : undefined,
+      tmuxName: config.configPath ? sessionId : undefined,
     };
   }
 
