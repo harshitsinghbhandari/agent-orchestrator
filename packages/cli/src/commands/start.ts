@@ -29,7 +29,6 @@ import {
   generateConfigFromUrl,
   configToYaml,
   isCanonicalGlobalConfigPath,
-  isOrchestratorSession,
   isTerminalSession,
   ConfigNotFoundError,
   loadLocalProjectConfigDetailed,
@@ -65,6 +64,7 @@ import {
   getRunning,
   waitForExit,
   acquireStartupLock,
+  writeLastStop,
 } from "../lib/running-state.js";
 import { preventIdleSleep } from "../lib/prevent-sleep.js";
 import { isHumanCaller } from "../lib/caller-context.js";
@@ -1773,51 +1773,56 @@ export function registerStop(program: Command): void {
 
         console.log(chalk.bold(`\nStopping orchestrator for ${chalk.cyan(project.name)}\n`));
 
-        // Resolve the actual orchestrator session id by listing the project's sessions
-        // and finding the most-recently-active orchestrator. This avoids relying on the
-        // legacy `${prefix}-orchestrator` (no-N) phantom id, which never matches a real
-        // numbered session and causes ao stop to silently no-op.
         const sm = await getSessionManager(config);
-        const allSessionPrefixes = Object.entries(config.projects).map(
-          ([, p]) => p.sessionPrefix ?? generateSessionPrefix(p.name ?? ""),
-        );
-        let orchestratorToKill: { id: string } | null = null;
-        let lookupFailed = false;
         try {
-          const projectSessions = await sm.list(_projectId);
-          const orchestrators = projectSessions
-            .filter((s) =>
-              isOrchestratorSession(s, project.sessionPrefix ?? _projectId, allSessionPrefixes),
-            )
-            .filter((s) => !isTerminalSession(s));
-          const sorted = [...orchestrators].sort(
-            (a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0),
-          );
-          orchestratorToKill = sorted[0] ?? null;
+          const allSessions = await sm.list(_projectId);
+          const activeSessions = allSessions.filter((s) => !isTerminalSession(s));
+          const killedSessionIds: string[] = [];
+
+          if (activeSessions.length > 0) {
+            const spinner = ora(`Stopping ${activeSessions.length} active session(s)`).start();
+            const purgeOpenCode = opts?.purgeSession === true;
+            const warnings: string[] = [];
+            for (const session of activeSessions) {
+              try {
+                const result = await sm.kill(session.id, { purgeOpenCode });
+                if (result.cleaned || result.alreadyTerminated) {
+                  killedSessionIds.push(session.id);
+                }
+              } catch (err) {
+                warnings.push(
+                  `  Warning: failed to stop ${session.id}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            }
+            if (killedSessionIds.length === 0) {
+              spinner.fail("Failed to stop any sessions");
+            } else if (killedSessionIds.length < activeSessions.length) {
+              spinner.warn(`Stopped ${killedSessionIds.length}/${activeSessions.length} session(s): ${killedSessionIds.join(", ")}`);
+            } else {
+              spinner.succeed(`Stopped ${killedSessionIds.length} session(s): ${killedSessionIds.join(", ")}`);
+            }
+            for (const w of warnings) {
+              console.log(chalk.yellow(w));
+            }
+          } else {
+            console.log(chalk.yellow(`No active sessions found for "${project.name}"`));
+          }
+
+          // Record stopped sessions for restore on next `ao start`
+          if (killedSessionIds.length > 0) {
+            await writeLastStop({
+              stoppedAt: new Date().toISOString(),
+              projectId: _projectId,
+              sessionIds: killedSessionIds,
+            });
+          }
         } catch (err) {
-          lookupFailed = true;
           console.log(
             chalk.yellow(
-              `  Could not list sessions to locate orchestrator: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
+              `  Could not list sessions: ${err instanceof Error ? err.message : String(err)}`,
             ),
           );
-        }
-
-        if (orchestratorToKill) {
-          const spinner = ora("Stopping orchestrator session").start();
-          const purgeOpenCode = opts?.purgeSession === true;
-          await sm.kill(orchestratorToKill.id, { purgeOpenCode });
-          spinner.succeed(`Orchestrator session stopped (${orchestratorToKill.id})`);
-          // Also log to console.log so the killed id is visible in non-TTY callers
-          // (CI, scripts) and in test capture, since spinner output is suppressed.
-          console.log(chalk.green(`  Stopped orchestrator session: ${orchestratorToKill.id}`));
-        } else if (!lookupFailed) {
-          // Suppress the "no orchestrator found" message when sm.list threw —
-          // the catch above already explained the real reason and adding a
-          // second message would falsely imply the lookup succeeded.
-          console.log(chalk.yellow(`No running orchestrator session found for "${project.name}"`));
         }
 
         // Lifecycle polling runs in-process inside the `ao start` process
