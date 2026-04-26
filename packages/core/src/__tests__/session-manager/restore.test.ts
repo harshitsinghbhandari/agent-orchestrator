@@ -716,6 +716,80 @@ describe("restore", () => {
     expect(written).toContain("<!-- AO_ORCHESTRATOR_PROMPT_START -->");
   });
 
+  it("injects OPENCODE_CONFIG for restored OpenCode workers", async () => {
+    const wsPath = join(tmpDir, "ws-app-worker-opencode-agentsmd");
+    mkdirSync(wsPath, { recursive: true });
+
+    const baseDir = getProjectDir("my-app");
+    mkdirSync(baseDir, { recursive: true });
+    const promptFile = join(baseDir, "worker-prompt-app-1.md");
+    const promptContent = "Work on issue: TEST-1\nFix the failing tests.";
+    writeFileSync(promptFile, promptContent, "utf-8");
+
+    const mockOpenCodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+      getRestoreCommand: vi.fn().mockResolvedValue("opencode --session 'ses_restore'"),
+    };
+
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockOpenCodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_restore",
+      runtimeHandle: makeHandle("rt-old"),
+    });
+
+    const configWithOpenCode: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          worker: {
+            agent: "opencode",
+          },
+        },
+      },
+    };
+
+    const sm = createSessionManager({
+      config: configWithOpenCode,
+      registry: registryWithOpenCode,
+    });
+    await sm.restore("app-1");
+
+    expect(mockRuntime.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          OPENCODE_CONFIG: expect.stringContaining("opencode-config-app-1.json"),
+        }),
+      }),
+    );
+    const runtimeCreateCall = vi.mocked(mockRuntime.create).mock.calls[0][0];
+    const opencodeConfigPath = runtimeCreateCall.environment.OPENCODE_CONFIG;
+    expect(opencodeConfigPath).toBeTruthy();
+    expect(existsSync(opencodeConfigPath)).toBe(true);
+    const opencodeConfig = JSON.parse(readFileSync(opencodeConfigPath, "utf-8")) as {
+      instructions: string[];
+    };
+    expect(opencodeConfig.instructions).toEqual([promptFile]);
+    expect(existsSync(getWorkspaceAgentsMdPath(wsPath))).toBe(false);
+  });
+
   it("preserves original createdAt/issue/PR metadata", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });

@@ -282,12 +282,17 @@ describe("SessionPage project polling", () => {
 
     const { default: SessionPage } = await import("./page");
 
-    render(<SessionPage />);
+    render(
+      <TestErrorBoundary>
+        <SessionPage />
+      </TestErrorBoundary>,
+    );
     await flushAsyncWork();
 
     expect(screen.getByText("Session not found")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Toggle sidebar" })).toBeInTheDocument();
     expect(screen.queryByTestId("session-detail")).not.toBeInTheDocument();
+    expect(screen.getByTestId("route-error")).toHaveTextContent("NEXT_NOT_FOUND");
   });
 
   it("renders an inline error state instead of throwing the route away", async () => {
