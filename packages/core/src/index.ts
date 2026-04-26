@@ -232,13 +232,10 @@ export {
   // V2 path functions (projects/{projectId}/ layout)
   getProjectDir,
   getProjectSessionsDir,
-  getProjectArchiveDir,
   getProjectWorktreesDir,
   getProjectFeedbackReportsDir,
   getOrchestratorPath,
   getSessionPath,
-  getArchiveFilePath,
-  compactTimestamp,
   parseTmuxNameV2,
   // Legacy path functions (deprecated — migration only)
   generateConfigHash,
