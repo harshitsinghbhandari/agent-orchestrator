@@ -114,14 +114,13 @@ update_metadata_key() {
       jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$metadata_file" > "$temp_file"
       mv "$temp_file" "$metadata_file"
     else
-      # jq unavailable — use sed-based JSON update (no key=value fallback to avoid corruption)
-      local escaped_json_value=$(printf '%s' "$value" | sed 's/[\\\\"/]/\\\\&/g')
-      if grep -q "\\"$key\\"" "$metadata_file" 2>/dev/null; then
-        sed "s|\\"$key\\"[[:space:]]*:[[:space:]]*\\"[^\\"]\\{0,\\}\\"|\\"$key\\": \\"$escaped_json_value\\"|" "$metadata_file" > "$temp_file"
-      else
-        # Insert new key before the closing brace
-        sed "s|}|, \\"$key\\": \\"$escaped_json_value\\" }|" "$metadata_file" > "$temp_file"
-      fi
+      # jq unavailable — use node (hard dep) for safe nested JSON update
+      node -e "
+        const fs = require('fs');
+        const d = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+        d[process.argv[2]] = process.argv[3];
+        fs.writeFileSync(process.argv[4], JSON.stringify(d, null, 2));
+      " "$metadata_file" "$key" "$value" "$temp_file"
       mv "$temp_file" "$metadata_file"
     fi
   else
