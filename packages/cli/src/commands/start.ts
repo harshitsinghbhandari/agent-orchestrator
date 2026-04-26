@@ -65,6 +65,8 @@ import {
   waitForExit,
   acquireStartupLock,
   writeLastStop,
+  readLastStop,
+  clearLastStop,
 } from "../lib/running-state.js";
 import { preventIdleSleep } from "../lib/prevent-sleep.js";
 import { isHumanCaller } from "../lib/caller-context.js";
@@ -1253,6 +1255,55 @@ async function runStartup(
         `Failed to setup orchestrator: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
+    }
+  }
+
+  // Check for sessions from last `ao stop` and offer to restore them
+  if (isHumanCaller()) {
+    try {
+      const lastStop = await readLastStop();
+      if (lastStop && lastStop.sessionIds.length > 0 && lastStop.projectId === projectId) {
+        const sessionList = lastStop.sessionIds.join(", ");
+        const stoppedAgo = `stopped at ${new Date(lastStop.stoppedAt).toLocaleString()}`;
+        console.log(
+          chalk.yellow(`\n  ${lastStop.sessionIds.length} session(s) were active before last ao stop (${stoppedAgo}):`),
+        );
+        console.log(chalk.dim(`  ${sessionList}\n`));
+
+        const shouldRestore = await promptConfirm("Restore these sessions?", true);
+        if (shouldRestore) {
+          const sm = await getSessionManager(config);
+          const restoreSpinner = ora(`Restoring ${lastStop.sessionIds.length} session(s)`).start();
+          let restoredCount = 0;
+          const warnings: string[] = [];
+          for (const sessionId of lastStop.sessionIds) {
+            // Skip the orchestrator — it was already restored by ensureOrchestrator above
+            if (selectedOrchestratorId && sessionId === selectedOrchestratorId) {
+              restoredCount++;
+              continue;
+            }
+            try {
+              await sm.restore(sessionId);
+              restoredCount++;
+            } catch (err) {
+              warnings.push(
+                `  Warning: could not restore ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+          if (restoredCount === lastStop.sessionIds.length) {
+            restoreSpinner.succeed(`Restored ${restoredCount}/${lastStop.sessionIds.length} session(s)`);
+          } else {
+            restoreSpinner.warn(`Restored ${restoredCount}/${lastStop.sessionIds.length} session(s)`);
+          }
+          for (const w of warnings) {
+            console.log(chalk.yellow(w));
+          }
+        }
+        await clearLastStop();
+      }
+    } catch {
+      // Non-fatal: don't block startup if last-stop handling fails
     }
   }
 
