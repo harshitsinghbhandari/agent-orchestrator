@@ -206,22 +206,33 @@ describe("convertKeyValueToJson", () => {
     });
   });
 
-  it("groups agentReport fields", () => {
+  // Agent-report and report-watcher fields stay flat in V2 because the
+  // live runtime readers (parseExistingAgentReport, lifecycle-manager,
+  // etc.) look them up directly on session.metadata and the metadata
+  // flatten layer (readMetadataRaw → flattenToStringRecord) does NOT
+  // unfold nested objects back into flat keys. Nesting them during
+  // migration silently dropped this state for migrated sessions.
+  it("keeps agentReport fields flat at top level for migrated sessions", () => {
     const kv = [
       "agentReportedState=addressing_reviews",
       "agentReportedAt=2026-04-21T12:35:05.200Z",
       "agentReportedNote=Fixed 2 test regressions",
+      "agentReportedPrUrl=https://github.com/o/r/pull/1",
+      "agentReportedPrNumber=1",
+      "agentReportedPrIsDraft=false",
     ].join("\n");
 
     const result = convertKeyValueToJson(kv);
-    expect(result["agentReport"]).toEqual({
-      state: "addressing_reviews",
-      at: "2026-04-21T12:35:05.200Z",
-      note: "Fixed 2 test regressions",
-    });
+    expect(result["agentReport"]).toBeUndefined();
+    expect(result["agentReportedState"]).toBe("addressing_reviews");
+    expect(result["agentReportedAt"]).toBe("2026-04-21T12:35:05.200Z");
+    expect(result["agentReportedNote"]).toBe("Fixed 2 test regressions");
+    expect(result["agentReportedPrUrl"]).toBe("https://github.com/o/r/pull/1");
+    expect(result["agentReportedPrNumber"]).toBe("1");
+    expect(result["agentReportedPrIsDraft"]).toBe("false");
   });
 
-  it("groups reportWatcher fields", () => {
+  it("keeps reportWatcher fields flat at top level for migrated sessions", () => {
     const kv = [
       "reportWatcherLastAuditedAt=2026-04-21T16:50:09.934Z",
       "reportWatcherActiveTrigger=stale_report",
@@ -230,12 +241,12 @@ describe("convertKeyValueToJson", () => {
     ].join("\n");
 
     const result = convertKeyValueToJson(kv);
-    expect(result["reportWatcher"]).toEqual({
-      lastAuditedAt: "2026-04-21T16:50:09.934Z",
-      activeTrigger: "stale_report",
-      triggerActivatedAt: "2026-04-21T13:12:39.670Z",
-      triggerCount: 133,
-    });
+    expect(result["reportWatcher"]).toBeUndefined();
+    expect(result["reportWatcherLastAuditedAt"]).toBe("2026-04-21T16:50:09.934Z");
+    expect(result["reportWatcherActiveTrigger"]).toBe("stale_report");
+    expect(result["reportWatcherTriggerActivatedAt"]).toBe("2026-04-21T13:12:39.670Z");
+    // triggerCount stays as a string — readers consume it via String() and Number() in lifecycle-manager.
+    expect(result["reportWatcherTriggerCount"]).toBe("133");
   });
 
   it("keeps detecting fields at top level (matching runtime behavior)", () => {
@@ -269,6 +280,37 @@ describe("convertKeyValueToJson", () => {
     const result = convertKeyValueToJson(kv);
     expect(result["runtimeHandle"]).toEqual(handle);
   });
+
+  // Regression test for the agent-report / report-watcher migration bug:
+  // the runtime readers (parseExistingAgentReport, lifecycle-manager) look
+  // up flat keys on session.metadata. readMetadataRaw → flattenToStringRecord
+  // stringifies nested objects as a single JSON blob and does NOT unfold
+  // them back to flat keys. So nesting these during migration silently
+  // dropped the state for migrated sessions.
+  it(
+    "round-trips agent-report and report-watcher flat keys through readMetadataRaw",
+    () => {
+      const kv = [
+        "agentReportedState=needs_input",
+        "agentReportedAt=2026-04-21T12:00:00.000Z",
+        "agentReportedNote=please clarify",
+        "reportWatcherTriggerCount=5",
+        "reportWatcherActiveTrigger=stale_report",
+      ].join("\n");
+
+      const migrated = convertKeyValueToJson(kv);
+      // After migration, the flat keys must be present at the top level
+      // of the V2 JSON record.
+      expect(migrated["agentReportedState"]).toBe("needs_input");
+      expect(migrated["agentReportedAt"]).toBe("2026-04-21T12:00:00.000Z");
+      expect(migrated["agentReportedNote"]).toBe("please clarify");
+      expect(migrated["reportWatcherTriggerCount"]).toBe("5");
+      expect(migrated["reportWatcherActiveTrigger"]).toBe("stale_report");
+      // No nested wrapper objects — those would be lost by flattenToStringRecord.
+      expect(migrated["agentReport"]).toBeUndefined();
+      expect(migrated["reportWatcher"]).toBeUndefined();
+    },
+  );
 });
 
 describe("migrateStorage", () => {
@@ -598,7 +640,9 @@ describe("migrateStorage", () => {
     });
     expect(session.prAutoDetect).toBe(true);
     expect(session.dashboard).toEqual({ port: 3000 });
-    expect(session.agentReport).toEqual({ state: "task_complete" });
+    // agentReport stays flat — see "round-trips agent-report ..." regression test above.
+    expect(session.agentReportedState).toBe("task_complete");
+    expect(session).not.toHaveProperty("agentReport");
     expect(session).not.toHaveProperty("status");
     expect(session).not.toHaveProperty("statePayload");
     expect(session).not.toHaveProperty("stateVersion");
