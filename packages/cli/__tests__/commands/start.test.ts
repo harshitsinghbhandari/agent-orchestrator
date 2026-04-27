@@ -73,6 +73,7 @@ const {
   mockRegister,
   mockUnregister,
   mockRemoveProjectFromRunning,
+  mockAddProjectToRunning,
   mockWaitForExit,
 } = vi.hoisted(() => ({
   mockAcquireStartupLock: vi.fn().mockResolvedValue(() => {}),
@@ -80,6 +81,7 @@ const {
   mockGetRunning: vi.fn().mockResolvedValue(null),
   mockRegister: vi.fn(),
   mockRemoveProjectFromRunning: vi.fn(),
+  mockAddProjectToRunning: vi.fn(),
   mockUnregister: vi.fn(),
   mockWaitForExit: vi.fn().mockReturnValue(true),
 }));
@@ -167,6 +169,7 @@ vi.mock("../../src/lib/running-state.js", () => ({
   register: (...args: unknown[]) => mockRegister(...args),
   unregister: (...args: unknown[]) => mockUnregister(...args),
   removeProjectFromRunning: (...args: unknown[]) => mockRemoveProjectFromRunning(...args),
+  addProjectToRunning: (...args: unknown[]) => mockAddProjectToRunning(...args),
   isAlreadyRunning: (...args: unknown[]) => mockIsAlreadyRunning(...args),
   getRunning: (...args: unknown[]) => mockGetRunning(...args),
   waitForExit: (...args: unknown[]) => mockWaitForExit(...args),
@@ -349,6 +352,7 @@ beforeEach(async () => {
   mockRegister.mockResolvedValue(undefined);
   mockUnregister.mockReset();
   mockRemoveProjectFromRunning.mockReset();
+  mockAddProjectToRunning.mockReset();
   mockWaitForExit.mockReset();
   mockWaitForExit.mockResolvedValue(true);
   mockIsHumanCaller.mockReset();
@@ -1878,6 +1882,67 @@ describe("stop command", () => {
         sessionIds: expect.arrayContaining(["p2-1"]),
       }),
     );
+  });
+
+  // Regression: `ao stop <project>` then `ao start <project>` used to fall
+  // through the projectNeedsRestart path into runStartup(), which spawned a
+  // SECOND dashboard on a new port and clobbered running.json — leaving the
+  // original parent process orphaned. Now it must attach to the running
+  // daemon: ensureOrchestrator runs against the existing session manager,
+  // running.json gets the project re-added, and runStartup is never called.
+  it("ao start <project> while daemon alive but project removed: attaches to existing daemon (no second dashboard)", async () => {
+    // Force the global-config fallback to use mockConfigRef.current rather
+    // than reading the test machine's real ~/.agent-orchestrator/config.yaml.
+    const origGlobalEnv = process.env["AO_GLOBAL_CONFIG"];
+    process.env["AO_GLOBAL_CONFIG"] = join(tmpDir, "no-such-global.yaml");
+
+    try {
+      mockConfigRef.current = makeConfig({
+        "project-1": makeProject({ name: "Project 1", sessionPrefix: "p1" }),
+        "project-2": makeProject({ name: "Project 2", sessionPrefix: "p2" }),
+      });
+
+      // Daemon alive; project-2 was just removed by `ao stop project-2`.
+      mockIsAlreadyRunning.mockResolvedValue({
+        pid: 99999,
+        configPath: "/fake/config.yaml",
+        port: 3000,
+        startedAt: new Date().toISOString(),
+        projects: ["project-1"],
+      });
+
+      await expect(
+        program.parseAsync([
+          "node",
+          "test",
+          "start",
+          "project-2",
+          "--no-dashboard",
+          "--no-orchestrator",
+        ]),
+      ).rejects.toThrow("process.exit(1)");
+
+      // Attached to existing daemon, did not register a new one.
+      expect(mockRegister).not.toHaveBeenCalled();
+      // ensureOrchestrator was invoked for the requested project.
+      expect(mockSessionManager.ensureOrchestrator).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: "project-2" }),
+      );
+      // running.json gets the project re-added so subsequent ao stop sees it.
+      expect(mockAddProjectToRunning).toHaveBeenCalledWith("project-2");
+      // No menu — this is a deterministic attach, not an interactive choice.
+      expect(mockPromptSelect).not.toHaveBeenCalled();
+
+      const output = vi
+        .mocked(console.log)
+        .mock.calls.map((c) => c.join(" "))
+        .join("\n");
+      expect(output).toContain("Attaching to running AO instance");
+      expect(output).toContain("reattached to running daemon");
+    } finally {
+      if (origGlobalEnv === undefined) delete process.env["AO_GLOBAL_CONFIG"];
+      else process.env["AO_GLOBAL_CONFIG"] = origGlobalEnv;
+    }
   });
 });
 
