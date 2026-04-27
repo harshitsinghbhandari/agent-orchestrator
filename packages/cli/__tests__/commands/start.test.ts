@@ -165,6 +165,9 @@ vi.mock("../../src/lib/running-state.js", () => ({
   isAlreadyRunning: (...args: unknown[]) => mockIsAlreadyRunning(...args),
   getRunning: vi.fn().mockReturnValue(null),
   waitForExit: (...args: unknown[]) => mockWaitForExit(...args),
+  writeLastStop: vi.fn().mockResolvedValue(undefined),
+  readLastStop: vi.fn().mockResolvedValue(null),
+  clearLastStop: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../src/lib/caller-context.js", () => ({
@@ -1503,7 +1506,7 @@ describe("stop command", () => {
         runtimeHandle: { id: "tmux-3" },
       },
     ]);
-    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockSessionManager.kill.mockResolvedValue({ cleaned: true, alreadyTerminated: false });
     mockDashboardOnPort(3000);
 
     await program.parseAsync(["node", "test", "stop"]);
@@ -1542,7 +1545,7 @@ describe("stop command", () => {
         runtimeHandle: { id: "tmux-2" },
       },
     ]);
-    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockSessionManager.kill.mockResolvedValue({ cleaned: true, alreadyTerminated: false });
 
     await program.parseAsync(["node", "test", "stop"]);
 
@@ -1563,7 +1566,7 @@ describe("stop command", () => {
       .mocked(console.log)
       .mock.calls.map((c) => c.join(" "))
       .join("\n");
-    expect(output).toContain("No running orchestrator session found");
+    expect(output).toContain("No active sessions found");
   });
 
   it("passes purge flag when stopping orchestrator with --purge-session", async () => {
@@ -1579,7 +1582,7 @@ describe("stop command", () => {
         runtimeHandle: { id: "tmux-1" },
       },
     ]);
-    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockSessionManager.kill.mockResolvedValue({ cleaned: true, alreadyTerminated: false });
     mockDashboardOnPort(3000);
 
     await program.parseAsync(["node", "test", "stop", "--purge-session"]);
@@ -1592,7 +1595,7 @@ describe("stop command", () => {
   it("finds orphaned dashboard on a reassigned port via port scan", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
     mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
-    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockSessionManager.kill.mockResolvedValue({ cleaned: true, alreadyTerminated: false });
     // Port 3000 has nothing, but port 3001 has the orphaned dashboard
     mockDashboardOnPort(3001, "99999");
 
@@ -1608,7 +1611,7 @@ describe("stop command", () => {
   it("skips non-dashboard processes during port scan", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
     mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
-    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockSessionManager.kill.mockResolvedValue({ cleaned: true, alreadyTerminated: false });
     // Port 3000 has nothing, port 3001 has an unrelated process,
     // port 3002 has the actual dashboard
     mockExec.mockImplementation(async (cmd: string, args: string[] = []) => {
@@ -1641,7 +1644,7 @@ describe("stop command", () => {
   it("only kills dashboard PIDs when port has mixed processes", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
     mockSessionManager.get.mockResolvedValue({ id: "app-orchestrator", status: "running" });
-    mockSessionManager.kill.mockResolvedValue(undefined);
+    mockSessionManager.kill.mockResolvedValue({ cleaned: true, alreadyTerminated: false });
     // Port 3000 has two processes: a dashboard and an unrelated sidecar
     mockExec.mockImplementation(async (cmd: string, args: string[] = []) => {
       if (cmd === "kill") {
@@ -1719,7 +1722,7 @@ describe("start command — autoCreateConfig", () => {
 
     const content = readFileSync(configPath, "utf-8");
     const parsed = parseYaml(content) as {
-      "$schema"?: string;
+      $schema?: string;
       defaults?: { notifiers?: unknown[] };
     };
     expect(parsed["$schema"]).toBe(
@@ -1783,6 +1786,34 @@ describe("start command — already-running detection", () => {
       .mock.calls.map((c) => c.join(" "))
       .join("\n");
     expect(output).toContain("AO is already running");
+  });
+
+  it("offers to add cwd when AO is running and cwd is an unregistered git repo", async () => {
+    mockIsAlreadyRunning.mockResolvedValue({
+      pid: 9999,
+      configPath: "/fake/config.yaml",
+      port: 3000,
+      startedAt: "2026-01-01T00:00:00Z",
+      projects: ["my-app"],
+    });
+
+    createFakeRepo(tmpDir, "https://github.com/org/unregistered.git");
+    mockProcessCwd.mockReturnValue(tmpDir);
+    mockPromptSelect.mockResolvedValue("quit");
+    mockConfigRef.current = makeConfig({
+      "my-app": makeProject({ path: join(tmpDir, "main-repo") }),
+    });
+
+    await expect(
+      program.parseAsync(["node", "test", "start", "--no-dashboard", "--no-orchestrator"]),
+    ).rejects.toThrow("process.exit(1)");
+
+    const options = mockPromptSelect.mock.calls[0]?.[1] as
+      | Array<{ value: string; label: string }>
+      | undefined;
+    expect(options?.some((option) => option.value === "add" && option.label.includes("Add"))).toBe(
+      true,
+    );
   });
 
   it("exits when human caller selects 'open'", async () => {

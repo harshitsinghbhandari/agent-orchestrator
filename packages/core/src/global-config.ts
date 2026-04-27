@@ -55,7 +55,7 @@ export function generateExternalId(projectPath: string, originUrl?: string | nul
 function sanitizeBasename(name: string): string {
   return name
     .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/[^a-z0-9_-]/g, "-")
     .replace(/^[^a-z0-9]/, "x")
     .replace(/-+/g, "-")
     .slice(0, 30);

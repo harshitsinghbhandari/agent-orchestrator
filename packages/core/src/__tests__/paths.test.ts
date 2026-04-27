@@ -1,20 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import {
-  compactTimestamp,
   generateProjectId,
   generateSessionName,
   generateSessionPrefix,
   generateTmuxName,
   getArchiveDir,
-  getArchiveFilePath,
   getFeedbackReportsDir,
   getOrchestratorPath,
   getOriginFilePath,
   getProjectBaseDir,
   getProjectDir,
   getProjectSessionsDir,
-  getProjectArchiveDir,
   getProjectWorktreesDir,
   getSessionPath,
   getSessionsDir,
@@ -70,10 +67,6 @@ describe("V2 paths", () => {
     expect(getProjectSessionsDir("my-app")).toBe(join(aoBase, "projects", "my-app", "sessions"));
   });
 
-  it("getProjectArchiveDir returns projects/{projectId}/sessions/archive", () => {
-    expect(getProjectArchiveDir("my-app")).toBe(join(aoBase, "projects", "my-app", "sessions", "archive"));
-  });
-
   it("getProjectWorktreesDir returns projects/{projectId}/worktrees", () => {
     expect(getProjectWorktreesDir("my-app")).toBe(join(aoBase, "projects", "my-app", "worktrees"));
   });
@@ -84,12 +77,6 @@ describe("V2 paths", () => {
 
   it("getSessionPath returns projects/{projectId}/sessions/{sessionId}.json", () => {
     expect(getSessionPath("my-app", "ao-7")).toBe(join(aoBase, "projects", "my-app", "sessions", "ao-7.json"));
-  });
-
-  it("getArchiveFilePath returns archive path with compact timestamp", () => {
-    const date = new Date("2026-04-20T14:30:52.123Z");
-    const path = getArchiveFilePath("my-app", "ao-7", date);
-    expect(path).toBe(join(aoBase, "projects", "my-app", "sessions", "archive", "ao-7_20260420T143052Z.json"));
   });
 
   it("assertSafeProjectId rejects unsafe project IDs", () => {
@@ -123,16 +110,6 @@ describe("generateProjectId", () => {
   it("uses basename of path", () => {
     expect(generateProjectId("/home/user/repos/integrator")).toBe("integrator");
     expect(generateProjectId("~/repos/agent-orchestrator")).toBe("agent-orchestrator");
-  });
-});
-
-describe("compactTimestamp", () => {
-  it("formats ISO timestamp without dashes, colons, and milliseconds", () => {
-    expect(compactTimestamp(new Date("2026-04-20T14:30:52.123Z"))).toBe("20260420T143052Z");
-  });
-
-  it("handles midnight correctly", () => {
-    expect(compactTimestamp(new Date("2026-01-01T00:00:00.000Z"))).toBe("20260101T000000Z");
   });
 });
 

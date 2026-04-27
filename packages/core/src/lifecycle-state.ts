@@ -432,6 +432,7 @@ export function deriveLegacyStatus(
       // Derive specific terminal status from lifecycle reason
       switch (lifecycle.session.reason) {
         case "manually_killed":
+        case "runtime_lost":
           return "killed";
         case "auto_cleanup":
         case "pr_merged":

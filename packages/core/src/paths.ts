@@ -4,7 +4,6 @@
  * V2 layout (projects/{projectId}/):
  *   getProjectDir(projectId)          → ~/.agent-orchestrator/projects/{projectId}
  *   getProjectSessionsDir(projectId)  → .../projects/{projectId}/sessions
- *   getProjectArchiveDir(projectId)   → .../projects/{projectId}/sessions/archive
  *   getProjectWorktreesDir(projectId) → .../projects/{projectId}/worktrees
  *   getOrchestratorPath(projectId)    → .../projects/{projectId}/orchestrator.json
  *   getSessionPath(projectId, sid)    → .../projects/{projectId}/sessions/{sid}.json
@@ -121,11 +120,6 @@ export function getProjectSessionsDir(projectId: string): string {
   return join(getProjectDir(projectId), "sessions");
 }
 
-/** Get the archive directory for a project (inside sessions/). */
-export function getProjectArchiveDir(projectId: string): string {
-  return join(getProjectSessionsDir(projectId), "archive");
-}
-
 /** Get the worktrees directory for a project. */
 export function getProjectWorktreesDir(projectId: string): string {
   return join(getProjectDir(projectId), "worktrees");
@@ -144,20 +138,6 @@ export function getOrchestratorPath(projectId: string): string {
 /** Get the session metadata file path (.json). */
 export function getSessionPath(projectId: string, sessionId: string): string {
   return join(getProjectSessionsDir(projectId), `${sessionId}.json`);
-}
-
-/** Get an archive file path with compact timestamp. */
-export function getArchiveFilePath(projectId: string, sessionId: string, date?: Date): string {
-  const ts = compactTimestamp(date ?? new Date());
-  return join(getProjectArchiveDir(projectId), `${sessionId}_${ts}.json`);
-}
-
-/** Compact ISO timestamp for archive filenames: 20260420T143052Z */
-export function compactTimestamp(date: Date): string {
-  return date
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace(/\.(\d{3})Z$/, "Z");
 }
 
 // =============================================================================
@@ -207,7 +187,7 @@ export function getFeedbackReportsDir(storageKey: string | undefined): string {
 }
 
 /**
- * @deprecated Use getProjectArchiveDir(projectId) instead.
+ * @deprecated Legacy archive directory — archive system removed.
  * Get the archive directory for a project (legacy: nested inside sessions/).
  */
 export function getArchiveDir(storageKey: string | undefined): string {

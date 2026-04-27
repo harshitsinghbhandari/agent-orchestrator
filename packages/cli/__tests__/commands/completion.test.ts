@@ -15,6 +15,8 @@ vi.mock("@aoagents/ao-core", async (importOriginal) => {
   return {
     ...actual,
     loadConfig: () => mockConfigRef.current,
+    loadGlobalConfig: () => null,
+    getGlobalConfigPath: () => "/nonexistent/config.yaml",
   };
 });
 
