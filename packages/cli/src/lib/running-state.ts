@@ -32,6 +32,8 @@ export interface LastStopState {
   stoppedAt: string;
   projectId: string;
   sessionIds: string[];
+  /** Sessions from other projects that were also active at stop time. */
+  otherProjects?: Array<{ projectId: string; sessionIds: string[] }>;
 }
 
 interface LockMetadata {

@@ -1262,42 +1262,64 @@ async function runStartup(
   if (isHumanCaller()) {
     try {
       const lastStop = await readLastStop();
-      if (lastStop && lastStop.sessionIds.length > 0 && lastStop.projectId === projectId) {
-        const sessionList = lastStop.sessionIds.join(", ");
+      if (lastStop && lastStop.sessionIds.length > 0) {
         const stoppedAgo = `stopped at ${new Date(lastStop.stoppedAt).toLocaleString()}`;
-        console.log(
-          chalk.yellow(`\n  ${lastStop.sessionIds.length} session(s) were active before last ao stop (${stoppedAgo}):`),
-        );
-        console.log(chalk.dim(`  ${sessionList}\n`));
 
-        const shouldRestore = await promptConfirm("Restore these sessions?", true);
-        if (shouldRestore) {
-          const sm = await getSessionManager(config);
-          const restoreSpinner = ora(`Restoring ${lastStop.sessionIds.length} session(s)`).start();
-          let restoredCount = 0;
-          const warnings: string[] = [];
-          for (const sessionId of lastStop.sessionIds) {
-            // Skip the orchestrator — it was already restored by ensureOrchestrator above
-            if (selectedOrchestratorId && sessionId === selectedOrchestratorId) {
-              restoredCount++;
-              continue;
-            }
-            try {
-              await sm.restore(sessionId);
-              restoredCount++;
-            } catch (err) {
-              warnings.push(
-                `  Warning: could not restore ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
+        // Collect all restorable sessions: current project + other projects
+        const currentProjectSessions = lastStop.projectId === projectId ? lastStop.sessionIds : [];
+        const otherProjects = lastStop.otherProjects ?? [];
+
+        // Show current project sessions
+        if (currentProjectSessions.length > 0) {
+          console.log(
+            chalk.yellow(`\n  ${currentProjectSessions.length} session(s) were active before last ao stop (${stoppedAgo}):`),
+          );
+          console.log(chalk.dim(`  ${currentProjectSessions.join(", ")}\n`));
+        }
+
+        // Show other project sessions
+        if (otherProjects.length > 0) {
+          const otherTotal = otherProjects.reduce((sum, p) => sum + p.sessionIds.length, 0);
+          console.log(
+            chalk.yellow(`  ${otherTotal} session(s) from other projects were also stopped:`),
+          );
+          for (const p of otherProjects) {
+            console.log(chalk.dim(`  ${p.projectId}: ${p.sessionIds.join(", ")}`));
           }
-          if (restoredCount === lastStop.sessionIds.length) {
-            restoreSpinner.succeed(`Restored ${restoredCount}/${lastStop.sessionIds.length} session(s)`);
-          } else {
-            restoreSpinner.warn(`Restored ${restoredCount}/${lastStop.sessionIds.length} session(s)`);
-          }
-          for (const w of warnings) {
-            console.log(chalk.yellow(w));
+          console.log();
+        }
+
+        // Only restore current project sessions (other projects need their own ao start)
+        if (currentProjectSessions.length > 0) {
+          const shouldRestore = await promptConfirm("Restore these sessions?", true);
+          if (shouldRestore) {
+            const sm = await getSessionManager(config);
+            const restoreSpinner = ora(`Restoring ${currentProjectSessions.length} session(s)`).start();
+            let restoredCount = 0;
+            const warnings: string[] = [];
+            for (const sessionId of currentProjectSessions) {
+              // Skip the orchestrator — it was already restored by ensureOrchestrator above
+              if (selectedOrchestratorId && sessionId === selectedOrchestratorId) {
+                restoredCount++;
+                continue;
+              }
+              try {
+                await sm.restore(sessionId);
+                restoredCount++;
+              } catch (err) {
+                warnings.push(
+                  `  Warning: could not restore ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            }
+            if (restoredCount === currentProjectSessions.length) {
+              restoreSpinner.succeed(`Restored ${restoredCount}/${currentProjectSessions.length} session(s)`);
+            } else {
+              restoreSpinner.warn(`Restored ${restoredCount}/${currentProjectSessions.length} session(s)`);
+            }
+            for (const w of warnings) {
+              console.log(chalk.yellow(w));
+            }
           }
         }
         await clearLastStop();
@@ -1827,9 +1849,17 @@ export function registerStop(program: Command): void {
 
         const sm = await getSessionManager(config);
         try {
-          const allSessions = await sm.list(_projectId);
+          // List ALL sessions across all projects — ao stop kills the parent
+          // process which affects all projects, not just the targeted one.
+          const allSessions = await sm.list();
           const activeSessions = allSessions.filter((s) => !isTerminalSession(s));
           const killedSessionIds: string[] = [];
+
+          // Separate sessions by project for display and recording
+          const targetActive = activeSessions.filter((s) => s.projectId === _projectId);
+          const otherActive = activeSessions.filter((s) => s.projectId !== _projectId);
+          // Group other-project sessions by projectId (used for display + recording)
+          const otherByProject = new Map<string, string[]>();
 
           if (activeSessions.length > 0) {
             const spinner = ora(`Stopping ${activeSessions.length} active session(s)`).start();
@@ -1850,28 +1880,47 @@ export function registerStop(program: Command): void {
             if (killedSessionIds.length === 0) {
               spinner.fail("Failed to stop any sessions");
             } else if (killedSessionIds.length < activeSessions.length) {
-              spinner.warn(`Stopped ${killedSessionIds.length}/${activeSessions.length} session(s): ${killedSessionIds.join(", ")}`);
+              spinner.warn(`Stopped ${killedSessionIds.length}/${activeSessions.length} session(s)`);
             } else {
-              spinner.succeed(`Stopped ${killedSessionIds.length} session(s): ${killedSessionIds.join(", ")}`);
+              spinner.succeed(`Stopped ${killedSessionIds.length} session(s)`);
             }
             for (const w of warnings) {
               console.log(chalk.yellow(w));
             }
-            // Also log to console.log so killed ids are visible in non-TTY callers
-            // (CI, scripts) and in test capture, since spinner output is suppressed.
-            if (killedSessionIds.length > 0) {
-              console.log(chalk.green(`  Stopped sessions: ${killedSessionIds.join(", ")}`));
+            // Show stopped sessions grouped by project
+            const killedTarget = targetActive
+              .filter((s) => killedSessionIds.includes(s.id))
+              .map((s) => s.id);
+            if (killedTarget.length > 0) {
+              console.log(chalk.green(`  ${project.name}: ${killedTarget.join(", ")}`));
+            }
+            for (const s of otherActive) {
+              if (!killedSessionIds.includes(s.id)) continue;
+              const list = otherByProject.get(s.projectId ?? "unknown") ?? [];
+              list.push(s.id);
+              otherByProject.set(s.projectId ?? "unknown", list);
+            }
+            for (const [pid, ids] of otherByProject) {
+              console.log(chalk.green(`  ${pid}: ${ids.join(", ")}`));
             }
           } else {
-            console.log(chalk.yellow(`No active sessions found for "${project.name}"`));
+            console.log(chalk.yellow(`No active sessions found`));
           }
 
           // Record stopped sessions for restore on next `ao start`
           if (killedSessionIds.length > 0) {
+            const otherProjects: Array<{ projectId: string; sessionIds: string[] }> = [];
+            for (const [pid, ids] of otherByProject) {
+              otherProjects.push({ projectId: pid, sessionIds: ids });
+            }
+
             await writeLastStop({
               stoppedAt: new Date().toISOString(),
               projectId: _projectId,
-              sessionIds: killedSessionIds,
+              sessionIds: killedSessionIds.filter((id) =>
+                targetActive.some((s) => s.id === id),
+              ),
+              otherProjects: otherProjects.length > 0 ? otherProjects : undefined,
             });
           }
         } catch (err) {

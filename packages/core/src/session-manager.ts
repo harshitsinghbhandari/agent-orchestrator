@@ -1911,6 +1911,35 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         }
       }
 
+      // Persist lifecycle to disk when enrichment detected a dead runtime.
+      // enrichSessionWithRuntimeState updates the in-memory lifecycle but
+      // doesn't write to disk — without this, the stale "alive" state persists
+      // and the dashboard shows terminated sessions on the active sidebar.
+      if (
+        session.lifecycle &&
+        (session.lifecycle.runtime.state === "missing" ||
+          session.lifecycle.runtime.state === "exited") &&
+        session.lifecycle.session.state !== "terminated" &&
+        session.lifecycle.session.state !== "done"
+      ) {
+        try {
+          const persisted = buildUpdatedLifecycle(sessionName, raw, (next) => {
+            next.session.state = "terminated";
+            next.session.reason = "runtime_lost";
+            next.session.terminatedAt = new Date().toISOString();
+            next.session.lastTransitionAt = next.session.terminatedAt;
+            next.runtime.state = session.lifecycle!.runtime.state;
+            next.runtime.reason = session.lifecycle!.runtime.reason;
+            next.runtime.lastObservedAt = new Date().toISOString();
+          });
+          updateMetadata(sessionsDir, sessionName, lifecycleMetadataUpdates(raw, persisted));
+          session.lifecycle = persisted;
+          session.status = deriveLegacyStatus(persisted);
+        } catch {
+          // Persist failed — in-memory state is still correct for this request
+        }
+      }
+
       return session;
     });
 
