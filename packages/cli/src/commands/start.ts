@@ -62,6 +62,7 @@ import { preflight } from "../lib/preflight.js";
 import {
   register,
   unregister,
+  addProjectToRunning,
   removeProjectFromRunning,
   isAlreadyRunning,
   getRunning,
@@ -1769,10 +1770,94 @@ export function registerStart(program: Command): void {
             process.exit(0);
           }
 
-          const projectNeedsRestart =
-            running && isProjectId && !running.projects.includes(projectArg);
+          // Project-ID arg + daemon running, but the project isn't in
+          // `running.projects` (typically because `ao stop <project>` just
+          // removed it via removeProjectFromRunning). Attach the project to
+          // the existing daemon: spawn its orchestrator session via the live
+          // session manager, reload the dashboard, re-add to running.json.
+          //
+          // Critically: do NOT fall through to runStartup() — that would
+          // start a second dashboard on a new port and clobber running.json,
+          // leaving the original parent process orphaned.
+          if (running && isProjectId && !running.projects.includes(projectArg)) {
+            const globalConfigPath = getGlobalConfigPath();
+            const cfg = existsSync(globalConfigPath)
+              ? loadConfig(globalConfigPath)
+              : loadConfig();
+            const project = cfg.projects[projectArg];
+            if (!project) {
+              throw new Error(
+                `Project "${projectArg}" is not registered in the global config (${globalConfigPath}).\n` +
+                  `  Run \`ao project add\` or \`ao start <path|url>\` first.`,
+              );
+            }
 
-          if (running && !projectNeedsRestart) {
+            console.log(chalk.dim("\n  Attaching to running AO instance...\n"));
+            const sm = await getSessionManager(cfg);
+            const systemPrompt = generateOrchestratorPrompt({
+              config: cfg,
+              projectId: projectArg,
+              project,
+            });
+            const session = await sm.ensureOrchestrator({
+              projectId: projectArg,
+              systemPrompt,
+            });
+
+            // Re-add to running.json so subsequent `ao stop` (no args)
+            // sees this orchestrator and a follow-up `ao spawn` doesn't
+            // print the "running instance is not polling project X" warning.
+            await addProjectToRunning(projectArg);
+
+            console.log(
+              chalk.green(`✓ Orchestrator session ready: ${session.id}`),
+            );
+            console.log(
+              chalk.green(`✓ Project "${projectArg}" reattached to running daemon (PID ${running.pid}).`),
+            );
+
+            // Invalidate the dashboard's cached services so the project page
+            // works immediately on the existing dashboard.
+            try {
+              const reloadRes = await fetch(
+                `http://localhost:${running.port}/api/projects/reload`,
+                { method: "POST" },
+              );
+              if (reloadRes.ok) {
+                console.log(chalk.dim(`  Dashboard config reloaded.`));
+              } else {
+                console.log(
+                  chalk.yellow(
+                    `  ⚠ Dashboard reload returned ${reloadRes.status}. Refresh the page if the project doesn't show up.`,
+                  ),
+                );
+              }
+            } catch {
+              console.log(
+                chalk.yellow(
+                  `  ⚠ Could not reach dashboard to reload config. Refresh the page if the project doesn't show up.`,
+                ),
+              );
+            }
+
+            console.log(
+              chalk.yellow(
+                `\n⚠ Lifecycle polling for "${projectArg}" still runs inside the original ao start\n` +
+                  `  process. Activity/PR state for this project won't auto-update until the\n` +
+                  `  daemon is fully restarted (\`ao stop && ao start ${projectArg}\`).\n`,
+              ),
+            );
+            if (isHumanCaller()) {
+              console.log(chalk.dim(`  Opening dashboard: http://localhost:${running.port}\n`));
+              openUrl(`http://localhost:${running.port}`);
+            } else {
+              console.log(`Dashboard: http://localhost:${running.port}`);
+            }
+            unlockStartup();
+            process.exit(0);
+          }
+
+          if (running) {
             if (isHumanCaller()) {
               console.log(chalk.cyan(`\nℹ AO is already running.`));
               console.log(`  Dashboard: ${chalk.cyan(`http://localhost:${running.port}`)}`);

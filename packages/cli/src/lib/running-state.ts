@@ -219,6 +219,27 @@ export async function removeProjectFromRunning(projectId: string): Promise<void>
 }
 
 /**
+ * Add a project to the running state's project list (idempotent).
+ * Used when a project's orchestrator is spawned against an already-running
+ * daemon — for example after `ao start <project>` attaches to an existing
+ * parent process whose `projects` list didn't yet include the project.
+ * Without this, subsequent `ao stop` (no args) would leave the new
+ * orchestrator orphaned because it isn't in `running.projects`.
+ * No-op if the state is missing or the project is already listed.
+ */
+export async function addProjectToRunning(projectId: string): Promise<void> {
+  const release = await acquireLock(STATE_LOCK_FILE, 5000, "running.json lock");
+  try {
+    const state = readState();
+    if (!state) return;
+    if (state.projects.includes(projectId)) return;
+    writeState({ ...state, projects: [...state.projects, projectId] });
+  } finally {
+    release();
+  }
+}
+
+/**
  * Get the currently running AO instance, if any.
  * Auto-prunes stale entries (dead PIDs).
  */
