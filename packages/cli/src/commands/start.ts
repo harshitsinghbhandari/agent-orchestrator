@@ -1949,27 +1949,33 @@ export function registerStop(program: Command): void {
           );
         }
 
-        // Lifecycle polling runs in-process inside the `ao start` process
-        // (registered via `running.json`). Sending SIGTERM to that PID below
-        // triggers the shared shutdown handler in `lifecycle-service`, which
-        // stops every per-project loop. No explicit stop call needed here —
-        // this CLI invocation is a separate process with an empty active map.
-
-        // Stop dashboard — kill parent PID from running.json, then also stop
-        // any dashboard child process via lsof (parent SIGTERM may not propagate)
-        if (running) {
-          try {
-            process.kill(running.pid, "SIGTERM");
-          } catch {
-            // Already dead
+        // Only kill the parent `ao start` process and dashboard when stopping
+        // everything (no project arg). When targeting a specific project, the
+        // parent process and dashboard serve all projects and must stay alive.
+        if (!projectArg) {
+          // Lifecycle polling runs in-process inside the `ao start` process
+          // (registered via `running.json`). Sending SIGTERM to that PID below
+          // triggers the shared shutdown handler in `lifecycle-service`, which
+          // stops every per-project loop. No explicit stop call needed here —
+          // this CLI invocation is a separate process with an empty active map.
+          if (running) {
+            try {
+              process.kill(running.pid, "SIGTERM");
+            } catch {
+              // Already dead
+            }
+            await unregister();
           }
-          await unregister();
+          await stopDashboard(running?.port ?? port);
         }
-        await stopDashboard(running?.port ?? port);
 
-        console.log(chalk.bold.green("\n✓ Orchestrator stopped\n"));
-        console.log(chalk.dim(`  Uptime: since ${running?.startedAt ?? "unknown"}`));
-        console.log(chalk.dim(`  Projects: ${Object.keys(config.projects).join(", ")}\n`));
+        if (projectArg) {
+          console.log(chalk.bold.green(`\n✓ Stopped sessions for ${project.name}\n`));
+        } else {
+          console.log(chalk.bold.green("\n✓ Orchestrator stopped\n"));
+          console.log(chalk.dim(`  Uptime: since ${running?.startedAt ?? "unknown"}`));
+          console.log(chalk.dim(`  Projects: ${Object.keys(config.projects).join(", ")}\n`));
+        }
       } catch (err) {
         if (err instanceof Error) {
           console.error(chalk.red("\nError:"), err.message);
