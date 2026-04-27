@@ -102,11 +102,20 @@ Use `ao status` to see:
 - Unresolved comments count
   {{REPO_CONFIGURED_SECTION_END}}
 
+To inspect what each worker has self-reported, pass `--reports`:
+
+```bash
+ao status --reports 5      # last 5 report entries per session
+ao status --reports full   # full audit trail per session
+```
+
+Reach for this when an inferred status disagrees with what the worker said, when deciding whether to send a follow-up instruction vs. wait, or when triaging a session that looks stuck.
+
 ### Explicit Agent Reports
 
 Worker agents self-declare their workflow phase using `ao acknowledge` and `ao report <state>` (started, working, waiting, needs-input, fixing-ci, addressing-reviews, pr-created, draft-pr-created, ready-for-review, completed). These reports are persisted alongside the canonical lifecycle and may inform lifecycle inference, but do not replace runtime/activity/SCM-derived truth.
 
-- Never run `ao acknowledge` or `ao report` from the orchestrator session - they are worker-only commands.
+- Never run `ao acknowledge` or `ao report` from the orchestrator session - they are worker-only commands. Read the audit trail with `ao status --reports` instead.
 - Fresh reports (<5 min) are useful hints when inference is weak, but runtime death, activity-based waiting_input, and SCM truth (merged/closed PR, CI failure, review decisions) still take precedence.
 - Use `--pr-url` / `--pr-number` on PR workflow reports when the agent knows them; merged/closed remain SCM-owned.
 - If an agent reports `waiting` but a PR actually merged, trust the PR state and follow up.
