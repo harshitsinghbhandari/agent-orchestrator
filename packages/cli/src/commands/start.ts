@@ -33,7 +33,8 @@ import {
   ConfigNotFoundError,
   loadLocalProjectConfigDetailed,
   registerProjectInGlobalConfig,
-  repairWrappedLocalProjectConfig,
+  detectScmPlatform,
+  sanitizeProjectId,
   getAoBaseDir,
   getGlobalConfigPath,
   inventoryHashDirs,
@@ -530,6 +531,31 @@ async function promptInstallAgentRuntime(available: DetectedAgent[]): Promise<De
  *   3. Final fallback to `git clone --depth 1` with HTTPS URL — works for
  *      public repos without any auth setup.
  */
+/**
+ * Detect the actual default branch of a freshly cloned repo.
+ * Prefers `origin/HEAD` (the remote's default), falling back to the
+ * current local branch. Returns null for empty repos (no commits).
+ */
+async function detectClonedRepoDefaultBranch(repoPath: string): Promise<string | null> {
+  // origin/HEAD points at "refs/remotes/origin/<defaultBranch>" — the most
+  // accurate source for what the remote considers default.
+  const symref = await git(["symbolic-ref", "refs/remotes/origin/HEAD"], repoPath);
+  if (symref) {
+    const match = symref.trim().match(/^refs\/remotes\/origin\/(.+)$/);
+    if (match) return match[1];
+  }
+
+  // Some clones don't set origin/HEAD (e.g. older git or `--depth 1` edge
+  // cases). Fall back to the current local branch.
+  const head = await git(["symbolic-ref", "--short", "HEAD"], repoPath);
+  if (head) {
+    const trimmed = head.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+
+  return null;
+}
+
 async function cloneRepo(parsed: ParsedRepoUrl, targetDir: string, cwd: string): Promise<void> {
   // 1. Try gh repo clone (handles GitHub auth automatically)
   if (parsed.host === "github.com") {
@@ -1596,32 +1622,80 @@ export function registerStart(program: Command): void {
             if (existingId) {
               resolvedId = existingId;
             } else if (isRepoUrl(projectArg!)) {
-              // handleUrlStart clones into a new dir and writes a wrapped
-              // (legacy `projects:`) agent-orchestrator.yaml. Register the
-              // project against the global config so the dashboard sees it,
-              // then convert the wrapped local config to the flat format
-              // the new resolver expects — otherwise loadConfig moves the
-              // project into degradedProjects and the dashboard 404s.
-              const result = await handleUrlStart(projectArg!);
-              const lookup = await resolveProjectByRepo(result.config, result.parsed);
-              const localProject = result.config.projects[lookup.projectId];
+              // Clone + register inline. We DO NOT call handleUrlStart —
+              // that helper writes a legacy wrapped (`projects:`) local
+              // config that the new resolver rejects, requiring a repair
+              // pass after the fact. Instead, we write a flat local config
+              // here so the global registry + repo can be loaded cleanly
+              // on the very first read.
+              const parsed = parseRepoUrl(projectArg!);
+              console.log(
+                chalk.bold.cyan(`\n  Cloning ${parsed.ownerRepo} (${parsed.host})\n`),
+              );
+              await ensureGit("repository cloning");
+
+              const cwdDir = cwd();
+              const targetDir = resolveCloneTarget(parsed, cwdDir);
+              if (isRepoAlreadyCloned(targetDir, parsed.cloneUrl)) {
+                console.log(chalk.green(`  Reusing existing clone at ${targetDir}`));
+              } else {
+                try {
+                  await cloneRepo(parsed, targetDir, cwdDir);
+                  console.log(chalk.green(`  Cloned to ${targetDir}`));
+                } catch (err) {
+                  throw new Error(
+                    `Failed to clone ${parsed.ownerRepo}: ${err instanceof Error ? err.message : String(err)}`,
+                    { cause: err },
+                  );
+                }
+              }
+
+              // Detect the default branch from the cloned repo. If the
+              // repo is empty (no commits / no refs), this returns null —
+              // we cannot create a worktree, so fail early with a clear
+              // message rather than letting ensureOrchestrator throw a
+              // confusing "Unable to resolve base ref" error.
+              const detectedBranch = await detectClonedRepoDefaultBranch(targetDir);
+              if (!detectedBranch) {
+                throw new Error(
+                  `Repository "${parsed.ownerRepo}" appears to be empty (no commits or refs).\n` +
+                    `  AO needs at least one commit on the default branch to spawn an orchestrator.\n` +
+                    `  Push an initial commit, then re-run \`ao start ${projectArg}\`.`,
+                );
+              }
+
+              const platform = detectScmPlatform(parsed.host);
+              const requestedProjectId = sanitizeProjectId(parsed.repo);
+              // The global registry only persists identity (path, repo,
+              // defaultBranch, sessionPrefix). Plugin choices like scm /
+              // tracker live in the local flat config below.
               resolvedId = registerProjectInGlobalConfig(
-                lookup.projectId,
-                localProject.name ?? lookup.projectId,
-                localProject.path,
+                requestedProjectId,
+                parsed.repo,
+                targetDir,
                 {
-                  ...(localProject.repo ? { repo: localProject.repo } : {}),
-                  defaultBranch: localProject.defaultBranch ?? "main",
-                  ...(localProject.sessionPrefix
-                    ? { sessionPrefix: localProject.sessionPrefix }
-                    : {}),
+                  repo: parsed.ownerRepo,
+                  defaultBranch: detectedBranch,
                 },
                 globalConfigPath,
               );
-              try {
-                repairWrappedLocalProjectConfig(resolvedId, localProject.path);
-              } catch {
-                /* repair is best-effort — defaults will fill in if behavior is missing */
+
+              // Write a flat local config (behavior only, no `projects:`
+              // wrapper, no identity fields). Identity lives in the global
+              // registry; this file holds plugin choices for the project.
+              // Don't clobber a config that ships in the repo — if the
+              // upstream already commits agent-orchestrator.yaml, leave it
+              // for the user to reconcile.
+              const hasCommittedConfig =
+                existsSync(resolve(targetDir, "agent-orchestrator.yaml")) ||
+                existsSync(resolve(targetDir, "agent-orchestrator.yml"));
+              if (!hasCommittedConfig) {
+                writeLocalProjectConfig(targetDir, {
+                  scm: { plugin: platform !== "unknown" ? platform : "github" },
+                  tracker: {
+                    plugin: platform === "gitlab" ? "gitlab" : "github",
+                  },
+                });
               }
             } else {
               const resolvedPath = resolve(
