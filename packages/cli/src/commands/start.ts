@@ -1690,6 +1690,14 @@ export function registerStart(program: Command): void {
               }
             }
             config = loadedConfig;
+            // If the user targets a project not in the local config, fall back
+            // to the global config which has all registered projects.
+            if (projectArg && !config.projects[projectArg]) {
+              const globalPath = getGlobalConfigPath();
+              if (existsSync(globalPath)) {
+                config = loadConfig(globalPath);
+              }
+            }
             ({ projectId, project } = await resolveProject(config, projectArg));
           }
 
@@ -1841,7 +1849,15 @@ export function registerStop(program: Command): void {
           return;
         }
 
-        const config = loadConfig();
+        let config = loadConfig();
+        // If the user targets a project not in the local config, fall back
+        // to the global config which has all registered projects.
+        if (projectArg && !config.projects[projectArg]) {
+          const globalPath = getGlobalConfigPath();
+          if (existsSync(globalPath)) {
+            config = loadConfig(globalPath);
+          }
+        }
         const { projectId: _projectId, project } = await resolveProject(config, projectArg, "stop");
         const port = config.port ?? DEFAULT_PORT;
 
