@@ -1647,6 +1647,32 @@ export function registerStart(program: Command): void {
               chalk.green(`\n✓ Project "${resolvedId}" registered in the global config.`),
             );
             console.log(chalk.green(`✓ Orchestrator session ready: ${session.id}`));
+
+            // Invalidate the dashboard's cached services so the new project
+            // appears immediately in the routes (otherwise /projects/<id> 404s
+            // until the daemon is restarted).
+            try {
+              const reloadRes = await fetch(
+                `http://localhost:${running.port}/api/projects/reload`,
+                { method: "POST" },
+              );
+              if (reloadRes.ok) {
+                console.log(chalk.dim(`  Dashboard config reloaded.`));
+              } else {
+                console.log(
+                  chalk.yellow(
+                    `  ⚠ Dashboard reload returned ${reloadRes.status}. Refresh the page if the new project doesn't show up.`,
+                  ),
+                );
+              }
+            } catch {
+              console.log(
+                chalk.yellow(
+                  `  ⚠ Could not reach dashboard to reload config. Refresh the page if the new project doesn't show up.`,
+                ),
+              );
+            }
+
             console.log(
               chalk.yellow(
                 `\n⚠ Lifecycle polling for "${resolvedId}" runs inside the long-lived ao start\n` +
