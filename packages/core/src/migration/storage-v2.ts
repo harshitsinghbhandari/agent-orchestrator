@@ -86,6 +86,14 @@ export interface MigrationResult {
   worktrees: number;
   emptyDirsDeleted: number;
   strayWorktreesMoved: number;
+  /** Number of Claude Code session-storage directories relinked to the new worktree path. */
+  claudeSessionsRelinked: number;
+}
+
+/** A single (oldWorkspacePath, newWorkspacePath) pair captured during migration. */
+interface WorkspacePathMove {
+  oldWorkspacePath: string;
+  newWorkspacePath: string;
 }
 
 export interface HashDirEntry {
@@ -485,6 +493,8 @@ function sanitizeLegacyProjectId(projectId: string): string {
 interface ProjectMigrationResult {
   sessions: number;
   worktrees: number;
+  /** Workspace path pairs (V1 → V2) for sessions whose worktree moved. */
+  workspaceMoves: WorkspacePathMove[];
 }
 
 /** Get file mtime as epoch ms, returning 0 on error. */
@@ -533,6 +543,7 @@ function migrateProject(
   const result: ProjectMigrationResult = {
     sessions: 0,
     worktrees: 0,
+    workspaceMoves: [],
   };
 
   // Collect all sessions across hash dirs
@@ -661,9 +672,19 @@ function migrateProject(
   for (const [sessionId, { metadata }] of allSessions) {
     // Update worktree path to new V2 location — only if the worktree was actually moved
     if (typeof metadata["worktree"] === "string" && metadata["worktree"]) {
+      const oldWorktreePath = metadata["worktree"];
       const newWorktreePath = join(worktreesDir, sessionId);
       if (existsSync(newWorktreePath) || dryRun) {
         metadata["worktree"] = newWorktreePath;
+        // Capture (old, new) so we can relink agent session storage later.
+        // No-op when oldWorktreePath === newWorktreePath (rare, happens if
+        // metadata was already pointing at the V2 path on a re-run).
+        if (oldWorktreePath !== newWorktreePath) {
+          result.workspaceMoves.push({
+            oldWorkspacePath: oldWorktreePath,
+            newWorkspacePath: newWorktreePath,
+          });
+        }
       }
       // Otherwise keep the original path — the worktree may be at ~/.worktrees/{projectId}/{sessionId}/
       // and will be moved by moveStrayWorktrees() later
@@ -769,12 +790,95 @@ function stripStorageKeysFromConfig(configPath: string, dryRun: boolean, log: (m
 }
 
 // ---------------------------------------------------------------------------
+// Agent session storage relinking (Mode A fix for PR #1466)
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a workspace path the way Claude Code does for `~/.claude/projects/`.
+ * Mirrors `toClaudeProjectPath` in `agent-claude-code/src/index.ts`. Kept
+ * in sync by hand — duplicating the function here avoids pulling the agent
+ * plugin into core/migration just for this string transformation.
+ */
+function encodeClaudeProjectPath(workspacePath: string): string {
+  return workspacePath
+    .replace(/\\/g, "/")
+    .replace(/:/g, "")
+    .replace(/[/.]/g, "-");
+}
+
+/**
+ * After `migrate-storage` moves a session's worktree from V1 to V2, Claude
+ * Code's session JSONLs are still keyed by the encoded form of the OLD
+ * workspace path, so `getRestoreCommand` looks up the new encoded path,
+ * finds nothing, and the agent launches without chat history.
+ *
+ * Move each `~/.claude/projects/<encoded(old)>/` directory to
+ * `<encoded(new)>/`. Skip when the source doesn't exist (no Claude history)
+ * or the target already exists (manual reconciliation needed). Both paths
+ * resolving to the same encoded string is a no-op.
+ *
+ * Returns the number of directories actually relinked.
+ *
+ * Codex stores its sessions date-sharded with the cwd embedded inside each
+ * JSONL's `session_meta` line, so the same physical-rename trick doesn't
+ * apply. Codex relinking is a separate follow-up — see PR #1466 thread.
+ */
+function relinkClaudeSessionStorage(
+  moves: ReadonlyArray<WorkspacePathMove>,
+  dryRun: boolean,
+  log: (message: string) => void,
+): number {
+  if (moves.length === 0) return 0;
+
+  const claudeProjectsDir = join(homedir(), ".claude", "projects");
+  if (!existsSync(claudeProjectsDir)) return 0;
+
+  let relinked = 0;
+  for (const { oldWorkspacePath, newWorkspacePath } of moves) {
+    const oldEncoded = encodeClaudeProjectPath(oldWorkspacePath);
+    const newEncoded = encodeClaudeProjectPath(newWorkspacePath);
+    if (oldEncoded === newEncoded) continue;
+
+    const oldDir = join(claudeProjectsDir, oldEncoded);
+    const newDir = join(claudeProjectsDir, newEncoded);
+
+    if (!existsSync(oldDir)) continue; // no Claude history for this session — nothing to do
+    if (existsSync(newDir)) {
+      log(`  [skip] Claude session dir already exists at new path: ${newEncoded}`);
+      continue;
+    }
+
+    if (dryRun) {
+      log(`  [dry-run] Would relink Claude sessions: ${oldEncoded} → ${newEncoded}`);
+      relinked++;
+      continue;
+    }
+
+    try {
+      renameSync(oldDir, newDir);
+      log(`  Relinked Claude sessions: ${oldEncoded} → ${newEncoded}`);
+      relinked++;
+    } catch (err) {
+      log(
+        `  [warn] failed to relink Claude session dir ${oldEncoded}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  return relinked;
+}
+
+// ---------------------------------------------------------------------------
 // Stray worktree detection
 // ---------------------------------------------------------------------------
 
 /**
  * Try to move a single worktree directory to the matching project.
  * Returns true if matched and moved (or would be moved in dry-run).
+ * Appends a (old, new) pair to `workspaceMoves` when a real move happens
+ * so the caller can relink agent session storage afterwards.
  */
 function tryMoveWorktree(
   sessionId: string,
@@ -782,6 +886,7 @@ function tryMoveWorktree(
   projectsDir: string,
   dryRun: boolean,
   log: (message: string) => void,
+  workspaceMoves: WorkspacePathMove[],
   skipProjects?: ReadonlySet<string>,
 ): boolean {
   for (const projectId of readdirSync(projectsDir)) {
@@ -794,6 +899,12 @@ function tryMoveWorktree(
       const destPath = join(projectsDir, projectId, "worktrees", sessionId);
       if (!existsSync(destPath)) {
         log(`  Moving stray worktree ${sessionId} → projects/${projectId}/worktrees/`);
+        if (srcPath !== destPath) {
+          workspaceMoves.push({
+            oldWorkspacePath: srcPath,
+            newWorkspacePath: destPath,
+          });
+        }
         if (!dryRun) {
           mkdirSync(join(projectsDir, projectId, "worktrees"), { recursive: true });
           crossDeviceMove(srcPath, destPath, log);
@@ -820,6 +931,7 @@ function moveStrayWorktrees(
   aoBaseDir: string,
   dryRun: boolean,
   log: (message: string) => void,
+  workspaceMoves: WorkspacePathMove[],
   skipProjects?: ReadonlySet<string>,
 ): number {
   const strayDir = join(homedir(), ".worktrees");
@@ -849,7 +961,7 @@ function moveStrayWorktrees(
         continue;
       }
       // If any child matches a session in any project, treat parent as a projectId dir
-      if (tryMoveWorktree(child, childPath, projectsDir, dryRun, log, skipProjects)) {
+      if (tryMoveWorktree(child, childPath, projectsDir, dryRun, log, workspaceMoves, skipProjects)) {
         moved++;
         isProjectDir = true;
       }
@@ -871,7 +983,7 @@ function moveStrayWorktrees(
     }
 
     // Not a projectId directory — treat as a flat session worktree
-    if (tryMoveWorktree(name, srcPath, projectsDir, dryRun, log, skipProjects)) {
+    if (tryMoveWorktree(name, srcPath, projectsDir, dryRun, log, workspaceMoves, skipProjects)) {
       moved++;
     } else {
       log(`  Warning: stray worktree ${name} in ~/.worktrees/ has no matching session — left in place.`);
@@ -933,7 +1045,14 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
     if (!dryRun && existsSync(markerPath)) {
       try { unlinkSync(markerPath); } catch { /* best-effort */ }
     }
-    return { projects: 0, sessions: 0, worktrees: 0, emptyDirsDeleted: 0, strayWorktreesMoved: 0 };
+    return {
+      projects: 0,
+      sessions: 0,
+      worktrees: 0,
+      emptyDirsDeleted: 0,
+      strayWorktreesMoved: 0,
+      claudeSessionsRelinked: 0,
+    };
   }
 
   log(`Found ${hashDirs.length} legacy director${hashDirs.length === 1 ? "y" : "ies"}.`);
@@ -975,7 +1094,12 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
     worktrees: 0,
     emptyDirsDeleted: 0,
     strayWorktreesMoved: 0,
+    claudeSessionsRelinked: 0,
   };
+
+  // (oldWorkspacePath, newWorkspacePath) pairs collected across both
+  // migration phases. Drives the agent-session-storage relink at the end.
+  const allWorkspaceMoves: WorkspacePathMove[] = [];
 
   // Migrate each project
   const projectErrors: Array<{ projectId: string; error: string }> = [];
@@ -1001,6 +1125,7 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
       totals.projects++;
       totals.sessions += projectResult.sessions;
       totals.worktrees += projectResult.worktrees;
+      allWorkspaceMoves.push(...projectResult.workspaceMoves);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`  ERROR migrating project ${projectId}: ${msg}`);
@@ -1043,12 +1168,23 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
 
   // Move stray worktrees from ~/.worktrees/ (skip projects that failed migration)
   const failedProjects = new Set(projectErrors.map((e) => e.projectId));
-  totals.strayWorktreesMoved = moveStrayWorktrees(aoBaseDir, dryRun, log, failedProjects);
+  totals.strayWorktreesMoved = moveStrayWorktrees(
+    aoBaseDir,
+    dryRun,
+    log,
+    allWorkspaceMoves,
+    failedProjects,
+  );
 
   // Repair git worktree references broken by directory moves
   if (!dryRun && (totals.worktrees > 0 || totals.strayWorktreesMoved > 0)) {
     await repairGitWorktrees(aoBaseDir, effectiveConfigPath, log);
   }
+
+  // Relink Claude Code session storage so chat history survives the
+  // worktree-path change. Without this, ao start → restore launches a
+  // fresh `claude` instance and the prior conversation is lost.
+  totals.claudeSessionsRelinked = relinkClaudeSessionStorage(allWorkspaceMoves, dryRun, log);
 
   // Only strip storageKey and remove marker when ALL projects succeeded.
   // Partial failure leaves the marker and config intact so the migration
@@ -1067,6 +1203,9 @@ export async function migrateStorage(options: MigrationOptions = {}): Promise<Mi
     `${totals.worktrees} worktree${totals.worktrees !== 1 ? "s" : ""}.`);
   if (totals.strayWorktreesMoved > 0) {
     log(`Moved ${totals.strayWorktreesMoved} stray worktree${totals.strayWorktreesMoved !== 1 ? "s" : ""} from ~/.worktrees/.`);
+  }
+  if (totals.claudeSessionsRelinked > 0) {
+    log(`Relinked ${totals.claudeSessionsRelinked} Claude session director${totals.claudeSessionsRelinked !== 1 ? "ies" : "y"} to new worktree paths.`);
   }
   if (totals.emptyDirsDeleted > 0) {
     log(`Deleted ${totals.emptyDirsDeleted} empty director${totals.emptyDirsDeleted !== 1 ? "ies" : "y"}.`);
@@ -1277,6 +1416,9 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
 
   // Move worktrees back to restored hash dirs, then remove project directories
   let rollbackWorktreesMoved = false;
+  // (V2 → V1) pairs collected so we can reverse the Claude session-storage
+  // relink that the forward migration performed.
+  const rollbackWorkspaceMoves: WorkspacePathMove[] = [];
   if (existsSync(projectsDir)) {
     for (const projectId of safeToDeleteProjects) {
       if (!restoredProjects.has(projectId)) continue;
@@ -1303,6 +1445,12 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
               log(`  Moving worktree back: projects/${projectId}/worktrees/${wt} → ${basename(targetHashDir)}/worktrees/${wt}`);
               if (!dryRun) crossDeviceMove(src, dest, log);
               rollbackWorktreesMoved = true;
+              // For Claude relink-reverse: source dir's encoded path moves
+              // back to the destination's encoded path.
+              rollbackWorkspaceMoves.push({
+                oldWorkspacePath: src,
+                newWorkspacePath: dest,
+              });
             }
           }
         }
@@ -1313,6 +1461,10 @@ export async function rollbackStorage(options: RollbackOptions = {}): Promise<vo
     if (!dryRun && rollbackWorktreesMoved) {
       await repairGitWorktrees(aoBaseDir, effectiveConfigPath, log);
     }
+
+    // Reverse the Claude session-storage relink so chat history follows
+    // the worktree back to its V1 encoded path.
+    relinkClaudeSessionStorage(rollbackWorkspaceMoves, dryRun, log);
 
     // Remove project directories that are safe to delete
     for (const projectId of safeToDeleteProjects) {

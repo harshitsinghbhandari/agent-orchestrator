@@ -1574,6 +1574,132 @@ describe("migration edge cases", () => {
     expect(existsSync(join(aoBaseDir, ".migration-in-progress"))).toBe(false);
   });
 
+  // Regression for the Mode A bug surfaced in PR #1466 QA: after migration
+  // the worktree path changes (V1 hash dir → V2 projects/ dir), but Claude
+  // Code keys session JSONLs by the encoded form of the workspace path.
+  // The migrator must move ~/.claude/projects/<old-encoded>/ → <new-encoded>/
+  // so chat history survives migration; otherwise the next ao start →
+  // restore launches a fresh `claude` and the conversation is lost.
+  it(
+    "relinks ~/.claude/projects/<old-encoded>/ to <new-encoded>/ for migrated worktrees",
+    async () => {
+      const origHome = process.env["HOME"];
+      const fakeHome = join(testDir, "fake-home");
+      mkdirSync(fakeHome, { recursive: true });
+      process.env["HOME"] = fakeHome;
+
+      try {
+        // Seed a V1 layout with one session whose worktree has a Claude
+        // session-storage dir at the OLD encoded path.
+        const hashDir = join(aoBaseDir, "aaaaaa000000-myproject");
+        mkdirSync(join(hashDir, "sessions"), { recursive: true });
+        const oldWorktreePath = join(hashDir, "worktrees", "ao-1");
+        mkdirSync(oldWorktreePath, { recursive: true });
+
+        writeFileSync(
+          join(hashDir, "sessions", "ao-1"),
+          [
+            "project=myproject",
+            "agent=claude-code",
+            "branch=session/ao-1",
+            `worktree=${oldWorktreePath}`,
+          ].join("\n"),
+        );
+
+        // Encode the old workspace path the way Claude Code does
+        // (replace `/` and `.` with `-`, strip `:`).
+        const encode = (p: string) =>
+          p.replace(/\\/g, "/").replace(/:/g, "").replace(/[/.]/g, "-");
+        const oldEncoded = encode(oldWorktreePath);
+        const claudeProjectsDir = join(fakeHome, ".claude", "projects");
+        const oldClaudeDir = join(claudeProjectsDir, oldEncoded);
+        mkdirSync(oldClaudeDir, { recursive: true });
+        // A session JSONL — content doesn't matter for the relink, only
+        // that the directory has files we can verify ended up at the new path.
+        writeFileSync(
+          join(oldClaudeDir, "session-uuid.jsonl"),
+          '{"type":"user","message":{"content":"hello"}}\n',
+        );
+
+        const result = await migrateStorage({
+          aoBaseDir,
+          globalConfigPath: configPath,
+          force: true,
+          log: () => {},
+        });
+
+        // Worktree was migrated, so the encoded path changed.
+        const newWorktreePath = join(aoBaseDir, "projects", "myproject", "worktrees", "ao-1");
+        const newEncoded = encode(newWorktreePath);
+        expect(oldEncoded).not.toBe(newEncoded);
+
+        // Old Claude dir should be gone, new one should have the JSONL.
+        expect(existsSync(oldClaudeDir)).toBe(false);
+        expect(
+          existsSync(join(claudeProjectsDir, newEncoded, "session-uuid.jsonl")),
+        ).toBe(true);
+        expect(result.claudeSessionsRelinked).toBe(1);
+      } finally {
+        if (origHome === undefined) delete process.env["HOME"];
+        else process.env["HOME"] = origHome;
+      }
+    },
+  );
+
+  // Safety: never overwrite an existing Claude session dir at the new
+  // encoded path. Skip and warn instead so the user reconciles manually.
+  it("does NOT overwrite an existing Claude session dir at the new encoded path", async () => {
+    const origHome = process.env["HOME"];
+    const fakeHome = join(testDir, "fake-home-2");
+    mkdirSync(fakeHome, { recursive: true });
+    process.env["HOME"] = fakeHome;
+
+    try {
+      const hashDir = join(aoBaseDir, "aaaaaa000000-myproject");
+      mkdirSync(join(hashDir, "sessions"), { recursive: true });
+      const oldWorktreePath = join(hashDir, "worktrees", "ao-1");
+      mkdirSync(oldWorktreePath, { recursive: true });
+
+      writeFileSync(
+        join(hashDir, "sessions", "ao-1"),
+        [
+          "project=myproject",
+          "agent=claude-code",
+          "branch=session/ao-1",
+          `worktree=${oldWorktreePath}`,
+        ].join("\n"),
+      );
+
+      const encode = (p: string) =>
+        p.replace(/\\/g, "/").replace(/:/g, "").replace(/[/.]/g, "-");
+      const oldEncoded = encode(oldWorktreePath);
+      const newWorktreePath = join(aoBaseDir, "projects", "myproject", "worktrees", "ao-1");
+      const newEncoded = encode(newWorktreePath);
+      const claudeProjectsDir = join(fakeHome, ".claude", "projects");
+      // Pre-create BOTH the old and new dirs — the new one already has
+      // content (e.g. user manually re-attached). Migration must not clobber it.
+      mkdirSync(join(claudeProjectsDir, oldEncoded), { recursive: true });
+      writeFileSync(join(claudeProjectsDir, oldEncoded, "old.jsonl"), "old");
+      mkdirSync(join(claudeProjectsDir, newEncoded), { recursive: true });
+      writeFileSync(join(claudeProjectsDir, newEncoded, "new.jsonl"), "new");
+
+      const result = await migrateStorage({
+        aoBaseDir,
+        globalConfigPath: configPath,
+        force: true,
+        log: () => {},
+      });
+
+      // Both dirs still exist; the new dir's content is untouched.
+      expect(existsSync(join(claudeProjectsDir, oldEncoded, "old.jsonl"))).toBe(true);
+      expect(existsSync(join(claudeProjectsDir, newEncoded, "new.jsonl"))).toBe(true);
+      expect(result.claudeSessionsRelinked).toBe(0);
+    } finally {
+      if (origHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = origHome;
+    }
+  });
+
   it("handles corrupt session metadata during migration without crashing", async () => {
     const hashDir = join(aoBaseDir, "aaaaaa000000-myproject");
     mkdirSync(join(hashDir, "sessions"), { recursive: true });
