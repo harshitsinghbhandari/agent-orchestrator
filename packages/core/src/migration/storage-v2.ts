@@ -372,23 +372,29 @@ export function convertKeyValueToJson(kvContent: string): Record<string, unknown
   }
   if (Object.keys(dashboard).length > 0) result["dashboard"] = dashboard;
 
-  // agentReport grouping
-  const agentReport: Record<string, unknown> = {};
-  if (kv["agentReportedState"]) agentReport["state"] = kv["agentReportedState"];
-  if (kv["agentReportedAt"]) agentReport["at"] = kv["agentReportedAt"];
-  if (kv["agentReportedNote"]) agentReport["note"] = kv["agentReportedNote"];
-  if (Object.keys(agentReport).length > 0) result["agentReport"] = agentReport;
-
-  // reportWatcher grouping
-  const reportWatcher: Record<string, unknown> = {};
-  if (kv["reportWatcherLastAuditedAt"]) reportWatcher["lastAuditedAt"] = kv["reportWatcherLastAuditedAt"];
-  if (kv["reportWatcherActiveTrigger"]) reportWatcher["activeTrigger"] = kv["reportWatcherActiveTrigger"];
-  if (kv["reportWatcherTriggerActivatedAt"]) reportWatcher["triggerActivatedAt"] = kv["reportWatcherTriggerActivatedAt"];
-  if (kv["reportWatcherTriggerCount"]) {
-    const num = Number(kv["reportWatcherTriggerCount"]);
-    reportWatcher["triggerCount"] = Number.isFinite(num) ? num : kv["reportWatcherTriggerCount"];
+  // Agent report + report watcher fields stay flat to match runtime
+  // behavior. Live readers (agent-report.ts:565 — parseExistingAgentReport,
+  // lifecycle-manager.ts:2083, etc.) look up these keys directly on
+  // session.metadata, and readMetadataRaw → flattenToStringRecord does
+  // not unfold nested objects back into flat keys. Nesting them here
+  // would silently lose this state for migrated sessions until restart
+  // (and even then the freshness window means stale-yet-present is
+  // safer than missing). Same rationale as the `detecting*` fields below.
+  const flatPassthroughKeys = [
+    "agentReportedState",
+    "agentReportedAt",
+    "agentReportedNote",
+    "agentReportedPrUrl",
+    "agentReportedPrNumber",
+    "agentReportedPrIsDraft",
+    "reportWatcherLastAuditedAt",
+    "reportWatcherActiveTrigger",
+    "reportWatcherTriggerActivatedAt",
+    "reportWatcherTriggerCount",
+  ] as const;
+  for (const flatKey of flatPassthroughKeys) {
+    if (kv[flatKey]) result[flatKey] = kv[flatKey];
   }
-  if (Object.keys(reportWatcher).length > 0) result["reportWatcher"] = reportWatcher;
 
   // detecting fields — keep at top level to match runtime behavior.
   // The lifecycle manager reads/writes these as flat top-level fields
@@ -404,9 +410,7 @@ export function convertKeyValueToJson(kvContent: string): Record<string, unknown
     ...stringFields, "worktree", "prAutoDetect", "runtimeHandle",
     "statePayload", "stateVersion", "status",
     "dashboardPort", "terminalWsPort", "directTerminalWsPort",
-    "agentReportedState", "agentReportedAt", "agentReportedNote",
-    "reportWatcherLastAuditedAt", "reportWatcherActiveTrigger",
-    "reportWatcherTriggerActivatedAt", "reportWatcherTriggerCount",
+    ...flatPassthroughKeys,
     "lifecycleEvidence", "detectingAttempts", "detectingStartedAt", "detectingEvidenceHash",
   ]);
   for (const [key, value] of Object.entries(kv)) {
