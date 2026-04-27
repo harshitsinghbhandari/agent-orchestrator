@@ -3,6 +3,8 @@ import {
   AGENT_REPORTED_STATES,
   isTerminalSession,
   loadConfig,
+  loadGlobalConfig,
+  getGlobalConfigPath,
   type OrchestratorConfig,
   type Session,
 } from "@aoagents/ao-core";
@@ -318,13 +320,41 @@ function describeProject(config: OrchestratorConfig, projectId: string): string 
 
 async function listProjects(): Promise<CompletionSuggestion[]> {
   try {
-    const config = loadConfig();
-    return sortSuggestions(
-      Object.keys(config.projects).map((projectId) => ({
-        value: projectId,
-        description: describeProject(config, projectId),
-      })),
-    );
+    // Merge projects from both local config (cwd-based) and global config
+    // so completions show all registered projects regardless of cwd.
+    const seen = new Map<string, CompletionSuggestion>();
+
+    try {
+      const config = loadConfig();
+      for (const projectId of Object.keys(config.projects)) {
+        seen.set(projectId, {
+          value: projectId,
+          description: describeProject(config, projectId),
+        });
+      }
+    } catch {
+      // No local config found — that's fine, global may still have projects
+    }
+
+    try {
+      const globalConfig = loadGlobalConfig(getGlobalConfigPath());
+      if (globalConfig) {
+        for (const [projectId, entry] of Object.entries(globalConfig.projects)) {
+          if (seen.has(projectId)) continue;
+          const parts = [entry.displayName, entry.repo ? `${entry.repo.owner}/${entry.repo.name}` : undefined, entry.path].filter(
+            (v): v is string => typeof v === "string" && v.length > 0,
+          );
+          seen.set(projectId, {
+            value: projectId,
+            description: parts.length > 0 ? parts.join(" - ") : undefined,
+          });
+        }
+      }
+    } catch {
+      // Global config unavailable — use whatever we have
+    }
+
+    return sortSuggestions([...seen.values()]);
   } catch {
     return [];
   }
