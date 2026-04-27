@@ -122,7 +122,9 @@ These files have a wide blast radius and deserve extra scrutiny:
 |------|----------------|
 | `packages/core/src/types.ts` | All 8 plugin interfaces live here. Changes can break every plugin. |
 | `packages/core/src/lifecycle-manager.ts` | State machine and polling loop with subtle state dependencies. |
-| `packages/core/src/session-manager.ts` | Session CRUD. Invariant violations can cause phantom `killed` or `exited` sessions. |
+| `packages/core/src/session-manager.ts` | Session CRUD + stale runtime reconciliation. `list()` persists `runtime_lost` to disk when enrichment detects dead runtimes. Invariant violations can cause phantom `killed` or `exited` sessions. |
+| `packages/core/src/lifecycle-state.ts` | Canonical lifecycle → legacy status mapping. New terminal reasons (e.g. `runtime_lost`) must be added to `deriveLegacyStatus()`. |
+| `packages/cli/src/commands/start.ts` | ao start/stop + Ctrl+C shutdown. Cross-project scoping logic is subtle — `ao stop <project>` must not kill parent process. |
 | `packages/core/src/config.ts` | Zod validation schema. Changes affect every `ao` command. |
 | `packages/core/src/index.ts` | Stable public API. Do not break it without deprecation. |
 | `packages/web/src/app/globals.css` | Design tokens used by 50+ components. Renaming tokens breaks the UI. |
@@ -237,6 +239,9 @@ const cmd = `git checkout ${shellEscape(branchName)}`;
 - **Missing `setupWorkspaceHooks`.** A new agent plugin without metadata hooks means the dashboard will not show PRs.
 - **Skipping JSONL fallback.** An agent plugin's `getActivityState` without `getActivityFallbackState()` means the dashboard shows no activity.
 - **New `SessionStatus` without updating `isTerminalSession` / `TERMINAL_STATUSES`.** The session can get stuck in limbo.
+- **New session reason without updating `deriveLegacyStatus()`.** Terminal reasons like `runtime_lost` must map to a legacy status (e.g. `killed`), or sessions show wrong status.
+- **Scoping `useSessionEvents` with project filter in Dashboard.tsx.** The sidebar must see ALL sessions — only the Kanban filters by project (client-side via `projectSessions`).
+- **ao stop killing parent process when targeting a specific project.** `ao stop <project>` must only kill that project's sessions, not the parent `ao start` process or dashboard.
 - **CSS color hardcoding.** Using `#hex` or `rgb()` instead of `var(--color-*)` tokens.
 - **Rounded corners.** Using `rounded-md` or `rounded-lg` on cards or buttons. Hard edges only.
 - **External UI libraries.** Importing from Radix, shadcn, or Headless UI. Use native HTML and Tailwind.

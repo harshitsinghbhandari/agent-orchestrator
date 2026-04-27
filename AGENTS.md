@@ -32,8 +32,18 @@ Full guidelines with AO-specific context: see "Working Principles" in CLAUDE.md.
 ## Key Files
 
 - `packages/core/src/types.ts` — All plugin interfaces (Agent, Runtime, Workspace, etc.)
-- `packages/core/src/session-manager.ts` — Session CRUD
+- `packages/core/src/session-manager.ts` — Session CRUD + stale runtime reconciliation (detects dead runtimes, persists `runtime_lost`)
 - `packages/core/src/lifecycle-manager.ts` — State machine + polling loop
-- `packages/web/src/components/Dashboard.tsx` — Main dashboard view
+- `packages/core/src/lifecycle-state.ts` — Canonical lifecycle → legacy status mapping (`deriveLegacyStatus`)
+- `packages/cli/src/commands/start.ts` — ao start/stop commands + Ctrl+C graceful shutdown
+- `packages/cli/src/lib/running-state.ts` — RunningState + LastStopState management
+- `packages/web/src/components/Dashboard.tsx` — Main dashboard view (sidebar uses unscoped sessions, kanban filters by project)
 - `packages/web/src/components/SessionDetail.tsx` — Session detail view
 - `packages/web/src/app/globals.css` — Design tokens
+
+## CLI Behavior Notes
+
+- `ao stop` loads global config to see all projects; `ao stop <project>` only kills that project's sessions
+- Ctrl+C on `ao start` performs full graceful shutdown (same as `ao stop`)
+- `LastStopState` includes `otherProjects` for cross-project session restore on next `ao start`
+- Dashboard sidebar always shows ALL projects' sessions regardless of active project view

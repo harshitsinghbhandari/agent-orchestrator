@@ -331,3 +331,4 @@ These are the concrete token names used in `packages/web/src/app/globals.css`. N
 | 2026-04-07 | Remove column shadows | P3: `18px/42px` column box-shadow created competing depth layers with card shadows. Border + background contrast does separation. No column-level shadow needed. |
 | 2026-04-07 | Topbar shows page name only, not project name | Minor: Topbar "vinesight-rn / kanban" duplicated project name visible in sidebar. Topbar now shows "Kanban" + freshness. |
 | 2026-04-07 | Diff size badges use `<abbr>` with tooltip | Minor: S/M/L diff badges were opaque. `<abbr title="Small (<100 lines)">` gives meaning on hover without adding visual noise. |
+| 2026-04-27 | Sidebar always shows ALL projects' sessions | P0: Sidebar is not filtered by active project — `useSessionEvents` called without project filter, kanban filters client-side via `projectSessions` memo. |
