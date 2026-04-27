@@ -89,55 +89,288 @@ note "Sandbox: $DEMO_HOME"
 note "Port:    $DEMO_PORT (no real ao daemon spawned in this demo)"
 sleep 2
 
+# ─── helpers: realistic project + session seeding ─────────────────────────
+
+# seed_project DIR PKG_NAME
+# Creates a real-looking Node/TypeScript project at DIR with multiple
+# commits so reviewers see a credible source tree, not an empty README.
+seed_project() {
+  local dir="$1"
+  local pkg="$2"
+  mkdir -p "$dir/src/lib" "$dir/tests"
+
+  cat >"$dir/package.json" <<EOF
+{
+  "name": "${pkg}",
+  "version": "0.1.0",
+  "description": "Demo project for the PR #1466 migration screencast",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "dependencies": { "zod": "^3.22.0" },
+  "devDependencies": { "typescript": "^5.4.0", "vitest": "^1.0.0" }
+}
+EOF
+
+  cat >"$dir/src/index.ts" <<'EOF'
+import { processInput, validate } from "./lib/util.js";
+import type { Result } from "./lib/types.js";
+
+export async function main(input: string): Promise<Result> {
+  const validated = validate(input);
+  return processInput(validated);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main(process.argv[2] ?? "")
+    .then((r) => console.log(r))
+    .catch((e) => {
+      console.error("error:", e.message);
+      process.exit(1);
+    });
+}
+EOF
+
+  cat >"$dir/src/lib/util.ts" <<'EOF'
+import type { Result, Validated } from "./types.js";
+
+export function validate(input: string): Validated {
+  if (!input || input.length < 2) throw new Error("input must be at least 2 chars");
+  return { value: input.trim(), receivedAt: new Date().toISOString() };
+}
+
+export async function processInput(v: Validated): Promise<Result> {
+  return { input: v.value, output: v.value.toUpperCase(), processedAt: new Date().toISOString() };
+}
+EOF
+
+  cat >"$dir/src/lib/types.ts" <<'EOF'
+export interface Validated { value: string; receivedAt: string }
+export interface Result { input: string; output: string; processedAt: string }
+EOF
+
+  cat >"$dir/tests/index.test.ts" <<'EOF'
+import { describe, it, expect } from "vitest";
+import { main } from "../src/index.js";
+
+describe("main", () => {
+  it("uppercases input", async () => {
+    expect((await main("hello")).output).toBe("HELLO");
+  });
+
+  it("rejects too-short input", async () => {
+    await expect(main("")).rejects.toThrow();
+  });
+});
+EOF
+
+  cat >"$dir/.gitignore" <<'EOF'
+node_modules/
+dist/
+*.log
+.env
+.DS_Store
+EOF
+
+  cat >"$dir/tsconfig.json" <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "declaration": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"]
+}
+EOF
+
+  cat >"$dir/README.md" <<EOF
+# ${pkg}
+
+Demo project for the AO PR #1466 migration screencast. Standard TypeScript
+package layout — sources in \`src/\`, tests in \`tests/\`, vitest harness.
+
+## Develop
+
+\`\`\`bash
+pnpm install
+pnpm test
+pnpm build
+\`\`\`
+EOF
+
+  # Commit history so the project looks alive, not stamped-out
+  git -C "$dir" init --quiet -b main
+  git -C "$dir" add README.md .gitignore
+  git -C "$dir" commit -q -m "init: scaffold ${pkg}"
+  git -C "$dir" add tsconfig.json package.json
+  git -C "$dir" commit -q -m "chore: typescript + package.json"
+  git -C "$dir" add src/lib/types.ts
+  git -C "$dir" commit -q -m "feat: add Validated and Result types"
+  git -C "$dir" add src/lib/util.ts
+  git -C "$dir" commit -q -m "feat: validate and processInput helpers"
+  git -C "$dir" add src/index.ts
+  git -C "$dir" commit -q -m "feat: main entry point"
+  git -C "$dir" add tests/index.test.ts
+  git -C "$dir" commit -q -m "test: cover main happy path and validation"
+}
+
+# seed_session HASH_DIR SESSION_ID PROJECT_KEY METADATA_BODY
+seed_session() {
+  local hash_dir="$1"
+  local sid="$2"
+  shift 2
+  local body="$*"
+  printf '%s\n' "$body" >"$hash_dir/sessions/$sid"
+}
+
 # ───────────────────────────────────────────────────────────────────────────
 banner "Act 1 — Migration: V1 hash dirs → V2 projects/  (most-reviewed code)"
 # ───────────────────────────────────────────────────────────────────────────
 
-step "Seed a real V1 layout (hash-prefixed dir, key=value metadata)"
+step "Seed a realistic environment: 2 projects, 6 sessions, real worktree content"
 
-DEMO_REPO="$DEMO_HOME/myproject"
-mkdir -p "$DEMO_REPO"
-git -C "$DEMO_REPO" init --quiet -b main
-echo "hello" >"$DEMO_REPO/README.md"
-git -C "$DEMO_REPO" add . >/dev/null
-git -C "$DEMO_REPO" commit -q -m "init"
+# Project 1: myproject (TS package, full source tree, 6-commit history)
+DEMO_REPO_A="$DEMO_HOME/myproject"
+seed_project "$DEMO_REPO_A" "myproject"
 
-HASH_DIR="$DEMO_HOME/.agent-orchestrator/aaaaaa000000-myproject"
-mkdir -p "$HASH_DIR/sessions" "$HASH_DIR/worktrees"
+# Project 2: frontend (also TS package — different code so two distinct projects)
+DEMO_REPO_B="$DEMO_HOME/frontend"
+seed_project "$DEMO_REPO_B" "frontend"
 
-# Seed a V1 session with a populated agent report + report-watcher state.
-# This exercises the @ashish921998 fix (flat keys must survive migration).
-LIFECYCLE_PAYLOAD='{"version":2,"session":{"kind":"worker","state":"working"},"runtime":{"state":"missing","reason":"manual_kill_requested"},"pr":{"state":"unknown"}}'
-cat >"$HASH_DIR/sessions/ao-1" <<V1META
-project=myproject
+# ── V1 hash dir 1: myproject ──────────────────────────────────────────────
+# In V1: terminated sessions were MOVED from sessions/<sid> into
+# sessions/archive/<sid>_<timestamp> as separate files. Active sessions
+# stayed in sessions/<sid>.
+# In V2 (this PR): the archive directory is removed entirely. Terminated
+# sessions just stay in sessions/<sid>.json with lifecycle.session.state =
+# "terminated". The migrator flattens archive entries into sessions/.
+HASH_DIR_A="$DEMO_HOME/.agent-orchestrator/aaaaaa000000-myproject"
+mkdir -p "$HASH_DIR_A/sessions/archive" "$HASH_DIR_A/worktrees"
+
+LIFECYCLE_WORKING='{"version":2,"session":{"kind":"worker","state":"working"},"runtime":{"state":"alive"},"pr":{"state":"unknown"}}'
+LIFECYCLE_STUCK='{"version":2,"session":{"kind":"worker","state":"stuck","reason":"agent_idle_too_long"},"runtime":{"state":"alive"},"pr":{"state":"unknown"}}'
+LIFECYCLE_ORCH='{"version":2,"session":{"kind":"orchestrator","state":"working"},"runtime":{"state":"alive"},"pr":{"state":"none"}}'
+
+# ao-1: the headline session — has BOTH agent-report state AND report-watcher
+# counters set, plus PR fields. Exercises the entire @ashish921998 flat-key
+# contract in a single record.
+seed_session "$HASH_DIR_A" "ao-1" \
+"project=myproject
 agent=claude-code
 status=working
 createdAt=2026-04-21T12:00:00.000Z
 agentReportedState=needs_input
 agentReportedAt=2026-04-21T12:35:00.000Z
 agentReportedNote=please clarify the spec
+agentReportedPrUrl=https://github.com/demo/myproject/pull/41
+agentReportedPrNumber=41
+agentReportedPrIsDraft=true
 reportWatcherTriggerCount=2
 reportWatcherActiveTrigger=stale_report
-reportWatcherLastAuditedAt=2026-04-21T12:34:00.000Z
+reportWatcherTriggerActivatedAt=2026-04-21T12:30:00.000Z
+reportWatcherLastAuditedAt=2026-04-21T12:36:00.000Z
 prAutoDetect=on
 dashboardPort=3000
+terminalWsPort=3001
 branch=session/ao-1
-worktree=$DEMO_REPO/worktrees/ao-1
-statePayload=$LIFECYCLE_PAYLOAD
+worktree=$DEMO_REPO_A/worktrees/ao-1
+statePayload=$LIFECYCLE_WORKING
 stateVersion=2
-V1META
+issue=demo/myproject#101
+pr=demo/myproject#41
+runtimeHandle={\"id\":\"ao-1\",\"runtimeName\":\"tmux\",\"data\":{\"name\":\"my-1\"}}"
 
-# A second session in V1 archive form, to exercise the archive-flatten path.
-mkdir -p "$HASH_DIR/archive/ao-2_20260420T100000Z"
-cat >"$HASH_DIR/archive/ao-2_20260420T100000Z/metadata" <<'V1META'
+# ao-3: stuck session with report-watcher counter (also exercises @ashish921998 fix)
+seed_session "$HASH_DIR_A" "ao-3" \
+"project=myproject
+agent=claude-code
+status=stuck
+createdAt=2026-04-21T13:00:00.000Z
+agentReportedState=working
+agentReportedAt=2026-04-21T14:50:00.000Z
+reportWatcherTriggerCount=3
+reportWatcherActiveTrigger=stale_report
+reportWatcherTriggerActivatedAt=2026-04-21T14:00:00.000Z
+reportWatcherLastAuditedAt=2026-04-21T14:55:00.000Z
+prAutoDetect=on
+dashboardPort=3000
+branch=session/ao-3
+worktree=$DEMO_REPO_A/worktrees/ao-3
+statePayload=$LIFECYCLE_STUCK
+stateVersion=2"
+
+# Orchestrator session — different `kind`, exercises lifecycle.session.kind=orchestrator
+seed_session "$HASH_DIR_A" "my-orchestrator-1" \
+"project=myproject
+agent=claude-code
+status=working
+createdAt=2026-04-21T11:00:00.000Z
+prAutoDetect=on
+dashboardPort=3000
+branch=orchestrator/my-orchestrator-1
+worktree=$DEMO_REPO_A/worktrees/my-orchestrator-1
+statePayload=$LIFECYCLE_ORCH
+stateVersion=2
+role=orchestrator"
+
+# ao-2 in archive — V1 archive file at sessions/archive/<sid>_<ts>.
+# Migration's job: flatten this into sessions/ao-2.json with terminated lifecycle.
+cat >"$HASH_DIR_A/sessions/archive/ao-2_20260420T100000Z" <<'V1META'
 project=myproject
 agent=claude-code
 status=killed
 createdAt=2026-04-20T08:00:00.000Z
 branch=session/ao-2
+statePayload={"version":2,"session":{"kind":"worker","state":"terminated","reason":"manually_killed"},"runtime":{"state":"missing","reason":"manual_kill_requested"},"pr":{"state":"unknown"}}
+stateVersion=2
 V1META
 
-# Pre-seed the global config the migrator reads.
+# Real worktree content for ao-1 — proves worktree migration moves files,
+# not just empty directories. Uses git worktree add so it's a registered
+# worktree, exactly what the migrator handles in production.
+git -C "$DEMO_REPO_A" worktree add -b session/ao-1 "$HASH_DIR_A/worktrees/ao-1" main >/dev/null 2>&1 || true
+echo "// pending edits for issue #101" >"$HASH_DIR_A/worktrees/ao-1/src/lib/util.ts.draft"
+
+# ── V1 hash dir 2: frontend ───────────────────────────────────────────────
+HASH_DIR_B="$DEMO_HOME/.agent-orchestrator/bbbbbb111111-frontend"
+mkdir -p "$HASH_DIR_B/sessions/archive" "$HASH_DIR_B/worktrees"
+
+# fe-1: working session with PR fields populated
+seed_session "$HASH_DIR_B" "fe-1" \
+"project=frontend
+agent=claude-code
+status=pr_open
+createdAt=2026-04-21T09:00:00.000Z
+prAutoDetect=on
+dashboardPort=3000
+branch=session/fe-1
+worktree=$DEMO_REPO_B/worktrees/fe-1
+issue=demo/frontend#7
+pr=demo/frontend#12
+statePayload={\"version\":2,\"session\":{\"kind\":\"worker\",\"state\":\"working\"},\"runtime\":{\"state\":\"alive\"},\"pr\":{\"state\":\"open\",\"number\":12}}
+stateVersion=2"
+
+# fe-2 in archive — terminated by runtime_lost
+cat >"$HASH_DIR_B/sessions/archive/fe-2_20260419T160000Z" <<'V1META'
+project=frontend
+agent=claude-code
+status=killed
+createdAt=2026-04-19T14:00:00.000Z
+branch=session/fe-2
+statePayload={"version":2,"session":{"kind":"worker","state":"terminated","reason":"runtime_lost"},"runtime":{"state":"missing","reason":"agent_process_exited"},"pr":{"state":"unknown"}}
+stateVersion=2
+V1META
+
+# ── Pre-seed the global config the migrator reads ────────────────────────
 cat >"$DEMO_HOME/.agent-orchestrator/config.yaml" <<CFG
 port: $DEMO_PORT
 defaults:
@@ -148,7 +381,7 @@ defaults:
 projects:
   myproject:
     projectId: myproject
-    path: $DEMO_REPO
+    path: $DEMO_REPO_A
     repo:
       owner: demo
       name: myproject
@@ -160,14 +393,42 @@ projects:
     displayName: myproject
     sessionPrefix: my
     storageKey: aaaaaa000000
+  frontend:
+    projectId: frontend
+    path: $DEMO_REPO_B
+    repo:
+      owner: demo
+      name: frontend
+      platform: github
+      originUrl: https://github.com/demo/frontend
+    defaultBranch: main
+    source: ao-project-add
+    registeredAt: 1776000100
+    displayName: frontend
+    sessionPrefix: fe
+    storageKey: bbbbbb111111
 CFG
 
-step "Before — V1 layout on disk"
-ls -1 "$DEMO_HOME/.agent-orchestrator/" | sed 's/^/  /'
+step "Before — V1 layout on disk (real repo + multi-session inventory)"
+echo "  Source repos (realistic TS package layout, multi-commit history):"
+echo "    myproject/  ($(git -C "$DEMO_REPO_A" log --oneline | wc -l | tr -d ' ') commits, $(find "$DEMO_REPO_A" -type f -not -path '*/.git/*' -not -path '*/worktrees/*' | wc -l | tr -d ' ') files)"
+echo "    frontend/   ($(git -C "$DEMO_REPO_B" log --oneline | wc -l | tr -d ' ') commits, $(find "$DEMO_REPO_B" -type f -not -path '*/.git/*' -not -path '*/worktrees/*' | wc -l | tr -d ' ') files)"
 echo
-echo "  Session metadata format (key=value, flat strings):"
-sed 's/^/    /' "$HASH_DIR/sessions/ao-1"
-sleep 4
+echo "  ~/.agent-orchestrator/  (V1: hash-prefixed dirs, key=value session files):"
+ls -1 "$DEMO_HOME/.agent-orchestrator/" | sed 's/^/    /'
+echo
+echo "  V1 hash dir 1 (myproject):"
+echo "    sessions/         : $(ls "$HASH_DIR_A/sessions" | grep -v '^archive$' | tr '\n' ' ')"
+echo "    sessions/archive/ : $(ls "$HASH_DIR_A/sessions/archive" 2>/dev/null | tr '\n' ' ')"
+echo "    worktrees/        : $(ls "$HASH_DIR_A/worktrees" 2>/dev/null | tr '\n' ' ')"
+echo
+echo "  V1 hash dir 2 (frontend):"
+echo "    sessions/         : $(ls "$HASH_DIR_B/sessions" | grep -v '^archive$' | tr '\n' ' ')"
+echo "    sessions/archive/ : $(ls "$HASH_DIR_B/sessions/archive" 2>/dev/null | tr '\n' ' ')"
+echo
+echo "  Session metadata format (key=value, flat strings) — ao-1:"
+sed 's/^/    /' "$HASH_DIR_A/sessions/ao-1"
+sleep 6
 
 step "ao migrate-storage --dry-run  (shows the plan, mutates nothing)"
 ao migrate-storage --dry-run --force || true
@@ -181,12 +442,22 @@ step "After — V2 layout (projects/{projectId}/sessions/{sid}.json)"
 echo "  Top level:"
 ls -1 "$DEMO_HOME/.agent-orchestrator/" | sed 's/^/    /'
 echo
-MIGRATED_PROJECT=$(ls "$DEMO_HOME/.agent-orchestrator/projects/" | grep -v '\.migrated$' | head -1)
+echo "  projects/ (one dir per project, archives flattened into sessions/):"
+for p in "$DEMO_HOME"/.agent-orchestrator/projects/*; do
+  pname=$(basename "$p")
+  [[ "$pname" == *.migrated ]] && continue
+  echo "    $pname/"
+  echo "      sessions/  : $(ls "$p/sessions" 2>/dev/null | tr '\n' ' ')"
+  if [[ -d "$p/worktrees" ]]; then
+    echo "      worktrees/ : $(ls "$p/worktrees" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
+echo
+# Inspect the JSON for ao-1 (the headline session: agent-report state set,
+# PR fields, runtimeHandle as embedded JSON — exercises the most fields).
+MIGRATED_PROJECT="myproject"
 SESSION_JSON="$DEMO_HOME/.agent-orchestrator/projects/$MIGRATED_PROJECT/sessions/ao-1.json"
-echo "  projects/$MIGRATED_PROJECT/:"
-(cd "$DEMO_HOME/.agent-orchestrator/projects/$MIGRATED_PROJECT" && find . -maxdepth 2 -mindepth 1) \
-  | sed 's|^\./|    |'
-sleep 3
+sleep 4
 
 step "Migrated session JSON (note: typed fields, no key=value soup)"
 node -e "
