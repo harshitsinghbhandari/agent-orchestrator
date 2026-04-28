@@ -157,7 +157,7 @@ async function resolveProject(
   config: OrchestratorConfig,
   projectArg?: string,
   action = "start",
-): Promise<{ projectId: string; project: ProjectConfig }> {
+): Promise<{ projectId: string; project: ProjectConfig; config: OrchestratorConfig }> {
   const projectIds = Object.keys(config.projects);
 
   if (projectIds.length === 0) {
@@ -172,13 +172,13 @@ async function resolveProject(
         `Project "${projectArg}" not found. Available projects:\n  ${projectIds.join(", ")}`,
       );
     }
-    return { projectId: projectArg, project };
+    return { projectId: projectArg, project, config };
   }
 
   // Only one project — use it
   if (projectIds.length === 1) {
     const projectId = projectIds[0];
-    return { projectId, project: config.projects[projectId] };
+    return { projectId, project: config.projects[projectId], config };
   }
 
   // Multiple projects — try matching cwd to a project path
@@ -186,7 +186,7 @@ async function resolveProject(
   const currentDir = resolve(cwd());
   const matchedProjectId = findProjectForDirectory(config.projects, currentDir);
   if (matchedProjectId) {
-    return { projectId: matchedProjectId, project: config.projects[matchedProjectId] };
+    return { projectId: matchedProjectId, project: config.projects[matchedProjectId], config };
   }
 
   // No match — prompt if interactive, otherwise error
@@ -226,11 +226,20 @@ async function resolveProject(
 
     if (projectId === "__add_cwd__") {
       const addedId = await addProjectToConfig(config, currentDirResolved);
+      // Return the reloaded config too — addProjectToConfig writes the
+      // (possibly hashed) project ID to disk, so any caller that holds the
+      // pre-add `config` reference would not see the new key. Without this,
+      // downstream consumers like `ensureLifecycleWorker(config, projectId)`
+      // throw `Unknown project: ...` even though the registration succeeded.
       const reloadedConfig = loadConfig(config.configPath);
-      return { projectId: addedId, project: reloadedConfig.projects[addedId] };
+      return {
+        projectId: addedId,
+        project: reloadedConfig.projects[addedId],
+        config: reloadedConfig,
+      };
     }
 
-    return { projectId, project: config.projects[projectId] };
+    return { projectId, project: config.projects[projectId], config };
   } else {
     throw new Error(
       `Multiple projects configured. Specify which one to ${action}:\n  ${projectIds.map((id) => `ao ${action} ${id}`).join("\n  ")}`,
@@ -249,14 +258,14 @@ async function resolveProject(
 async function resolveProjectByRepo(
   config: OrchestratorConfig,
   parsed: ParsedRepoUrl,
-): Promise<{ projectId: string; project: ProjectConfig }> {
+): Promise<{ projectId: string; project: ProjectConfig; config: OrchestratorConfig }> {
   const projectIds = Object.keys(config.projects);
 
   // Try to match by repo field (e.g. "owner/repo")
   for (const id of projectIds) {
     const project = config.projects[id];
     if (project.repo === parsed.ownerRepo) {
-      return { projectId: id, project };
+      return { projectId: id, project, config };
     }
   }
 
@@ -2024,7 +2033,7 @@ export function registerStart(program: Command): void {
             console.log(chalk.bold.cyan("\n  Agent Orchestrator — Quick Start\n"));
             const result = await handleUrlStart(projectArg);
             config = result.config;
-            ({ projectId, project } = await resolveProjectByRepo(config, result.parsed));
+            ({ projectId, project, config } = await resolveProjectByRepo(config, result.parsed));
           } else if (projectArg && isLocalPath(projectArg)) {
             // ── Path argument: add project if new, then start ──
             const resolvedPath = resolve(projectArg.replace(/^~/, process.env["HOME"] || ""));
@@ -2045,7 +2054,7 @@ export function registerStart(program: Command): void {
                 // cwd is the target — auto-create config here
                 config = await autoCreateConfig(cwd());
               }
-              ({ projectId, project } = await resolveProject(config));
+              ({ projectId, project, config } = await resolveProject(config));
             } else {
               config = loadConfig(configPath);
 
@@ -2102,7 +2111,7 @@ export function registerStart(program: Command): void {
                 config = loadConfig(globalPath);
               }
             }
-            ({ projectId, project } = await resolveProject(config, projectArg));
+            ({ projectId, project, config } = await resolveProject(config, projectArg));
           }
 
           // ── Handle "new orchestrator" choice (deferred from already-running check) ──
