@@ -158,23 +158,28 @@ function DashboardInner({
     }
     return levels;
   }, [initialSessions, attentionZones]);
-  const { sessions, connectionStatus, sseAttentionLevels, liveSessionsResolved, loadError } =
-    useSessionEvents({
-      initialSessions,
-      // No project filter — sidebar needs all sessions across all projects.
-      // Kanban filtering is applied client-side via projectSessions below.
-      muxSessions: mux?.status === "connected" ? mux.sessions : undefined,
-      initialAttentionLevels,
-      attentionZones,
-    });
+  const { sessions, attentionLevels, liveSessionsResolved, loadError } = useSessionEvents({
+    initialSessions,
+    // No project filter — sidebar needs all sessions across all projects.
+    // Kanban filtering is applied client-side via projectSessions below.
+    muxSessions: mux?.status === "connected" ? mux.sessions : undefined,
+    muxLastError: mux?.lastError,
+    initialAttentionLevels,
+    attentionZones,
+  });
 
   const projectSessions = useMemo(() => {
     if (!projectId) return sessions;
     return sessions.filter((s) => s.projectId === projectId);
   }, [sessions, projectId]);
+  const connectionStatus: "connected" | "reconnecting" | "disconnected" =
+    mux?.status === "disconnected" ? "disconnected"
+    : mux?.status === "connected" ? "connected"
+    : "reconnecting";
   const recoveredFromLoadError = Boolean(dashboardLoadError) && liveSessionsResolved;
-  const visibleDashboardLoadError =
-    loadError ?? (recoveredFromLoadError ? undefined : dashboardLoadError);
+  const ssrLoadError = recoveredFromLoadError ? undefined : dashboardLoadError;
+  // Live WS error takes precedence; fall back to SSR load error when live data hasn't resolved it.
+  const visibleLoadError = loadError ?? ssrLoadError;
   const searchParams = useSearchParams();
   const router = useRouter();
   const routerRef = useRef(router);
@@ -229,12 +234,12 @@ function DashboardInner({
     setActiveOrchestrators((current) => mergeOrchestrators(current, orchestratorLinks));
   }, [orchestratorLinks]);
 
-  // Update document title with live attention counts from SSE
+  // Update document title with live attention counts
   useEffect(() => {
-    const needsAttention = countNeedingAttention(sseAttentionLevels);
+    const needsAttention = countNeedingAttention(attentionLevels);
     const label = projectName ?? "ao";
     document.title = needsAttention > 0 ? `${label} (${needsAttention} need attention)` : label;
-  }, [sseAttentionLevels, projectName]);
+  }, [attentionLevels, projectName]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -442,9 +447,9 @@ function DashboardInner({
   };
 
   const hasAnySessions = kanbanLevels.some((level) => grouped[level].length > 0);
-  const showEmptyState = !allProjectsView && !hasAnySessions && !visibleDashboardLoadError;
+  const showEmptyState = !allProjectsView && !hasAnySessions && !visibleLoadError;
 
-  const loadErrorBanner = visibleDashboardLoadError ? (
+  const loadErrorBanner = visibleLoadError ? (
     <div
       className="dashboard-alert mb-6 flex flex-col gap-1.5 border border-[color-mix(in_srgb,var(--color-status-error)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-status-error)_10%,transparent)] px-3.5 py-2.5 text-[11px] md:mb-4"
       role="alert"
@@ -454,7 +459,7 @@ function DashboardInner({
         Orchestrator failed to load
       </span>
       <span className="break-words text-[var(--color-text-secondary)]">
-        {visibleDashboardLoadError}
+        {visibleLoadError}
       </span>
       <span className="text-[var(--color-text-secondary)]">
         Confirm <span className="font-mono text-[10px]">agent-orchestrator.yaml</span> exists and is
@@ -612,8 +617,8 @@ function DashboardInner({
               <div className="sidebar-mobile-backdrop" onClick={() => setMobileMenuOpen(false)} />
             )}
 
-            <main className="dashboard-main dashboard-main--desktop overflow-y-auto">
-              <DynamicFavicon sseAttentionLevels={sseAttentionLevels} projectName={projectName} />
+            <main className="dashboard-main dashboard-main--desktop">
+              <DynamicFavicon attentionLevels={attentionLevels} projectName={projectName} />
               <div className="dashboard-main__subhead">
                 <h1 className="dashboard-main__title">Dashboard</h1>
                 <p className="dashboard-main__subtitle">

@@ -2,9 +2,8 @@
  * Multiplexed WebSocket server for terminal multiplexing.
  * Manages multiple terminal connections over a single persistent WebSocket.
  *
- * Session updates are delivered via a single shared SSE connection from this
- * process to Next.js /api/events, then broadcast to all subscribed clients.
- * This replaces per-client HTTP polling and makes session updates event-driven.
+ * Session updates are delivered via polling of Next.js /api/sessions/patches
+ * every 3s, then broadcast to all subscribed clients via WebSocket.
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -32,6 +31,7 @@ type ServerMessage =
   | { ch: "terminal"; id: string; type: "opened" }
   | { ch: "terminal"; id: string; type: "error"; message: string }
   | { ch: "sessions"; type: "snapshot"; sessions: SessionPatch[] }
+  | { ch: "sessions"; type: "error"; error: string }
   | { ch: "system"; type: "pong" }
   | { ch: "system"; type: "error"; message: string };
 
@@ -54,14 +54,15 @@ interface SessionPatch {
 }
 
 /**
- * Manages a single shared SSE connection to Next.js /api/events.
- * Broadcasts session patches to all subscribed callbacks.
- * Lazily connects on first subscriber, disconnects when the last one leaves.
+ * Manages polling of session patches from Next.js /api/sessions/patches.
+ * Broadcasts to all subscribed callbacks.
+ * Lazily starts polling on first subscriber, stops when the last one leaves.
  */
 export class SessionBroadcaster {
   private subscribers = new Set<(sessions: SessionPatch[]) => void>();
-  private abortController: AbortController | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private errorSubscribers = new Set<(error: string) => void>();
+  private intervalId: ReturnType<typeof setInterval> | null = null;
+  private polling = false;
   private readonly baseUrl: string;
 
   constructor(nextPort: string) {
@@ -69,27 +70,50 @@ export class SessionBroadcaster {
   }
 
   /**
-   * Subscribe to session patches. Returns an unsubscribe function.
-   * Sends an immediate snapshot to the new subscriber, then live SSE pushes.
+   * Subscribe to session patches and errors. Returns an unsubscribe function.
+   * Sends an immediate snapshot to the new subscriber, then polling updates.
    */
-  subscribe(callback: (sessions: SessionPatch[]) => void): () => void {
+  subscribe(callback: (sessions: SessionPatch[]) => void, onError?: (error: string) => void): () => void {
     const wasEmpty = this.subscribers.size === 0;
     this.subscribers.add(callback);
+    if (onError) this.errorSubscribers.add(onError);
 
     // Immediately send a one-off snapshot to just this new subscriber
-    void this.fetchSnapshot().then((sessions) => {
-      if (sessions && this.subscribers.has(callback)) {
-        callback(sessions);
+    void this.fetchSnapshot().then((result) => {
+      if (result.sessions && this.subscribers.has(callback)) {
+        try {
+          callback(result.sessions);
+        } catch {
+          // Isolate subscriber errors so one bad subscriber doesn't break others
+        }
+      } else if (result.error && onError && this.errorSubscribers.has(onError)) {
+        try {
+          onError(result.error);
+        } catch {
+          // Isolate subscriber errors
+        }
       }
     });
 
-    // Start the shared SSE connection if this is the first subscriber
+    // Start polling if this is the first subscriber
     if (wasEmpty) {
-      void this.connect();
+      this.intervalId = setInterval(() => {
+        if (this.polling) return;
+        this.polling = true;
+        void this.fetchSnapshot()
+          .then((result) => {
+            if (result.sessions && this.intervalId !== null) this.broadcast(result.sessions);
+            else if (result.error && this.intervalId !== null) this.broadcastError(result.error);
+          })
+          .finally(() => {
+            this.polling = false;
+          });
+      }, 3000);
     }
 
     return () => {
       this.subscribers.delete(callback);
+      if (onError) this.errorSubscribers.delete(onError);
       if (this.subscribers.size === 0) {
         this.disconnect();
       }
@@ -106,101 +130,45 @@ export class SessionBroadcaster {
     }
   }
 
-  /** One-shot HTTP fetch of the current session list for immediate delivery. */
-  private async fetchSnapshot(): Promise<SessionPatch[] | null> {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+  private broadcastError(error: string): void {
+    for (const callback of this.errorSubscribers) {
       try {
-        const res = await fetch(`${this.baseUrl}/api/sessions/patches`, {
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        if (!res.ok) return null;
-        const data = (await res.json()) as { sessions?: SessionPatch[] };
-        return data.sessions ?? null;
-      } catch {
-        clearTimeout(timeoutId);
-        return null;
+        callback(error);
+      } catch (err) {
+        console.error("[MuxServer] Session error subscriber threw:", err);
       }
-    } catch {
-      return null;
     }
   }
 
-  /** Open a persistent SSE connection and stream events to all subscribers. */
-  private async connect(): Promise<void> {
-    if (this.abortController) return;
-
+  /** One-shot HTTP fetch of the current session list. */
+  private async fetchSnapshot(): Promise<{ sessions: SessionPatch[] | null; error: string | null }> {
     const controller = new AbortController();
-    this.abortController = controller;
-    const { signal } = controller;
-
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
     try {
-      const res = await fetch(`${this.baseUrl}/api/events`, {
-        signal,
-        headers: { Accept: "text/event-stream" },
+      const res = await fetch(`${this.baseUrl}/api/sessions/patches`, {
+        signal: controller.signal,
       });
-
-      if (!res.ok || !res.body) {
-        throw new Error(`SSE connect failed: ${res.status}`);
+      clearTimeout(timeoutId);
+      if (!res.ok) {
+        const msg = `Session fetch failed: HTTP ${res.status}`;
+        console.warn(`[SessionBroadcaster] ${msg}`);
+        return { sessions: null, error: msg };
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (!signal.aborted) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(line.slice(6)) as {
-              type: string;
-              sessions?: SessionPatch[];
-            };
-            if (event.type === "snapshot" && event.sessions) {
-              this.broadcast(event.sessions);
-            }
-          } catch {
-            // ignore malformed events
-          }
-        }
-      }
+      const data = (await res.json()) as { sessions?: SessionPatch[] };
+      return { sessions: data.sessions ?? null, error: null };
     } catch (err) {
-      if (signal.aborted) return; // intentional disconnect, not an error
-      console.warn("[MuxServer] SSE connection lost:", err instanceof Error ? err.message : err);
-    } finally {
-      // Only clear our own controller — a concurrent connect() may have already
-      // set a new one (e.g. disconnect() → subscribe() → connect() in the same tick).
-      if (this.abortController === controller) {
-        this.abortController = null;
-      }
-    }
-
-    // Reconnect with backoff if there are still subscribers
-    if (this.subscribers.size > 0) {
-      console.log("[MuxServer] SSE reconnecting in 5s");
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = null;
-        if (this.subscribers.size > 0) void this.connect();
-      }, 5000);
+      clearTimeout(timeoutId);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[SessionBroadcaster] fetchSnapshot error:", msg);
+      return { sessions: null, error: msg };
     }
   }
 
   private disconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    if (this.intervalId !== null) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
     }
-    this.abortController?.abort();
-    this.abortController = null;
   }
 }
 
@@ -228,6 +196,7 @@ interface ManagedTerminal {
 }
 
 const RING_BUFFER_MAX = 50 * 1024; // 50KB max per terminal
+const WS_BUFFER_HIGH_WATERMARK = 64 * 1024; // 64KB
 const MAX_REATTACH_ATTEMPTS = 3;
 
 /**
@@ -570,12 +539,22 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
           }
         } else if (msg.ch === "subscribe") {
           if (msg.topics.includes("sessions") && !sessionUnsubscribe) {
-            sessionUnsubscribe = broadcaster.subscribe((sessions) => {
-              if (ws.readyState === WebSocket.OPEN) {
+            sessionUnsubscribe = broadcaster.subscribe(
+              (sessions) => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                if (ws.bufferedAmount > WS_BUFFER_HIGH_WATERMARK) {
+                  console.warn("[MuxServer] Skipping session snapshot — socket backpressured");
+                  return;
+                }
                 const snapMsg: ServerMessage = { ch: "sessions", type: "snapshot", sessions };
                 ws.send(JSON.stringify(snapMsg));
-              }
-            });
+              },
+              (error) => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                const errMsg: ServerMessage = { ch: "sessions", type: "error", error };
+                ws.send(JSON.stringify(errMsg));
+              },
+            );
           }
         }
       } catch (err) {
