@@ -14,6 +14,7 @@
     "@aoagents/ao-plugin-agent-claude-code": "workspace:*",
     "@aoagents/ao-plugin-agent-codex": "workspace:*",
     "@aoagents/ao-plugin-agent-aider": "workspace:*",
+    "@aoagents/ao-plugin-agent-copilot": "workspace:*",
     "@aoagents/ao-plugin-agent-opencode": "workspace:*",
     "@aoagents/ao-plugin-runtime-tmux": "workspace:*",
     "@aoagents/ao-plugin-runtime-process": "workspace:*",
