@@ -182,35 +182,34 @@ if [ "$SMOKE_ONLY" = false ]; then
   remote_sha="$(git rev-parse "$UPDATE_REMOTE/$TARGET_BRANCH")"
   if [ "$local_sha" = "$remote_sha" ]; then
     printf '\nAlready on latest version.\n'
-    exit 0
+  else
+    run_cmd git pull --ff-only "$UPDATE_REMOTE" "$TARGET_BRANCH"
+    run_cmd pnpm install
+
+    run_cmd pnpm --filter @aoagents/ao-core clean
+    run_cmd pnpm --filter @aoagents/ao-cli clean
+    run_cmd pnpm --filter @aoagents/ao-web clean
+
+    run_cmd pnpm --filter @aoagents/ao-core build
+    run_cmd pnpm --filter @aoagents/ao-cli build
+    run_cmd pnpm --filter @aoagents/ao-web build
+
+    printf '\nRefreshing ao launcher...\n'
+    (
+      cd "$REPO_ROOT/packages/ao"
+      if npm link 2>/dev/null; then
+        :
+      elif [ -t 0 ]; then
+        printf '  Permission denied. Retrying with sudo...\n'
+        sudo npm link
+      else
+        printf 'ERROR: Permission denied. Run manually: cd %s/packages/ao && sudo npm link\n' "$REPO_ROOT"
+        exit 1
+      fi
+    )
+
+    ensure_repo_clean "Update modified tracked files. Inspect git status, review the changes, and rerun after restoring a clean checkout if needed."
   fi
-
-  run_cmd git pull --ff-only "$UPDATE_REMOTE" "$TARGET_BRANCH"
-  run_cmd pnpm install
-
-  run_cmd pnpm --filter @aoagents/ao-core clean
-  run_cmd pnpm --filter @aoagents/ao-cli clean
-  run_cmd pnpm --filter @aoagents/ao-web clean
-
-  run_cmd pnpm --filter @aoagents/ao-core build
-  run_cmd pnpm --filter @aoagents/ao-cli build
-  run_cmd pnpm --filter @aoagents/ao-web build
-
-  printf '\nRefreshing ao launcher...\n'
-  (
-    cd "$REPO_ROOT/packages/ao"
-    if npm link 2>/dev/null; then
-      :
-    elif [ -t 0 ]; then
-      printf '  Permission denied. Retrying with sudo...\n'
-      sudo npm link
-    else
-      printf 'ERROR: Permission denied. Run manually: cd %s/packages/ao && sudo npm link\n' "$REPO_ROOT"
-      exit 1
-    fi
-  )
-
-  ensure_repo_clean "Update modified tracked files. Inspect git status, review the changes, and rerun after restoring a clean checkout if needed."
 fi
 
 if [ "$SKIP_SMOKE" = false ]; then

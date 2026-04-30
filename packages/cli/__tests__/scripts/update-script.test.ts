@@ -236,11 +236,12 @@ exit 0`,
     expect(result.stderr).toContain("commit or stash");
   });
 
-  it("exits early with 'Already on latest version' when local HEAD matches remote HEAD", () => {
+  it("skips rebuild but still runs smoke tests when local HEAD matches remote HEAD", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "ao-update-already-latest-"));
     const fakeRepo = join(tempRoot, "repo");
     mkdirSync(join(fakeRepo, "packages", "cli"), { recursive: true });
-    mkdirSync(join(fakeRepo, "packages", "ao"), { recursive: true });
+    mkdirSync(join(fakeRepo, "packages", "ao", "bin"), { recursive: true });
+    writeFileSync(join(fakeRepo, "packages", "ao", "bin", "ao.js"), "#!/usr/bin/env node\n");
 
     const binDir = join(tempRoot, "bin");
     mkdirSync(binDir, { recursive: true });
@@ -276,7 +277,7 @@ exit 0`,
       `printf 'node %s\\n' "$*" >> ${JSON.stringify(commandLog)}\nif [ "$1" = "--version" ]; then\n  printf 'v20.11.1\\n'\nfi\nexit 0`,
     );
 
-    const result = spawnSync("bash", [scriptPath, "--skip-smoke"], {
+    const result = spawnSync("bash", [scriptPath], {
       env: {
         ...process.env,
         PATH: `${binDir}:${process.env.PATH || ""}`,
@@ -290,9 +291,18 @@ exit 0`,
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Already on latest version");
+    // Rebuild commands should NOT have run
     expect(commands).not.toContain("pnpm install");
     expect(commands).not.toContain("pnpm --filter @aoagents/ao-core build");
     expect(commands).not.toContain("npm link");
+    expect(commands).not.toContain("git pull --ff-only origin main");
+    // Smoke tests SHOULD still have run
+    expect(commands).toContain(
+      `node ${join(fakeRepo, "packages", "ao", "bin", "ao.js")} --version`,
+    );
+    expect(commands).toContain(
+      `node ${join(fakeRepo, "packages", "ao", "bin", "ao.js")} doctor --help`,
+    );
   });
 
   it("rejects conflicting smoke flags in the script", () => {
