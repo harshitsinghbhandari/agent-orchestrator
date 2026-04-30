@@ -14,6 +14,9 @@ const {
   mockReadFile,
   mockReaddir,
   mockStat,
+  mockMkdir,
+  mockWriteFile,
+  mockRename,
   mockHomedir,
   mockReadLastJsonlEntry,
   mockReadLastActivityEntry,
@@ -25,6 +28,9 @@ const {
   mockReadFile: vi.fn(),
   mockReaddir: vi.fn(),
   mockStat: vi.fn(),
+  mockMkdir: vi.fn().mockResolvedValue(undefined),
+  mockWriteFile: vi.fn().mockResolvedValue(undefined),
+  mockRename: vi.fn().mockResolvedValue(undefined),
   mockHomedir: vi.fn(() => "/mock/home"),
   mockReadLastJsonlEntry: vi.fn(),
   mockReadLastActivityEntry: vi.fn(),
@@ -44,6 +50,9 @@ vi.mock("node:fs/promises", () => ({
   readFile: mockReadFile,
   readdir: mockReaddir,
   stat: mockStat,
+  mkdir: mockMkdir,
+  writeFile: mockWriteFile,
+  rename: mockRename,
 }));
 
 vi.mock("node:os", () => ({
@@ -67,6 +76,7 @@ import {
   manifest,
   default as defaultExport,
   _resetSessionDirCache,
+  _ensureFolderTrusted,
   resetPsCache,
 } from "../index.js";
 
@@ -899,26 +909,172 @@ describe("getRestoreCommand", () => {
 });
 
 // =========================================================================
-// setupWorkspaceHooks & postLaunchSetup
+// setupWorkspaceHooks & postLaunchSetup — trust folder management
 // =========================================================================
 describe("setupWorkspaceHooks", () => {
   const agent = create();
 
-  it("is a no-op (PATH wrappers are installed by session-manager)", async () => {
+  it("adds workspace path to Copilot trustedFolders", async () => {
+    mockReadFile.mockResolvedValue(
+      `// managed automatically\n${JSON.stringify({ trustedFolders: [] }, null, 2)}\n`,
+    );
+    delete process.env["COPILOT_HOME"];
+
     await agent.setupWorkspaceHooks!("/workspace/test", {
       dataDir: "/data",
       sessionId: "sess-1",
     });
-    // No file writes expected
-    expect(mockReadFile).not.toHaveBeenCalled();
+
+    expect(mockMkdir).toHaveBeenCalledWith("/mock/home/.copilot", { recursive: true });
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    expect(mockRename).toHaveBeenCalledTimes(1);
+
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    expect(written).toContain("// managed automatically");
+    expect(written).toContain('"/workspace/test"');
   });
 });
 
 describe("postLaunchSetup", () => {
   const agent = create();
 
-  it("is a no-op (PATH wrappers are re-ensured by session-manager)", async () => {
-    await agent.postLaunchSetup!(makeSession());
-    expect(mockReadFile).not.toHaveBeenCalled();
+  it("re-ensures the workspace is trusted after launch", async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({ trustedFolders: [] }));
+    delete process.env["COPILOT_HOME"];
+
+    await agent.postLaunchSetup!(makeSession({ workspacePath: "/workspace/test" }));
+
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op when session has no workspacePath", async () => {
+    await agent.postLaunchSetup!(makeSession({ workspacePath: undefined }));
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+});
+
+// =========================================================================
+// Trusted folder helper (_ensureFolderTrusted)
+// =========================================================================
+describe("ensureFolderTrusted", () => {
+  beforeEach(() => {
+    delete process.env["COPILOT_HOME"];
+  });
+
+  it("creates a fresh config.json when none exists", async () => {
+    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    mockReadFile.mockRejectedValue(enoent);
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    expect(mockMkdir).toHaveBeenCalledWith("/mock/home/.copilot", { recursive: true });
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    const parsed = JSON.parse(written) as { trustedFolders: string[] };
+    expect(parsed.trustedFolders).toEqual(["/workspace/new"]);
+  });
+
+  it("appends to existing trustedFolders without duplicating", async () => {
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ trustedFolders: ["/workspace/existing"], otherKey: "preserved" }),
+    );
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    const parsed = JSON.parse(written) as { trustedFolders: string[]; otherKey: string };
+    expect(parsed.trustedFolders).toEqual(["/workspace/existing", "/workspace/new"]);
+    expect(parsed.otherKey).toBe("preserved");
+  });
+
+  it("does not write when path is already trusted", async () => {
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ trustedFolders: ["/workspace/already"] }),
+    );
+
+    await _ensureFolderTrusted("/workspace/already");
+
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(mockRename).not.toHaveBeenCalled();
+  });
+
+  it("preserves the leading // comment header", async () => {
+    mockReadFile.mockResolvedValue(
+      `// User settings belong in settings.json.\n// This file is managed automatically.\n${JSON.stringify({ trustedFolders: [] }, null, 2)}\n`,
+    );
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    expect(written).toContain("// User settings belong in settings.json.");
+    expect(written).toContain("// This file is managed automatically.");
+    expect(written).toContain('"/workspace/new"');
+  });
+
+  it("respects COPILOT_HOME environment variable", async () => {
+    process.env["COPILOT_HOME"] = "/custom/copilot/home";
+    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    mockReadFile.mockRejectedValue(enoent);
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    expect(mockReadFile).toHaveBeenCalledWith("/custom/copilot/home/config.json", "utf-8");
+    expect(mockMkdir).toHaveBeenCalledWith("/custom/copilot/home", { recursive: true });
+    const renameCall = mockRename.mock.calls[0]!;
+    expect(renameCall[1]).toBe("/custom/copilot/home/config.json");
+
+    delete process.env["COPILOT_HOME"];
+  });
+
+  it("falls back to ~/.copilot when COPILOT_HOME is empty string", async () => {
+    process.env["COPILOT_HOME"] = "";
+    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    mockReadFile.mockRejectedValue(enoent);
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    expect(mockReadFile).toHaveBeenCalledWith("/mock/home/.copilot/config.json", "utf-8");
+
+    delete process.env["COPILOT_HOME"];
+  });
+
+  it("recovers from malformed JSON by writing a fresh trustedFolders entry", async () => {
+    mockReadFile.mockResolvedValue("not valid json {{{");
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    const parsed = JSON.parse(written) as { trustedFolders: string[] };
+    expect(parsed.trustedFolders).toEqual(["/workspace/new"]);
+  });
+
+  it("uses atomic write (temp file + rename)", async () => {
+    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    mockReadFile.mockRejectedValue(enoent);
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    const writeCall = mockWriteFile.mock.calls[0]!;
+    const tmpPath = writeCall[0] as string;
+    expect(tmpPath).toMatch(
+      /^\/mock\/home\/\.copilot\/config\.json\.tmp\.\d+\.\d+$/,
+    );
+    expect(mockRename).toHaveBeenCalledWith(tmpPath, "/mock/home/.copilot/config.json");
+  });
+
+  it("ignores non-string entries in existing trustedFolders array", async () => {
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({ trustedFolders: ["/valid/path", 42, null, "/another/valid"] }),
+    );
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    const parsed = JSON.parse(written) as { trustedFolders: string[] };
+    expect(parsed.trustedFolders).toEqual([
+      "/valid/path",
+      "/another/valid",
+      "/workspace/new",
+    ]);
   });
 });

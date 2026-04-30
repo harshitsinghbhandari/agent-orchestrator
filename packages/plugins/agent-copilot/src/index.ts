@@ -21,7 +21,7 @@ import {
   type WorkspaceHooksConfig,
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +39,102 @@ export const manifest = {
   version: "0.1.0",
   displayName: "GitHub Copilot",
 };
+
+// =============================================================================
+// Trusted Folder Management
+// =============================================================================
+
+/**
+ * Resolve Copilot's config directory.
+ * Copilot honors COPILOT_HOME if set; otherwise defaults to ~/.copilot.
+ */
+function getCopilotConfigDir(): string {
+  const fromEnv = process.env["COPILOT_HOME"];
+  if (fromEnv && fromEnv.trim()) return fromEnv;
+  return join(homedir(), ".copilot");
+}
+
+/**
+ * Split Copilot's config.json content into a leading "//" comment block and
+ * the JSON body. Copilot writes a "// This file is managed automatically"
+ * header that strict JSON.parse() would reject.
+ */
+function splitCopilotConfig(raw: string): { header: string; body: string } {
+  const lines = raw.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i]!.trim();
+    if (trimmed === "" || trimmed.startsWith("//")) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  const header = lines.slice(0, i).join("\n");
+  const body = lines.slice(i).join("\n");
+  return { header, body };
+}
+
+/**
+ * Add `workspacePath` to Copilot's `trustedFolders` list so the agent doesn't
+ * block on the "Do you trust the files in this folder?" prompt at startup.
+ *
+ * Reads {COPILOT_HOME or ~/.copilot}/config.json, appends the path if not
+ * already present, and writes atomically via a temp file + rename. Preserves
+ * the leading "// managed automatically" comment block.
+ */
+async function ensureFolderTrusted(workspacePath: string): Promise<void> {
+  const configDir = getCopilotConfigDir();
+  const configPath = join(configDir, "config.json");
+
+  let header = "";
+  let config: Record<string, unknown> = {};
+
+  try {
+    const raw = await readFile(configPath, "utf-8");
+    const split = splitCopilotConfig(raw);
+    header = split.header;
+    if (split.body.trim()) {
+      const parsed: unknown = JSON.parse(split.body);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    }
+  } catch (err: unknown) {
+    // ENOENT is fine — first run, config doesn't exist yet.
+    // Other errors (EACCES, malformed JSON) we still recover by starting
+    // fresh with an empty config. The trust folder is the only field we care
+    // about here; Copilot will recreate other fields on next launch.
+    if (
+      !(err instanceof Error && "code" in err && (err as { code?: string }).code === "ENOENT")
+    ) {
+      // Unparseable existing file — keep going with a fresh config rather than
+      // refusing to launch. Copilot's first-launch flow will repopulate it.
+    }
+  }
+
+  const existing = config["trustedFolders"];
+  const trusted: string[] = Array.isArray(existing)
+    ? existing.filter((v): v is string => typeof v === "string")
+    : [];
+
+  if (trusted.includes(workspacePath)) return;
+  trusted.push(workspacePath);
+  config["trustedFolders"] = trusted;
+
+  await mkdir(configDir, { recursive: true });
+
+  const json = JSON.stringify(config, null, 2);
+  const out = header
+    ? `${header.trimEnd()}\n${json}\n`
+    : `${json}\n`;
+
+  // Atomic write: temp file + rename. Avoids partial writes if multiple
+  // sessions race on launch, and ensures Copilot never reads a half-written file.
+  const tmpPath = `${configPath}.tmp.${process.pid}.${Date.now()}`;
+  await writeFile(tmpPath, out, "utf-8");
+  await rename(tmpPath, configPath);
+}
 
 // =============================================================================
 // Copilot Session Discovery
@@ -269,6 +365,9 @@ function extractCopilotCost(lines: CopilotEventLine[]): CostEstimate | undefined
  */
 let psCache: { output: string; timestamp: number; promise?: Promise<string> } | null = null;
 const PS_CACHE_TTL_MS = 5_000;
+
+/** @internal Exported for testing only. */
+export { ensureFolderTrusted as _ensureFolderTrusted };
 
 /** Reset the ps cache. Exported for testing only. */
 export function resetPsCache(): void {
@@ -637,15 +736,23 @@ function createCopilotAgent(): Agent {
     },
 
     async setupWorkspaceHooks(
-      _workspacePath: string,
+      workspacePath: string,
       _config: WorkspaceHooksConfig,
     ): Promise<void> {
       // PATH wrappers are installed by session-manager for all agents.
       // Copilot discovers AGENTS.md from .ao/ (written by setupPathWrapperWorkspace).
+      // Pre-trust the workspace so Copilot doesn't block at launch on the
+      // "Do you trust the files in this folder?" TUI prompt.
+      await ensureFolderTrusted(workspacePath);
     },
 
-    async postLaunchSetup(_session: Session): Promise<void> {
+    async postLaunchSetup(session: Session): Promise<void> {
       // PATH wrappers are re-ensured by session-manager.
+      // Re-ensure folder trust in case the workspace was created after
+      // setupWorkspaceHooks ran (e.g. worktree timing).
+      if (session.workspacePath) {
+        await ensureFolderTrusted(session.workspacePath);
+      }
     },
   };
 }
