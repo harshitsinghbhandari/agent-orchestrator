@@ -177,6 +177,14 @@ if [ "$SMOKE_ONLY" = false ]; then
   maybe_sync_origin_with_upstream
 
   run_cmd git fetch "$UPDATE_REMOTE" "$TARGET_BRANCH"
+
+  local_sha="$(git rev-parse HEAD)"
+  remote_sha="$(git rev-parse "$UPDATE_REMOTE/$TARGET_BRANCH")"
+  if [ "$local_sha" = "$remote_sha" ]; then
+    printf '\nAlready on latest version.\n'
+    exit 0
+  fi
+
   run_cmd git pull --ff-only "$UPDATE_REMOTE" "$TARGET_BRANCH"
   run_cmd pnpm install
 

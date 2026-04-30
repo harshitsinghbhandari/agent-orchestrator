@@ -36,6 +36,8 @@ describe("ao-update.sh", () => {
   "status --porcelain") ;;
   "branch --show-current") printf 'main\\n' ;;
   "fetch origin main") ;;
+  "rev-parse HEAD") printf 'oldsha000\\n' ;;
+  "rev-parse origin/main") printf 'newsha111\\n' ;;
   "pull --ff-only origin main") ;;
   *) ;;
 esac\nexit 0`,
@@ -96,6 +98,8 @@ esac\nexit 0`,
   "status --porcelain") ;;
   "branch --show-current") printf 'main\\n' ;;
   "fetch upstream main") ;;
+  "rev-parse HEAD") printf 'oldsha000\\n' ;;
+  "rev-parse upstream/main") printf 'newsha111\\n' ;;
   "pull --ff-only upstream main") ;;
   *) ;;
 esac\nexit 0`,
@@ -232,6 +236,65 @@ exit 0`,
     expect(result.stderr).toContain("commit or stash");
   });
 
+  it("exits early with 'Already on latest version' when local HEAD matches remote HEAD", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "ao-update-already-latest-"));
+    const fakeRepo = join(tempRoot, "repo");
+    mkdirSync(join(fakeRepo, "packages", "cli"), { recursive: true });
+    mkdirSync(join(fakeRepo, "packages", "ao"), { recursive: true });
+
+    const binDir = join(tempRoot, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const commandLog = join(tempRoot, "commands.log");
+
+    const sha = "abc123def456abc123def456abc123def456abc123";
+
+    createFakeBinary(
+      binDir,
+      "git",
+      `printf 'git %s\\n' "$*" >> ${JSON.stringify(commandLog)}
+case "$*" in
+  "remote get-url upstream") exit 1 ;;
+  "rev-parse --is-inside-work-tree") printf 'true\\n' ;;
+  "status --porcelain") ;;
+  "branch --show-current") printf 'main\\n' ;;
+  "fetch origin main") ;;
+  "rev-parse HEAD") printf '${sha}\\n' ;;
+  "rev-parse origin/main") printf '${sha}\\n' ;;
+  *) ;;
+esac
+exit 0`,
+    );
+    createFakeBinary(
+      binDir,
+      "pnpm",
+      `printf 'pnpm %s\\n' "$*" >> ${JSON.stringify(commandLog)}\nif [ "$1" = "--version" ]; then\n  printf '9.15.4\\n'\nfi\nexit 0`,
+    );
+    createFakeBinary(binDir, "npm", `printf 'npm %s\\n' "$*" >> ${JSON.stringify(commandLog)}\nexit 0`);
+    createFakeBinary(
+      binDir,
+      "node",
+      `printf 'node %s\\n' "$*" >> ${JSON.stringify(commandLog)}\nif [ "$1" = "--version" ]; then\n  printf 'v20.11.1\\n'\nfi\nexit 0`,
+    );
+
+    const result = spawnSync("bash", [scriptPath, "--skip-smoke"], {
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH || ""}`,
+        AO_REPO_ROOT: fakeRepo,
+      },
+      encoding: "utf8",
+    });
+
+    const commands = readFileSync(commandLog, "utf8");
+    rmSync(tempRoot, { recursive: true, force: true });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Already on latest version");
+    expect(commands).not.toContain("pnpm install");
+    expect(commands).not.toContain("pnpm --filter @aoagents/ao-core build");
+    expect(commands).not.toContain("npm link");
+  });
+
   it("rejects conflicting smoke flags in the script", () => {
     const result = spawnSync("bash", [scriptPath, "--skip-smoke", "--smoke-only"], {
       encoding: "utf8",
@@ -262,6 +325,8 @@ exit 0`,
     fi
     ;;
   "branch --show-current") printf "main\\n" ;;
+  "rev-parse HEAD") printf "oldsha000\\n" ;;
+  "rev-parse origin/main") printf "newsha111\\n" ;;
   "pull --ff-only origin main") touch ${JSON.stringify(join(tempRoot, "post-dirty"))} ;;
 esac
 exit 0`,
