@@ -2,11 +2,11 @@
 "@aoagents/ao-core": minor
 ---
 
-Enrich lifecycle events with PR/issue context for webhook consumers. All events now carry `context.pr` (url, title, number, branch) and `context.issueId`/`context.issueTitle` when available.
+Enrich lifecycle events with PR/issue context for webhook consumers. All events now carry `data.context` with `pr` (url, title, number, branch), `issueId`, `issueTitle`, `summary`, and `branch` when available, plus `data.schemaVersion: 2`.
 
 Additional changes:
-- Persist `issueTitle` in session metadata during spawn for round-trip availability.
-- Refactor `executeReaction()` to accept a full `Session` object instead of separate `sessionId`/`projectId` args.
-- Fix review-check logic missing new bugbot comments from the latest push (#895) — the `bugbot-comments` reaction now dispatches a detailed message with all automated comments.
-- Add `spawn-target` module for unified issue/PR target resolution.
-- Add `format-automated-comments` utility for sanitized bot comment rendering.
+
+- Persist `issueTitle` in session metadata during spawn so it survives across restarts and is available for event enrichment.
+- Refactor `executeReaction()` to accept a `Session` object instead of separate `sessionId`/`projectId` arguments.
+- Add `maybeDispatchCIFailureDetails()` — when a session enters `ci_failed`, the agent receives a follow-up message with the failed check names and URLs (deduped via fingerprint so subsequent polls don't re-send the same failure set).
+- `bugbot-comments` reaction dispatches an enriched message listing every automated comment inline, so the agent doesn't need to re-fetch via `gh api`.
