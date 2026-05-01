@@ -775,6 +775,66 @@ describe("resolveTmuxSession", () => {
       );
     });
 
+    it("prefers the project-scoped storageKey when session IDs collide", () => {
+      const fs = {
+        readdir: () => [
+          "aaaaaaaaaaaa-alpha",
+          "bbbbbbbbbbbb-beta",
+        ],
+        exists: (p: string) =>
+          p.endsWith("/aaaaaaaaaaaa-alpha/sessions/app-1") ||
+          p.endsWith("/bbbbbbbbbbbb-beta/sessions/app-1"),
+        homedir: () => "/home/user",
+      };
+      const mockExec = vi.fn()
+        .mockImplementationOnce(() => {
+          throw new Error("session not found"); // exact match fails
+        })
+        .mockImplementationOnce(() => {
+          return ""; // project-scoped candidate succeeds
+        });
+
+      const result = resolveTmuxSession("app-1", TMUX, mockExec, fs, "beta");
+
+      expect(result).toBe("bbbbbbbbbbbb-beta-app-1");
+      expect(mockExec).toHaveBeenNthCalledWith(
+        2,
+        TMUX,
+        ["has-session", "-t", "=bbbbbbbbbbbb-beta-app-1"],
+        { timeout: 5000 },
+      );
+    });
+
+    it("does not treat suffix project names as exact project matches", () => {
+      const fs = {
+        readdir: () => [
+          "aaaaaaaaaaaa-my-app",
+          "bbbbbbbbbbbb-app",
+        ],
+        exists: (p: string) =>
+          p.endsWith("/aaaaaaaaaaaa-my-app/sessions/app-1") ||
+          p.endsWith("/bbbbbbbbbbbb-app/sessions/app-1"),
+        homedir: () => "/home/user",
+      };
+      const mockExec = vi.fn()
+        .mockImplementationOnce(() => {
+          throw new Error("session not found"); // exact match fails
+        })
+        .mockImplementationOnce(() => {
+          return ""; // correctly probes exact project match first
+        });
+
+      const result = resolveTmuxSession("app-1", TMUX, mockExec, fs, "app");
+
+      expect(result).toBe("bbbbbbbbbbbb-app-app-1");
+      expect(mockExec).toHaveBeenNthCalledWith(
+        2,
+        TMUX,
+        ["has-session", "-t", "=bbbbbbbbbbbb-app-app-1"],
+        { timeout: 5000 },
+      );
+    });
+
     it("accepts wrapped storageKeys with spaces/unicode in the project name", () => {
       // Legacy storageKeys use basename(projectPath), which has no character
       // restrictions on-disk. Regexes that reject spaces or unicode would
