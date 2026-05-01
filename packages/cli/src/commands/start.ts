@@ -1247,6 +1247,7 @@ async function runStartup(
 
   // Start dashboard (unless --no-dashboard)
   if (opts?.dashboard !== false) {
+    const requestedDashboardPort = port;
     if (!(await isPortAvailable(port))) {
       const newPort = await findFreePort(port + 1);
       if (newPort === null) {
@@ -1264,7 +1265,9 @@ async function runStartup(
     const isMonorepo = existsSync(resolve(webDir, "server"));
     const willUseDevServer = isMonorepo && opts?.dev === true;
     if (opts?.rebuild) {
-      await rebuildDashboardProductionArtifacts(webDir);
+      await rebuildDashboardProductionArtifacts(webDir, [
+        ...new Set([requestedDashboardPort, port]),
+      ]);
     } else if (!willUseDevServer) {
       await preflight.checkBuilt(webDir);
       await clearStaleCacheIfNeeded(webDir);
