@@ -23,7 +23,7 @@ import {
 import { execFile, execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -75,18 +75,9 @@ function splitCopilotConfig(raw: string): { header: string; body: string } {
   return { header, body };
 }
 
-/**
- * Add `workspacePath` to Copilot's `trustedFolders` list so the agent doesn't
- * block on the "Do you trust the files in this folder?" prompt at startup.
- *
- * Reads {COPILOT_HOME or ~/.copilot}/config.json, appends the path if not
- * already present, and writes atomically via a temp file + rename. Preserves
- * the leading "// managed automatically" comment block.
- */
-async function ensureFolderTrusted(workspacePath: string): Promise<void> {
-  const configDir = getCopilotConfigDir();
-  const configPath = join(configDir, "config.json");
-
+async function readCopilotConfig(
+  configPath: string,
+): Promise<{ header: string; config: Record<string, unknown> }> {
   let header = "";
   let config: Record<string, unknown> = {};
 
@@ -100,48 +91,76 @@ async function ensureFolderTrusted(workspacePath: string): Promise<void> {
         config = parsed as Record<string, unknown>;
       }
     }
-  } catch (err: unknown) {
-    // ENOENT is fine — first run, config doesn't exist yet.
-    // Other errors (EACCES, malformed JSON) we still recover by starting
-    // fresh with an empty config. The trust folder is the only field we care
-    // about here; Copilot will recreate other fields on next launch.
-    if (
-      !(err instanceof Error && "code" in err && (err as { code?: string }).code === "ENOENT")
-    ) {
-      // Unparseable existing file — keep going with a fresh config rather than
-      // refusing to launch. Copilot's first-launch flow will repopulate it.
-    }
+  } catch {
+    // ENOENT is fine (first run). Other errors (EACCES, malformed JSON) are
+    // also recoverable — fall through with empty config so Copilot's
+    // first-launch flow can repopulate it.
   }
 
+  return { header, config };
+}
+
+function getTrustedFolders(config: Record<string, unknown>): string[] {
   const existing = config["trustedFolders"];
-  const trusted: string[] = Array.isArray(existing)
+  return Array.isArray(existing)
     ? existing.filter((v): v is string => typeof v === "string")
     : [];
+}
 
-  if (trusted.includes(workspacePath)) return;
-  trusted.push(workspacePath);
-  config["trustedFolders"] = trusted;
+const ENSURE_TRUSTED_MAX_ATTEMPTS = 3;
+
+/**
+ * Add `workspacePath` to Copilot's `trustedFolders` list so the agent doesn't
+ * block on the "Do you trust the files in this folder?" prompt at startup.
+ *
+ * Reads {COPILOT_HOME or ~/.copilot}/config.json, appends the path if missing,
+ * and writes atomically via a temp file + rename. Preserves the leading
+ * "// managed automatically" comment block.
+ *
+ * Concurrent-safe: re-reads the config immediately before writing and retries
+ * if a verifying read shows our entry was clobbered. Without this, two sessions
+ * launching simultaneously could each load the pre-existing list, append their
+ * own path, and the second writer's atomic rename would lose the first one's
+ * entry.
+ */
+async function ensureFolderTrusted(workspacePath: string): Promise<void> {
+  const configDir = getCopilotConfigDir();
+  const configPath = join(configDir, "config.json");
 
   await mkdir(configDir, { recursive: true });
 
-  const json = JSON.stringify(config, null, 2);
-  const out = header
-    ? `${header.trimEnd()}\n${json}\n`
-    : `${json}\n`;
+  for (let attempt = 0; attempt < ENSURE_TRUSTED_MAX_ATTEMPTS; attempt++) {
+    // Re-read on every attempt so we merge against the latest on-disk state.
+    const { header, config } = await readCopilotConfig(configPath);
+    const trusted = getTrustedFolders(config);
+    if (trusted.includes(workspacePath)) return;
 
-  // Atomic write: temp file + rename. Avoids partial writes if multiple
-  // sessions race on launch, and ensures Copilot never reads a half-written file.
-  const tmpPath = `${configPath}.tmp.${process.pid}.${Date.now()}`;
-  await writeFile(tmpPath, out, "utf-8");
-  await rename(tmpPath, configPath);
+    const merged = [...trusted, workspacePath];
+    const nextConfig: Record<string, unknown> = { ...config, trustedFolders: merged };
+
+    const json = JSON.stringify(nextConfig, null, 2);
+    const out = header ? `${header.trimEnd()}\n${json}\n` : `${json}\n`;
+
+    const tmpPath = `${configPath}.tmp.${process.pid}.${Date.now()}.${attempt}`;
+    await writeFile(tmpPath, out, "utf-8");
+    await rename(tmpPath, configPath);
+
+    // Verify a concurrent writer didn't clobber us. If it did, loop and merge.
+    const verified = await readCopilotConfig(configPath);
+    if (getTrustedFolders(verified.config).includes(workspacePath)) return;
+  }
+  // Best-effort: don't throw — folder trust is a UX optimization, not a
+  // correctness requirement. The dialog will show but Copilot still launches.
 }
 
 // =============================================================================
 // Copilot Session Discovery
 // =============================================================================
 
-/** Copilot session state directory: ~/.copilot/session-state/ */
-const COPILOT_SESSIONS_DIR = join(homedir(), ".copilot", "session-state");
+/** Resolve the Copilot session-state dir at call time so COPILOT_HOME is honored. */
+function getCopilotSessionsDir(): string {
+  return join(getCopilotConfigDir(), "session-state");
+}
 
 /** TTL for session directory cache (ms). Prevents redundant filesystem scans
  *  when getActivityState and getSessionInfo are called in the same refresh cycle. */
@@ -204,9 +223,10 @@ async function findCopilotSessionDir(workspacePath: string): Promise<string | nu
 }
 
 async function scanForSessionDir(workspacePath: string): Promise<string | null> {
+  const sessionsDir = getCopilotSessionsDir();
   let entries: string[];
   try {
-    entries = await readdir(COPILOT_SESSIONS_DIR);
+    entries = await readdir(sessionsDir);
   } catch {
     return null;
   }
@@ -214,25 +234,38 @@ async function scanForSessionDir(workspacePath: string): Promise<string | null> 
   let bestMatch: { dir: string; mtime: number } | null = null;
 
   for (const entry of entries) {
-    const sessionDir = join(COPILOT_SESSIONS_DIR, entry);
-    const yamlPath = join(sessionDir, "workspace.yaml");
+    const sessionDir = join(sessionsDir, entry);
+    const yaml = await readWorkspaceYaml(sessionDir);
+    if (!yaml) continue;
 
-    try {
-      const yamlContent = await readFile(yamlPath, "utf-8");
-      const parsed = parseWorkspaceYaml(yamlContent);
-
-      if (parsed.cwd === workspacePath || parsed.git_root === workspacePath) {
+    if (yaml.cwd === workspacePath || yaml.git_root === workspacePath) {
+      try {
         const s = await stat(sessionDir);
         if (!bestMatch || s.mtimeMs > bestMatch.mtime) {
           bestMatch = { dir: sessionDir, mtime: s.mtimeMs };
         }
+      } catch {
+        // Skip if stat fails
       }
-    } catch {
-      // Skip sessions with missing/unreadable workspace.yaml
     }
   }
 
   return bestMatch?.dir ?? null;
+}
+
+/**
+ * Read and parse the workspace.yaml in a Copilot session directory.
+ * Returns null on missing/unreadable file. Shared between session discovery,
+ * getSessionInfo, and getRestoreCommand to avoid duplicating the read.
+ */
+async function readWorkspaceYaml(sessionDir: string): Promise<CopilotWorkspaceYaml | null> {
+  const yamlPath = join(sessionDir, "workspace.yaml");
+  try {
+    const content = await readFile(yamlPath, "utf-8");
+    return parseWorkspaceYaml(content);
+  } catch {
+    return null;
+  }
 }
 
 // =============================================================================
@@ -260,6 +293,9 @@ interface CopilotEventLine {
       }
     >;
     shutdownType?: string;
+    // tool.execution_complete fields
+    success?: boolean;
+    error?: string;
   };
 }
 
@@ -310,6 +346,25 @@ async function parseEventsJsonlTail(
     }
   }
   return lines;
+}
+
+/**
+ * Inspect the last line of events.jsonl to detect a failed tool execution.
+ * `readLastJsonlEntry()` only returns `type`, so we re-read the tail when the
+ * type is `tool.execution_complete` and check `data.success`/`data.error`.
+ * Used by getActivityState to distinguish "blocked" from "active/ready/idle".
+ */
+async function isFailedToolExecution(eventsPath: string): Promise<boolean> {
+  // Re-read the tail (tiny — last line is small) and parse the final entry.
+  const lines = await parseEventsJsonlTail(eventsPath, 16_384);
+  const last = lines.at(-1);
+  if (!last || last.type !== "tool.execution_complete") return false;
+
+  const data = last.data;
+  if (!data) return false;
+  // success: false → permission denied, command failed, etc.
+  // error: present → also a failure signal.
+  return data.success === false || typeof data.error === "string";
 }
 
 /** Extract cost/usage from parsed events.jsonl lines */
@@ -551,9 +606,33 @@ function createCopilotAgent(): Agent {
       // Prevent update prompts during agent execution
       parts.push("--no-auto-update");
 
-      if (config.prompt) {
-        // Use -i to stay interactive after executing the prompt
-        parts.push("-i", shellEscape(config.prompt));
+      // Copilot has no separate `--system-prompt` flag, so we prepend the
+      // system prompt onto the user prompt via shell substitution. This keeps
+      // long system prompts out of the tmux command buffer (the file is
+      // dereferenced at exec time) and matches the pattern used by claude-code.
+      const buildPrompt = (): string | null => {
+        if (config.systemPromptFile) {
+          // $(cat file) ; printf '\n\n' ; <user prompt>
+          const promptSuffix = config.prompt ? config.prompt : "";
+          // Use printf for portable newlines; fall back to empty user prompt.
+          return `"$(cat ${shellEscape(config.systemPromptFile)}; printf '\\n\\n'; printf %s ${shellEscape(promptSuffix)})"`;
+        }
+        if (config.systemPrompt) {
+          const combined = config.prompt
+            ? `${config.systemPrompt}\n\n${config.prompt}`
+            : config.systemPrompt;
+          return shellEscape(combined);
+        }
+        if (config.prompt) {
+          return shellEscape(config.prompt);
+        }
+        return null;
+      };
+
+      const promptArg = buildPrompt();
+      if (promptArg) {
+        // -i keeps Copilot interactive after the prompt is delivered.
+        parts.push("-i", promptArg);
       }
 
       return parts.join(" ");
@@ -614,10 +693,15 @@ function createCopilotAgent(): Agent {
           const timestamp = entry.modifiedAt;
           const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
 
-          // Check for tool.execution_complete with failure (blocked)
+          // tool.execution_complete with success=false signals a tool failure
+          // (permission denied, error, etc). readLastJsonlEntry only returns
+          // the type, so we re-read the last line to inspect data.success/error.
           if (entry.lastType === "tool.execution_complete") {
-            // Cannot inspect data.success from readLastJsonlEntry — treat as
-            // potentially active (tool just finished) with age decay
+            if (await isFailedToolExecution(eventsPath)) {
+              return { state: "blocked", timestamp };
+            }
+            // Successful tool completion — treat as active (just finished work)
+            // with age decay.
             if (ageMs <= activeWindowMs) return { state: "active", timestamp };
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };
           }
@@ -666,19 +750,11 @@ function createCopilotAgent(): Agent {
       const sessionDir = await findCopilotSessionDir(session.workspacePath);
       if (!sessionDir) return null;
 
-      // Read workspace.yaml for summary and session ID
-      const yamlPath = join(sessionDir, "workspace.yaml");
-      let yaml: CopilotWorkspaceYaml;
-      try {
-        const yamlContent = await readFile(yamlPath, "utf-8");
-        yaml = parseWorkspaceYaml(yamlContent);
-      } catch {
-        return null;
-      }
+      const yaml = await readWorkspaceYaml(sessionDir);
+      if (!yaml) return null;
 
-      // Extract session ID from workspace.yaml id field, falling back to dir name
-      const agentSessionId =
-        yaml.id ?? sessionDir.split("/").pop() ?? null;
+      // Use basename() so the fallback works on Windows separators too.
+      const agentSessionId = yaml.id ?? (basename(sessionDir) || null);
 
       // Read events.jsonl for cost tracking
       const eventsPath = join(sessionDir, "events.jsonl");
@@ -702,15 +778,8 @@ function createCopilotAgent(): Agent {
       const sessionDir = await findCopilotSessionDir(session.workspacePath);
       if (!sessionDir) return null;
 
-      // Read workspace.yaml for the session UUID
-      const yamlPath = join(sessionDir, "workspace.yaml");
-      let yaml: CopilotWorkspaceYaml;
-      try {
-        const yamlContent = await readFile(yamlPath, "utf-8");
-        yaml = parseWorkspaceYaml(yamlContent);
-      } catch {
-        return null;
-      }
+      const yaml = await readWorkspaceYaml(sessionDir);
+      if (!yaml) return null;
 
       const sessionId = yaml.id;
       if (!sessionId) return null;
@@ -739,19 +808,31 @@ function createCopilotAgent(): Agent {
       workspacePath: string,
       _config: WorkspaceHooksConfig,
     ): Promise<void> {
-      // PATH wrappers are installed by session-manager for all agents.
-      // Copilot discovers AGENTS.md from .ao/ (written by setupPathWrapperWorkspace).
-      // Pre-trust the workspace so Copilot doesn't block at launch on the
-      // "Do you trust the files in this folder?" TUI prompt.
-      await ensureFolderTrusted(workspacePath);
+      // Pre-trust the workspace in {COPILOT_HOME or ~/.copilot}/config.json so
+      // Copilot doesn't block at launch on the "Do you trust the files in this
+      // folder?" TUI prompt. PATH wrappers (~/.ao/bin/gh, ~/.ao/bin/git) are
+      // installed separately by session-manager for all agents.
+      //
+      // Best-effort: if the config write fails (filesystem error, permission
+      // denied), swallow the error rather than aborting session spawn — the
+      // user will see the trust dialog but the session will still launch.
+      try {
+        await ensureFolderTrusted(workspacePath);
+      } catch {
+        // Trusted-folder management is a UX optimization, not a correctness
+        // requirement. Don't fail the spawn over it.
+      }
     },
 
     async postLaunchSetup(session: Session): Promise<void> {
-      // PATH wrappers are re-ensured by session-manager.
-      // Re-ensure folder trust in case the workspace was created after
-      // setupWorkspaceHooks ran (e.g. worktree timing).
-      if (session.workspacePath) {
+      // Re-ensure folder trust in case the workspace directory was created
+      // after setupWorkspaceHooks ran (e.g. worktree timing). Same best-effort
+      // semantics as setupWorkspaceHooks.
+      if (!session.workspacePath) return;
+      try {
         await ensureFolderTrusted(session.workspacePath);
+      } catch {
+        // See setupWorkspaceHooks comment.
       }
     },
   };

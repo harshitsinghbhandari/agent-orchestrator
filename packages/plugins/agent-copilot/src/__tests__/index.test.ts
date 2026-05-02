@@ -160,6 +160,47 @@ function makeWorkspaceYaml(fields: Record<string, string>): string {
     .join("\n");
 }
 
+/**
+ * Wire up mockReadFile/mockWriteFile/mockRename so they simulate a real
+ * filesystem round-trip: writes to a temp path are "committed" by rename,
+ * and subsequent reads of config.json return the latest written content.
+ *
+ * This is required because ensureFolderTrusted re-reads the config after
+ * each write to detect concurrent clobbers — without round-trip semantics,
+ * the verifying read would always see stale content and the loop would
+ * exhaust its attempts.
+ *
+ * `initialContent` of `null` simulates ENOENT (no config exists yet).
+ */
+function setupConfigRoundTrip(initialContent: string | null): void {
+  let current = initialContent;
+  const tmpWrites = new Map<string, string>();
+
+  mockReadFile.mockImplementation((path: string) => {
+    if (typeof path === "string" && path.endsWith("/config.json")) {
+      if (current === null) {
+        const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return Promise.reject(enoent);
+      }
+      return Promise.resolve(current);
+    }
+    return Promise.resolve("");
+  });
+
+  mockWriteFile.mockImplementation((path: string, content: string) => {
+    if (typeof path === "string") {
+      tmpWrites.set(path, content);
+    }
+    return Promise.resolve(undefined);
+  });
+
+  mockRename.mockImplementation((tmpPath: string) => {
+    const written = tmpWrites.get(tmpPath);
+    if (written !== undefined) current = written;
+    return Promise.resolve(undefined);
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   _resetSessionDirCache();
@@ -273,6 +314,45 @@ describe("getLaunchCommand", () => {
   it("always includes --no-auto-update", () => {
     const cmd = agent.getLaunchCommand(makeLaunchConfig({ model: "gpt-5.4", prompt: "Fix it" }));
     expect(cmd).toContain("--no-auto-update");
+  });
+
+  it("inlines systemPrompt as a prefix to the user prompt", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ systemPrompt: "You are helpful", prompt: "Fix the bug" }),
+    );
+    expect(cmd).toContain("-i 'You are helpful\n\nFix the bug'");
+  });
+
+  it("uses systemPrompt alone when no user prompt is given", () => {
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ systemPrompt: "You are helpful" }));
+    expect(cmd).toContain("-i 'You are helpful'");
+  });
+
+  it("uses systemPromptFile via shell substitution when provided", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ systemPromptFile: "/tmp/sys.md", prompt: "Go" }),
+    );
+    expect(cmd).toContain("-i ");
+    expect(cmd).toContain("$(cat '/tmp/sys.md'");
+    expect(cmd).toContain("'Go'");
+  });
+
+  it("prefers systemPromptFile over systemPrompt when both are set", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        systemPromptFile: "/tmp/sys.md",
+        systemPrompt: "ignored",
+        prompt: "Go",
+      }),
+    );
+    expect(cmd).toContain("$(cat '/tmp/sys.md'");
+    expect(cmd).not.toContain("'ignored'");
+  });
+
+  it("works with systemPromptFile but no user prompt", () => {
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ systemPromptFile: "/tmp/sys.md" }));
+    expect(cmd).toContain("-i ");
+    expect(cmd).toContain("$(cat '/tmp/sys.md'");
   });
 });
 
@@ -642,7 +722,7 @@ describe("getActivityState", () => {
     expect(result?.state).toBe("active");
   });
 
-  it("handles tool.execution_complete with age decay", async () => {
+  it("handles tool.execution_complete with age decay (success case)", async () => {
     mockTmuxWithProcess("copilot");
     setupSessionDir();
     mockReadLastJsonlEntry.mockResolvedValue({
@@ -650,10 +730,82 @@ describe("getActivityState", () => {
       payloadType: null,
       modifiedAt: new Date(),
     });
+    // No events.jsonl tail content → isFailedToolExecution returns false
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.includes("workspace.yaml")) {
+        return Promise.resolve(makeWorkspaceYaml({ id: "sess-uuid", cwd: "/workspace/test" }));
+      }
+      return Promise.resolve("");
+    });
 
     const session = makeSession({ runtimeHandle: makeTmuxHandle() });
     const result = await agent.getActivityState(session);
     expect(result?.state).toBe("active");
+  });
+
+  it("returns blocked when tool.execution_complete has success=false", async () => {
+    mockTmuxWithProcess("copilot");
+    setupSessionDir();
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "tool.execution_complete",
+      payloadType: null,
+      modifiedAt: new Date(),
+    });
+    // Mock events.jsonl tail with a failure entry
+    const failureLine = JSON.stringify({
+      type: "tool.execution_complete",
+      data: { success: false, error: "Permission denied" },
+    });
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.includes("workspace.yaml")) {
+        return Promise.resolve(makeWorkspaceYaml({ id: "sess-uuid", cwd: "/workspace/test" }));
+      }
+      if (path.includes("events.jsonl")) {
+        return Promise.resolve(failureLine + "\n");
+      }
+      return Promise.resolve("");
+    });
+    mockStat.mockResolvedValue({
+      mtimeMs: Date.now(),
+      mtime: new Date(),
+      size: failureLine.length + 1,
+    });
+
+    const session = makeSession({ runtimeHandle: makeTmuxHandle() });
+    const result = await agent.getActivityState(session);
+    expect(result?.state).toBe("blocked");
+  });
+
+  it("returns blocked when tool.execution_complete has an error field", async () => {
+    mockTmuxWithProcess("copilot");
+    setupSessionDir();
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "tool.execution_complete",
+      payloadType: null,
+      modifiedAt: new Date(),
+    });
+    const errorLine = JSON.stringify({
+      type: "tool.execution_complete",
+      data: { error: "Tool crashed" },
+    });
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.includes("workspace.yaml")) {
+        return Promise.resolve(makeWorkspaceYaml({ id: "sess-uuid", cwd: "/workspace/test" }));
+      }
+      if (path.includes("events.jsonl")) {
+        return Promise.resolve(errorLine + "\n");
+      }
+      return Promise.resolve("");
+    });
+    mockStat.mockResolvedValue({
+      mtimeMs: Date.now(),
+      mtime: new Date(),
+      size: errorLine.length + 1,
+    });
+
+    const session = makeSession({ runtimeHandle: makeTmuxHandle() });
+    const result = await agent.getActivityState(session);
+    expect(result?.state).toBe("blocked");
   });
 
   it("returns exited when process handle has dead PID", async () => {
@@ -754,6 +906,36 @@ describe("getSessionInfo", () => {
     mockStat.mockResolvedValue({ mtimeMs: 1000, mtime: new Date(1000) });
 
     expect(await agent.getSessionInfo(makeSession())).toBeNull();
+  });
+
+  it("falls back to basename(sessionDir) when workspace.yaml has no id", async () => {
+    mockReaddir.mockResolvedValue(["uuid-from-dir-name"]);
+    mockReadFile.mockImplementation((path: string) => {
+      if (path.includes("workspace.yaml")) {
+        // No `id` field — should fall back to basename
+        return Promise.resolve(makeWorkspaceYaml({ cwd: "/workspace/test", summary: "x" }));
+      }
+      return Promise.resolve("");
+    });
+    mockStat.mockResolvedValue({ mtimeMs: 1000, mtime: new Date(1000), size: 0 });
+
+    const result = await agent.getSessionInfo(makeSession());
+    expect(result).not.toBeNull();
+    expect(result!.agentSessionId).toBe("uuid-from-dir-name");
+  });
+
+  it("respects COPILOT_HOME for session discovery", async () => {
+    process.env["COPILOT_HOME"] = "/custom/copilot/home";
+    let readdirCalledWith: string | undefined;
+    mockReaddir.mockImplementation((path: string) => {
+      readdirCalledWith = path;
+      return Promise.reject(new Error("ENOENT"));
+    });
+
+    await agent.getSessionInfo(makeSession());
+    expect(readdirCalledWith).toBe("/custom/copilot/home/session-state");
+
+    delete process.env["COPILOT_HOME"];
   });
 
   it("picks the most recently modified matching session directory", async () => {
@@ -915,7 +1097,7 @@ describe("setupWorkspaceHooks", () => {
   const agent = create();
 
   it("adds workspace path to Copilot trustedFolders", async () => {
-    mockReadFile.mockResolvedValue(
+    setupConfigRoundTrip(
       `// managed automatically\n${JSON.stringify({ trustedFolders: [] }, null, 2)}\n`,
     );
     delete process.env["COPILOT_HOME"];
@@ -926,12 +1108,25 @@ describe("setupWorkspaceHooks", () => {
     });
 
     expect(mockMkdir).toHaveBeenCalledWith("/mock/home/.copilot", { recursive: true });
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
-    expect(mockRename).toHaveBeenCalledTimes(1);
+    expect(mockWriteFile).toHaveBeenCalled();
+    expect(mockRename).toHaveBeenCalled();
 
     const written = mockWriteFile.mock.calls[0]![1] as string;
     expect(written).toContain("// managed automatically");
     expect(written).toContain('"/workspace/test"');
+  });
+
+  it("swallows errors from ensureFolderTrusted (best-effort)", async () => {
+    // mkdir failure shouldn't abort session spawn
+    mockMkdir.mockRejectedValueOnce(new Error("EACCES"));
+    delete process.env["COPILOT_HOME"];
+
+    await expect(
+      agent.setupWorkspaceHooks!("/workspace/test", {
+        dataDir: "/data",
+        sessionId: "sess-1",
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -939,12 +1134,21 @@ describe("postLaunchSetup", () => {
   const agent = create();
 
   it("re-ensures the workspace is trusted after launch", async () => {
-    mockReadFile.mockResolvedValue(JSON.stringify({ trustedFolders: [] }));
+    setupConfigRoundTrip(JSON.stringify({ trustedFolders: [] }));
     delete process.env["COPILOT_HOME"];
 
     await agent.postLaunchSetup!(makeSession({ workspacePath: "/workspace/test" }));
 
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    expect(mockWriteFile).toHaveBeenCalled();
+    const written = mockWriteFile.mock.calls[0]![1] as string;
+    expect(written).toContain('"/workspace/test"');
+  });
+
+  it("swallows errors from ensureFolderTrusted (best-effort)", async () => {
+    mockMkdir.mockRejectedValueOnce(new Error("EACCES"));
+    await expect(
+      agent.postLaunchSetup!(makeSession({ workspacePath: "/workspace/test" })),
+    ).resolves.toBeUndefined();
   });
 
   it("is a no-op when session has no workspacePath", async () => {
@@ -962,8 +1166,7 @@ describe("ensureFolderTrusted", () => {
   });
 
   it("creates a fresh config.json when none exists", async () => {
-    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    mockReadFile.mockRejectedValue(enoent);
+    setupConfigRoundTrip(null);
 
     await _ensureFolderTrusted("/workspace/new");
 
@@ -974,7 +1177,7 @@ describe("ensureFolderTrusted", () => {
   });
 
   it("appends to existing trustedFolders without duplicating", async () => {
-    mockReadFile.mockResolvedValue(
+    setupConfigRoundTrip(
       JSON.stringify({ trustedFolders: ["/workspace/existing"], otherKey: "preserved" }),
     );
 
@@ -987,9 +1190,7 @@ describe("ensureFolderTrusted", () => {
   });
 
   it("does not write when path is already trusted", async () => {
-    mockReadFile.mockResolvedValue(
-      JSON.stringify({ trustedFolders: ["/workspace/already"] }),
-    );
+    setupConfigRoundTrip(JSON.stringify({ trustedFolders: ["/workspace/already"] }));
 
     await _ensureFolderTrusted("/workspace/already");
 
@@ -998,7 +1199,7 @@ describe("ensureFolderTrusted", () => {
   });
 
   it("preserves the leading // comment header", async () => {
-    mockReadFile.mockResolvedValue(
+    setupConfigRoundTrip(
       `// User settings belong in settings.json.\n// This file is managed automatically.\n${JSON.stringify({ trustedFolders: [] }, null, 2)}\n`,
     );
 
@@ -1012,8 +1213,7 @@ describe("ensureFolderTrusted", () => {
 
   it("respects COPILOT_HOME environment variable", async () => {
     process.env["COPILOT_HOME"] = "/custom/copilot/home";
-    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    mockReadFile.mockRejectedValue(enoent);
+    setupConfigRoundTrip(null);
 
     await _ensureFolderTrusted("/workspace/new");
 
@@ -1027,8 +1227,7 @@ describe("ensureFolderTrusted", () => {
 
   it("falls back to ~/.copilot when COPILOT_HOME is empty string", async () => {
     process.env["COPILOT_HOME"] = "";
-    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    mockReadFile.mockRejectedValue(enoent);
+    setupConfigRoundTrip(null);
 
     await _ensureFolderTrusted("/workspace/new");
 
@@ -1038,32 +1237,32 @@ describe("ensureFolderTrusted", () => {
   });
 
   it("recovers from malformed JSON by writing a fresh trustedFolders entry", async () => {
-    mockReadFile.mockResolvedValue("not valid json {{{");
+    setupConfigRoundTrip("not valid json {{{");
 
     await _ensureFolderTrusted("/workspace/new");
 
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    expect(mockWriteFile).toHaveBeenCalled();
     const written = mockWriteFile.mock.calls[0]![1] as string;
     const parsed = JSON.parse(written) as { trustedFolders: string[] };
     expect(parsed.trustedFolders).toEqual(["/workspace/new"]);
   });
 
   it("uses atomic write (temp file + rename)", async () => {
-    const enoent = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    mockReadFile.mockRejectedValue(enoent);
+    setupConfigRoundTrip(null);
 
     await _ensureFolderTrusted("/workspace/new");
 
     const writeCall = mockWriteFile.mock.calls[0]!;
     const tmpPath = writeCall[0] as string;
+    // tmp path: config.json.tmp.<pid>.<timestamp>.<attempt>
     expect(tmpPath).toMatch(
-      /^\/mock\/home\/\.copilot\/config\.json\.tmp\.\d+\.\d+$/,
+      /^\/mock\/home\/\.copilot\/config\.json\.tmp\.\d+\.\d+\.\d+$/,
     );
     expect(mockRename).toHaveBeenCalledWith(tmpPath, "/mock/home/.copilot/config.json");
   });
 
   it("ignores non-string entries in existing trustedFolders array", async () => {
-    mockReadFile.mockResolvedValue(
+    setupConfigRoundTrip(
       JSON.stringify({ trustedFolders: ["/valid/path", 42, null, "/another/valid"] }),
     );
 
@@ -1077,4 +1276,45 @@ describe("ensureFolderTrusted", () => {
       "/workspace/new",
     ]);
   });
+
+  it("retries when a concurrent writer clobbers our entry", async () => {
+    let writeCount = 0;
+    let current: string = JSON.stringify({ trustedFolders: [] });
+
+    mockReadFile.mockImplementation(() => Promise.resolve(current));
+    mockWriteFile.mockImplementation((_path: string, content: string) => {
+      writeCount++;
+      // Simulate a concurrent writer clobbering our first write — but accept
+      // the second attempt so the loop terminates.
+      if (writeCount === 1) {
+        current = JSON.stringify({ trustedFolders: ["/concurrent/other"] });
+      } else {
+        current = content;
+      }
+      return Promise.resolve(undefined);
+    });
+    mockRename.mockResolvedValue(undefined);
+
+    await _ensureFolderTrusted("/workspace/new");
+
+    expect(writeCount).toBeGreaterThanOrEqual(2);
+    const finalParsed = JSON.parse(splitHeader(current).body) as { trustedFolders: string[] };
+    expect(finalParsed.trustedFolders).toContain("/workspace/new");
+    expect(finalParsed.trustedFolders).toContain("/concurrent/other");
+  });
 });
+
+/** Strip a leading // comment block to JSON-parse what's left. */
+function splitHeader(raw: string): { body: string } {
+  const lines = raw.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const t = lines[i]!.trim();
+    if (t === "" || t.startsWith("//")) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return { body: lines.slice(i).join("\n") };
+}
