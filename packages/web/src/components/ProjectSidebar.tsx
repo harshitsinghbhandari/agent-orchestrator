@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import type { ProjectInfo } from "@/lib/project-name";
 import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "@/lib/types";
-import { isOrchestratorSession } from "@aoagents/ao-core/types";
+import { isOrchestratorSession, isTerminalSession } from "@aoagents/ao-core/types";
 import { getSessionTitle, humanizeBranch } from "@/lib/format";
 import { usePopoverClamp } from "@/hooks/usePopoverClamp";
 import { getOrchestratorSessionId } from "@/lib/orchestrator-utils";
@@ -397,6 +397,13 @@ function ProjectSidebarInner({
           const orchestratorSession = sessions?.find(
             (s) => s.projectId === project.id && s.id === canonicalOrchestratorId,
           );
+          const hasLiveOrchestrator = Boolean(
+            orchestratorSession &&
+              !isTerminalSession({
+                status: orchestratorSession.status,
+                activity: orchestratorSession.activity,
+              }),
+          );
 
           return (
             <div key={project.id} className="project-sidebar__project">
@@ -563,6 +570,22 @@ function ProjectSidebarInner({
                       role="menu"
                       aria-label={`${project.name} actions`}
                     >
+                      {hasLiveOrchestrator && orchestratorSession ? (
+                        <button
+                          type="button"
+                          className="project-sidebar__proj-menu-item"
+                          role="menuitem"
+                          onClick={() => {
+                            setProjectMenuOpenId(null);
+                            navigate(
+                              projectSessionPath(project.id, orchestratorSession.id),
+                              orchestratorSession,
+                            );
+                          }}
+                        >
+                          Open orchestrator
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="project-sidebar__proj-menu-item"
