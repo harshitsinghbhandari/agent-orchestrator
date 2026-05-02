@@ -44,7 +44,14 @@ ao doctor                              # Check install, runtime, and stale temp 
 ao doctor --fix                        # Apply safe fixes automatically
 ao update                              # Update local AO install (source installs only)
 ao config-help                         # Show full config schema reference
+ao reset                               # Wipe a project's local AO state (interactive)
+ao reset <project>                     # Wipe state for a specific project
+ao reset -p <project>                  # Same, via flag
+ao reset --all                         # Wipe state for every configured project
+ao reset --yes                         # Skip the confirmation prompt
 ```
+
+`ao reset` removes the project's V2 storage directory (`~/.agent-orchestrator/projects/<project>/`), unregisters the project from the global config registry, prunes its slot from portfolio preferences, and deletes its rows from the activity events SQLite log. Live tmux sessions are killed first. The repo on disk and your `agent-orchestrator.yaml` are **never** touched. The shared observability dir (`~/.agent-orchestrator/<hash>-observability/`) and any legacy V1 storage are intentionally preserved. `ao reset` refuses to run while `ao start` is serving the targeted project — stop it first with `ao stop`.
 
 ## Zsh completion
 

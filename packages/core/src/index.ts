@@ -371,7 +371,7 @@ export { atomicWriteFileSync } from "./atomic-write.js";
 
 // Activity event logging — structured diagnostic event trail
 export { recordActivityEvent, droppedEventCount } from "./activity-events.js";
-export { isActivityEventsFtsEnabled } from "./events-db.js";
+export { isActivityEventsFtsEnabled, deleteEventsForProject } from "./events-db.js";
 export type {
   ActivityEventInput,
   ActivityEventKind,
