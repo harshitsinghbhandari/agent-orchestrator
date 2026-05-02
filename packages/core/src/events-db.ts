@@ -142,15 +142,20 @@ export function isActivityEventsFtsEnabled(): boolean {
 
 /**
  * Delete every activity_events row whose project_id matches.
- * Returns the number of rows removed (0 if the DB is unavailable).
+ * `available` distinguishes "DB couldn't be opened" (skip silently) from
+ * "DB worked, deleted N rows". Callers that want to warn on a locked /
+ * missing DB need that distinction — `removed === 0` alone is ambiguous.
  */
-export function deleteEventsForProject(projectId: string): number {
+export function deleteEventsForProject(projectId: string): {
+  available: boolean;
+  removed: number;
+} {
   const db = getDb();
-  if (!db) return 0;
+  if (!db) return { available: false, removed: 0 };
   const result = db.prepare(`DELETE FROM activity_events WHERE project_id = ?`).run(projectId) as {
     changes?: number;
   };
-  return result.changes ?? 0;
+  return { available: true, removed: result.changes ?? 0 };
 }
 
 /**

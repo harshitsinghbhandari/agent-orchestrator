@@ -79,6 +79,39 @@ Steps 3–5 are best-effort (try/catch). Reset is destructive by definition;
 a corrupted global config or unavailable SQLite must not block disk
 cleanup, which is the most user-visible outcome.
 
+## Robustness against degraded environments
+
+Reset is the recovery tool — it has to keep working when the rest of AO is
+broken. Several edge cases are handled explicitly:
+
+- **Corrupted/missing local config.** If `loadConfig()` throws (bad YAML,
+  unreadable file), reset prints a yellow warning and continues with
+  `config = null`. We still need to clean up disk state and orphan
+  registry entries.
+- **Orphan projects.** A project can exist in the global registry
+  (`~/.agent-orchestrator/config.yaml`) but not in the local config (e.g.
+  the user wiped their local YAML manually). `ao reset <orphan-id>` works
+  by name; `ao reset --all` includes orphans automatically. The preview
+  marks them with a yellow `(orphan — not in local config)` tag so the
+  operator can see what they're touching.
+- **Invalid project IDs.** `getProjectDir(projectId)` rejects `.`, `..`,
+  long names, and unsafe characters. With `--all`, reset filters those out
+  with a warning instead of crashing the whole loop on the first bad id.
+- **`getRunning()` lock contention.** If reading `running.json` throws
+  (stale lock, contention timeout), reset prints a warning and proceeds.
+  The live-orchestrator check is a safety net, not a hard blocker.
+- **Locked activity events DB.** `deleteEventsForProject` returns
+  `{ available, removed }`. If `available === false` (better-sqlite3
+  unavailable, or any caller threw), reset prints a single
+  end-of-run warning that event rows for the targeted project(s) may
+  persist — instead of silently swallowing the failure as "0 rows
+  removed".
+- **`cwd` inside a worktree.** When run from
+  `~/.agent-orchestrator/projects/X/worktrees/Y` (a session worktree, not
+  the repo root), reset matches against the parent project. Without this,
+  multi-project users in worktrees would have to type the project id
+  explicitly.
+
 ## What it intentionally does NOT remove
 
 - **The repo on disk** (`projectConfig.path`) and the project's

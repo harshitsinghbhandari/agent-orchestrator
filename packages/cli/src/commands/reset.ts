@@ -23,6 +23,17 @@
  *   the preview so the operator knows what survives.
  * - Each persistence layer is reported only when it actually changed.
  *
+ * Robustness:
+ * - Tolerates a corrupted/missing local config (we still need to reset orphans
+ *   and clean disk state).
+ * - Tolerates orphan projects: an id that exists in the global registry but
+ *   not the local config can still be reset by name, and `--all` includes
+ *   orphans automatically.
+ * - Tolerates invalid project IDs in `--all` (skip with a warning instead of
+ *   crashing the whole loop).
+ * - Auto-matches cwd inside a worktree (~/.agent-orchestrator/projects/X/worktrees/Y)
+ *   to the parent project, not just the repo root.
+ *
  * Live sessions are killed first via SessionManager.kill (runtime-agnostic —
  * works for tmux, process, and any future runtime plugin) before disk wipe.
  */
@@ -35,13 +46,13 @@ import type { Command } from "commander";
 import {
   loadConfig,
   getProjectDir,
+  getProjectWorktreesDir,
   loadGlobalConfig,
   unregisterProject,
   loadPreferences,
   savePreferences,
   deleteEventsForProject,
   type LoadedConfig,
-  type ProjectConfig,
   type PortfolioPreferences,
 } from "@aoagents/ao-core";
 import { promptConfirm } from "../lib/prompts.js";
@@ -52,47 +63,83 @@ import { getRunning } from "../lib/running-state.js";
 
 interface ResolvedTarget {
   projectId: string;
-  project: ProjectConfig;
+}
+
+/** True if this looks like a safe project id we can pass to getProjectDir(). */
+function isSafeProjectId(projectId: string): boolean {
+  try {
+    getProjectDir(projectId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read every projectId known to the global registry, swallowing errors. */
+function readGlobalProjectIds(): string[] {
+  try {
+    const global = loadGlobalConfig();
+    return global ? Object.keys(global.projects) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
  * Resolve project from config — auto-detect from cwd or use explicit argument.
+ *
+ * Supports orphan projects: an id that exists in the global registry but not
+ * the local config is still resolvable by name, so users can clean up state
+ * for projects they no longer have a local YAML for.
  */
 function resolveProjectForReset(
-  config: LoadedConfig,
+  config: LoadedConfig | null,
   projectArg?: string,
 ): ResolvedTarget {
-  const projectIds = Object.keys(config.projects);
+  const localProjectIds = config ? Object.keys(config.projects) : [];
+  const globalProjectIds = readGlobalProjectIds();
+  const allKnownIds = Array.from(new Set([...localProjectIds, ...globalProjectIds]));
 
-  if (projectIds.length === 0) {
+  if (projectArg) {
+    if (allKnownIds.includes(projectArg)) {
+      return { projectId: projectArg };
+    }
+    if (allKnownIds.length === 0) {
+      throw new Error(`Project "${projectArg}" not found in any config.`);
+    }
+    throw new Error(
+      `Project "${projectArg}" not found. Known projects:\n  ${allKnownIds.join(", ")}`,
+    );
+  }
+
+  if (allKnownIds.length === 0) {
     throw new Error("No projects configured. Nothing to reset.");
   }
 
-  if (projectArg) {
-    const project = config.projects[projectArg];
-    if (!project) {
-      throw new Error(
-        `Project "${projectArg}" not found. Available projects:\n  ${projectIds.join(", ")}`,
-      );
-    }
-    return { projectId: projectArg, project };
+  if (allKnownIds.length === 1) {
+    return { projectId: allKnownIds[0] };
   }
 
-  // Single project — use it
-  if (projectIds.length === 1) {
-    const projectId = projectIds[0];
-    return { projectId, project: config.projects[projectId] };
-  }
-
-  // Multiple projects — try matching cwd
+  // Multiple projects — try matching cwd against repo paths first…
   const currentDir = resolve(cwd());
-  const matchedProjectId = findProjectForDirectory(config.projects, currentDir);
-  if (matchedProjectId) {
-    return { projectId: matchedProjectId, project: config.projects[matchedProjectId] };
+  if (config) {
+    const matchedProjectId = findProjectForDirectory(config.projects, currentDir);
+    if (matchedProjectId) return { projectId: matchedProjectId };
+  }
+
+  // …then against AO-managed worktree directories. Users often run `ao reset`
+  // from inside a worktree, where cwd is under getProjectWorktreesDir(id) —
+  // not under project.path — so the repo-path match misses.
+  for (const id of allKnownIds) {
+    if (!isSafeProjectId(id)) continue;
+    const worktreesDir = getProjectWorktreesDir(id);
+    if (currentDir === worktreesDir || currentDir.startsWith(worktreesDir + "/")) {
+      return { projectId: id };
+    }
   }
 
   throw new Error(
-    `Multiple projects configured. Specify which one to reset:\n  ${projectIds.map((id) => `ao reset ${id}`).join("\n  ")}\n\nOr use ao reset --all to reset all projects.`,
+    `Multiple projects configured. Specify which one to reset:\n  ${allKnownIds.map((id) => `ao reset ${id}`).join("\n  ")}\n\nOr use ao reset --all to reset all projects.`,
   );
 }
 
@@ -151,7 +198,6 @@ function getDirSize(dirPath: string): number {
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name);
       try {
-        // isDirectory()/isFile() on Dirent reflects the entry itself (no symlink follow).
         if (entry.isSymbolicLink()) continue;
         if (entry.isDirectory()) {
           totalSize += getDirSize(fullPath);
@@ -180,11 +226,14 @@ function formatSize(bytes: number): string {
 
 /**
  * Kill all live sessions for a project before wiping state.
+ * Skipped silently if config is unavailable — without a config we can't
+ * even build the SessionManager, but reset can still wipe disk state.
  */
 async function killProjectSessions(
-  config: LoadedConfig,
+  config: LoadedConfig | null,
   projectId: string,
 ): Promise<number> {
+  if (!config) return 0;
   let killed = 0;
   try {
     const sm = await getSessionManager(config);
@@ -297,6 +346,7 @@ interface PerTargetResult {
   projectId: string;
   diskRemoved: boolean;
   diskError?: string;
+  eventsAvailable: boolean;
   eventsRemoved: number;
   killed: number;
 }
@@ -307,7 +357,7 @@ export function registerReset(program: Command): void {
     .description("Wipe a project's local AO state (storage dir + global registry entry)")
     .option("-p, --project <id>", "Specify project ID to reset")
     .option("--yes", "Skip confirmation prompt")
-    .option("--all", "Reset all projects")
+    .option("--all", "Reset all projects (including orphans in the global registry)")
     .action(
       async (
         projectArg?: string,
@@ -329,17 +379,52 @@ export function registerReset(program: Command): void {
           process.exit(1);
         }
 
-        const config = loadConfig();
+        // Tolerate a corrupted/missing local config: we still need to be able
+        // to clean up orphans and disk state. We treat the local config as
+        // "advisory" — the global registry is the authoritative project list.
+        let config: LoadedConfig | null = null;
+        try {
+          config = loadConfig();
+        } catch (err) {
+          console.warn(
+            chalk.yellow(
+              `Warning: could not read local agent-orchestrator.yaml — proceeding from global registry only.`,
+            ),
+          );
+          console.warn(
+            chalk.dim(
+              `  ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        }
+
         const effectiveProjectArg = projectArg ?? opts.project;
 
         // Determine which projects to reset
         let targets: ResolvedTarget[];
 
         if (opts.all) {
-          targets = Object.entries(config.projects).map(([id, project]) => ({
-            projectId: id,
-            project,
-          }));
+          const localIds = config ? Object.keys(config.projects) : [];
+          const globalIds = readGlobalProjectIds();
+          const merged = Array.from(new Set([...localIds, ...globalIds]));
+
+          // Filter out unsafe ids early so one bad apple can't crash the loop.
+          // assertSafeProjectId rejects ".", "..", weird chars, length > 128.
+          const safeIds: string[] = [];
+          const unsafeIds: string[] = [];
+          for (const id of merged) {
+            (isSafeProjectId(id) ? safeIds : unsafeIds).push(id);
+          }
+          if (unsafeIds.length > 0) {
+            console.warn(
+              chalk.yellow(
+                `Warning: skipping ${unsafeIds.length} project(s) with unsafe ids:`,
+              ),
+            );
+            for (const id of unsafeIds) console.warn(chalk.dim(`  - ${JSON.stringify(id)}`));
+          }
+
+          targets = safeIds.map((id) => ({ projectId: id }));
           if (targets.length === 0) {
             console.log(chalk.yellow("No projects configured. Nothing to reset."));
             return;
@@ -350,11 +435,20 @@ export function registerReset(program: Command): void {
 
         // Refuse to operate on a project served by a live `ao start` instance.
         // Wiping under the daemon's feet corrupts in-memory orchestrator state.
-        const running = await getRunning();
+        let running: Awaited<ReturnType<typeof getRunning>> = null;
+        try {
+          running = await getRunning();
+        } catch (err) {
+          console.warn(
+            chalk.yellow(
+              `Warning: could not check if 'ao start' is running (${err instanceof Error ? err.message : String(err)}). Proceeding anyway.`,
+            ),
+          );
+        }
         if (running) {
           const overlap = targets
             .map((t) => t.projectId)
-            .filter((id) => running.projects.includes(id));
+            .filter((id) => running!.projects.includes(id));
           if (overlap.length > 0) {
             console.error("");
             console.error(chalk.bold.red("  ⚠  CANNOT RESET — `ao start` IS LIVE"));
@@ -374,9 +468,9 @@ export function registerReset(program: Command): void {
         }
 
         // Collect all deletion targets (disk preview + per-layer references)
-        const allTargets = targets.map(({ projectId, project }) => ({
+        const allTargets = targets.map(({ projectId }) => ({
           projectId,
-          project,
+          isOrphan: !(config && config.projects[projectId]),
           ...collectDeletionTargets(projectId),
           ...readGlobalReferences(projectId),
         }));
@@ -396,9 +490,7 @@ export function registerReset(program: Command): void {
 
         // Loud, unmissable destructive-action banner
         console.log("");
-        console.log(
-          chalk.bold.red("  ⚠  WARNING — DESTRUCTIVE OPERATION"),
-        );
+        console.log(chalk.bold.red("  ⚠  WARNING — DESTRUCTIVE OPERATION"));
         console.log(
           chalk.red("  This permanently deletes project state. It cannot be undone."),
         );
@@ -410,13 +502,15 @@ export function registerReset(program: Command): void {
         // Display what will be deleted
         console.log(chalk.bold("The following project state will be deleted:\n"));
 
-        for (const { projectId, baseDir, exists, items, registered, prefsReferenced } of allTargets) {
+        for (const { projectId, baseDir, exists, items, registered, prefsReferenced, isOrphan } of allTargets) {
           if (!exists && !registered && !prefsReferenced) {
             console.log(chalk.dim(`  ${projectId}: (no state found)`));
             continue;
           }
 
-          console.log(chalk.cyan(`  ${projectId}:`));
+          console.log(
+            chalk.cyan(`  ${projectId}${isOrphan ? chalk.yellow(" (orphan — not in local config)") : ""}:`),
+          );
           if (exists) {
             console.log(chalk.dim(`    ${baseDir}/`));
             if (items.length > 0) {
@@ -468,12 +562,14 @@ export function registerReset(program: Command): void {
 
         // Execute reset
         const results: PerTargetResult[] = [];
+        let dbWasUnavailable = false;
         for (const { projectId, baseDir, exists, registered, prefsReferenced } of allTargets) {
           if (!exists && !registered && !prefsReferenced) continue;
 
           console.log(chalk.bold(`\nResetting ${chalk.cyan(projectId)}...`));
 
-          // Kill live sessions first
+          // Kill live sessions first (skipped if local config is unavailable —
+          // we'd still wipe disk state even without the SessionManager)
           const killed = await killProjectSessions(config, projectId);
           if (killed > 0) {
             console.log(chalk.dim(`  Killed ${killed} live session${killed !== 1 ? "s" : ""}`));
@@ -490,8 +586,8 @@ export function registerReset(program: Command): void {
               diskRemoved = true;
               console.log(chalk.green(`  ✓ Removed ${baseDir}`));
             } catch (err) {
-              // ENOENT means the directory disappeared between preview and rm — treat as success.
               if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+                // Race: dir disappeared between preview and rm. Treat as success.
                 diskRemoved = true;
                 console.log(chalk.green(`  ✓ Removed ${baseDir}`));
               } else {
@@ -502,9 +598,6 @@ export function registerReset(program: Command): void {
           }
 
           // Global registry + preferences cleanup (best-effort, accurate reporting).
-          // Each layer is reported only if it actually changed — no spurious
-          // "preferences" mention when prefs.json didn't exist or held no
-          // matching entries.
           const { unregistered, prefsChanged } = pruneGlobalState(projectId);
           if (unregistered) {
             console.log(chalk.dim("  Unregistered from global config registry"));
@@ -513,22 +606,36 @@ export function registerReset(program: Command): void {
             console.log(chalk.dim("  Pruned slot from portfolio preferences"));
           }
 
-          // Activity events DB pruning (best-effort)
-          let eventsRemoved = 0;
+          // Activity events DB pruning. Distinguish "DB unavailable" (warn once
+          // at the end) from "DB worked, removed N rows".
+          let eventsAvailable: boolean;
+          let eventsRemoved: number;
           try {
-            eventsRemoved = deleteEventsForProject(projectId);
-            if (eventsRemoved > 0) {
-              console.log(
-                chalk.dim(
-                  `  Removed ${eventsRemoved} activity event${eventsRemoved !== 1 ? "s" : ""}`,
-                ),
-              );
-            }
+            const result = deleteEventsForProject(projectId);
+            eventsAvailable = result.available;
+            eventsRemoved = result.removed;
           } catch {
-            // Best-effort; SQLite unavailable is not a failure for reset
+            eventsAvailable = false;
+            eventsRemoved = 0;
+          }
+          if (!eventsAvailable) dbWasUnavailable = true;
+          if (eventsRemoved > 0) {
+            console.log(
+              chalk.dim(
+                `  Removed ${eventsRemoved} activity event${eventsRemoved !== 1 ? "s" : ""}`,
+              ),
+            );
           }
 
-          results.push({ projectId, diskRemoved, diskError, eventsRemoved, killed });
+          results.push({ projectId, diskRemoved, diskError, eventsAvailable, eventsRemoved, killed });
+        }
+
+        if (dbWasUnavailable) {
+          console.warn(
+            chalk.yellow(
+              "\nWarning: activity-events DB was unavailable (locked or not installed). Event rows for the targeted project(s) may persist.",
+            ),
+          );
         }
 
         const failures = results.filter((r) => !r.diskRemoved);
