@@ -11,9 +11,13 @@ AO accumulates per-project state across several disjoint persistence layers:
 the V2 storage directory, the global config registry, the portfolio
 preferences file, and the shared activity-events SQLite log. Recovering from
 a corrupted local state used to require manual `rm -rf` plus surgery on
-`config.yaml` and `preferences.json`. `ao reset` does that cleanup
-atomically per project, with a preview, a confirmation, and a session-kill
-step so we don't pull files out from under a running agent.
+`config.yaml` and `preferences.json`. `ao reset` runs that cleanup as a
+single command per project — with a preview, a confirmation, and a
+session-kill step so we don't pull files out from under a running agent —
+but it is **not transactional**: each persistence layer is cleaned
+best-effort, and the disk wipe can succeed or fail independently of the
+global-state cleanup. Exit code reflects the disk-wipe outcome; partial
+failures are reported but never rolled back.
 
 ## Surface
 

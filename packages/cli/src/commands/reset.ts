@@ -15,7 +15,8 @@
  *   which may contain data for multiple projects sharing the same config
  *
  * Refuses to run while `ao start` is active for the targeted project.
- * Live tmux sessions are killed first via SessionManager.kill before disk wipe.
+ * Live sessions are killed first via SessionManager.kill (runtime-agnostic —
+ * works for tmux, process, and any future runtime plugin) before disk wipe.
  */
 
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -87,18 +88,24 @@ function resolveProjectForReset(
 
 interface DeletionTargets {
   baseDir: string;
+  exists: boolean;
   items: Array<{ path: string; label: string; size?: number }>;
 }
 
 /**
  * Collect what will be deleted for a project.
+ *
+ * `exists` reflects baseDir's presence on disk and is the authoritative
+ * signal for "is there anything to delete here". `items` is best-effort
+ * preview content — readdir/stat errors leave it empty, so callers must
+ * not use `items.length` as a proxy for "directory is empty/absent".
  */
 function collectDeletionTargets(projectId: string): DeletionTargets {
   const baseDir = getProjectDir(projectId);
   const items: DeletionTargets["items"] = [];
 
   if (!existsSync(baseDir)) {
-    return { baseDir, items };
+    return { baseDir, exists: false, items };
   }
 
   try {
@@ -121,7 +128,7 @@ function collectDeletionTargets(projectId: string): DeletionTargets {
     // Directory might not be readable
   }
 
-  return { baseDir, items };
+  return { baseDir, exists: true, items };
 }
 
 /**
@@ -310,11 +317,11 @@ export function registerReset(program: Command): void {
           }
         })();
 
-        const targetsWithGlobalState = allTargets.filter(
-          (t) => t.items.length > 0 || globalConfig?.projects[t.projectId],
+        const targetsWithState = allTargets.filter(
+          (t) => t.exists || globalConfig?.projects[t.projectId],
         );
 
-        if (targetsWithGlobalState.length === 0) {
+        if (targetsWithState.length === 0) {
           console.log(
             chalk.yellow(
               "\nNo AO state found for the specified project(s). Nothing to reset.\n",
@@ -326,23 +333,25 @@ export function registerReset(program: Command): void {
         // Display what will be deleted
         console.log(chalk.bold("\nThe following project state will be deleted:\n"));
 
-        for (const { projectId, baseDir, items } of allTargets) {
+        for (const { projectId, baseDir, exists, items } of allTargets) {
           const registered = !!globalConfig?.projects[projectId];
-          if (items.length === 0 && !registered) {
+          if (!exists && !registered) {
             console.log(chalk.dim(`  ${projectId}: (no state found)`));
             continue;
           }
 
           console.log(chalk.cyan(`  ${projectId}:`));
-          if (items.length > 0) {
+          if (exists) {
             console.log(chalk.dim(`    ${baseDir}/`));
-            for (const item of items) {
-              const sizeStr =
-                item.size !== undefined ? chalk.dim(` (${formatSize(item.size)})`) : "";
-              console.log(`      ${item.label}${sizeStr}`);
+            if (items.length > 0) {
+              for (const item of items) {
+                const sizeStr =
+                  item.size !== undefined ? chalk.dim(` (${formatSize(item.size)})`) : "";
+                console.log(`      ${item.label}${sizeStr}`);
+              }
+            } else {
+              console.log(chalk.dim("      (contents not enumerable)"));
             }
-          } else {
-            console.log(chalk.dim(`    ${baseDir}/  (already empty)`));
           }
           if (registered) {
             console.log(chalk.dim("    + global registry entry + portfolio preferences"));
@@ -372,9 +381,9 @@ export function registerReset(program: Command): void {
 
         // Execute reset
         const results: PerTargetResult[] = [];
-        for (const { projectId, baseDir, items } of allTargets) {
+        for (const { projectId, baseDir, exists } of allTargets) {
           const registered = !!globalConfig?.projects[projectId];
-          if (items.length === 0 && !registered) continue;
+          if (!exists && !registered) continue;
 
           console.log(chalk.bold(`\nResetting ${chalk.cyan(projectId)}...`));
 
@@ -384,17 +393,25 @@ export function registerReset(program: Command): void {
             console.log(chalk.dim(`  Killed ${killed} live session${killed !== 1 ? "s" : ""}`));
           }
 
-          let diskRemoved = items.length === 0; // nothing on disk == trivially removed
+          // Disk removal: drive off baseDir existence, not the preview list.
+          // An empty or unreadable dir still needs removing; an absent dir is a no-op success.
+          let diskRemoved = !exists;
           let diskError: string | undefined;
 
-          if (items.length > 0) {
+          if (exists) {
             try {
               rmSync(baseDir, { recursive: true, force: true });
               diskRemoved = true;
               console.log(chalk.green(`  ✓ Removed ${baseDir}`));
             } catch (err) {
-              diskError = err instanceof Error ? err.message : String(err);
-              console.error(chalk.red(`  ✗ Failed to remove ${baseDir}: ${diskError}`));
+              // ENOENT means the directory disappeared between preview and rm — treat as success.
+              if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+                diskRemoved = true;
+                console.log(chalk.green(`  ✓ Removed ${baseDir}`));
+              } else {
+                diskError = err instanceof Error ? err.message : String(err);
+                console.error(chalk.red(`  ✗ Failed to remove ${baseDir}: ${diskError}`));
+              }
             }
           }
 

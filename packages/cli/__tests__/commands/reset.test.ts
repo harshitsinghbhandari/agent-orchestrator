@@ -179,6 +179,23 @@ afterEach(() => {
 });
 
 describe("ao reset", () => {
+  it("removes an empty baseDir when it exists but has no listable contents", async () => {
+    // Regression: previously the command keyed off `items.length > 0`, so an
+    // empty (or unreadable) project dir would skip removal and report success.
+    const baseDir = getProjectDir("my-app");
+    mkdirSync(baseDir, { recursive: true });
+    expect(existsSync(baseDir)).toBe(true);
+
+    mockSessionManager.list.mockResolvedValue([]);
+
+    await program.parseAsync(["node", "ao", "reset", "my-app", "--yes"]);
+
+    expect(existsSync(baseDir)).toBe(false);
+    const output = consoleSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).not.toContain("No AO state found");
+    expect(output).toContain("Reset complete");
+  });
+
   it("removes the project base directory when confirmed", async () => {
     const baseDir = getProjectDir("my-app");
     const sessionsDir = getProjectSessionsDir("my-app");
