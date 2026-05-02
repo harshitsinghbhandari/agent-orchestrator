@@ -152,10 +152,12 @@ export function deleteEventsForProject(projectId: string): {
 } {
   const db = getDb();
   if (!db) return { available: false, removed: 0 };
+  // better-sqlite3's RunResult guarantees `changes: number`; the local
+  // BetterSqlite3Database shim returns `unknown`, so we narrow.
   const result = db.prepare(`DELETE FROM activity_events WHERE project_id = ?`).run(projectId) as {
-    changes?: number;
+    changes: number;
   };
-  return { available: true, removed: result.changes ?? 0 };
+  return { available: true, removed: result.changes };
 }
 
 /**

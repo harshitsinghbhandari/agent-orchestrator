@@ -327,3 +327,60 @@ export async function clearLastStop(): Promise<void> {
     release();
   }
 }
+
+/**
+ * Strip the given projects from `last-stop.json` so `ao start` does not
+ * offer to restore sessions whose state has been wiped.
+ *
+ * Behavior:
+ * - If the primary `projectId` matches one being pruned and `otherProjects`
+ *   is empty (or also entirely pruned), the file is deleted.
+ * - If the primary matches but other projects survive, the first remaining
+ *   other is promoted to primary.
+ * - Otherwise, just trim `otherProjects`.
+ *
+ * Best-effort: lock contention or write failures are swallowed (reset
+ * shouldn't fail because this auxiliary cleanup couldn't run).
+ */
+export async function pruneLastStopForProjects(projectIds: readonly string[]): Promise<void> {
+  if (projectIds.length === 0) return;
+  const resetSet = new Set(projectIds);
+  let state: LastStopState | null;
+  try {
+    state = await readLastStop();
+  } catch {
+    return;
+  }
+  if (!state) return;
+
+  const remainingOthers = (state.otherProjects ?? []).filter(
+    (o) => !resetSet.has(o.projectId),
+  );
+  const primaryWiped = resetSet.has(state.projectId);
+  const othersChanged = (state.otherProjects ?? []).length !== remainingOthers.length;
+
+  if (!primaryWiped && !othersChanged) return;
+
+  if (primaryWiped) {
+    if (remainingOthers.length === 0) {
+      try { await clearLastStop(); } catch { /* ignore */ }
+      return;
+    }
+    const [newPrimary, ...rest] = remainingOthers;
+    const next: LastStopState = {
+      stoppedAt: state.stoppedAt,
+      projectId: newPrimary.projectId,
+      sessionIds: newPrimary.sessionIds,
+      otherProjects: rest.length > 0 ? rest : undefined,
+    };
+    try { await writeLastStop(next); } catch { /* ignore */ }
+    return;
+  }
+
+  // Primary survives; just trim others.
+  const next: LastStopState = {
+    ...state,
+    otherProjects: remainingOthers.length > 0 ? remainingOthers : undefined,
+  };
+  try { await writeLastStop(next); } catch { /* ignore */ }
+}

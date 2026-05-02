@@ -26,6 +26,7 @@ const {
   mockSavedPrefs,
   mockRunningRef,
   mockEventsDeleted,
+  mockLastStopPruned,
   mockLoadConfigError,
   mockEventsResult,
 } = vi.hoisted(() => ({
@@ -51,6 +52,7 @@ const {
     current: null as { pid: number; port: number; projects: string[] } | null,
   },
   mockEventsDeleted: { current: [] as Array<{ projectId: string; rows: number }> },
+  mockLastStopPruned: { current: [] as string[] },
   mockSessionManager: {
     list: vi.fn(),
     kill: vi.fn(),
@@ -133,6 +135,9 @@ vi.mock("../../src/lib/prompts.js", () => ({
 
 vi.mock("../../src/lib/running-state.js", () => ({
   getRunning: async () => mockRunningRef.current,
+  pruneLastStopForProjects: async (projectIds: readonly string[]) => {
+    mockLastStopPruned.current.push(...projectIds);
+  },
 }));
 
 import { Command } from "commander";
@@ -186,6 +191,7 @@ beforeEach(() => {
   mockSavedPrefs.current = [];
   mockRunningRef.current = null;
   mockEventsDeleted.current = [];
+  mockLastStopPruned.current = [];
   mockLoadConfigError.current = null;
   mockEventsResult.current = null;
 
@@ -661,6 +667,41 @@ describe("ao reset", () => {
     expect(existsSync(baseDir)).toBe(false);
     const warnOutput = consoleWarnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(warnOutput).toContain("activity-events DB was unavailable");
+  });
+
+  it("prunes last-stop.json for successfully-wiped projects", async () => {
+    const baseDir = getProjectDir("my-app");
+    mkdirSync(baseDir, { recursive: true });
+    writeFileSync(join(baseDir, "marker"), "x");
+    mockSessionManager.list.mockResolvedValue([]);
+
+    await program.parseAsync(["node", "ao", "reset", "my-app", "--yes"]);
+
+    expect(mockLastStopPruned.current).toEqual(["my-app"]);
+  });
+
+  it("does NOT prune last-stop.json when disk wipe failed", async () => {
+    const { chmodSync } = await import("node:fs");
+    const baseDir = getProjectDir("my-app");
+    mkdirSync(baseDir, { recursive: true });
+    writeFileSync(join(baseDir, "marker"), "x");
+
+    const projectsParent = join(tmpDir, ".agent-orchestrator", "projects");
+    chmodSync(projectsParent, 0o555);
+
+    mockSessionManager.list.mockResolvedValue([]);
+
+    try {
+      await expect(
+        program.parseAsync(["node", "ao", "reset", "my-app", "--yes"]),
+      ).rejects.toThrow(/process\.exit\(1\)/);
+
+      // Disk wipe failed, so last-stop must not be pruned — letting a retry
+      // recover correctly.
+      expect(mockLastStopPruned.current).toEqual([]);
+    } finally {
+      chmodSync(projectsParent, 0o755);
+    }
   });
 
   it("rejects an unknown project with a helpful error listing both local and global ids", async () => {

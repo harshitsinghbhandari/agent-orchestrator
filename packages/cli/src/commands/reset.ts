@@ -59,7 +59,7 @@ import { promptConfirm } from "../lib/prompts.js";
 import { findProjectForDirectory } from "../lib/project-resolution.js";
 import { isHumanCaller } from "../lib/caller-context.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
-import { getRunning } from "../lib/running-state.js";
+import { getRunning, pruneLastStopForProjects } from "../lib/running-state.js";
 
 interface ResolvedTarget {
   projectId: string;
@@ -637,6 +637,14 @@ export function registerReset(program: Command): void {
             ),
           );
         }
+
+        // Strip wiped projects from last-stop.json so the next `ao start`
+        // doesn't offer to restore sessions that no longer exist.
+        // Only prune projects whose disk wipe actually succeeded — leaving
+        // last-stop alone for failures lets a retry recover correctly.
+        await pruneLastStopForProjects(
+          results.filter((r) => r.diskRemoved).map((r) => r.projectId),
+        );
 
         const failures = results.filter((r) => !r.diskRemoved);
         if (failures.length > 0) {

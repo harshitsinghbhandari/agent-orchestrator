@@ -74,6 +74,15 @@ For each targeted project, in order:
    `DELETE FROM activity_events WHERE project_id = ?` against the shared
    SQLite log at `~/.agent-orchestrator/activity-events.db`. The DB is
    shared across projects, so per-project pruning is the only safe option.
+6. **last-stop.json pruning.** After all per-target work, reset calls
+   `pruneLastStopForProjects(successfullyWipedIds)` to strip wiped
+   projects from `~/.agent-orchestrator/last-stop.json`. Without this,
+   the next `ao start` would offer to restore sessions whose state has
+   been deleted, producing confusing errors. Failed targets are
+   intentionally **not** pruned — leaving last-stop intact lets a retry
+   recover the same sessions correctly. If the primary `projectId` in
+   last-stop matches a wiped project, the first surviving entry from
+   `otherProjects` is promoted; if nothing remains, the file is deleted.
 
 Steps 3–5 are best-effort (try/catch). Reset is destructive by definition;
 a corrupted global config or unavailable SQLite must not block disk
