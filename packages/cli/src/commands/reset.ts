@@ -6,6 +6,9 @@
  *   (sessions, worktrees, feedback reports, orchestrator runtime state, etc.)
  * - The project entry from the global config registry (~/.agent-orchestrator/config.yaml)
  * - The project's per-project entry and projectOrder slot in portfolio preferences
+ *   ONLY when the prefs file actually references the project. We never write
+ *   preferences.json into existence on machines that haven't customized the
+ *   portfolio.
  * - Activity events for the project from the shared SQLite log
  *
  * Out of scope (intentionally preserved):
@@ -14,7 +17,12 @@
  * - The shared observability dir (~/.agent-orchestrator/{hash}-observability/)
  *   which may contain data for multiple projects sharing the same config
  *
- * Refuses to run while `ao start` is active for the targeted project.
+ * UX:
+ * - Refuses (loud red banner) to run while `ao start` is active for the project.
+ * - Prints a destructive-action banner + a "NOT touched by reset" notice before
+ *   the preview so the operator knows what survives.
+ * - Each persistence layer is reported only when it actually changed.
+ *
  * Live sessions are killed first via SessionManager.kill (runtime-agnostic —
  * works for tmux, process, and any future runtime plugin) before disk wipe.
  */
@@ -29,10 +37,12 @@ import {
   getProjectDir,
   loadGlobalConfig,
   unregisterProject,
-  updatePreferences,
+  loadPreferences,
+  savePreferences,
   deleteEventsForProject,
   type LoadedConfig,
   type ProjectConfig,
+  type PortfolioPreferences,
 } from "@aoagents/ao-core";
 import { promptConfirm } from "../lib/prompts.js";
 import { findProjectForDirectory } from "../lib/project-resolution.js";
@@ -193,35 +203,94 @@ async function killProjectSessions(
   return killed;
 }
 
+/** True if the preferences object contains anything keyed by `projectId`. */
+function preferencesReferenceProject(
+  prefs: PortfolioPreferences,
+  projectId: string,
+): boolean {
+  if (prefs.projects?.[projectId]) return true;
+  if (prefs.projectOrder?.includes(projectId)) return true;
+  if (prefs.defaultProjectId === projectId) return true;
+  return false;
+}
+
 /**
- * Drop the project from the global registry and any portfolio preference slots.
- * Reset is purely destructive; lookups that no longer find the project are not failures.
+ * Read-only check: is anything outside the V2 storage dir referencing the
+ * project? Used at preview time so we can show the user accurately what
+ * reset will touch — separately for the registry and the prefs file.
  */
-function pruneGlobalState(projectId: string): void {
+function readGlobalReferences(projectId: string): {
+  registered: boolean;
+  prefsReferenced: boolean;
+} {
+  let registered = false;
+  let prefsReferenced = false;
+
   try {
-    if (loadGlobalConfig()?.projects[projectId]) {
-      unregisterProject(projectId);
-    }
+    registered = !!loadGlobalConfig()?.projects[projectId];
   } catch {
-    // Best-effort; corrupted global config shouldn't block reset
+    // Corrupted global config — treat as not registered
   }
 
   try {
-    updatePreferences((prefs) => {
+    prefsReferenced = preferencesReferenceProject(loadPreferences(), projectId);
+  } catch {
+    // Corrupted prefs — treat as no reference
+  }
+
+  return { registered, prefsReferenced };
+}
+
+/**
+ * Drop the project from the global registry and any portfolio preference slots.
+ * Returns what was actually changed so callers can report accurately.
+ *
+ * Both layers are best-effort (try/catch). Reset is destructive by definition;
+ * a corrupted global config or unwritable prefs file must not block disk cleanup.
+ *
+ * Important: prefs are only written if the loaded prefs actually reference
+ * this project. Otherwise we'd create an empty `preferences.json` on machines
+ * that have never customized the portfolio — a surprising side effect.
+ */
+function pruneGlobalState(projectId: string): {
+  unregistered: boolean;
+  prefsChanged: boolean;
+} {
+  let unregistered = false;
+  let prefsChanged = false;
+
+  try {
+    if (loadGlobalConfig()?.projects[projectId]) {
+      unregisterProject(projectId);
+      unregistered = true;
+    }
+  } catch {
+    // Corrupted global config — skip
+  }
+
+  try {
+    const prefs = loadPreferences();
+    if (preferencesReferenceProject(prefs, projectId)) {
       if (prefs.projects?.[projectId]) {
         const { [projectId]: _removed, ...rest } = prefs.projects;
-        prefs.projects = rest;
+        prefs.projects = Object.keys(rest).length > 0 ? rest : undefined;
       }
       if (prefs.projectOrder) {
-        prefs.projectOrder = prefs.projectOrder.filter((id) => id !== projectId);
+        const next = prefs.projectOrder.filter((id) => id !== projectId);
+        prefs.projectOrder = next.length > 0 ? next : undefined;
       }
       if (prefs.defaultProjectId === projectId) {
         prefs.defaultProjectId = undefined;
       }
-    });
+      savePreferences(prefs);
+      prefsChanged = true;
+    }
+    // else: nothing to change → don't write preferences.json into existence
   } catch {
-    // Same: best-effort
+    // Best-effort
   }
+
+  return { unregistered, prefsChanged };
 }
 
 interface PerTargetResult {
@@ -287,38 +356,33 @@ export function registerReset(program: Command): void {
             .map((t) => t.projectId)
             .filter((id) => running.projects.includes(id));
           if (overlap.length > 0) {
+            console.error("");
+            console.error(chalk.bold.red("  ⚠  CANNOT RESET — `ao start` IS LIVE"));
             console.error(
               chalk.red(
-                `\n'ao start' is currently running (PID ${running.pid}, port ${running.port}) and serving:`,
+                `  Running on PID ${running.pid}, port ${running.port}, serving:`,
               ),
             );
-            for (const id of overlap) console.error(chalk.red(`  - ${id}`));
+            for (const id of overlap) console.error(chalk.red(`    - ${id}`));
             console.error(
               chalk.red(
-                `\nStop it first with: ao stop${overlap.length === 1 ? ` ${overlap[0]}` : ""}\n`,
+                `\n  Stop it first with: ao stop${overlap.length === 1 ? ` ${overlap[0]}` : ""}\n`,
               ),
             );
             process.exit(1);
           }
         }
 
-        // Collect all deletion targets (disk preview)
+        // Collect all deletion targets (disk preview + per-layer references)
         const allTargets = targets.map(({ projectId, project }) => ({
           projectId,
           project,
           ...collectDeletionTargets(projectId),
+          ...readGlobalReferences(projectId),
         }));
 
-        const globalConfig = (() => {
-          try {
-            return loadGlobalConfig();
-          } catch {
-            return null;
-          }
-        })();
-
         const targetsWithState = allTargets.filter(
-          (t) => t.exists || globalConfig?.projects[t.projectId],
+          (t) => t.exists || t.registered || t.prefsReferenced,
         );
 
         if (targetsWithState.length === 0) {
@@ -330,12 +394,24 @@ export function registerReset(program: Command): void {
           return;
         }
 
-        // Display what will be deleted
-        console.log(chalk.bold("\nThe following project state will be deleted:\n"));
+        // Loud, unmissable destructive-action banner
+        console.log("");
+        console.log(
+          chalk.bold.red("  ⚠  WARNING — DESTRUCTIVE OPERATION"),
+        );
+        console.log(
+          chalk.red("  This permanently deletes project state. It cannot be undone."),
+        );
+        console.log(
+          chalk.red("  Make sure you have pushed any work in active worktrees first."),
+        );
+        console.log("");
 
-        for (const { projectId, baseDir, exists, items } of allTargets) {
-          const registered = !!globalConfig?.projects[projectId];
-          if (!exists && !registered) {
+        // Display what will be deleted
+        console.log(chalk.bold("The following project state will be deleted:\n"));
+
+        for (const { projectId, baseDir, exists, items, registered, prefsReferenced } of allTargets) {
+          if (!exists && !registered && !prefsReferenced) {
             console.log(chalk.dim(`  ${projectId}: (no state found)`));
             continue;
           }
@@ -354,10 +430,21 @@ export function registerReset(program: Command): void {
             }
           }
           if (registered) {
-            console.log(chalk.dim("    + global registry entry + portfolio preferences"));
+            console.log(chalk.dim("    + entry in global config registry"));
+          }
+          if (prefsReferenced) {
+            console.log(chalk.dim("    + slot in portfolio preferences"));
           }
           console.log();
         }
+
+        // Tell the user what reset does NOT touch — the boundaries matter
+        // because users often assume "reset" wipes more than it does.
+        console.log(chalk.bold.red("  NOT touched by reset:"));
+        console.log(chalk.red("    • The repo on disk and your agent-orchestrator.yaml"));
+        console.log(chalk.red("    • Legacy V1 storage (~/.agent-orchestrator/<storageKey>/)"));
+        console.log(chalk.red("    • The shared observability dir (~/.agent-orchestrator/<hash>-observability/)"));
+        console.log("");
 
         // Confirm
         if (!opts.yes) {
@@ -370,7 +457,7 @@ export function registerReset(program: Command): void {
             process.exit(1);
           }
           const confirmed = await promptConfirm(
-            "This will permanently delete the above project state. Continue?",
+            chalk.bold.red("This will permanently delete the above project state. Continue?"),
             false,
           );
           if (!confirmed) {
@@ -381,9 +468,8 @@ export function registerReset(program: Command): void {
 
         // Execute reset
         const results: PerTargetResult[] = [];
-        for (const { projectId, baseDir, exists } of allTargets) {
-          const registered = !!globalConfig?.projects[projectId];
-          if (!exists && !registered) continue;
+        for (const { projectId, baseDir, exists, registered, prefsReferenced } of allTargets) {
+          if (!exists && !registered && !prefsReferenced) continue;
 
           console.log(chalk.bold(`\nResetting ${chalk.cyan(projectId)}...`));
 
@@ -415,10 +501,16 @@ export function registerReset(program: Command): void {
             }
           }
 
-          // Global registry + preferences cleanup (best-effort)
-          pruneGlobalState(projectId);
-          if (registered) {
-            console.log(chalk.dim("  Unregistered from global config + portfolio preferences"));
+          // Global registry + preferences cleanup (best-effort, accurate reporting).
+          // Each layer is reported only if it actually changed — no spurious
+          // "preferences" mention when prefs.json didn't exist or held no
+          // matching entries.
+          const { unregistered, prefsChanged } = pruneGlobalState(projectId);
+          if (unregistered) {
+            console.log(chalk.dim("  Unregistered from global config registry"));
+          }
+          if (prefsChanged) {
+            console.log(chalk.dim("  Pruned slot from portfolio preferences"));
           }
 
           // Activity events DB pruning (best-effort)

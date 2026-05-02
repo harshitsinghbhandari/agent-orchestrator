@@ -10,12 +10,20 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getProjectDir, getProjectSessionsDir } from "@aoagents/ao-core";
 
+type TestPrefs = {
+  version: 1;
+  defaultProjectId?: string;
+  projectOrder?: string[];
+  projects?: Record<string, { pinned?: boolean; enabled?: boolean }>;
+};
+
 const {
   mockHomeRef,
   mockConfigRef,
   mockSessionManager,
   mockGlobalConfigRef,
   mockPreferencesRef,
+  mockSavedPrefs,
   mockRunningRef,
   mockEventsDeleted,
 } = vi.hoisted(() => ({
@@ -24,14 +32,13 @@ const {
   mockGlobalConfigRef: {
     current: null as { projects: Record<string, unknown>; projectOrder?: string[] } | null,
   },
+  // The "stored" prefs file. Reset reads from this and writes back.
   mockPreferencesRef: {
-    current: { version: 1 } as {
-      version: 1;
-      defaultProjectId?: string;
-      projectOrder?: string[];
-      projects?: Record<string, { pinned?: boolean; enabled?: boolean }>;
-    },
+    current: null as { version: 1; defaultProjectId?: string; projectOrder?: string[]; projects?: Record<string, { pinned?: boolean; enabled?: boolean }> } | null,
   },
+  // Records every savePreferences call so we can assert "wasn't written"
+  // when the file would otherwise be created spuriously.
+  mockSavedPrefs: { current: [] as Array<unknown> },
   mockRunningRef: {
     current: null as { pid: number; port: number; projects: string[] } | null,
   },
@@ -76,8 +83,15 @@ vi.mock("@aoagents/ao-core", async (importOriginal) => {
         );
       }
     },
-    updatePreferences: (updater: (prefs: typeof mockPreferencesRef.current) => void) => {
-      updater(mockPreferencesRef.current);
+    loadPreferences: () => {
+      // Mirror real behavior: missing file → default { version: 1 }
+      return mockPreferencesRef.current ?? { version: 1 };
+    },
+    savePreferences: (prefs: TestPrefs) => {
+      // Track that a write happened so tests can assert it didn't, and
+      // also persist the value for subsequent assertions.
+      mockSavedPrefs.current.push(JSON.parse(JSON.stringify(prefs)));
+      mockPreferencesRef.current = prefs;
     },
     deleteEventsForProject: (projectId: string) => {
       const rows = projectId === "my-app" ? 3 : 0;
@@ -150,7 +164,10 @@ beforeEach(() => {
   } as Record<string, unknown>;
 
   mockGlobalConfigRef.current = null;
-  mockPreferencesRef.current = { version: 1 };
+  // Default to "no preferences file on disk" (the common case for users
+  // who haven't customized portfolio).
+  mockPreferencesRef.current = null;
+  mockSavedPrefs.current = [];
   mockRunningRef.current = null;
   mockEventsDeleted.current = [];
 
@@ -433,10 +450,60 @@ describe("ao reset", () => {
     expect(mockGlobalConfigRef.current.projects["my-app"]).toBeUndefined();
     expect(mockGlobalConfigRef.current.projects["other-app"]).toBeDefined();
     expect(mockGlobalConfigRef.current.projectOrder).toEqual(["other-app"]);
-    expect(mockPreferencesRef.current.projects?.["my-app"]).toBeUndefined();
-    expect(mockPreferencesRef.current.projects?.["other-app"]).toBeDefined();
-    expect(mockPreferencesRef.current.projectOrder).toEqual(["other-app"]);
-    expect(mockPreferencesRef.current.defaultProjectId).toBeUndefined();
+    expect(mockPreferencesRef.current?.projects?.["my-app"]).toBeUndefined();
+    expect(mockPreferencesRef.current?.projects?.["other-app"]).toBeDefined();
+    expect(mockPreferencesRef.current?.projectOrder).toEqual(["other-app"]);
+    expect(mockPreferencesRef.current?.defaultProjectId).toBeUndefined();
+
+    const output = consoleSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("Unregistered from global config registry");
+    expect(output).toContain("Pruned slot from portfolio preferences");
+  });
+
+  it("does NOT create preferences.json when no prefs reference the project", async () => {
+    // Repro: user has never customized portfolio. preferences.json doesn't
+    // exist. Reset should leave it that way.
+    mockGlobalConfigRef.current = { projects: { "my-app": { path: "/repo" } } };
+    mockPreferencesRef.current = null; // file does not exist
+    mockSessionManager.list.mockResolvedValue([]);
+
+    await program.parseAsync(["node", "ao", "reset", "my-app", "--yes"]);
+
+    expect(mockSavedPrefs.current).toEqual([]); // savePreferences never called
+    const output = consoleSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("Unregistered from global config registry");
+    expect(output).not.toContain("portfolio preferences");
+  });
+
+  it("does NOT touch preferences.json when prefs exist but reference other projects", async () => {
+    mockGlobalConfigRef.current = { projects: { "my-app": { path: "/repo" } } };
+    mockPreferencesRef.current = {
+      version: 1,
+      defaultProjectId: "other-app",
+      projectOrder: ["other-app"],
+      projects: { "other-app": { pinned: true } },
+    };
+    mockSessionManager.list.mockResolvedValue([]);
+
+    await program.parseAsync(["node", "ao", "reset", "my-app", "--yes"]);
+
+    expect(mockSavedPrefs.current).toEqual([]); // unchanged → no write
+    expect(mockPreferencesRef.current?.projects?.["other-app"]).toBeDefined();
+  });
+
+  it("shows the destructive warning banner before the preview", async () => {
+    const baseDir = getProjectDir("my-app");
+    mkdirSync(baseDir, { recursive: true });
+    writeFileSync(join(baseDir, "marker"), "x");
+
+    mockSessionManager.list.mockResolvedValue([]);
+
+    await program.parseAsync(["node", "ao", "reset", "my-app", "--yes"]);
+
+    const output = consoleSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("WARNING — DESTRUCTIVE OPERATION");
+    expect(output).toContain("cannot be undone");
+    expect(output).toContain("NOT touched by reset");
   });
 
   it("prunes activity events for the targeted project", async () => {

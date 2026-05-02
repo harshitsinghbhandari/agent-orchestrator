@@ -59,9 +59,17 @@ For each targeted project, in order:
    `projectOrder`. Without this, the dashboard would re-discover the project
    on next launch and the user would see an "empty" project they thought
    they had wiped.
-4. **Portfolio preferences.** `updatePreferences()` removes
-   `prefs.projects[projectId]`, drops the project from `prefs.projectOrder`,
-   and clears `prefs.defaultProjectId` if it pointed at the removed project.
+4. **Portfolio preferences.** Only touched when
+   `preferences.json` actually contains a reference to the project — i.e.
+   `prefs.projects[projectId]`, an entry in `prefs.projectOrder`, or
+   `prefs.defaultProjectId === projectId`. Reset reads via `loadPreferences()`
+   (which returns `{ version: 1 }` when the file is missing), removes the
+   matching keys, and only calls `savePreferences()` if something actually
+   changed. Critically, we **never** write `preferences.json` into existence
+   on machines that have never customized the portfolio — the previous
+   implementation used `updatePreferences()`, which always rewrote the file,
+   so running reset on a fresh machine would create an empty
+   `preferences.json` as a side effect.
 5. **Activity events.** `deleteEventsForProject(projectId)` runs
    `DELETE FROM activity_events WHERE project_id = ?` against the shared
    SQLite log at `~/.agent-orchestrator/activity-events.db`. The DB is
