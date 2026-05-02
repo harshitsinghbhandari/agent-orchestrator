@@ -397,13 +397,14 @@ function ProjectSidebarInner({
           const orchestratorSession = sessions?.find(
             (s) => s.projectId === project.id && s.id === canonicalOrchestratorId,
           );
-          const hasLiveOrchestrator = Boolean(
+          const liveOrchestrator =
             orchestratorSession &&
-              !isTerminalSession({
-                status: orchestratorSession.status,
-                activity: orchestratorSession.activity,
-              }),
-          );
+            !isTerminalSession({
+              status: orchestratorSession.status,
+              activity: orchestratorSession.activity,
+            })
+              ? orchestratorSession
+              : null;
 
           return (
             <div key={project.id} className="project-sidebar__project">
@@ -570,7 +571,7 @@ function ProjectSidebarInner({
                       role="menu"
                       aria-label={`${project.name} actions`}
                     >
-                      {hasLiveOrchestrator && orchestratorSession ? (
+                      {liveOrchestrator ? (
                         <button
                           type="button"
                           className="project-sidebar__proj-menu-item"
@@ -578,8 +579,8 @@ function ProjectSidebarInner({
                           onClick={() => {
                             setProjectMenuOpenId(null);
                             navigate(
-                              projectSessionPath(project.id, orchestratorSession.id),
-                              orchestratorSession,
+                              projectSessionPath(project.id, liveOrchestrator.id),
+                              liveOrchestrator,
                             );
                           }}
                         >
