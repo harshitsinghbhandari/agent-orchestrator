@@ -17,6 +17,7 @@ export {
   findConfig,
   findConfigFile,
 } from "./config.js";
+export { isPortfolioEnabled } from "./feature-flags.js";
 
 // Plugin registry
 export {
@@ -151,10 +152,26 @@ export {
 } from "./scm-webhook-utils.js";
 export { asValidOpenCodeSessionId } from "./opencode-session-id.js";
 export {
+  OPENCODE_SESSION_LIST_CACHE_TTL_MS,
+  getOpenCodeTmpDir,
+  ensureOpenCodeTmpDir,
+  getOpenCodeChildEnv,
+  getCachedOpenCodeSessionList,
+  invalidateOpenCodeSessionListCache,
+  resetOpenCodeSessionListCache,
+} from "./opencode-shared.js";
+export type { OpenCodeSessionListEntry } from "./opencode-shared.js";
+export {
   getWorkspaceAgentsMdPath,
   writeWorkspaceOpenCodeAgentsMd,
 } from "./opencode-agents-md.js";
-export { normalizeOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
+export { writeOpenCodeConfig } from "./opencode-config.js";
+export {
+  getOrchestratorSessionId,
+  normalizeOrchestratorSessionStrategy,
+} from "./orchestrator-session-strategy.js";
+export { resolveSpawnTarget } from "./spawn-target.js";
+export type { SpawnTarget } from "./spawn-target.js";
 
 // Activity log — JSONL activity tracking for agents without native JSONL
 export {
@@ -190,14 +207,16 @@ export {
   createProjectObserver,
   readObservabilitySummary,
 } from "./observability.js";
+export { execGhObserved, getGhTraceFilePath } from "./gh-trace.js";
 export { resolveNotifierTarget } from "./notifier-resolution.js";
 export type {
+  ObservabilityLevel,
   ObservabilityMetricName,
   ObservabilityHealthStatus,
-  ObservabilityLevel,
   ObservabilitySummary,
   ProjectObserver,
 } from "./observability.js";
+export type { GhTraceContext, GhTraceEntry } from "./gh-trace.js";
 
 // Feedback tools — contracts, validation, and report storage
 export {
@@ -220,9 +239,17 @@ export type {
 
 // Path utilities — hash-based directory structure
 export {
+  // V2 path functions (projects/{projectId}/ layout)
+  getProjectDir,
+  getProjectSessionsDir,
+  getProjectWorktreesDir,
+  getProjectFeedbackReportsDir,
+  getOrchestratorPath,
+  getSessionPath,
+  parseTmuxNameV2,
+  // Legacy path functions (deprecated — migration only)
   generateConfigHash,
   generateProjectId,
-  generateInstanceId,
   generateSessionPrefix,
   getProjectBaseDir,
   getSessionsDir,
@@ -233,13 +260,46 @@ export {
   getOriginFilePath,
   generateSessionName,
   generateTmuxName,
+  requireStorageKey,
   parseTmuxName,
   expandHome,
   validateAndStoreOrigin,
 } from "./paths.js";
 
+export { normalizeOriginUrl, relativeSubdir, deriveStorageKey } from "./storage-key.js";
+
+// Global config — Option C hybrid architecture (global registry + local behavior)
+export {
+  getGlobalConfigPath,
+  isCanonicalGlobalConfigPath,
+  loadGlobalConfig,
+  saveGlobalConfig,
+  loadLocalProjectConfig,
+  LocalProjectConfigSchema,
+  loadLocalProjectConfigDetailed,
+  getLocalProjectConfigPath,
+  repairWrappedLocalProjectConfig,
+  registerProjectInGlobalConfig,
+  generateExternalId,
+  buildEffectiveProjectConfig,
+  resolveProjectIdentity,
+  isOldConfigFormat,
+  migrateToGlobalConfig,
+  writeLocalProjectConfig,
+} from "./global-config.js";
+export type {
+  GlobalConfig,
+  GlobalProjectEntry,
+  LocalProjectConfig,
+  LocalProjectConfigLoadResult,
+  RegisterProjectOptions,
+} from "./global-config.js";
+
+export { loadEffectiveProjectConfig, iterateAllProjects } from "./project-resolver.js";
+
 // Config generator — auto-generate config from repo URL
 export {
+  CONFIG_SCHEMA_URL,
   isRepoUrl,
   parseRepoUrl,
   detectScmPlatform,
@@ -247,9 +307,11 @@ export {
   detectProjectInfo,
   generateConfigFromUrl,
   configToYaml,
+  withConfigSchema,
   isRepoAlreadyCloned,
   resolveCloneTarget,
   sanitizeProjectId,
+  readOriginRemoteUrl,
 } from "./config-generator.js";
 export type {
   ParsedRepoUrl,
@@ -257,3 +319,69 @@ export type {
   DetectedProjectInfo,
   GenerateConfigOptions,
 } from "./config-generator.js";
+
+// Portfolio — cross-project aggregation
+export type {
+  PortfolioProject,
+  PortfolioPreferences,
+  PortfolioRegistered,
+  PortfolioSession,
+} from "./types.js";
+
+export { getAoBaseDir, getPortfolioDir, getPreferencesPath, getRegisteredPath } from "./paths.js";
+
+export {
+  discoverProjects,
+  loadRegistered,
+  loadPreferences,
+  savePreferences,
+  updatePreferences,
+  saveRegistered,
+  getPortfolio,
+  registerProject,
+  unregisterProject,
+  refreshProject,
+} from "./portfolio-registry.js";
+
+export { resolveProjectConfig, clearConfigCache } from "./portfolio-projects.js";
+
+export { listPortfolioSessions, getPortfolioSessionCounts } from "./portfolio-session-service.js";
+
+export {
+  resolvePortfolioProject,
+  resolvePortfolioSession,
+  derivePortfolioProjectId,
+} from "./portfolio-routing.js";
+
+// Storage V2 migration — one-time converter from hash-based to projectId-based layout
+export {
+  migrateStorage,
+  rollbackStorage,
+  inventoryHashDirs,
+  convertKeyValueToJson,
+} from "./migration/storage-v2.js";
+export type {
+  MigrationOptions,
+  MigrationResult,
+  RollbackOptions,
+  HashDirEntry,
+} from "./migration/storage-v2.js";
+
+export { atomicWriteFileSync } from "./atomic-write.js";
+
+// Activity event logging — structured diagnostic event trail
+export { recordActivityEvent, droppedEventCount } from "./activity-events.js";
+export { isActivityEventsFtsEnabled } from "./events-db.js";
+export type {
+  ActivityEventInput,
+  ActivityEventKind,
+  ActivityEventSource,
+  ActivityEventLevel,
+  ActivityEvent,
+} from "./activity-events.js";
+export {
+  queryActivityEvents,
+  searchActivityEvents,
+  getActivityEventStats,
+} from "./query-activity-events.js";
+export type { ActivityEventFilter, ActivityEventStats } from "./query-activity-events.js";

@@ -6,50 +6,27 @@ import { describe, it, expect } from "vitest";
 import { validateConfig } from "../config.js";
 
 describe("Config Validation - Project Uniqueness", () => {
-  it("rejects duplicate project IDs (same basename)", () => {
+  it("accepts projects that share a basename when projectIds differ", () => {
     const config = {
       projects: {
         proj1: {
           path: "/repos/integrator",
           repo: "org/integrator",
           defaultBranch: "main",
+          sessionPrefix: "proj1",
+          storageKey: "storage-proj1",
         },
         proj2: {
           path: "/other/integrator", // Same basename!
           repo: "org/integrator",
           defaultBranch: "main",
+          sessionPrefix: "proj2",
+          storageKey: "storage-proj2",
         },
       },
     };
 
-    expect(() => validateConfig(config)).toThrow(/Duplicate project ID/);
-    expect(() => validateConfig(config)).toThrow(/integrator/);
-  });
-
-  it("error message shows conflicting paths", () => {
-    const config = {
-      projects: {
-        proj1: {
-          path: "/repos/integrator",
-          repo: "org/integrator",
-          defaultBranch: "main",
-        },
-        proj2: {
-          path: "/other/integrator",
-          repo: "org/integrator",
-          defaultBranch: "main",
-        },
-      },
-    };
-
-    try {
-      validateConfig(config);
-      expect.fail("Should have thrown");
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("/repos/integrator");
-      expect(message).toContain("/other/integrator");
-    }
+    expect(() => validateConfig(config)).not.toThrow();
   });
 
   it("accepts unique basenames", () => {
@@ -69,6 +46,31 @@ describe("Config Validation - Project Uniqueness", () => {
     };
 
     expect(() => validateConfig(config)).not.toThrow();
+  });
+});
+
+describe("Config Validation - Numeric Fields", () => {
+  const baseConfig = {
+    projects: {
+      app: {
+        path: "/repos/app",
+      },
+    },
+  };
+
+  it("rejects fractional ports", () => {
+    expect(() => validateConfig({ ...baseConfig, port: 3000.5 })).toThrow();
+    expect(() => validateConfig({ ...baseConfig, terminalPort: 14800.5 })).toThrow();
+    expect(() => validateConfig({ ...baseConfig, directTerminalPort: 14801.5 })).toThrow();
+  });
+
+  it("rejects fractional lifecycle grace periods", () => {
+    expect(() =>
+      validateConfig({
+        ...baseConfig,
+        lifecycle: { mergeCleanupIdleGraceMs: 300_000.5 },
+      }),
+    ).toThrow();
   });
 });
 

@@ -25,7 +25,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "working",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "working",
       sessionReason: "task_in_progress",
     };
@@ -43,7 +43,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "working",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "working",
       sessionReason: "task_in_progress",
     };
@@ -59,7 +59,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "working",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "working",
       sessionReason: "task_in_progress",
     };
@@ -73,7 +73,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "done",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "done",
       sessionReason: "research_complete",
     };
@@ -87,7 +87,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "terminated",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "terminated",
       sessionReason: "manually_killed",
     };
@@ -103,7 +103,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "done",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "done",
       sessionReason: "research_complete",
     };
@@ -119,7 +119,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "terminated",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "terminated",
       sessionReason: "manually_killed",
     };
@@ -133,7 +133,7 @@ describe("applyDecisionToLifecycle", () => {
     const decision: LifecycleDecision = {
       status: "pr_open",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       prState: "open",
       prReason: "in_progress",
     };
@@ -152,14 +152,12 @@ describe("buildTransitionMetadataPatch", () => {
     const decision: LifecycleDecision = {
       status: "detecting",
       evidence: "probe_failed",
-      detectingAttempts: 2,
-      detectingStartedAt: "2026-04-17T11:55:00.000Z",
-      detectingEvidenceHash: "abc123def456",
+      detecting: { attempts: 2, startedAt: "2026-04-17T11:55:00.000Z", evidenceHash: "abc123def456" },
       sessionState: "detecting",
       sessionReason: "probe_failure",
     };
 
-    const patch = buildTransitionMetadataPatch(lifecycle, decision, "working");
+    const patch = buildTransitionMetadataPatch(lifecycle, decision);
 
     expect(patch["lifecycleEvidence"]).toBe("probe_failed");
     expect(patch["detectingAttempts"]).toBe("2");
@@ -172,31 +170,30 @@ describe("buildTransitionMetadataPatch", () => {
     const decision: LifecycleDecision = {
       status: "working",
       evidence: "active",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "working",
       sessionReason: "task_in_progress",
     };
 
-    const patch = buildTransitionMetadataPatch(lifecycle, decision, "detecting");
+    const patch = buildTransitionMetadataPatch(lifecycle, decision);
 
     expect(patch["detectingAttempts"]).toBe("");
     expect(patch["detectingStartedAt"]).toBe("");
     expect(patch["detectingEvidenceHash"]).toBe("");
   });
 
-  it("includes stateVersion and statePayload", () => {
+  it("includes lifecycle in the patch", () => {
     const lifecycle = createInitialCanonicalLifecycle("worker");
     const decision: LifecycleDecision = {
       status: "working",
       evidence: "test",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
     };
 
-    const patch = buildTransitionMetadataPatch(lifecycle, decision, "working");
+    const patch = buildTransitionMetadataPatch(lifecycle, decision);
 
-    expect(patch["stateVersion"]).toBe("2");
-    expect(patch["statePayload"]).toBeDefined();
-    expect(JSON.parse(patch["statePayload"])).toHaveProperty("version", 2);
+    expect(patch["lifecycle"]).toBeDefined();
+    expect(JSON.parse(patch["lifecycle"])).toHaveProperty("version", 2);
   });
 
   it("clears stale PR, runtime, and role metadata when lifecycle no longer carries them", () => {
@@ -204,12 +201,12 @@ describe("buildTransitionMetadataPatch", () => {
     const decision: LifecycleDecision = {
       status: "working",
       evidence: "active",
-      detectingAttempts: 0,
+      detecting: { attempts: 0 },
       sessionState: "working",
       sessionReason: "task_in_progress",
     };
 
-    const patch = buildTransitionMetadataPatch(lifecycle, decision, "working");
+    const patch = buildTransitionMetadataPatch(lifecycle, decision);
 
     expect(patch["pr"]).toBe("");
     expect(patch["runtimeHandle"]).toBe("");
@@ -233,10 +230,7 @@ describe("applyLifecycleDecision (integration)", () => {
   });
 
   function writeTestSession(sessionId: string, metadata: Record<string, string>) {
-    const content = Object.entries(metadata)
-      .map(([k, v]) => `${k}=${v}`)
-      .join("\n");
-    writeFileSync(join(dataDir, sessionId), content);
+    writeFileSync(join(dataDir, `${sessionId}.json`), JSON.stringify(metadata));
   }
 
   it("returns failure when session not found", () => {
@@ -246,7 +240,7 @@ describe("applyLifecycleDecision (integration)", () => {
       decision: {
         status: "working",
         evidence: "test",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
       },
       source: "poll",
     });
@@ -268,7 +262,7 @@ describe("applyLifecycleDecision (integration)", () => {
       decision: {
         status: "working",
         evidence: "agent_started",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "working",
         sessionReason: "task_in_progress",
       },
@@ -298,7 +292,7 @@ describe("applyLifecycleDecision (integration)", () => {
       decision: {
         status: "pr_open",
         evidence: "pr_created",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         prState: "open",
         prReason: "in_progress",
       },
@@ -339,7 +333,7 @@ describe("applyLifecycleDecision (integration)", () => {
       decision: {
         status: "working",
         evidence: "active",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "working",
         sessionReason: "task_in_progress",
       },
@@ -368,7 +362,7 @@ describe("applyLifecycleDecision (integration)", () => {
       decision: {
         status: "working",
         evidence: "agent_started",
-        detectingAttempts: 0,
+        detecting: { attempts: 0 },
         sessionState: "working",
         sessionReason: "task_in_progress",
       },
@@ -393,6 +387,6 @@ describe("createStateTransitionDecision", () => {
     expect(decision.sessionState).toBe("stuck");
     expect(decision.sessionReason).toBe("probe_failure");
     expect(decision.evidence).toBe("runtime dead after 3 attempts");
-    expect(decision.detectingAttempts).toBe(0);
+    expect(decision.detecting.attempts).toBe(0);
   });
 });

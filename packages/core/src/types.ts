@@ -67,7 +67,8 @@ export type CanonicalPRReason =
   | "approved"
   | "merge_ready"
   | "merged"
-  | "closed_unmerged";
+  | "closed_unmerged"
+  | "cleared_on_restore";
 
 export type CanonicalRuntimeState = "unknown" | "alive" | "exited" | "missing" | "probe_failed";
 
@@ -231,19 +232,8 @@ export const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set([
 /** Activity states that indicate the session is no longer running. */
 export const TERMINAL_ACTIVITIES: ReadonlySet<ActivityState> = new Set(["exited"]);
 
-/** Statuses that must never be restored (e.g. already merged). */
-export const NON_RESTORABLE_STATUSES: ReadonlySet<SessionStatus> = new Set(["merged"]);
-
-/** Check whether lifecycle metadata indicates the session's PR is already merged. */
-function hasMergedLifecyclePR(lifecycle: CanonicalSessionLifecycle): boolean {
-  return (
-    (
-      lifecycle as CanonicalSessionLifecycle & {
-        pr?: { state?: string | null } | null;
-      }
-    ).pr?.state === "merged"
-  );
-}
+/** Statuses that must never be restored. */
+export const NON_RESTORABLE_STATUSES: ReadonlySet<SessionStatus> = new Set([]);
 
 /** Check if a session is in a terminal (dead) state. */
 export function isTerminalSession(session: {
@@ -275,8 +265,7 @@ export function isRestorable(session: {
   if (session.lifecycle) {
     return (
       isTerminalSession(session) &&
-      !NON_RESTORABLE_STATUSES.has(session.status) &&
-      !hasMergedLifecyclePR(session.lifecycle)
+      !NON_RESTORABLE_STATUSES.has(session.status)
     );
   }
   return isTerminalSession(session) && !NON_RESTORABLE_STATUSES.has(session.status);
@@ -338,9 +327,6 @@ export function isOrchestratorSession(
   sessionPrefix?: string,
   allSessionPrefixes?: string[],
 ): boolean {
-  // Explicit role metadata is always authoritative — covers legacy
-  // bare-named records once they have been backfilled by
-  // repairSingleSessionMetadataOnRead on read.
   if (session.metadata?.["role"] === "orchestrator") {
     return true;
   }
@@ -348,6 +334,9 @@ export function isOrchestratorSession(
     return false;
   }
   const escaped = sessionPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (session.id === `${sessionPrefix}-orchestrator`) {
+    return true;
+  }
   if (!new RegExp(`^${escaped}-orchestrator-\\d+$`).test(session.id)) {
     return false;
   }
@@ -385,6 +374,8 @@ export interface SessionSpawnConfig {
 export interface OrchestratorSpawnConfig {
   projectId: string;
   systemPrompt?: string;
+  /** Override the agent plugin for this orchestrator (e.g. "codex", "claude-code", "opencode") */
+  agent?: string;
 }
 
 // =============================================================================
@@ -506,6 +497,19 @@ export interface Agent {
    */
   getRestoreCommand?(session: Session, project: ProjectConfig): Promise<string | null>;
 
+  /**
+   * Optional: run setup BEFORE the agent process is launched.
+   *
+   * Use this when a plugin needs to observe state that the agent itself will
+   * mutate at startup. Captured *after* the workspace exists but *before*
+   * `runtime.create()` spawns the agent — so the snapshot is taken cleanly,
+   * with no race against the agent's own initialization writes.
+   *
+   * Receives only the workspace path because the full Session object (with
+   * runtime handle, lifecycle, etc.) does not exist yet at this point.
+   */
+  preLaunchSetup?(workspacePath: string): Promise<void>;
+
   /** Optional: run setup after agent is launched (e.g. configure MCP servers) */
   postLaunchSetup?(session: Session): Promise<void>;
 
@@ -541,6 +545,15 @@ export interface Agent {
 export interface AgentLaunchConfig {
   sessionId: SessionId;
   projectConfig: ProjectConfig;
+  /**
+   * Per-session workspace path. Differs from `projectConfig.path` when the
+   * workspace plugin (e.g. worktree mode) creates an isolated checkout per
+   * session. Plugins that need the agent's actual cwd — for cwd-derived
+   * lookups, --work-dir flags, file-based discovery — must use this when
+   * present. Falls back to `projectConfig.path` when undefined (clone-mode
+   * workspaces, or plugins not yet plumbing it through).
+   */
+  workspacePath?: string;
   issueId?: string;
   prompt?: string;
   permissions?: AgentPermissionInput;
@@ -588,6 +601,8 @@ export interface AgentSessionInfo {
   summaryIsFallback?: boolean;
   /** Agent's internal session ID (for resume) */
   agentSessionId: string | null;
+  /** Agent-owned metadata worth persisting for later restore. */
+  metadata?: Record<string, string>;
   /** Estimated cost so far */
   cost?: CostEstimate;
 }
@@ -632,6 +647,8 @@ export interface WorkspaceCreateConfig {
   project: ProjectConfig;
   sessionId: SessionId;
   branch: string;
+  /** Override the base directory for worktrees (e.g. V2 project-scoped dir). */
+  worktreeDir?: string;
 }
 
 export interface WorkspaceInfo {
@@ -785,8 +802,18 @@ export interface SCM {
   /** Get pending (unresolved) review comments */
   getPendingComments(pr: PRInfo): Promise<ReviewComment[]>;
 
-  /** Get automated review comments (bots, linters, security scanners) */
-  getAutomatedComments(pr: PRInfo): Promise<AutomatedComment[]>;
+  /**
+   * Get all review threads (human + bot) with isBot flag.
+   * Single GraphQL call for all review threads (human + bot) with review summaries.
+   * Returns unresolved threads only.
+   *
+   * Optional — plugins that do not implement this method will fall back to
+   * `getPendingComments()` (which lacks `isBot` classification and review
+   * summaries). New SCM plugins should prefer implementing this method.
+   *
+   * @since 0.6.0 — replaces the removed `getAutomatedComments` method.
+   */
+  getReviewThreads?(pr: PRInfo): Promise<ReviewThreadsResult>;
 
   // --- Merge Readiness ---
 
@@ -806,7 +833,62 @@ export interface SCM {
    * @param observer - Optional observer for batch operation metrics
    * @returns Map keyed by "${owner}/${repo}#${number}" containing enrichment data
    */
-  enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver): Promise<Map<string, PREnrichmentData>>;
+  enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver, repos?: string[]): Promise<Map<string, PREnrichmentData>>;
+}
+
+/**
+ * Batch enrichment data returned by SCM plugins.
+ * Contains all the information the orchestrator needs for status detection.
+ */
+export interface PREnrichmentData {
+  /** Current PR state */
+  state: PRState;
+  /** Overall CI status */
+  ciStatus: CIStatus;
+  /** Review decision */
+  reviewDecision: ReviewDecision;
+  /** Whether the PR is mergeable based on CI, reviews, and merge state */
+  mergeable: boolean;
+  /** PR title */
+  title?: string;
+  /** Number of additions */
+  additions?: number;
+  /** Number of deletions */
+  deletions?: number;
+  /** Whether PR is a draft */
+  isDraft?: boolean;
+  /** Whether PR has merge conflicts */
+  hasConflicts?: boolean;
+  /** Whether PR is behind base branch */
+  isBehind?: boolean;
+  /** List of blockers preventing merge */
+  blockers?: string[];
+}
+
+/**
+ * Observer for GraphQL batch PR enrichment operations.
+ * Used by SCM plugins to report batch success/failure to the observability system.
+ */
+export interface BatchObserver {
+  /** Record a successful batch enrichment */
+  recordSuccess(data: {
+    batchIndex: number;
+    totalBatches: number;
+    prCount: number;
+    durationMs: number;
+  }): void;
+  /** Record a failed batch enrichment */
+  recordFailure(data: {
+    batchIndex: number;
+    totalBatches: number;
+    prCount: number;
+    error: string;
+    durationMs: number;
+  }): void;
+  /** Log a message at a specific level */
+  log(level: ObservabilityLevel, message: string): void;
+  /** Called after ETag guards with repos where Guard 1 returned 304 (no PR list changes). */
+  reportPRListUnchangedRepos?(repos: Set<string>): void;
 }
 
 // --- PR Types ---
@@ -903,6 +985,8 @@ export type ReviewDecision = "approved" | "changes_requested" | "pending" | "non
 
 export interface ReviewComment {
   id: string;
+  /** GraphQL node ID of the review thread (for resolveReviewThread mutation). */
+  threadId?: string;
   author: string;
   body: string;
   path?: string;
@@ -910,6 +994,20 @@ export interface ReviewComment {
   isResolved: boolean;
   createdAt: Date;
   url: string;
+  /** Whether the comment was authored by a known bot */
+  isBot?: boolean;
+}
+
+export interface ReviewSummary {
+  author: string;
+  state: string;
+  body: string;
+  submittedAt: Date;
+}
+
+export interface ReviewThreadsResult {
+  threads: ReviewComment[];
+  reviews: ReviewSummary[];
 }
 
 export interface AutomatedComment {
@@ -987,7 +1085,6 @@ export interface BatchObserver {
   /** Log a message at a specific level */
   log(level: ObservabilityLevel, message: string): void;
 }
-
 // =============================================================================
 // NOTIFIER — Plugin Slot 6 (PRIMARY INTERFACE)
 // =============================================================================
@@ -1055,6 +1152,7 @@ export type EventPriority = "urgent" | "action" | "warning" | "info";
 /** All orchestrator event types */
 export type EventType =
   // Session lifecycle
+  | "session.spawn_started"
   | "session.spawned"
   | "session.working"
   | "session.exited"
@@ -1178,6 +1276,9 @@ export interface LifecycleConfig {
 
 /** Top-level orchestrator configuration (from agent-orchestrator.yaml) */
 export interface OrchestratorConfig {
+  /** Optional JSON Schema hint for editor autocomplete/validation. */
+  "$schema"?: string;
+
   /**
    * Path to the config file (set automatically during load).
    * Used for hash-based directory structure.
@@ -1234,6 +1335,16 @@ export interface OrchestratorConfig {
    * Used by plugin-registry for manifest validation. Set automatically during config validation.
    */
   _externalPluginEntries?: ExternalPluginEntryRef[];
+}
+
+export interface DegradedProjectEntry {
+  projectId: string;
+  path: string;
+  resolveError: string;
+}
+
+export interface LoadedConfig extends OrchestratorConfig {
+  degradedProjects: Record<string, DegradedProjectEntry>;
 }
 
 /**
@@ -1333,11 +1444,16 @@ export interface ProjectConfig {
   /** Local path to the repo */
   path: string;
 
+  resolveError?: string;
+
   /** Default branch (main, master, next, develop, etc.) */
   defaultBranch: string;
 
   /** Session name prefix (e.g. "app" → "app-1", "app-2") */
   sessionPrefix: string;
+
+  /** Whether this project is active in portfolio and dashboard surfaces */
+  enabled?: boolean;
 
   /** Override default runtime */
   runtime?: string;
@@ -1549,40 +1665,52 @@ export interface PluginModule<T = unknown> {
 }
 
 // =============================================================================
-// SESSION METADATA (flat file format)
+// SESSION METADATA
 // =============================================================================
 
 /**
- * Session metadata stored as flat key=value files.
- * Matches the existing bash script format for backwards compatibility.
+ * Session metadata stored as JSON files under projects/{projectId}/sessions/.
  *
- * Note: In the new architecture, session files are named with user-facing names
- * (e.g., "int-1") and contain a tmuxName field for the globally unique tmux name
- * (e.g., "a3b4c5d6e7f8-int-1").
+ * Session files are named with user-facing session IDs (e.g., "ao-1.json").
+ * The tmuxName field matches the session ID (e.g., "ao-1") — no hash prefix.
  */
 export interface SessionMetadata {
   worktree: string;
   branch: string;
   status: string;
-  stateVersion?: string;
-  statePayload?: string;
-  tmuxName?: string; // Globally unique tmux session name (includes hash)
+  lifecycle?: CanonicalSessionLifecycle;
+  tmuxName?: string; // Tmux session name (matches session ID, e.g. "ao-1")
   issue?: string;
+  issueTitle?: string; // Issue title for event enrichment
   pr?: string;
-  prAutoDetect?: "on" | "off";
+  prAutoDetect?: boolean;
   summary?: string;
   project?: string;
   agent?: string; // Agent plugin name (e.g. "codex", "claude-code") — persisted for lifecycle
   createdAt?: string;
-  runtimeHandle?: string;
+  runtimeHandle?: RuntimeHandle;
   restoredAt?: string;
   role?: string; // "orchestrator" for orchestrator sessions
-  dashboardPort?: number;
-  terminalWsPort?: number;
-  directTerminalWsPort?: number;
+  dashboard?: {
+    port?: number;
+    terminalWsPort?: number;
+    directTerminalWsPort?: number;
+  };
   opencodeSessionId?: string;
+  claudeSessionUuid?: string;
+  codexThreadId?: string;
+  codexModel?: string;
+  restoreFallbackReason?: string;
   pinnedSummary?: string; // First quality summary, pinned for display stability
   userPrompt?: string; // Prompt used when spawning without a tracker issue
+  /**
+   * Stable human-readable display name derived from task context at spawn time.
+   * Populated from issue title, user prompt, or orchestrator system prompt —
+   * whichever was available when the session was created. Used by the dashboard
+   * as a fallback above humanized branch names so sessions are identifiable
+   * even when PR/issue enrichment is unavailable.
+   */
+  displayName?: string;
 }
 
 // =============================================================================
@@ -1614,16 +1742,9 @@ export interface KillOptions {
 export interface SessionManager {
   spawn(config: SessionSpawnConfig): Promise<Session>;
   spawnOrchestrator(config: OrchestratorSpawnConfig): Promise<Session>;
+  ensureOrchestrator(config: OrchestratorSpawnConfig): Promise<Session>;
   restore(sessionId: SessionId): Promise<Session>;
   list(projectId?: string): Promise<Session[]>;
-  /** Fast cache-served list. Falls back to list() on first call or after TTL. */
-  listCached(projectId?: string): Promise<Session[]>;
-  /**
-   * Drop the listCached() cache. Call after any metadata mutation made
-   * outside of the session manager's own mutation APIs (e.g. when another
-   * module imports updateMetadata from ./metadata directly).
-   */
-  invalidateCache(): void;
   get(sessionId: SessionId): Promise<Session | null>;
   kill(sessionId: SessionId, options?: KillOptions): Promise<KillResult>;
   cleanup(
@@ -1638,6 +1759,8 @@ export interface SessionManager {
 export interface OpenCodeSessionManager extends SessionManager {
   /** Remap session to OpenCode session ID, returns the mapped OpenCode session ID */
   remap(sessionId: SessionId, force?: boolean): Promise<string>;
+  listCached(projectId?: string): Promise<Session[]>;
+  invalidateCache(): void;
 }
 
 export interface ClaimPROptions {
@@ -1771,4 +1894,64 @@ export class ConfigNotFoundError extends Error {
     super(message ?? "No agent-orchestrator.yaml found. Run `ao start` to create one.");
     this.name = "ConfigNotFoundError";
   }
+}
+
+/** Thrown when a project cannot be resolved into an effective runtime config. */
+export class ProjectResolveError extends Error {
+  constructor(
+    public readonly projectId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProjectResolveError";
+  }
+}
+
+// =============================================================================
+// PORTFOLIO — Cross-project aggregation
+// =============================================================================
+
+/** A project entry in the portfolio index (merged from discovery + registration + preferences) */
+export interface PortfolioProject {
+  id: string;                          // Stable portfolio identity (configProjectKey, with collision suffix if needed)
+  name: string;                        // Human-readable display name
+  configPath: string;                  // Absolute path to agent-orchestrator.yaml
+  configProjectKey: string;            // Key in config.projects map
+  repoPath: string;                    // Absolute local filesystem path
+  repo?: string;                       // "owner/repo" for SCM
+  defaultBranch?: string;
+  sessionPrefix: string;
+  source: "discovered" | "registered" | "config"; // How this entry was found
+  enabled: boolean;                    // User can disable without removing
+  pinned: boolean;                     // User preference for ordering
+  lastSeenAt: string;                  // ISO timestamp
+  resolveError?: string;               // Present only when the project is degraded
+}
+
+/** User preferences overlay (canonical, small file) */
+export interface PortfolioPreferences {
+  version: 1;
+  defaultProjectId?: string;
+  projectOrder?: string[];             // Ordered project IDs for display
+  projects?: Record<string, {          // Per-project preferences
+    pinned?: boolean;
+    enabled?: boolean;
+    displayName?: string;
+  }>;
+}
+
+/** Registered projects (explicit `ao project add`) */
+export interface PortfolioRegistered {
+  version: 1;
+  projects: Array<{
+    path: string;                      // Repo path
+    configProjectKey?: string;         // Key in config if multi-project YAML
+    addedAt: string;                   // ISO timestamp
+  }>;
+}
+
+/** Aggregated portfolio session with project context */
+export interface PortfolioSession {
+  session: Session;
+  project: PortfolioProject;
 }

@@ -3,13 +3,14 @@ import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { getSessionsDir, getProjectBaseDir } from "../paths.js";
+import { getProjectSessionsDir, getProjectDir } from "../paths.js";
+import { resetOpenCodeSessionListCache } from "../session-manager.js";
 import { createInitialCanonicalLifecycle, deriveLegacyStatus } from "../lifecycle-state.js";
 import { createActivitySignal } from "../activity-signal.js";
 import type {
   OrchestratorConfig,
   PluginRegistry,
-  SessionManager,
+  OpenCodeSessionManager,
   Session,
   Runtime,
   RuntimeHandle,
@@ -43,10 +44,17 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
       lifecycle.session.startedAt = lifecycle.session.lastTransitionAt;
       break;
     case "stuck":
-    case "errored":
       lifecycle.session.state = "stuck";
-      lifecycle.session.reason = requestedStatus === "errored" ? "error_in_process" : "probe_failure";
+      lifecycle.session.reason = "probe_failure";
       lifecycle.session.startedAt = lifecycle.session.lastTransitionAt;
+      break;
+    case "errored":
+      lifecycle.session.state = "terminated";
+      lifecycle.session.reason = "error_in_process";
+      lifecycle.session.startedAt = lifecycle.session.lastTransitionAt;
+      lifecycle.session.terminatedAt = lifecycle.session.lastTransitionAt;
+      lifecycle.runtime.state = "missing";
+      lifecycle.runtime.reason = "process_missing";
       break;
     case "merged":
       lifecycle.session.state = "idle";
@@ -113,10 +121,10 @@ export function makeSession(overrides: Partial<Session> = {}): Session {
 export function makePR(overrides: Partial<PRInfo> = {}): PRInfo {
   return {
     number: 42,
-    url: "https://github.com/org/repo/pull/42",
+    url: "https://github.com/org/my-app/pull/42",
     title: "Fix things",
     owner: "org",
-    repo: "repo",
+    repo: "my-app",
     branch: "feat/test",
     baseBranch: "main",
     isDraft: false,
@@ -171,7 +179,7 @@ export function createMockPlugins(): MockPlugins {
 }
 
 export function createMockSCM(overrides: Partial<SCM> = {}): SCM {
-  return {
+  const scm: SCM = {
     name: "github",
     detectPR: vi.fn().mockResolvedValue(null),
     getPRState: vi.fn().mockResolvedValue("open"),
@@ -182,7 +190,7 @@ export function createMockSCM(overrides: Partial<SCM> = {}): SCM {
     getReviews: vi.fn().mockResolvedValue([]),
     getReviewDecision: vi.fn().mockResolvedValue("none"),
     getPendingComments: vi.fn().mockResolvedValue([]),
-    getAutomatedComments: vi.fn().mockResolvedValue([]),
+    getReviewThreads: vi.fn().mockResolvedValue({ threads: [], reviews: [] }),
     getMergeability: vi.fn().mockResolvedValue({
       mergeable: false,
       ciPassing: true,
@@ -190,8 +198,33 @@ export function createMockSCM(overrides: Partial<SCM> = {}): SCM {
       noConflicts: true,
       blockers: [],
     }),
+    // Default batch mock: resolves individual method mocks at call time
+    // so tests that override getPRState/getCISummary/etc. automatically
+    // get matching batch enrichment without explicit enrichSessionsPRBatch.
+    enrichSessionsPRBatch: vi.fn().mockImplementation(async (prs: PRInfo[]) => {
+      const result = new Map();
+      for (const pr of prs) {
+        const [state, ciStatus, reviewDecision, mergeability, ciChecks] = await Promise.all([
+          scm.getPRState(pr),
+          scm.getCISummary(pr),
+          scm.getReviewDecision(pr),
+          scm.getMergeability(pr),
+          scm.getCIChecks(pr),
+        ]);
+        result.set(`${pr.owner}/${pr.repo}#${pr.number}`, {
+          state: state ?? "open",
+          ciStatus: ciStatus ?? "passing",
+          reviewDecision: reviewDecision ?? "none",
+          mergeable: mergeability?.mergeable ?? false,
+          hasConflicts: mergeability ? !mergeability.noConflicts : false,
+          ciChecks: ciChecks ?? [],
+        });
+      }
+      return result;
+    }),
     ...overrides,
   };
+  return scm;
 }
 
 export function createMockNotifier(): Notifier {
@@ -213,7 +246,10 @@ export interface RegistryPlugins {
   notifier?: Notifier;
 }
 
-export function createMockRegistry(plugins: RegistryPlugins, options: { strict?: boolean } = {}): PluginRegistry {
+export function createMockRegistry(
+  plugins: RegistryPlugins,
+  options: { strict?: boolean } = {},
+): PluginRegistry {
   return {
     register: vi.fn(),
     get: vi.fn().mockImplementation((slot: string, name?: string) => {
@@ -238,8 +274,6 @@ export function createMockRegistry(plugins: RegistryPlugins, options: { strict?:
         if (!name || name === plugins.notifier.name) return plugins.notifier;
         if (!options.strict) return plugins.notifier;
       }
-
-
 
       return null;
     }),
@@ -301,7 +335,7 @@ export function createTestEnvironment(): TestEnvironment {
     readyThresholdMs: 300_000,
   };
 
-  const sessionsDir = getSessionsDir(configPath, join(tmpDir, "my-app"));
+  const sessionsDir = getProjectSessionsDir("my-app");
   mkdirSync(sessionsDir, { recursive: true });
 
   const cleanup = () => {
@@ -310,9 +344,9 @@ export function createTestEnvironment(): TestEnvironment {
     } else {
       process.env["HOME"] = previousHome;
     }
-    const projectBaseDir = getProjectBaseDir(configPath, join(tmpDir, "my-app"));
-    if (existsSync(projectBaseDir)) {
-      rmSync(projectBaseDir, { recursive: true, force: true });
+    const projectDir = getProjectDir("my-app");
+    if (existsSync(projectDir)) {
+      rmSync(projectDir, { recursive: true, force: true });
     }
     rmSync(tmpDir, { recursive: true, force: true });
   };
@@ -334,18 +368,26 @@ export interface TestContext {
   mockRegistry: PluginRegistry;
   config: OrchestratorConfig;
   originalPath: string | undefined;
+  originalHome: string | undefined;
 }
 
 export function setupTestContext(): TestContext {
+  resetOpenCodeSessionListCache();
   const originalPath = process.env.PATH;
+  const originalHome = process.env["HOME"];
   const tmpDir = join(tmpdir(), `ao-test-session-mgr-${randomUUID()}`);
   mkdirSync(tmpDir, { recursive: true });
+  process.env["HOME"] = tmpDir;
 
   const configPath = join(tmpDir, "agent-orchestrator.yaml");
   writeFileSync(configPath, "projects: {}\n");
 
   const { runtime: mockRuntime, agent: mockAgent, workspace: mockWorkspace } = createMockPlugins();
-  const mockRegistry = createMockRegistry({ runtime: mockRuntime, agent: mockAgent, workspace: mockWorkspace });
+  const mockRegistry = createMockRegistry({
+    runtime: mockRuntime,
+    agent: mockAgent,
+    workspace: mockWorkspace,
+  });
 
   const config: OrchestratorConfig = {
     configPath,
@@ -379,7 +421,7 @@ export function setupTestContext(): TestContext {
     readyThresholdMs: 300_000,
   };
 
-  const sessionsDir = getSessionsDir(configPath, join(tmpDir, "my-app"));
+  const sessionsDir = getProjectSessionsDir("my-app");
   mkdirSync(sessionsDir, { recursive: true });
 
   return {
@@ -392,14 +434,20 @@ export function setupTestContext(): TestContext {
     mockRegistry,
     config,
     originalPath,
+    originalHome,
   };
 }
 
 export function teardownTestContext(ctx: TestContext): void {
   process.env.PATH = ctx.originalPath;
-  const projectBaseDir = getProjectBaseDir(ctx.configPath, join(ctx.tmpDir, "my-app"));
-  if (existsSync(projectBaseDir)) {
-    rmSync(projectBaseDir, { recursive: true, force: true });
+  if (ctx.originalHome === undefined) {
+    delete process.env["HOME"];
+  } else {
+    process.env["HOME"] = ctx.originalHome;
+  }
+  const projectDir = getProjectDir("my-app");
+  if (existsSync(projectDir)) {
+    rmSync(projectDir, { recursive: true, force: true });
   }
   rmSync(ctx.tmpDir, { recursive: true, force: true });
 }
@@ -408,14 +456,24 @@ export function teardownTestContext(ctx: TestContext): void {
 // Session manager mock
 // ---------------------------------------------------------------------------
 
-export function createMockSessionManager(): SessionManager {
+export function createMockSessionManager(): OpenCodeSessionManager {
   return {
     spawn: vi.fn().mockResolvedValue(makeSession()),
-    spawnOrchestrator: vi.fn().mockResolvedValue(makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } })),
+    spawnOrchestrator: vi
+      .fn()
+      .mockResolvedValue(
+        makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } }),
+      ),
+    ensureOrchestrator: vi
+      .fn()
+      .mockResolvedValue(
+        makeSession({ id: "app-orchestrator", metadata: { role: "orchestrator" } }),
+      ),
     restore: vi.fn().mockResolvedValue(makeSession()),
     list: vi.fn().mockResolvedValue([]),
     listCached: vi.fn().mockResolvedValue([]),
     invalidateCache: vi.fn(),
+    remap: vi.fn().mockResolvedValue("app-1"),
     get: vi.fn().mockResolvedValue(null),
     kill: vi.fn().mockResolvedValue({ cleaned: true, alreadyTerminated: false }),
     cleanup: vi.fn().mockResolvedValue({ killed: [], skipped: [], errors: [] }),
@@ -428,5 +486,5 @@ export function createMockSessionManager(): SessionManager {
       githubAssigned: true,
       takenOverFrom: [],
     }),
-  } as SessionManager;
+  } as OpenCodeSessionManager;
 }

@@ -34,7 +34,7 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
-import { create, manifest, default as defaultExport } from "./index.js";
+import { create, manifest, default as defaultExport, resetOpenCodeSessionListCache } from "./index.js";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -95,6 +95,7 @@ function mockTmuxWithProcess(processName: string, found = true) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetOpenCodeSessionListCache();
 });
 
 describe("plugin manifest & exports", () => {
@@ -818,14 +819,14 @@ describe("postLaunchSetup", () => {
 describe("getEnvironment PATH", () => {
   const agent = create();
 
-  it("prepends ~/.ao/bin to PATH", () => {
+  it("does not set PATH (injected by session-manager)", () => {
     const env = agent.getEnvironment(makeLaunchConfig());
-    expect(env["PATH"]).toMatch(/\.ao\/bin/);
+    expect(env["PATH"]).toBeUndefined();
   });
 
-  it("sets GH_PATH", () => {
+  it("does not set GH_PATH (injected by session-manager)", () => {
     const env = agent.getEnvironment(makeLaunchConfig());
-    expect(env["GH_PATH"]).toBe("/usr/local/bin/gh");
+    expect(env["GH_PATH"]).toBeUndefined();
   });
 });
 

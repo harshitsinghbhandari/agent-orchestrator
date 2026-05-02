@@ -22,7 +22,6 @@ import type {
 import { cloneLifecycle, deriveLegacyStatus } from "./lifecycle-state.js";
 import { updateMetadata, readMetadataRaw, readCanonicalLifecycle } from "./metadata.js";
 import type { LifecycleDecision } from "./lifecycle-status-decisions.js";
-import { validateStatus } from "./utils/validation.js";
 
 /**
  * Source of the lifecycle transition — used for audit and observability.
@@ -110,17 +109,18 @@ export function applyDecisionToLifecycle(
 }
 
 /**
- * Build the metadata patch for persisting a lifecycle transition.
+ * Build the full metadata patch for a lifecycle poll transition.
+ * Unlike buildLifecycleMetadataPatch(), this includes detecting metadata
+ * (attempts, startedAt, evidenceHash) and lifecycle evidence from the decision.
+ * Used exclusively by the lifecycle manager polling loop.
  */
 export function buildTransitionMetadataPatch(
   lifecycle: CanonicalSessionLifecycle,
   decision: LifecycleDecision,
-  previousStatus: SessionStatus,
 ): Record<string, string> {
   const patch: Record<string, string> = {
-    stateVersion: "2",
-    statePayload: JSON.stringify(lifecycle),
-    status: deriveLegacyStatus(lifecycle, previousStatus),
+    lifecycle: JSON.stringify(lifecycle),
+    // status is NOT persisted — computed on read via deriveLegacyStatus()
   };
 
   // Include lifecycle evidence
@@ -129,20 +129,20 @@ export function buildTransitionMetadataPatch(
   }
 
   // Include detecting metadata
-  if (decision.detectingAttempts > 0) {
-    patch["detectingAttempts"] = String(decision.detectingAttempts);
+  if (decision.detecting.attempts > 0) {
+    patch["detectingAttempts"] = String(decision.detecting.attempts);
   } else {
     patch["detectingAttempts"] = "";
   }
 
-  if (decision.detectingStartedAt) {
-    patch["detectingStartedAt"] = decision.detectingStartedAt;
+  if (decision.detecting.startedAt) {
+    patch["detectingStartedAt"] = decision.detecting.startedAt;
   } else {
     patch["detectingStartedAt"] = "";
   }
 
-  if (decision.detectingEvidenceHash) {
-    patch["detectingEvidenceHash"] = decision.detectingEvidenceHash;
+  if (decision.detecting.evidenceHash) {
+    patch["detectingEvidenceHash"] = decision.detecting.evidenceHash;
   } else {
     patch["detectingEvidenceHash"] = "";
   }
@@ -205,16 +205,13 @@ export function applyLifecycleDecision(
   }
 
   const previousLifecycle = cloneLifecycle(currentLifecycle);
-  const previousStatus = deriveLegacyStatus(
-    previousLifecycle,
-    validateStatus(rawMeta["status"]),
-  );
+  const previousStatus = deriveLegacyStatus(previousLifecycle);
 
   // Apply the decision to the lifecycle
   const nextLifecycle = cloneLifecycle(currentLifecycle);
   applyDecisionToLifecycle(nextLifecycle, input.decision, nowIso);
 
-  const nextStatus = deriveLegacyStatus(nextLifecycle, previousStatus);
+  const nextStatus = deriveLegacyStatus(nextLifecycle);
   const statusChanged = nextStatus !== previousStatus;
 
   // Build metadata patch, starting with additional metadata (so lifecycle keys take precedence)
@@ -231,7 +228,6 @@ export function applyLifecycleDecision(
   const lifecyclePatch = buildTransitionMetadataPatch(
     nextLifecycle,
     input.decision,
-    previousStatus,
   );
   for (const [key, value] of Object.entries(lifecyclePatch)) {
     metadataPatch[key] = value;
@@ -295,7 +291,7 @@ export function createStateTransitionDecision(
   return {
     status,
     evidence,
-    detectingAttempts: 0,
+    detecting: { attempts: 0 },
     sessionState: state,
     sessionReason: reason,
   };

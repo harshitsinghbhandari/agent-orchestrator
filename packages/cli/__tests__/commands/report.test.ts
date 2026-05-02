@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import type * as CoreModule from "@aoagents/ao-core";
 
-const { mockConfigRef, mockSessionManager, mockApplyAgentReport, mockGetSessionsDir } = vi.hoisted(
+const { mockConfigRef, mockSessionManager, mockApplyAgentReport, mockGetProjectSessionsDir } = vi.hoisted(
   () => ({
     mockConfigRef: { current: null as Record<string, unknown> | null },
     mockSessionManager: {
       get: vi.fn(),
     },
     mockApplyAgentReport: vi.fn(),
-    mockGetSessionsDir: vi.fn(),
+    mockGetProjectSessionsDir: vi.fn(),
   }),
 );
 
@@ -18,7 +18,7 @@ vi.mock("@aoagents/ao-core", async (importOriginal) => {
   return {
     ...actual,
     loadConfig: () => mockConfigRef.current,
-    getSessionsDir: (...args: unknown[]) => mockGetSessionsDir(...args),
+    getProjectSessionsDir: (...args: unknown[]) => mockGetProjectSessionsDir(...args),
     applyAgentReport: (...args: unknown[]) => mockApplyAgentReport(...args),
   };
 });
@@ -63,8 +63,8 @@ describe("report commands", () => {
     };
     mockSessionManager.get.mockReset();
     mockApplyAgentReport.mockReset();
-    mockGetSessionsDir.mockReset();
-    mockGetSessionsDir.mockReturnValue("/tmp/sessions");
+    mockGetProjectSessionsDir.mockReset();
+    mockGetProjectSessionsDir.mockReturnValue("/tmp/sessions");
     mockSessionManager.get.mockResolvedValue({
       id: "app-1",
       projectId: "app",

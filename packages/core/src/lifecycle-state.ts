@@ -74,6 +74,8 @@ const CanonicalSessionLifecycleSchema = z.object({
         "agent_process_exited",
         "probe_failure",
         "error_in_process",
+        "auto_cleanup",
+        "pr_merged",
       ]),
       startedAt: TimestampSchema,
       completedAt: TimestampSchema,
@@ -95,6 +97,7 @@ const CanonicalSessionLifecycleSchema = z.object({
         "merge_ready",
         "merged",
         "closed_unmerged",
+        "cleared_on_restore",
       ]),
       number: z.number().int().nullable(),
       url: z.string().nullable(),
@@ -112,6 +115,8 @@ const CanonicalSessionLifecycleSchema = z.object({
         "tmux_missing",
         "manual_kill_requested",
         "probe_error",
+        "pr_merged_cleanup",
+        "auto_cleanup",
       ]),
       lastObservedAt: TimestampSchema,
       handle: RuntimeHandleSchema.nullable(),
@@ -399,9 +404,11 @@ export function parseCanonicalLifecycle(
   options: ParseCanonicalLifecycleOptions = {},
 ): CanonicalSessionLifecycle {
   const parsed =
-    meta["statePayload"] && meta["stateVersion"] === "2"
-      ? safeJsonParse<unknown>(meta["statePayload"])
-      : null;
+    meta["lifecycle"]
+      ? safeJsonParse<unknown>(meta["lifecycle"])
+      : meta["statePayload"] && meta["stateVersion"] === "2"
+        ? safeJsonParse<unknown>(meta["statePayload"])
+        : null;
   const validated = CanonicalSessionLifecycleSchema.safeParse(parsed);
   if (validated.success) {
     return normalizePayloadLifecycle(validated.data, meta, options);
@@ -411,18 +418,7 @@ export function parseCanonicalLifecycle(
 
 export function deriveLegacyStatus(
   lifecycle: CanonicalSessionLifecycle,
-  previousStatus: SessionStatus = "working",
 ): SessionStatus {
-  if (
-    lifecycle.session.state === "terminated" &&
-    (previousStatus === "cleanup" ||
-      previousStatus === "errored" ||
-      previousStatus === "killed" ||
-      previousStatus === "terminated")
-  ) {
-    return previousStatus;
-  }
-
   switch (lifecycle.session.state) {
     case "not_started":
       return "spawning";
@@ -433,10 +429,26 @@ export function deriveLegacyStatus(
     case "done":
       return "done";
     case "terminated":
-      return "terminated";
+      // Derive specific terminal status from lifecycle reason
+      switch (lifecycle.session.reason) {
+        case "manually_killed":
+        case "runtime_lost":
+          return "killed";
+        case "auto_cleanup":
+        case "pr_merged":
+          return "cleanup";
+        case "error_in_process":
+        case "probe_failure":
+          return "errored";
+        default:
+          return "terminated";
+      }
     case "detecting":
       return "detecting";
     default:
+      // "idle" and "working" fall through to PR-state checks below.
+      // idle + merged PR → "merged"; idle + open PR → PR-specific status;
+      // working + open PR → PR-specific status; otherwise → session state directly.
       break;
   }
 
@@ -458,18 +470,21 @@ export function deriveLegacyStatus(
     case "working":
       return "working";
     default:
-      return previousStatus;
+      return "working";
   }
 }
 
+/**
+ * Build a minimal metadata patch for persisting lifecycle state outside the polling loop.
+ * Used by writeCanonicalLifecycle() and agent-report writes. Does NOT include detecting
+ * or evidence metadata — use buildTransitionMetadataPatch() for lifecycle poll transitions.
+ */
 export function buildLifecycleMetadataPatch(
   lifecycle: CanonicalSessionLifecycle,
-  previousStatus?: SessionStatus,
 ): Partial<Record<string, string>> {
   return {
-    stateVersion: "2",
-    statePayload: JSON.stringify(lifecycle),
-    status: deriveLegacyStatus(lifecycle, previousStatus),
+    lifecycle: JSON.stringify(lifecycle),
+    // status is NOT persisted — computed on read via deriveLegacyStatus()
     pr: lifecycle.pr.url ?? "",
     runtimeHandle: lifecycle.runtime.handle ? JSON.stringify(lifecycle.runtime.handle) : "",
     tmuxName: lifecycle.runtime.tmuxName ?? "",

@@ -1,8 +1,7 @@
 import { ACTIVITY_STATE, isOrchestratorSession, isTerminalSession } from "@aoagents/ao-core";
-import { getServices, getSCM } from "@/lib/services";
+import { getServices } from "@/lib/services";
 import {
   sessionToDashboard,
-  resolveProject,
   enrichSessionPR,
   enrichSessionsMetadata,
   computeStats,
@@ -11,10 +10,9 @@ import {
 import { getCorrelationId, jsonWithCorrelation, recordApiObservation } from "@/lib/observability";
 import { filterProjectSessions } from "@/lib/project-utils";
 import { settlesWithin } from "@/lib/async-utils";
+import type { DashboardOrchestratorLink } from "@/lib/types";
 
 const METADATA_ENRICH_TIMEOUT_MS = 3_000;
-const PR_ENRICH_TIMEOUT_MS = 4_000;
-const PER_PR_ENRICH_TIMEOUT_MS = 1_500;
 
 function compareOrchestratorRecency(a: { lastActivityAt?: Date | null; createdAt?: Date | null; id: string }, b: { lastActivityAt?: Date | null; createdAt?: Date | null; id: string }): number {
   return (
@@ -56,13 +54,16 @@ function selectPreferredOrchestratorId(
 function listPreferredProjectOrchestrators(
   sessions: Parameters<typeof listDashboardOrchestrators>[0],
   projects: Parameters<typeof listDashboardOrchestrators>[1],
-) {
+) : DashboardOrchestratorLink[] {
   const preferredOrchestrators = listProjectOrchestratorSessions(sessions, projects);
-  const liveOrchestrators = preferredOrchestrators.filter((session) => !isTerminalSession(session));
-  return listDashboardOrchestrators(
-    liveOrchestrators.length > 0 ? liveOrchestrators : preferredOrchestrators,
-    projects,
-  );
+
+  return preferredOrchestrators
+    .map((session) => ({
+      id: session.id,
+      projectId: session.projectId,
+      projectName: projects[session.projectId]?.name ?? session.projectId,
+    }))
+    .sort((a, b) => a.projectName.localeCompare(b.projectName) || a.id.localeCompare(b.id));
 }
 
 export async function GET(request: Request) {
@@ -73,13 +74,16 @@ export async function GET(request: Request) {
     const projectFilter = searchParams.get("project");
     const activeOnly = searchParams.get("active") === "true";
     const orchestratorOnly = searchParams.get("orchestratorOnly") === "true";
+    const fresh = searchParams.get("fresh") === "true";
 
     const { config, registry, sessionManager } = await getServices();
     const requestedProjectId =
       projectFilter && projectFilter !== "all" && config.projects[projectFilter]
         ? projectFilter
         : undefined;
-    const coreSessions = await sessionManager.listCached(requestedProjectId);
+    const coreSessions = fresh
+      ? await sessionManager.list(requestedProjectId)
+      : await sessionManager.listCached(requestedProjectId);
     const visibleSessions = filterProjectSessions(coreSessions, projectFilter, config.projects);
     const orchestrators = requestedProjectId
       ? listPreferredProjectOrchestrators(visibleSessions, config.projects)
@@ -97,7 +101,7 @@ export async function GET(request: Request) {
         startedAt,
         outcome: "success",
         statusCode: 200,
-        data: { orchestratorOnly: true, orchestratorCount: orchestrators.length },
+        data: { orchestratorOnly: true, orchestratorCount: orchestrators.length, fresh },
       });
 
       return jsonWithCorrelation(
@@ -140,26 +144,11 @@ export async function GET(request: Request) {
     );
 
     if (metadataSettled) {
-      const prEnrichPromises: Promise<boolean>[] = [];
-
+      // PR enrichment: read from session metadata (written by CLI lifecycle).
+      // No GitHub API calls — synchronous metadata read.
       for (let i = 0; i < workerSessions.length; i++) {
-        const core = workerSessions[i];
-        if (!core?.pr) continue;
-
-        const project = resolveProject(core, config.projects);
-        const scm = getSCM(registry, project);
-        if (!scm) continue;
-
-        prEnrichPromises.push(
-          settlesWithin(
-            enrichSessionPR(dashboardSessions[i], scm, core.pr),
-            PER_PR_ENRICH_TIMEOUT_MS,
-          ),
-        );
-      }
-
-      if (prEnrichPromises.length > 0) {
-        await settlesWithin(Promise.allSettled(prEnrichPromises), PR_ENRICH_TIMEOUT_MS);
+        if (!workerSessions[i]?.pr) continue;
+        enrichSessionPR(dashboardSessions[i]);
       }
     }
 
@@ -171,7 +160,7 @@ export async function GET(request: Request) {
       startedAt,
       outcome: "success",
       statusCode: 200,
-      data: { sessionCount: dashboardSessions.length, activeOnly },
+      data: { sessionCount: dashboardSessions.length, activeOnly, fresh },
     });
 
     return jsonWithCorrelation(

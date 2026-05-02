@@ -1,6 +1,6 @@
 {
   "name": "@aoagents/ao-core",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Core library — types, config, session manager, lifecycle manager, event bus",
   "license": "MIT",
   "type": "module",
@@ -18,10 +18,6 @@
     "./config": {
       "types": "./dist/config.d.ts",
       "import": "./dist/config.js"
-    },
-    "./decomposer": {
-      "types": "./dist/decomposer.d.ts",
-      "import": "./dist/decomposer.js"
     },
     "./lifecycle-manager": {
       "types": "./dist/lifecycle-manager.d.ts",
@@ -62,6 +58,10 @@
     "./session-manager": {
       "types": "./dist/session-manager.d.ts",
       "import": "./dist/session-manager.js"
+    },
+    "./migration": {
+      "types": "./dist/migration/storage-v2.d.ts",
+      "import": "./dist/migration/storage-v2.js"
     }
   },
   "files": [
@@ -90,8 +90,12 @@
     "yaml": "^2.7.0",
     "zod": "^3.24.0"
   },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
   "devDependencies": {
     "@rollup/plugin-typescript": "^12.3.0",
+    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^25.2.3",
     "@vitest/coverage-v8": "^4.0.18",
     "rollup": "^4.60.1",

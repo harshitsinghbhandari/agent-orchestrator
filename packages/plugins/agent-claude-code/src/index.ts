@@ -81,37 +81,59 @@ fi
 
 # Construct metadata file path
 # AO_DATA_DIR is already set to the project-specific sessions directory
-metadata_file="$AO_DATA_DIR/$AO_SESSION"
+# V2 storage uses .json extension
+metadata_file="$AO_DATA_DIR/\${AO_SESSION}.json"
+
+# Fallback to bare filename for pre-migration layouts
+if [[ ! -f "$metadata_file" ]]; then
+  metadata_file="$AO_DATA_DIR/$AO_SESSION"
+fi
 
 # Ensure metadata file exists
 if [[ ! -f "$metadata_file" ]]; then
-  echo '{"systemMessage": "Metadata file not found: '"$metadata_file"'"}'
+  echo '{"systemMessage": "Metadata file not found: '"$AO_DATA_DIR/\${AO_SESSION}"'"}'
   exit 0
 fi
 
-# Update a single key in metadata
+# Detect if metadata file is JSON format
+is_json_metadata() {
+  local first_char
+  first_char=$(head -c1 "$metadata_file" 2>/dev/null)
+  [[ "$first_char" == "{" ]]
+}
+
+# Update a single key in metadata (handles both JSON and key=value formats)
 update_metadata_key() {
   local key="$1"
   local value="$2"
-
-  # Create temp file
   local temp_file="\${metadata_file}.tmp"
 
-  # Escape special sed characters in value (& | / \\)
-  local escaped_value=$(echo "$value" | sed 's/[&|\\/]/\\\\&/g')
-
-  # Check if key already exists
-  if grep -q "^$key=" "$metadata_file" 2>/dev/null; then
-    # Update existing key
-    sed "s|^$key=.*|$key=$escaped_value|" "$metadata_file" > "$temp_file"
+  if is_json_metadata; then
+    # JSON format
+    if command -v jq &>/dev/null; then
+      jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$metadata_file" > "$temp_file"
+      mv "$temp_file" "$metadata_file"
+    else
+      # jq unavailable — use node (hard dep) for safe nested JSON update
+      node -e "
+        const fs = require('fs');
+        const d = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+        d[process.argv[2]] = process.argv[3];
+        fs.writeFileSync(process.argv[4], JSON.stringify(d, null, 2));
+      " "$metadata_file" "$key" "$value" "$temp_file"
+      mv "$temp_file" "$metadata_file"
+    fi
   else
-    # Append new key
-    cp "$metadata_file" "$temp_file"
-    echo "$key=$value" >> "$temp_file"
+    # Key=value format (legacy)
+    local escaped_value=$(echo "$value" | sed 's/[&|\\/]/\\\\&/g')
+    if grep -q "^$key=" "$metadata_file" 2>/dev/null; then
+      sed "s|^$key=.*|$key=$escaped_value|" "$metadata_file" > "$temp_file"
+    else
+      cp "$metadata_file" "$temp_file"
+      echo "$key=$value" >> "$temp_file"
+    fi
+    mv "$temp_file" "$metadata_file"
   fi
-
-  # Atomic replace
-  mv "$temp_file" "$metadata_file"
 }
 
 # ============================================================================
@@ -135,8 +157,13 @@ done
 
 # Detect: gh pr create
 if [[ "$clean_command" =~ ^gh[[:space:]]+pr[[:space:]]+create ]]; then
+  sanitized_output=$(printf '%s' "$output" | sed -E $'s/\x1B\\[[0-9;]*[A-Za-z]//g')
   # Extract PR URL from output
-  pr_url=$(echo "$output" | grep -Eo 'https://github[.]com/[^/]+/[^/]+/pull/[0-9]+' | head -1)
+  pr_url=""
+  # GitHub PR URLs are whitespace-delimited in gh output after ANSI stripping.
+  if [[ "$sanitized_output" =~ (https://github[.]com/[^[:space:]]+/[^[:space:]]+/pull/[0-9]+) ]]; then
+    pr_url="\${BASH_REMATCH[1]}"
+  fi
 
   if [[ -n "$pr_url" ]]; then
     update_metadata_key "pr" "$pr_url"
@@ -805,34 +832,34 @@ function createClaudeCodeAgent(): Agent {
         summary: summaryResult?.summary ?? null,
         summaryIsFallback: summaryResult?.isFallback,
         agentSessionId,
+        metadata: { claudeSessionUuid: agentSessionId },
         cost: extractCost(lines),
       };
     },
 
     async getRestoreCommand(session: Session, project: ProjectConfig): Promise<string | null> {
-      if (!session.workspacePath) return null;
+      let sessionUuid = session.metadata?.["claudeSessionUuid"]?.trim();
+      if (!sessionUuid) {
+        if (!session.workspacePath) return null;
 
-      // Find Claude's project directory for this workspace
-      const projectPath = toClaudeProjectPath(session.workspacePath);
-      const projectDir = join(homedir(), ".claude", "projects", projectPath);
+        // Find Claude's project directory for this workspace
+        const projectPath = toClaudeProjectPath(session.workspacePath);
+        const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
-      // Find the latest session JSONL file
-      const sessionFile = await findLatestSessionFile(projectDir);
-      if (!sessionFile) return null;
+        // Find the latest session JSONL file
+        const sessionFile = await findLatestSessionFile(projectDir);
+        if (!sessionFile) return null;
 
-      // Extract session UUID from filename (e.g. "abc123-def456.jsonl" → "abc123-def456")
-      const sessionUuid = basename(sessionFile, ".jsonl");
+        // Extract session UUID from filename (e.g. "abc123-def456.jsonl" → "abc123-def456")
+        sessionUuid = basename(sessionFile, ".jsonl");
+      }
       if (!sessionUuid) return null;
 
       // Build resume command
       const parts: string[] = ["claude", "--resume", shellEscape(sessionUuid)];
 
       const permissionMode = normalizeAgentPermissionMode(project.agentConfig?.permissions);
-      const isOrchestrator = session.metadata?.["role"] === "orchestrator";
-      if (
-        isOrchestrator &&
-        (permissionMode === "permissionless" || permissionMode === "auto-edit")
-      ) {
+      if (permissionMode === "permissionless" || permissionMode === "auto-edit") {
         parts.push("--dangerously-skip-permissions");
       }
 

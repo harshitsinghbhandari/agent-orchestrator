@@ -8,11 +8,11 @@ import {
 import { join } from "node:path";
 import { createSessionManager } from "../../session-manager.js";
 import { getWorkspaceAgentsMdPath } from "../../opencode-agents-md.js";
-import { getProjectBaseDir } from "../../paths.js";
+import { getProjectDir } from "../../paths.js";
 import {
   writeMetadata,
   readMetadataRaw,
-  deleteMetadata,
+  updateMetadata,
 } from "../../metadata.js";
 import {
   SessionNotRestorableError,
@@ -59,14 +59,14 @@ describe("restore", () => {
       issue: "TEST-1",
       pr: "https://github.com/org/my-app/pull/10",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     const restored = await sm.restore("app-1");
 
     expect(restored.id).toBe("app-1");
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("pr_open");
     expect(restored.activity).toBe("active");
     expect(restored.workspacePath).toBe(wsPath);
     expect(restored.branch).toBe("feat/TEST-1");
@@ -78,12 +78,45 @@ describe("restore", () => {
     expect(mockRuntime.create).toHaveBeenCalled();
     // Verify metadata was updated (not rewritten)
     const meta = readMetadataRaw(sessionsDir, "app-1");
-    expect(meta!["status"]).toBe("spawning");
+    expect(meta!["status"]).toBe("pr_open");
     expect(meta!["restoredAt"]).toBeDefined();
     // Verify original fields are preserved
     expect(meta!["issue"]).toBe("TEST-1");
     expect(meta!["pr"]).toBe("https://github.com/org/my-app/pull/10");
     expect(meta!["createdAt"]).toBe("2025-01-01T00:00:00.000Z");
+  });
+
+  it("forwards AO_AGENT_GH_TRACE into restored agent runtime env when configured", async () => {
+    const wsPath = join(tmpDir, "ws-app-1-trace");
+    mkdirSync(wsPath, { recursive: true });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
+    });
+
+    const previousTrace = process.env["AO_AGENT_GH_TRACE"];
+    process.env["AO_AGENT_GH_TRACE"] = "/tmp/restored-agent-gh-trace-test.jsonl";
+
+    try {
+      const sm = createSessionManager({ config, registry: mockRegistry });
+      await sm.restore("app-1");
+
+      expect(mockRuntime.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environment: expect.objectContaining({
+            AO_AGENT_GH_TRACE: "/tmp/restored-agent-gh-trace-test.jsonl",
+            AO_CALLER_TYPE: "agent",
+          }),
+        }),
+      );
+    } finally {
+      if (previousTrace === undefined) delete process.env["AO_AGENT_GH_TRACE"];
+      else process.env["AO_AGENT_GH_TRACE"] = previousTrace;
+    }
   });
 
   it("continues restore even if old runtime destroy fails", async () => {
@@ -112,13 +145,13 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithFailingDestroy });
     const restored = await sm.restore("app-1");
 
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("working");
     expect(failingRuntime.destroy).toHaveBeenCalled();
     expect(failingRuntime.create).toHaveBeenCalled();
   });
@@ -153,7 +186,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "terminated",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithRestore });
@@ -164,30 +197,33 @@ describe("restore", () => {
     expect(mockRuntime.create).toHaveBeenCalled();
   });
 
-  it("throws SessionNotRestorableError for merged sessions", async () => {
+  it("allows restoring merged sessions", async () => {
+    const ws = "/tmp/mock-ws/app-1";
     writeMetadata(sessionsDir, "app-1", {
-      worktree: "/tmp",
+      worktree: ws,
       branch: "main",
       status: "merged",
       project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
     });
 
-    const sm = createSessionManager({ config, registry: mockRegistry });
-    await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
-  });
+    const registry: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return {
+          ...mockWorkspace,
+          exists: vi.fn().mockResolvedValue(true),
+          restore: vi.fn().mockResolvedValue({ path: ws, branch: "main", sessionId: "app-1", projectId: "my-app" }),
+        };
+        return null;
+      }),
+    };
 
-  it("throws SessionNotRestorableError for legacy merged sessions with a PR URL", async () => {
-    writeMetadata(sessionsDir, "app-1", {
-      worktree: "/tmp",
-      branch: "main",
-      status: "merged",
-      pr: "https://github.com/org/my-app/pull/10",
-      project: "my-app",
-      createdAt: "2025-01-01T00:00:00.000Z",
-    });
-
-    const sm = createSessionManager({ config, registry: mockRegistry });
-    await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
+    const sm = createSessionManager({ config, registry });
+    const restored = await sm.restore("app-1");
+    expect(restored.id).toBe("app-1");
   });
 
   it("throws SessionNotRestorableError for working sessions", async () => {
@@ -226,18 +262,17 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryNoRestore });
     await expect(sm.restore("app-1")).rejects.toThrow(WorkspaceMissingError);
   });
 
-  it("restores a session from archive when active metadata is deleted", async () => {
+  it("restores a terminated session with existing metadata", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
 
-    // Create metadata, then delete it (which archives it)
     writeMetadata(sessionsDir, "app-1", {
       worktree: wsPath,
       branch: "feat/TEST-1",
@@ -246,68 +281,58 @@ describe("restore", () => {
       issue: "TEST-1",
       pr: "https://github.com/org/my-app/pull/10",
       createdAt: "2025-01-01T00:00:00.000Z",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
+    });
+    updateMetadata(sessionsDir, "app-1", {
+      lifecycle: JSON.stringify({ session: { state: "terminated", terminatedAt: new Date().toISOString() } }),
     });
 
-    // Archive it (deleteMetadata with archive=true is the default)
-    deleteMetadata(sessionsDir, "app-1");
-
-    // Verify active metadata is gone
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
-
-    // Restore should find it in archive
     const sm = createSessionManager({ config, registry: mockRegistry });
     const restored = await sm.restore("app-1");
 
     expect(restored.id).toBe("app-1");
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("pr_open");
     expect(restored.branch).toBe("feat/TEST-1");
     expect(restored.workspacePath).toBe(wsPath);
 
-    // Verify active metadata was recreated
+    // Verify metadata is preserved
     const meta = readMetadataRaw(sessionsDir, "app-1");
     expect(meta).not.toBeNull();
     expect(meta!["issue"]).toBe("TEST-1");
     expect(meta!["pr"]).toBe("https://github.com/org/my-app/pull/10");
   });
 
-  it("restores from archive with multiple archived versions (picks latest)", async () => {
+  it("preserves displayName when restoring terminated session", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
 
-    // Manually create two archive entries with different timestamps
-    const archiveDir = join(sessionsDir, "archive");
-    mkdirSync(archiveDir, { recursive: true });
-
-    // Older archive — has stale branch
-    writeFileSync(
-      join(archiveDir, "app-1_2025-01-01T00-00-00-000Z"),
-      "worktree=" + wsPath + "\nbranch=old-branch\nstatus=killed\nproject=my-app\n",
-    );
-
-    // Newer archive — has correct branch
-    writeFileSync(
-      join(archiveDir, "app-1_2025-06-15T12-00-00-000Z"),
-      "worktree=" +
-        wsPath +
-        "\nbranch=feat/latest\nstatus=killed\nproject=my-app\n" +
-        "runtimeHandle=" +
-        JSON.stringify(makeHandle("rt-old")) +
-        "\n",
-    );
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      issue: "TEST-1",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      runtimeHandle: makeHandle("rt-old"),
+      displayName: "Refactor session manager to use flat metadata files",
+    });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
-    const restored = await sm.restore("app-1");
+    await sm.restore("app-1");
 
-    expect(restored.branch).toBe("feat/latest");
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta).not.toBeNull();
+    expect(meta!["displayName"]).toBe(
+      "Refactor session manager to use flat metadata files",
+    );
   });
 
-  it("throws for nonexistent session (not in active or archive)", async () => {
+  it("throws for nonexistent session", async () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("nonexistent")).rejects.toThrow("not found");
   });
 
-  it("does not recreate active metadata when archive restore fails validation", async () => {
+  it("throws SessionNotRestorableError when OpenCode mapping is missing", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
     const deleteLogPath = join(tmpDir, "opencode-restore-validation.log");
@@ -320,20 +345,19 @@ describe("restore", () => {
       status: "killed",
       project: "my-app",
       agent: "opencode",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
-    deleteMetadata(sessionsDir, "app-1");
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
-
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
   });
 
-  it("does not recreate active metadata from archive when session is not restorable", async () => {
+  it("throws SessionNotRestorableError for non-restorable terminated session", async () => {
     const wsPath = join(tmpDir, "ws-app-archive-non-restorable");
     mkdirSync(wsPath, { recursive: true });
 
+    // A "working" session that isn't actually running is not restorable
+    // because restore only works on terminal statuses
     writeMetadata(sessionsDir, "app-1", {
       worktree: wsPath,
       branch: "main",
@@ -341,14 +365,11 @@ describe("restore", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses_archive_valid",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
-    deleteMetadata(sessionsDir, "app-1", true);
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
-
-    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
   });
 
   it("re-discovers OpenCode mapping when stored mapping is invalid", async () => {
@@ -374,13 +395,13 @@ describe("restore", () => {
       project: "my-app",
       agent: "opencode",
       opencodeSessionId: "ses bad id",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
     const restored = await sm.restore("app-1");
 
-    expect(restored.status).toBe("spawning");
+    expect(restored.status).toBe("working");
     const meta = readMetadataRaw(sessionsDir, "app-1");
     expect(meta?.["opencodeSessionId"]).toBe("ses_restore_discovered");
   }, 15000);
@@ -409,7 +430,7 @@ describe("restore", () => {
       status: "killed",
       project: "my-app",
       role: "orchestrator",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({
@@ -445,7 +466,7 @@ describe("restore", () => {
       branch: "feat/TEST-SUBAGENT",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config: configWithSubagent, registry: mockRegistry });
@@ -480,7 +501,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "errored",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithAgentRestore });
@@ -516,7 +537,7 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithNullRestore });
@@ -526,6 +547,145 @@ describe("restore", () => {
     expect(mockAgent.getLaunchCommand).toHaveBeenCalled();
     const createCall = (mockRuntime.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.launchCommand).toBe("mock-agent --start");
+
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta!["restoreFallbackReason"]).toBe("mock-agent.getRestoreCommand returned null");
+  });
+
+  it("does not launch a fresh chat when a native-restore agent cannot build restore command", async () => {
+    const wsPath = join(tmpDir, "ws-app-native-restore-missing");
+    mkdirSync(wsPath, { recursive: true });
+
+    const mockNativeRestoreAgent: Agent = {
+      ...mockAgent,
+      name: "codex",
+      getRestoreCommand: vi.fn().mockResolvedValue(null),
+    };
+
+    const registryWithNativeRestoreAgent: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockNativeRestoreAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithNativeRestoreAgent });
+
+    await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
+    expect(mockRuntime.create).not.toHaveBeenCalled();
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta!["restoreFallbackReason"]).toBe("codex.getRestoreCommand returned null");
+  });
+
+  it("clears restore fallback reason when getRestoreCommand succeeds", async () => {
+    const wsPath = join(tmpDir, "ws-app-restore-clears-fallback");
+    mkdirSync(wsPath, { recursive: true });
+
+    const mockAgentWithRestore: Agent = {
+      ...mockAgent,
+      getRestoreCommand: vi.fn().mockResolvedValue("claude --resume abc123"),
+    };
+
+    const registryWithAgentRestore: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgentWithRestore;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
+      restoreFallbackReason: "previous fallback",
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithAgentRestore });
+    await sm.restore("app-1");
+
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta!["restoreFallbackReason"]).toBeUndefined();
+  });
+
+  it("normalizes agent metadata empty strings in memory like metadata persistence", async () => {
+    const wsPath = join(tmpDir, "ws-app-agent-metadata-normalize");
+    mkdirSync(wsPath, { recursive: true });
+
+    const mockAgentWithMetadata: Agent = {
+      ...mockAgent,
+      getSessionInfo: vi.fn().mockResolvedValue({
+        summary: null,
+        agentSessionId: "native-1",
+        metadata: {
+          codexThreadId: "thread-1",
+          restoreFallbackReason: "",
+        },
+      }),
+    };
+
+    const registryWithAgentMetadata: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgentWithMetadata;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
+      restoreFallbackReason: "previous fallback",
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithAgentMetadata });
+    const restored = await sm.restore("app-1");
+
+    expect(restored.metadata["codexThreadId"]).toBe("thread-1");
+    expect(restored.metadata["restoreFallbackReason"]).toBeUndefined();
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta!["codexThreadId"]).toBe("thread-1");
+    expect(meta!["restoreFallbackReason"]).toBeUndefined();
+  });
+
+  it("clears restore fallback reason when agent has no restore command", async () => {
+    const wsPath = join(tmpDir, "ws-app-no-restore-clears-fallback");
+    mkdirSync(wsPath, { recursive: true });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: makeHandle("rt-old"),
+      restoreFallbackReason: "previous fallback",
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.restore("app-1");
+
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta!["restoreFallbackReason"]).toBeUndefined();
   });
 
   it("does not inject OPENCODE_CONFIG when restoring OpenCode orchestrators", async () => {
@@ -557,7 +717,7 @@ describe("restore", () => {
       role: "orchestrator",
       agent: "opencode",
       opencodeSessionId: "ses_restore",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const configWithOpenCode: OrchestratorConfig = {
@@ -591,10 +751,9 @@ describe("restore", () => {
     const wsPath = join(tmpDir, "ws-app-orchestrator-opencode-agentsmd");
     mkdirSync(wsPath, { recursive: true });
 
-    const projectPath = join(tmpDir, "my-app");
-    const baseDir = getProjectBaseDir(ctx.configPath, projectPath);
-    mkdirSync(baseDir, { recursive: true });
-    const promptFile = join(baseDir, "orchestrator-prompt-app-orchestrator.md");
+    const projectDir = getProjectDir("my-app");
+    mkdirSync(projectDir, { recursive: true });
+    const promptFile = join(projectDir, "orchestrator-prompt-app-orchestrator.md");
     const promptContent = "You are the AO orchestrator. Delegate tasks.";
     writeFileSync(promptFile, promptContent, "utf-8");
 
@@ -625,7 +784,7 @@ describe("restore", () => {
       role: "orchestrator",
       agent: "opencode",
       opencodeSessionId: "ses_restore",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const configWithOpenCode: OrchestratorConfig = {
@@ -652,6 +811,80 @@ describe("restore", () => {
     expect(written).toContain("<!-- AO_ORCHESTRATOR_PROMPT_START -->");
   });
 
+  it("injects OPENCODE_CONFIG for restored OpenCode workers", async () => {
+    const wsPath = join(tmpDir, "ws-app-worker-opencode-agentsmd");
+    mkdirSync(wsPath, { recursive: true });
+
+    const baseDir = getProjectDir("my-app");
+    mkdirSync(baseDir, { recursive: true });
+    const promptFile = join(baseDir, "worker-prompt-app-1.md");
+    const promptContent = "Work on issue: TEST-1\nFix the failing tests.";
+    writeFileSync(promptFile, promptContent, "utf-8");
+
+    const mockOpenCodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+      getRestoreCommand: vi.fn().mockResolvedValue("opencode --session 'ses_restore'"),
+    };
+
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockOpenCodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_restore",
+      runtimeHandle: makeHandle("rt-old"),
+    });
+
+    const configWithOpenCode: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          worker: {
+            agent: "opencode",
+          },
+        },
+      },
+    };
+
+    const sm = createSessionManager({
+      config: configWithOpenCode,
+      registry: registryWithOpenCode,
+    });
+    await sm.restore("app-1");
+
+    expect(mockRuntime.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          OPENCODE_CONFIG: expect.stringContaining("opencode-config-app-1.json"),
+        }),
+      }),
+    );
+    const runtimeCreateCall = vi.mocked(mockRuntime.create).mock.calls[0][0];
+    const opencodeConfigPath = runtimeCreateCall.environment.OPENCODE_CONFIG;
+    expect(opencodeConfigPath).toBeTruthy();
+    expect(existsSync(opencodeConfigPath)).toBe(true);
+    const opencodeConfig = JSON.parse(readFileSync(opencodeConfigPath, "utf-8")) as {
+      instructions: string[];
+    };
+    expect(opencodeConfig.instructions).toEqual([promptFile]);
+    expect(existsSync(getWorkspaceAgentsMdPath(wsPath))).toBe(false);
+  });
+
   it("preserves original createdAt/issue/PR metadata", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
@@ -666,7 +899,7 @@ describe("restore", () => {
       pr: "https://github.com/org/my-app/pull/99",
       summary: "Implementing feature X",
       createdAt: originalCreatedAt,
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: mockRegistry });
@@ -704,14 +937,14 @@ describe("restore", () => {
       branch: "feat/TEST-77",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithNoopPostLaunch });
     await sm.restore("app-1");
 
     const meta = readMetadataRaw(sessionsDir, "app-1");
-    expect(meta!["status"]).toBe("spawning");
+    expect(meta!["status"]).toBe("working");
     expect(meta!["runtimeHandle"]).toBe(JSON.stringify(makeHandle("rt-1")));
     expect(meta!["restoredAt"]).toBeDefined();
   });
@@ -745,14 +978,14 @@ describe("restore", () => {
       branch: "feat/TEST-78",
       status: "killed",
       project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+      runtimeHandle: makeHandle("rt-old"),
     });
 
     const sm = createSessionManager({ config, registry: registryWithMetadataUpdate });
     await sm.restore("app-1");
 
     const meta = readMetadataRaw(sessionsDir, "app-1");
-    expect(meta!["status"]).toBe("spawning");
+    expect(meta!["status"]).toBe("working");
     expect(meta!["runtimeHandle"]).toBe(JSON.stringify(makeHandle("rt-1")));
     expect(meta!["opencodeSessionId"]).toBe("ses_from_post_launch");
   });

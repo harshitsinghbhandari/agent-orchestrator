@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getProjectBaseDir, getSessionsDir } from "@aoagents/ao-core";
+import { getProjectDir, getProjectSessionsDir } from "@aoagents/ao-core";
 
 const { mockConfigRef, mockSessionManager } = vi.hoisted(() => ({
   mockConfigRef: { current: null as Record<string, unknown> | null },
@@ -58,9 +58,12 @@ let tmpDir: string;
 let configPath: string;
 let program: Command;
 let consoleSpy: ReturnType<typeof vi.spyOn>;
+let originalHome: string | undefined;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "ao-reset-test-"));
+  originalHome = process.env.HOME;
+  process.env.HOME = tmpDir;
 
   configPath = join(tmpDir, "agent-orchestrator.yaml");
   writeFileSync(configPath, "projects: {}");
@@ -107,14 +110,19 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
 describe("ao reset", () => {
   it("removes the project base directory when confirmed", async () => {
     // Create the project base dir with some state
-    const baseDir = getProjectBaseDir(configPath, join(tmpDir, "main-repo"));
-    const sessionsDir = getSessionsDir(configPath, join(tmpDir, "main-repo"));
+    const baseDir = getProjectDir("my-app");
+    const sessionsDir = getProjectSessionsDir("my-app");
     mkdirSync(sessionsDir, { recursive: true });
     writeFileSync(join(sessionsDir, "app-1"), "status=working\n");
     writeFileSync(join(baseDir, ".origin"), configPath);
@@ -127,7 +135,7 @@ describe("ao reset", () => {
   });
 
   it("shows what will be deleted before confirmation", async () => {
-    const sessionsDir = getSessionsDir(configPath, join(tmpDir, "main-repo"));
+    const sessionsDir = getProjectSessionsDir("my-app");
     mkdirSync(sessionsDir, { recursive: true });
     writeFileSync(join(sessionsDir, "app-1"), "status=working\n");
 
@@ -150,7 +158,7 @@ describe("ao reset", () => {
   });
 
   it("kills live sessions before wiping state", async () => {
-    const baseDir = getProjectBaseDir(configPath, join(tmpDir, "main-repo"));
+    const baseDir = getProjectDir("my-app");
     mkdirSync(baseDir, { recursive: true });
     writeFileSync(join(baseDir, ".origin"), configPath);
 
@@ -168,7 +176,7 @@ describe("ao reset", () => {
   });
 
   it("respects confirmation denial", async () => {
-    const baseDir = getProjectBaseDir(configPath, join(tmpDir, "main-repo"));
+    const baseDir = getProjectDir("my-app");
     mkdirSync(baseDir, { recursive: true });
     writeFileSync(join(baseDir, ".origin"), configPath);
 
@@ -196,8 +204,8 @@ describe("ao reset", () => {
     mkdirSync(join(tmpDir, "other-repo"), { recursive: true });
 
     // Create base dirs for both projects
-    const baseDir1 = getProjectBaseDir(configPath, join(tmpDir, "main-repo"));
-    const baseDir2 = getProjectBaseDir(configPath, join(tmpDir, "other-repo"));
+    const baseDir1 = getProjectDir("my-app");
+    const baseDir2 = getProjectDir("other-app");
     mkdirSync(baseDir1, { recursive: true });
     mkdirSync(baseDir2, { recursive: true });
     writeFileSync(join(baseDir1, ".origin"), configPath);
@@ -218,7 +226,7 @@ describe("ao reset", () => {
   });
 
   it("supports -p flag for project selection", async () => {
-    const baseDir = getProjectBaseDir(configPath, join(tmpDir, "main-repo"));
+    const baseDir = getProjectDir("my-app");
     mkdirSync(baseDir, { recursive: true });
     writeFileSync(join(baseDir, ".origin"), configPath);
 
@@ -230,7 +238,7 @@ describe("ao reset", () => {
   });
 
   it("continues even if session kill fails", async () => {
-    const baseDir = getProjectBaseDir(configPath, join(tmpDir, "main-repo"));
+    const baseDir = getProjectDir("my-app");
     mkdirSync(baseDir, { recursive: true });
     writeFileSync(join(baseDir, ".origin"), configPath);
 

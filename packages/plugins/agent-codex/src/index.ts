@@ -4,13 +4,10 @@ import {
   shellEscape,
   readLastJsonlEntry,
   normalizeAgentPermissionMode,
-  buildAgentPath,
-  setupPathWrapperWorkspace,
   readLastActivityEntry,
   checkActivityLogState,
   getActivityFallbackState,
   recordTerminalActivity,
-  PREFERRED_GH_PATH,
   type Agent,
   type AgentSessionInfo,
   type AgentLaunchConfig,
@@ -487,11 +484,7 @@ function createCodexAgent(): Agent {
         env["AO_ISSUE_ID"] = config.issueId;
       }
 
-      // Prepend ~/.ao/bin to PATH so our gh/git wrappers intercept commands.
-      // The wrappers strip this directory from PATH before calling the real
-      // binary, so there's no infinite recursion.
-      env["PATH"] = buildAgentPath(process.env["PATH"]);
-      env["GH_PATH"] = PREFERRED_GH_PATH;
+      // PATH and GH_PATH are injected by session-manager for all agents.
       // Disable Codex's version check/update prompt for non-interactive AO sessions.
       env["CODEX_DISABLE_UPDATE_CHECK"] = "1";
 
@@ -710,21 +703,33 @@ function createCodexAgent(): Agent {
         summary: data.model ? `Codex session (${data.model})` : null,
         summaryIsFallback: true,
         agentSessionId,
+        metadata: data.threadId
+          ? {
+              codexThreadId: data.threadId,
+              ...(data.model ? { codexModel: data.model } : {}),
+            }
+          : undefined,
         cost,
       };
     },
 
     async getRestoreCommand(session: Session, project: ProjectConfig): Promise<string | null> {
-      if (!session.workspacePath) return null;
+      let threadId = session.metadata?.["codexThreadId"]?.trim();
+      let model: string | null = session.metadata?.["codexModel"]?.trim() || null;
+      if (!threadId) {
+        if (!session.workspacePath) return null;
 
-      // Find the Codex session file for this workspace
-      const sessionFile = await findCodexSessionFileCached(session.workspacePath);
-      if (!sessionFile) return null;
+        // Find the Codex session file for this workspace
+        const sessionFile = await findCodexSessionFileCached(session.workspacePath);
+        if (!sessionFile) return null;
 
-      // Stream the file line-by-line to avoid loading potentially huge
-      // rollout files (100 MB+) entirely into memory.
-      const data = await streamCodexSessionData(sessionFile);
-      if (!data?.threadId) return null;
+        // Stream the file line-by-line to avoid loading potentially huge
+        // rollout files (100 MB+) entirely into memory.
+        const data = await streamCodexSessionData(sessionFile);
+        if (!data?.threadId) return null;
+        threadId = data.threadId;
+        model = data.model;
+      }
 
       // Use Codex's native `resume` subcommand for proper conversation resume.
       // This restores the full thread state, not just a text prompt re-injection.
@@ -734,20 +739,20 @@ function createCodexAgent(): Agent {
       appendNoUpdateCheckFlag(parts);
 
       appendApprovalFlags(parts, project.agentConfig?.permissions);
-      const effectiveModel = (project.agentConfig?.model ?? data.model) as string | undefined;
+      const effectiveModel = (project.agentConfig?.model ?? model) as string | undefined;
       appendModelFlags(parts, effectiveModel ?? undefined);
 
       // Positional threadId goes last, after all flags
-      parts.push(shellEscape(data.threadId));
+      parts.push(shellEscape(threadId));
 
       return parts.join(" ");
     },
 
-    async setupWorkspaceHooks(workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
-      await setupPathWrapperWorkspace(workspacePath);
+    async setupWorkspaceHooks(_workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
+      // PATH wrappers are installed by session-manager for all agents.
     },
 
-    async postLaunchSetup(session: Session): Promise<void> {
+    async postLaunchSetup(_session: Session): Promise<void> {
       // Resolve binary path on first launch (cached for subsequent calls).
       // Uses a promise guard to prevent concurrent calls from racing.
       if (!resolvedBinary) {
@@ -760,8 +765,7 @@ function createCodexAgent(): Agent {
           resolvingBinary = null;
         }
       }
-      if (!session.workspacePath) return;
-      await setupPathWrapperWorkspace(session.workspacePath);
+      // PATH wrappers are re-ensured by session-manager.
     },
   };
 }

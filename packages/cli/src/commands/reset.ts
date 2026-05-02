@@ -18,7 +18,7 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import {
   loadConfig,
-  getProjectBaseDir,
+  getProjectDir,
   type OrchestratorConfig,
   type ProjectConfig,
 } from "@aoagents/ao-core";
@@ -72,15 +72,9 @@ function resolveProjectForReset(
  * Collect what will be deleted for a project.
  */
 function collectDeletionTargets(
-  config: OrchestratorConfig,
-  project: ProjectConfig,
+  projectId: string,
 ): { baseDir: string; items: Array<{ path: string; label: string; size?: number }> } {
-  const configPath = config.configPath;
-  if (!configPath) {
-    throw new Error("Cannot determine config path. Ensure config is loaded.");
-  }
-
-  const baseDir = getProjectBaseDir(configPath, project.path);
+  const baseDir = getProjectDir(projectId);
 
   const items: Array<{ path: string; label: string; size?: number }> = [];
 
@@ -211,7 +205,7 @@ export function registerReset(program: Command): void {
         const allTargets = targets.map(({ projectId, project }) => ({
           projectId,
           project,
-          ...collectDeletionTargets(config, project),
+          ...collectDeletionTargets(projectId),
         }));
 
         const hasAnyItems = allTargets.some((t) => t.items.length > 0);

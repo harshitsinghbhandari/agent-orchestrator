@@ -12,9 +12,12 @@ import {
   type ActivityState,
   type Tracker,
   type ProjectConfig,
+  type AgentReportAuditEntry,
   isOrchestratorSession,
   isTerminalSession,
   loadConfig,
+  getProjectSessionsDir,
+  readAgentReportAuditTrailAsync,
 } from "@aoagents/ao-core";
 import { git, getTmuxSessions, getTmuxActivity } from "../lib/shell.js";
 import {
@@ -45,6 +48,7 @@ interface SessionInfo {
   reviewDecision: ReviewDecision | null;
   pendingThreads: number | null;
   activity: ActivityState | null;
+  reports: AgentReportAuditEntry[];
 }
 
 interface StatusOptions {
@@ -53,6 +57,18 @@ interface StatusOptions {
   watch?: boolean;
   interval?: string;
   includeTerminated?: boolean;
+  reports?: string;
+}
+
+/** Parse --reports value: "full" → Infinity, positive integer → N, undefined → 0 (off). */
+function parseReportsLimit(value: string | undefined): number {
+  if (value === undefined) return 0;
+  if (value === "full") return Infinity;
+  const n = Number.parseInt(value, 10);
+  if (Number.isNaN(n) || n <= 0) {
+    throw new Error('--reports must be "full" or a positive integer.');
+  }
+  return n;
 }
 
 const DEFAULT_WATCH_INTERVAL_SECONDS = 5;
@@ -77,6 +93,7 @@ async function gatherSessionInfo(
   agent: Agent,
   scm: SCM,
   projectConfig: ReturnType<typeof loadConfig>,
+  reportsLimit: number = 0,
 ): Promise<SessionInfo> {
   const sessionPrefix = projectConfig.projects[session.projectId]?.sessionPrefix ?? session.projectId;
   const allSessionPrefixes = Object.entries(projectConfig.projects).map(
@@ -150,6 +167,22 @@ async function gatherSessionInfo(
     }
   }
 
+  // Fetch agent report audit trail when --reports is active
+  let reports: AgentReportAuditEntry[] = [];
+  if (reportsLimit > 0) {
+    try {
+      const project = projectConfig.projects[session.projectId];
+      if (project) {
+        const sessionsDir = getProjectSessionsDir(session.projectId);
+        const trail = await readAgentReportAuditTrailAsync(sessionsDir, session.id);
+        // trail is already reverse-chronological (newest first)
+        reports = reportsLimit === Infinity ? trail : trail.slice(0, reportsLimit);
+      }
+    } catch {
+      // Audit trail read failed — not critical
+    }
+  }
+
   return {
     name: session.id,
     role: isOrchestratorSession(session, sessionPrefix, allSessionPrefixes) ? "orchestrator" : "worker",
@@ -166,7 +199,34 @@ async function gatherSessionInfo(
     reviewDecision,
     pendingThreads,
     activity,
+    reports,
   };
+}
+
+function formatReportTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "??:??";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function printReportRows(reports: AgentReportAuditEntry[], indent: string): void {
+  if (reports.length === 0) return;
+  // reports are newest-first from the audit trail; display oldest-first (chronological)
+  const chronological = [...reports].reverse();
+  console.log(`${indent}${chalk.dim("Reports:")}`);
+  for (const entry of chronological) {
+    const time = chalk.dim(formatReportTime(entry.timestamp));
+    const src = chalk.dim(entry.source === "acknowledge" ? "ack" : "rpt");
+    const state = entry.accepted ? chalk.cyan(entry.reportState) : chalk.red(entry.reportState);
+    const transition =
+      entry.before.sessionState === entry.after.sessionState
+        ? chalk.dim(`(${entry.after.sessionState})`)
+        : chalk.dim(`(${entry.before.sessionState} → ${entry.after.sessionState})`);
+    const rejected = entry.accepted ? "" : chalk.red(" REJECTED");
+    const note = entry.note ? chalk.dim(` "${entry.note}"`) : "";
+    const pr = entry.prNumber ? chalk.blue(` #${entry.prNumber}`) : "";
+    console.log(`${indent}  ${time} ${src} ${state} ${transition}${rejected}${pr}${note}`);
+  }
 }
 
 // Column widths for the table
@@ -222,6 +282,8 @@ function printSessionRow(info: SessionInfo): void {
   if (displaySummary) {
     console.log(`  ${" ".repeat(COL.session)}${chalk.dim(displaySummary.slice(0, 60))}`);
   }
+
+  printReportRows(info.reports, `  ${" ".repeat(COL.session)}`);
 }
 
 function printOrchestratorRow(info: SessionInfo): void {
@@ -234,6 +296,7 @@ function printOrchestratorRow(info: SessionInfo): void {
   if (displaySummary) {
     console.log(`                ${chalk.dim(displaySummary.slice(0, 60))}`);
   }
+  printReportRows(info.reports, "                ");
 }
 
 export function registerStatus(program: Command): void {
@@ -247,6 +310,10 @@ export function registerStatus(program: Command): void {
     .option(
       "--include-terminated",
       "Include terminated sessions (killed/done/merged/terminated/errored/cleanup)",
+    )
+    .option(
+      "--reports <value>",
+      'Show agent report history per session. "full" for all entries, or a number for last N entries.',
     )
     .action(async (opts: StatusOptions) => {
       if (opts.watch && opts.json) {
@@ -262,6 +329,14 @@ export function registerStatus(program: Command): void {
           console.error(chalk.red(err instanceof Error ? err.message : String(err)));
           process.exit(1);
         }
+      }
+
+      let reportsLimit = 0;
+      try {
+        reportsLimit = parseReportsLimit(opts.reports);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
       }
 
       const renderStatus = async (refreshing = false): Promise<void> => {
@@ -353,7 +428,7 @@ export function registerStatus(program: Command): void {
           }
 
           // Gather all session info in parallel
-          const infoPromises = projectSessions.map((s) => gatherSessionInfo(s, agent, scm, config));
+          const infoPromises = projectSessions.map((s) => gatherSessionInfo(s, agent, scm, config, reportsLimit));
           const sessionInfos = await Promise.all(infoPromises);
 
           const orchestrators = sessionInfos.filter((info) => info.role === "orchestrator");

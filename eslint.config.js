@@ -10,7 +10,19 @@ export default tseslint.config(
       "**/dist-server/**",
       "**/node_modules/**",
       "**/.next/**",
+      "**/out/**",
+      "**/.source/**",
+      "**/next-env.d.ts",
+      "**/.next-dev/**",
       "**/coverage/**",
+      ".ao/**",
+      ".claude/**",
+      ".context/**",
+      ".cursor/**",
+      ".expect/**",
+      ".gstack/**",
+      ".worktrees/**",
+      "artifacts/**",
       "packages/web/next-env.d.ts",
       "packages/web/next.config.js",
       "packages/web/postcss.config.mjs",
@@ -89,7 +101,7 @@ export default tseslint.config(
 
   // Scripts directory - Node.js environment
   {
-    files: ["scripts/**/*.js", "scripts/**/*.mjs"],
+    files: ["scripts/**/*.js", "scripts/**/*.mjs", "packages/*/scripts/**/*.js"],
     languageOptions: {
       globals: {
         console: "readonly",

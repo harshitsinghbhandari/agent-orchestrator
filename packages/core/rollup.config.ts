@@ -41,7 +41,10 @@ function cleanDist(): Plugin {
 }
 
 const config: RollupOptions = {
-  input: "src/index.ts",
+  input: {
+    index: "src/index.ts",
+    "migration/storage-v2": "src/migration/storage-v2.ts",
+  },
   output: {
     dir: "dist",
     format: "es",

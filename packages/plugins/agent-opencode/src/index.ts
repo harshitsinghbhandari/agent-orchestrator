@@ -2,14 +2,15 @@ import {
   DEFAULT_READY_THRESHOLD_MS,
   DEFAULT_ACTIVE_WINDOW_MS,
   shellEscape,
-  buildAgentPath,
   readLastActivityEntry,
   checkActivityLogState,
   getActivityFallbackState,
   recordTerminalActivity,
-  setupPathWrapperWorkspace,
-  PREFERRED_GH_PATH,
   asValidOpenCodeSessionId,
+  getCachedOpenCodeSessionList,
+  getOpenCodeChildEnv,
+  ensureOpenCodeTmpDir,
+  resetOpenCodeSessionListCache,
   type Agent,
   type AgentSessionInfo,
   type AgentLaunchConfig,
@@ -21,17 +22,12 @@ import {
   type Session,
   type WorkspaceHooksConfig,
   type OpenCodeAgentConfig,
+  type OpenCodeSessionListEntry,
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-
-interface OpenCodeSessionListEntry {
-  id: string;
-  title?: string;
-  updated?: string | number;
-}
 
 function parseUpdatedTimestamp(updated: string | number | undefined): Date | null {
   if (typeof updated === "number") {
@@ -57,20 +53,8 @@ function parseUpdatedTimestamp(updated: string | number | undefined): Date | nul
   return new Date(parsedMs);
 }
 
-function parseSessionList(raw: string): OpenCodeSessionListEntry[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter((item): item is OpenCodeSessionListEntry => {
-    if (!item || typeof item !== "object") return false;
-    const record = item as Record<string, unknown>;
-    return asValidOpenCodeSessionId(record["id"]) !== undefined;
-  });
-}
+// Re-export for backward compat — see @aoagents/ao-core/opencode-shared.
+export { resetOpenCodeSessionListCache };
 
 /**
  * Parse JSON stream lines from `opencode run --format json` output.
@@ -161,13 +145,7 @@ async function findOpenCodeSession(
   session: Session,
 ): Promise<OpenCodeSessionListEntry | null> {
   try {
-    const { stdout } = await execFileAsync(
-      "opencode",
-      ["session", "list", "--format", "json"],
-      { timeout: 30_000 },
-    );
-
-    const sessions = parseSessionList(stdout);
+    const sessions = await getCachedOpenCodeSessionList();
 
     // Prefer exact ID match from metadata
     if (session.metadata?.opencodeSessionId) {
@@ -276,9 +254,16 @@ function createOpenCodeAgent(): Agent {
         env["AO_ISSUE_ID"] = config.issueId;
       }
 
-      // Prepend ~/.ao/bin to PATH so our gh/git wrappers intercept commands.
-      env["PATH"] = buildAgentPath(process.env["PATH"]);
-      env["GH_PATH"] = PREFERRED_GH_PATH;
+      // Point Bun's embedded shared-library extraction at an AO-owned temp
+      // dir so the cli-side janitor only needs to sweep our own files
+      // (issue #1046). Setting all three keys covers POSIX (TMPDIR) and
+      // Windows fallbacks; opencode itself ships POSIX-only today.
+      const tmpDir = ensureOpenCodeTmpDir();
+      env["TMPDIR"] = tmpDir;
+      env["TMP"] = tmpDir;
+      env["TEMP"] = tmpDir;
+
+      // PATH and GH_PATH are injected by session-manager for all agents.
 
       return env;
     },
@@ -437,13 +422,12 @@ function createOpenCodeAgent(): Agent {
       return parts.join(" ");
     },
 
-    async setupWorkspaceHooks(workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
-      await setupPathWrapperWorkspace(workspacePath);
+    async setupWorkspaceHooks(_workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
+      // PATH wrappers are installed by session-manager for all agents.
     },
 
-    async postLaunchSetup(session: Session): Promise<void> {
-      if (!session.workspacePath) return;
-      await setupPathWrapperWorkspace(session.workspacePath);
+    async postLaunchSetup(_session: Session): Promise<void> {
+      // PATH wrappers are re-ensured by session-manager.
     },
   };
 }
@@ -458,7 +442,7 @@ export function create(): Agent {
 
 export function detect(): boolean {
   try {
-    execFileSync("opencode", ["version"], { stdio: "ignore" });
+    execFileSync("opencode", ["version"], { stdio: "ignore", env: getOpenCodeChildEnv() });
     return true;
   } catch {
     return false;

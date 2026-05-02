@@ -96,6 +96,13 @@ Every abstraction is a pluggable interface defined in `packages/core/src/types.t
 
 ### Session Lifecycle
 
+Sessions have a **canonical lifecycle** (in `lifecycle-state.ts`) with separate `state` and `reason` fields, and a **legacy status** derived from them for display.
+
+**Canonical session states:** `not_started`, `working`, `idle`, `needs_input`, `stuck`, `detecting`, `done`, `terminated`
+
+**Terminal reasons:** `manually_killed`, `runtime_lost`, `agent_process_exited`, `probe_failure`, `error_in_process`, `auto_cleanup`, `pr_merged`
+
+**Legacy status flow (derived via `deriveLegacyStatus`):**
 ```
 spawning -> working -> pr_open -> ci_failed / review_pending
                                       |              |
@@ -103,6 +110,8 @@ spawning -> working -> pr_open -> ci_failed / review_pending
                                       |              |
                                       +-> mergeable -> merged -> cleanup -> done
 ```
+
+**Stale runtime reconciliation:** `sm.list()` detects dead runtimes (tmux/process gone) during enrichment and persists `runtime_lost` reason to disk. This maps to legacy status `killed`. Without this, sessions with dead runtimes would show stale "active" status indefinitely.
 
 ### Data Flow
 
@@ -119,11 +128,16 @@ agent-orchestrator.yaml -> Config Loader (Zod) -> Plugin Registry
 No database. Flat files + memory:
 
 - **Config:** `agent-orchestrator.yaml` (Zod-validated)
+- **Global config:** `~/.agent-orchestrator/config.yaml` (all registered projects)
 - **Session metadata:** `~/.agent-orchestrator/{hash}-{projectId}/sessions/{sessionId}` (key-value pairs)
 - **Worktrees:** `~/.agent-orchestrator/{hash}-{projectId}/worktrees/{sessionId}/`
 - **Archives:** `~/.agent-orchestrator/{hash}-{projectId}/archive/{sessionId}_{timestamp}`
+- **Running state:** `~/.agent-orchestrator/running.json` (current ao start PID, port, projects)
+- **Last-stop state:** `~/.agent-orchestrator/last-stop.json` (sessions killed by ao stop / Ctrl+C, includes `otherProjects` for cross-project sessions — used by ao start to offer session restore)
 
 Hash = SHA-256 of config directory (first 12 chars). Prevents collision across multiple checkouts.
+
+**Config resolution:** `loadConfig()` searches up from cwd and finds the nearest `agent-orchestrator.yaml` (typically 1 project). The global config at `~/.agent-orchestrator/config.yaml` contains all registered projects. CLI commands that need cross-project visibility (ao stop, tab completions) fall back to the global config.
 
 ### Prompt Assembly (3 Layers)
 
@@ -191,6 +205,29 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## CLI Behavior (ao start / ao stop)
+
+### ao start
+- Registers in `running.json` (PID, port, projects)
+- Offers to restore sessions from `last-stop.json` — includes cross-project sessions via `otherProjects` field
+- **Ctrl+C performs full graceful shutdown** (same as ao stop): kills all sessions, writes last-stop state, unregisters from running.json. 10s hard timeout guarantees exit.
+
+### ao stop
+- `ao stop` (no args): kills ALL sessions across ALL projects, sends SIGTERM to parent ao start process, stops dashboard, unregisters
+- `ao stop <project>`: kills only that project's sessions, does NOT kill parent process or dashboard (they serve all projects)
+- Always loads global config (`~/.agent-orchestrator/config.yaml`) to see all projects — local config only has the cwd project
+- Records `LastStopState` with `otherProjects` field for cross-project session restore
+
+### Dashboard sidebar
+- Sidebar always shows sessions from ALL projects regardless of which project page is active
+- `useSessionEvents` in Dashboard.tsx is called without project filter — sidebar gets unscoped sessions
+- Kanban board filters client-side via `projectSessions` memo
+
+### Key invariants
+- `sm.list()` persists `runtime_lost` lifecycle to disk when enrichment detects dead runtimes — this is the only place stale runtime state gets reconciled
+- `deriveLegacyStatus()` maps canonical lifecycle to legacy status — new terminal reasons must be added here
+- Tab completions merge local config + global config to show all projects
+
 ## Conventions
 
 ### Code Style
@@ -250,8 +287,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | File | Purpose |
 |------|---------|
 | `packages/core/src/types.ts` | Central type definitions (all 8 plugin interfaces) |
-| `packages/core/src/session-manager.ts` | Session CRUD operations |
+| `packages/core/src/session-manager.ts` | Session CRUD + stale runtime reconciliation (persists runtime_lost on dead runtimes) |
 | `packages/core/src/lifecycle-manager.ts` | State machine + polling loop + reactions |
+| `packages/core/src/lifecycle-state.ts` | Canonical lifecycle → legacy status mapping (deriveLegacyStatus) |
 | `packages/core/src/config.ts` | YAML config loading with Zod validation |
 | `packages/core/src/plugin-registry.ts` | Plugin discovery and resolution |
 | `packages/core/src/index.ts` | Core public API (stable, do not break) |
@@ -259,13 +297,16 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | `packages/web/src/components/SessionDetail.tsx` | Session detail view |
 | `packages/web/src/components/DirectTerminal.tsx` | xterm.js terminal with WebSocket |
 | `packages/web/src/components/SessionCard.tsx` | Kanban session card |
-| `packages/web/src/hooks/useSessionEvents.ts` | SSE consumer hook |
+| `packages/web/src/hooks/useSessionEvents.ts` | SSE consumer hook (project filter optional — sidebar uses unscoped) |
 | `packages/web/src/lib/types.ts` | Dashboard types |
 | `packages/web/src/app/globals.css` | Design tokens and base styles (full token definitions) |
 | `DESIGN.md` | **Design system reference** — design principles, token mapping, component patterns, anti-patterns (read this before writing any web UI) |
 | `agent-orchestrator.yaml` | Project-level config (user-created) |
 | `eslint.config.js` | ESLint flat config |
 | `tsconfig.base.json` | Shared TypeScript base config |
+| `packages/cli/src/commands/start.ts` | ao start/stop commands + Ctrl+C graceful shutdown |
+| `packages/cli/src/lib/running-state.ts` | RunningState + LastStopState management (register/unregister, last-stop read/write) |
+| `packages/web/src/components/ProjectSidebar.tsx` | Sidebar — always shows all projects' sessions |
 
 ## Plugin Standards
 

@@ -6,8 +6,8 @@
  *   2. Config-derived context — project name, repo, default branch, tracker info, reaction rules
  *   3. User rules — inline agentRules and/or agentRulesFile content
  *
- * buildPrompt() always returns the AO base guidance and project context so
- * bare launches still know about AO-specific commands such as PR claiming.
+ * buildPrompt() returns the split between persistent system instructions and
+ * task-specific text so callers can route them to agents separately.
  */
 
 import { readFileSync } from "node:fs";
@@ -178,30 +178,32 @@ function readUserRules(project: ProjectConfig): string | null {
 
 /**
  * Compose a layered prompt for an agent session.
- *
- * Always returns the AO base guidance plus project context, then layers on
- * issue context, user rules, and explicit instructions when available.
  */
-export function buildPrompt(config: PromptBuildConfig): string {
+export function buildPrompt(
+  config: PromptBuildConfig,
+): { systemPrompt: string; taskPrompt?: string } {
   const userRules = readUserRules(config.project);
-  const sections: string[] = [];
+  const systemSections: string[] = [];
 
   // Layer 1: Base prompt is always included for every managed session.
   // Use trimmed prompt when no repo is configured (PR/CI instructions don't apply).
-  sections.push(config.project.repo ? BASE_AGENT_PROMPT : BASE_AGENT_PROMPT_NO_REPO);
+  systemSections.push(config.project.repo ? BASE_AGENT_PROMPT : BASE_AGENT_PROMPT_NO_REPO);
 
-  // Layer 2: Config-derived context
-  sections.push(buildConfigLayer(config));
+  // Layer 2: Worker sessions are scoped to a single issue, so issue/task
+  // context belongs in the system prompt with the rest of the session context.
+  systemSections.push(buildConfigLayer(config));
 
   // Layer 3: User rules
   if (userRules) {
-    sections.push(`## Project Rules\n${userRules}`);
+    systemSections.push(`## Project Rules\n${userRules}`);
   }
 
-  // Explicit user prompt (appended last, highest priority)
-  if (config.userPrompt) {
-    sections.push(`## Additional Instructions\n${config.userPrompt}`);
-  }
-
-  return sections.join("\n\n");
+  return {
+    systemPrompt: systemSections.join("\n\n"),
+    taskPrompt: config.userPrompt
+      ? config.userPrompt
+      : config.issueId
+        ? `Work on issue: ${config.issueId}`
+        : undefined,
+  };
 }

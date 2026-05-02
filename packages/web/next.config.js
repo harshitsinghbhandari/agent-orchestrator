@@ -1,5 +1,11 @@
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  outputFileTracingRoot: path.join(__dirname, "../.."),
   transpilePackages: [
     "@aoagents/ao-core",
     "@aoagents/ao-plugin-agent-claude-code",
@@ -10,6 +16,10 @@ const nextConfig = {
     "@aoagents/ao-plugin-tracker-github",
     "@aoagents/ao-plugin-tracker-linear",
     "@aoagents/ao-plugin-workspace-worktree",
+  ],
+  serverExternalPackages: [
+    "yaml",
+    "zod",
   ],
   async headers() {
     return [

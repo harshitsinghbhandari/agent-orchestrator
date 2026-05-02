@@ -19,6 +19,7 @@ import { PRCard, PRTableRow } from "./PRStatus";
 import { MobileBottomNav } from "./MobileBottomNav";
 import type { ProjectInfo } from "@/lib/project-name";
 import { getProjectScopedHref } from "@/lib/project-utils";
+import { projectDashboardPath, projectSessionPath } from "@/lib/routes";
 
 interface PullRequestsPageProps {
   initialSessions: DashboardSession[];
@@ -51,10 +52,10 @@ export function PullRequestsPage({
 }: PullRequestsPageProps) {
   const orchestratorLinks = orchestrators ?? EMPTY_ORCHESTRATORS;
   const mux = useMuxOptional();
-  // Seed initial attention levels using the same mode the server SSE will
-  // use when it sends snapshots (read from `config.dashboard.attentionZones`
-  // upstream). This prevents the sseAttentionLevels map from oscillating
-  // between detailed (seed/refresh) and simple (server snapshot) values.
+  // Seed initial attention levels using the same mode used during refresh
+  // (read from `config.dashboard.attentionZones` upstream). This prevents
+  // the attentionLevels map from oscillating between detailed (seed/refresh)
+  // and simple (server snapshot) values.
   const initialAttentionLevels = useMemo(() => {
     const levels: Record<string, ReturnType<typeof getAttentionLevel>> = {};
     for (const s of initialSessions) {
@@ -62,7 +63,7 @@ export function PullRequestsPage({
     }
     return levels;
   }, [initialSessions, attentionZones]);
-  const { sessions, sseAttentionLevels } = useSessionEvents({
+  const { sessions, attentionLevels } = useSessionEvents({
     initialSessions,
     project: projectId,
     muxSessions: mux?.status === "connected" ? mux.sessions : undefined,
@@ -94,10 +95,10 @@ export function PullRequestsPage({
   const openPRs = useMemo(() => allPRs.filter((pr) => pr.state === "open"), [allPRs]);
   const mergedPRs = useMemo(() => allPRs.filter((pr) => pr.state === "merged"), [allPRs]);
   const closedPRs = useMemo(() => allPRs.filter((pr) => pr.state === "closed"), [allPRs]);
-  const dashboardHref = getProjectScopedHref("/", projectId);
+  const dashboardHref = projectId ? projectDashboardPath(projectId) : getProjectScopedHref("/", projectId);
   const prsHref = getProjectScopedHref("/prs", projectId);
   const orchestratorHref = currentProjectOrchestrator
-    ? `/sessions/${encodeURIComponent(currentProjectOrchestrator.id)}`
+    ? projectSessionPath(currentProjectOrchestrator.projectId, currentProjectOrchestrator.id)
     : null;
   const activeMobilePRs = prFilter === "open" ? openPRs : prFilter === "merged" ? mergedPRs : prFilter === "closed" ? closedPRs : allPRs;
 
@@ -126,7 +127,7 @@ export function PullRequestsPage({
         <div className="sidebar-mobile-backdrop" onClick={() => setMobileMenuOpen(false)} />
       )}
       <div className="dashboard-main flex-1 overflow-y-auto px-4 py-4 md:px-7 md:py-6">
-        <DynamicFavicon sseAttentionLevels={sseAttentionLevels} projectName={projectName ? `${projectName} PRs` : "Pull Requests"} />
+        <DynamicFavicon attentionLevels={attentionLevels} projectName={projectName ? `${projectName} PRs` : "Pull Requests"} />
         {isMobile ? (
           <section className="mobile-pr-page-header">
             <div className="mobile-pr-page-header__top">
@@ -201,12 +202,6 @@ export function PullRequestsPage({
                       {allProjectsView ? "Across all projects" : "In this project"}
                     </span>
                   </div>
-                </div>
-              </div>
-
-              <div className="dashboard-hero__meta">
-                <div className="flex items-center gap-3">
-                  <ThemeToggle />
                 </div>
               </div>
             </div>
