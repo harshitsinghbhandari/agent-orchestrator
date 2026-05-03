@@ -45,8 +45,8 @@ import {
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import { exec, execSilent, git } from "../lib/shell.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
-import { stopAllLifecycleWorkers, listLifecycleWorkers } from "../lib/lifecycle-service.js";
-import { startBunTmpJanitor, stopBunTmpJanitor } from "../lib/bun-tmp-janitor.js";
+import { listLifecycleWorkers } from "../lib/lifecycle-service.js";
+import { startBunTmpJanitor } from "../lib/bun-tmp-janitor.js";
 import {
   findWebDir,
   buildDashboardEnv,
@@ -72,7 +72,7 @@ import {
   readLastStop,
   clearLastStop,
 } from "../lib/running-state.js";
-import { startProjectSupervisor, stopProjectSupervisor } from "../lib/project-supervisor.js";
+import { startProjectSupervisor } from "../lib/project-supervisor.js";
 import { isHumanCaller } from "../lib/caller-context.js";
 import { detectEnvironment } from "../lib/detect-env.js";
 import {
@@ -99,6 +99,7 @@ import {
   tryInstallWithAttempts,
 } from "../lib/install-helpers.js";
 import { ensureGit, runtimePreflight } from "../lib/startup-preflight.js";
+import { installShutdownHandlers } from "../lib/shutdown.js";
 
 import { DEFAULT_PORT } from "../lib/constants.js";
 import { projectSessionUrl } from "../lib/routes.js";
@@ -1952,92 +1953,10 @@ export function registerStart(program: Command): void {
             },
           });
 
-          // Install shutdown handlers so Ctrl+C and `ao stop` (which sends
-          // SIGTERM) perform a full graceful shutdown: kill sessions, record
-          // last-stop state for restore, unregister, then exit.
-          // Installing a SIGINT/SIGTERM listener removes Node's default exit
-          // behavior, so we MUST call process.exit() explicitly.
-          let shuttingDown = false;
-          const shutdown = (signal: NodeJS.Signals): void => {
-            if (shuttingDown) return;
-            shuttingDown = true;
-
-            const exitCode = signal === "SIGINT" ? 130 : 0;
-
-            try {
-              stopProjectSupervisor();
-              stopAllLifecycleWorkers();
-            } catch {
-              // Best-effort — never block shutdown on observability.
-            }
-
-            const SHUTDOWN_TIMEOUT_MS = 10_000;
-            const forceExit = setTimeout(() => process.exit(exitCode), SHUTDOWN_TIMEOUT_MS);
-            forceExit.unref();
-
-            (async () => {
-              try {
-                const shutdownConfig = loadConfig(config.configPath);
-                const sm = await getSessionManager(shutdownConfig);
-                const allSessions = await sm.list();
-                const activeSessions = allSessions.filter((s) => !isTerminalSession(s));
-
-                const killedSessionIds: string[] = [];
-                for (const session of activeSessions) {
-                  try {
-                    const result = await sm.kill(session.id);
-                    if (result.cleaned || result.alreadyTerminated) {
-                      killedSessionIds.push(session.id);
-                    }
-                  } catch {
-                    // Best-effort per session
-                  }
-                }
-
-                if (killedSessionIds.length > 0) {
-                  const targetIds = killedSessionIds.filter((id) =>
-                    activeSessions.some((s) => s.id === id && s.projectId === projectId),
-                  );
-                  const otherProjects: Array<{ projectId: string; sessionIds: string[] }> = [];
-                  const otherByProject = new Map<string, string[]>();
-                  for (const s of activeSessions) {
-                    if (s.projectId === projectId) continue;
-                    if (!killedSessionIds.includes(s.id)) continue;
-                    const list = otherByProject.get(s.projectId ?? "unknown") ?? [];
-                    list.push(s.id);
-                    otherByProject.set(s.projectId ?? "unknown", list);
-                  }
-                  for (const [pid, ids] of otherByProject) {
-                    otherProjects.push({ projectId: pid, sessionIds: ids });
-                  }
-                  await writeLastStop({
-                    stoppedAt: new Date().toISOString(),
-                    projectId,
-                    sessionIds: targetIds,
-                    otherProjects: otherProjects.length > 0 ? otherProjects : undefined,
-                  });
-                }
-
-                await unregister();
-              } catch {
-                // Best-effort — always exit even if cleanup fails
-              }
-              try {
-                // Await any in-flight sweep so shutdown does not exit while
-                // unlink() calls are still mid-flight against the filesystem.
-                await stopBunTmpJanitor();
-              } catch {
-                // Best-effort cleanup.
-              }
-              process.exit(exitCode);
-            })();
-          };
-          process.once("SIGINT", (sig) => {
-            void shutdown(sig);
-          });
-          process.once("SIGTERM", (sig) => {
-            void shutdown(sig);
-          });
+          // Ctrl+C and `ao stop` (which sends SIGTERM) perform a full
+          // graceful shutdown: kill sessions, record last-stop state for
+          // restore, unregister, then exit. See lib/shutdown.ts.
+          installShutdownHandlers({ configPath: config.configPath, projectId });
         } catch (err) {
           if (err instanceof Error) {
             console.error(chalk.red("\nError:"), err.message);
