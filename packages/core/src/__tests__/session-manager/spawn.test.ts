@@ -1359,6 +1359,37 @@ describe("spawn", () => {
       expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
     });
 
+    it("destroys the worktree and cleans metadata when workspace.postCreate fails", async () => {
+      const worktreePath = join(getProjectWorktreesDir("my-app"), "app-1");
+      const workspaceWithPostCreate: typeof mockWorkspace = {
+        ...mockWorkspace,
+        create: vi.fn().mockResolvedValueOnce({
+          path: worktreePath,
+          branch: "session/app-1",
+          sessionId: "app-1",
+          projectId: "my-app",
+        }),
+        postCreate: vi.fn().mockRejectedValueOnce(new Error("postCreate hook failed")),
+      };
+      const registryWithPostCreate: PluginRegistry = {
+        ...mockRegistry,
+        get: vi.fn().mockImplementation((slot: string) => {
+          if (slot === "runtime") return mockRuntime;
+          if (slot === "agent") return mockAgent;
+          if (slot === "workspace") return workspaceWithPostCreate;
+          return null;
+        }),
+      };
+      const sm = createSessionManager({ config, registry: registryWithPostCreate });
+
+      await expect(sm.spawn({ projectId: "my-app" })).rejects.toThrow("postCreate hook failed");
+
+      expect(workspaceWithPostCreate.destroy).toHaveBeenCalledWith(worktreePath);
+      expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
+      // Runtime should not have been created since postCreate failed before runtime.create.
+      expect(mockRuntime.create).not.toHaveBeenCalled();
+    });
+
     it("still cleans subsequent resources when one cleanup step throws", async () => {
       const worktreePath = join(getProjectWorktreesDir("my-app"), "app-1");
       (mockWorkspace.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({

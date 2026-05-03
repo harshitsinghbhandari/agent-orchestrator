@@ -1466,7 +1466,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
       return session;
     } catch (err) {
-      await cleanupStack.runAll();
+      // Log cleanup failures so they don't disappear silently. The original
+      // code used /* best effort */ swallows; the stack preserves that
+      // behavior (cleanup errors don't propagate) but surfaces them for debug.
+      await cleanupStack.runAll((cleanupErr) => {
+        console.error("[session-manager] spawn rollback step failed:", cleanupErr);
+      });
       throw err;
     }
   }
