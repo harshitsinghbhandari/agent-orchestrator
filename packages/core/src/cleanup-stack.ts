@@ -18,7 +18,8 @@ export class CleanupStack {
   private dismissed = false;
 
   /**
-   * Register a cleanup. Cleanups added after `dismiss()` will not run.
+   * Register a cleanup. Cleanups added after `dismiss()` or `runAll()` will
+   * not run — both are terminal states for the stack.
    */
   push(fn: CleanupFn): void {
     if (this.dismissed) return;
@@ -36,10 +37,13 @@ export class CleanupStack {
   /**
    * Run all pushed cleanups in LIFO order. Each cleanup is awaited; throws are
    * forwarded to `onError` (default: swallowed) so one failing cleanup never
-   * skips the remaining ones. After running, the stack is empty.
+   * skips the remaining ones. After running, the stack is terminal: subsequent
+   * `push()` calls are no-ops and subsequent `runAll()` calls do nothing —
+   * symmetric with `dismiss()`.
    */
   async runAll(onError?: (err: unknown) => void): Promise<void> {
     if (this.dismissed) return;
+    this.dismissed = true;
     while (this.fns.length > 0) {
       const fn = this.fns.pop()!;
       try {

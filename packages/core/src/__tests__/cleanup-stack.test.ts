@@ -110,4 +110,15 @@ describe("CleanupStack", () => {
 
     expect(fn).not.toHaveBeenCalled();
   });
+
+  it("treats push after runAll as a no-op (symmetric with dismiss)", async () => {
+    const fn = vi.fn();
+    const stack = new CleanupStack();
+    await stack.runAll();
+    stack.push(fn);
+
+    await stack.runAll();
+
+    expect(fn).not.toHaveBeenCalled();
+  });
 });
