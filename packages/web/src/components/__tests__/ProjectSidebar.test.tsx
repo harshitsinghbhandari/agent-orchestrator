@@ -404,19 +404,12 @@ describe("ProjectSidebar", () => {
     expect(screen.queryByText("Orchestrator")).not.toBeInTheDocument();
   });
 
-  it("shows 'Open orchestrator' in the project actions menu when a live orchestrator exists", async () => {
+  it("shows 'Open orchestrator' in the project actions menu when the orchestrators prop has an entry", async () => {
     render(
       <ProjectSidebar
         projects={projects}
-        sessions={[
-          makeSession({
-            id: "project-2-orchestrator",
-            projectId: "project-2",
-            summary: "Orchestrator",
-            metadata: { role: "orchestrator" },
-            status: "working",
-          }),
-        ]}
+        sessions={[]}
+        orchestrators={[{ id: "project-2-orchestrator-1", projectId: "project-2" }]}
         activeProjectId="project-1"
         activeSessionId={undefined}
       />,
@@ -429,11 +422,12 @@ describe("ProjectSidebar", () => {
     ).toBeInTheDocument();
   });
 
-  it("omits 'Open orchestrator' from the menu when no orchestrator session exists", async () => {
+  it("omits 'Open orchestrator' from the menu when no orchestrator entry exists for the project", async () => {
     render(
       <ProjectSidebar
         projects={projects}
         sessions={[]}
+        orchestrators={[{ id: "project-1-orchestrator", projectId: "project-1" }]}
         activeProjectId="project-1"
         activeSessionId={undefined}
       />,
@@ -445,44 +439,12 @@ describe("ProjectSidebar", () => {
     expect(screen.queryByRole("menuitem", { name: "Open orchestrator" })).not.toBeInTheDocument();
   });
 
-  it("omits 'Open orchestrator' when the orchestrator session is terminal", async () => {
+  it("navigates to the orchestrator id from the prop when 'Open orchestrator' is clicked", async () => {
     render(
       <ProjectSidebar
         projects={projects}
-        sessions={[
-          makeSession({
-            id: "project-2-orchestrator",
-            projectId: "project-2",
-            summary: "Orchestrator",
-            metadata: { role: "orchestrator" },
-            status: "killed",
-            activity: "exited",
-          }),
-        ]}
-        activeProjectId="project-1"
-        activeSessionId={undefined}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Project actions for Project Two/i }));
-
-    expect(await screen.findByRole("menuitem", { name: "Project settings" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Open orchestrator" })).not.toBeInTheDocument();
-  });
-
-  it("navigates to the orchestrator session when 'Open orchestrator' is clicked", async () => {
-    render(
-      <ProjectSidebar
-        projects={projects}
-        sessions={[
-          makeSession({
-            id: "project-2-orchestrator",
-            projectId: "project-2",
-            summary: "Orchestrator",
-            metadata: { role: "orchestrator" },
-            status: "working",
-          }),
-        ]}
+        sessions={[]}
+        orchestrators={[{ id: "project-2-orchestrator-1", projectId: "project-2" }]}
         activeProjectId="project-1"
         activeSessionId={undefined}
       />,
@@ -491,7 +453,7 @@ describe("ProjectSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: /Project actions for Project Two/i }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Open orchestrator" }));
 
-    expect(mockPush).toHaveBeenCalledWith("/projects/project-2/sessions/project-2-orchestrator");
+    expect(mockPush).toHaveBeenCalledWith("/projects/project-2/sessions/project-2-orchestrator-1");
     await waitFor(() => {
       expect(screen.queryByRole("menuitem", { name: "Open orchestrator" })).not.toBeInTheDocument();
     });

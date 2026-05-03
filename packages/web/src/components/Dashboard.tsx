@@ -605,6 +605,7 @@ function DashboardInner({
                 <ProjectSidebar
                   projects={projects}
                   sessions={sessions}
+                  orchestrators={activeOrchestrators}
                   activeProjectId={projectId}
                   activeSessionId={activeSessionId}
                   collapsed={sidebarCollapsed}

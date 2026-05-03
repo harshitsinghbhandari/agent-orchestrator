@@ -14,7 +14,7 @@ import type { ProjectInfo } from "@/lib/project-name";
 import { SidebarContext } from "./workspace/SidebarContext";
 import { projectDashboardPath, projectSessionPath } from "@/lib/routes";
 
-import { ProjectSidebar } from "./ProjectSidebar";
+import { ProjectSidebar, type ProjectSidebarOrchestrator } from "./ProjectSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import {
   SessionDetailHeader,
@@ -44,6 +44,7 @@ interface SessionDetailProps {
   projectOrchestratorId?: string | null;
   projects?: ProjectInfo[];
   sidebarSessions?: DashboardSession[] | null;
+  sidebarOrchestrators?: ProjectSidebarOrchestrator[];
   sidebarLoading?: boolean;
   sidebarError?: boolean;
   onRetrySidebar?: () => void;
@@ -56,6 +57,7 @@ export function SessionDetail({
   projectOrchestratorId = null,
   projects = [],
   sidebarSessions = [],
+  sidebarOrchestrators,
   sidebarLoading = false,
   sidebarError = false,
   onRetrySidebar,
@@ -175,6 +177,7 @@ export function SessionDetail({
               <ProjectSidebar
                 projects={projects}
                 sessions={sidebarSessions}
+                orchestrators={sidebarOrchestrators}
                 loading={sidebarLoading}
                 error={sidebarError}
                 onRetry={onRetrySidebar}
