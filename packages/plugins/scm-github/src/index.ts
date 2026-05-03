@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import {
   CI_STATUS,
   execGhObserved,
+  memoizeAsync,
   type PluginModule,
   type PreflightContext,
   type SCM,
@@ -1258,16 +1259,21 @@ function createGitHubSCM(): SCM {
       // gh-auth check otherwise so spawns that don't touch PRs don't require
       // gh credentials. Lifecycle polling has its own auth handling.
       if (!context.intent.willClaimExistingPR) return;
-      try {
-        await execFileAsync("gh", ["--version"]);
-      } catch {
-        throw new Error("GitHub CLI (gh) is not installed. Install it: https://cli.github.com/");
-      }
-      try {
-        await execFileAsync("gh", ["auth", "status"]);
-      } catch {
-        throw new Error("GitHub CLI is not authenticated. Run: gh auth login");
-      }
+      // Memoize across plugins: shares the "gh-cli-auth" cache key with
+      // tracker-github so spawns that touch both only run gh --version + gh
+      // auth status once total, not twice.
+      await memoizeAsync("gh-cli-auth", async () => {
+        try {
+          await execFileAsync("gh", ["--version"]);
+        } catch {
+          throw new Error("GitHub CLI (gh) is not installed. Install it: https://cli.github.com/");
+        }
+        try {
+          await execFileAsync("gh", ["auth", "status"]);
+        } catch {
+          throw new Error("GitHub CLI is not authenticated. Run: gh auth login");
+        }
+      });
     },
   };
 }

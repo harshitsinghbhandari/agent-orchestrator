@@ -6,6 +6,7 @@
 
 import {
   execGhObserved,
+  memoizeAsync,
   type PluginModule,
   type Tracker,
   type Issue,
@@ -27,6 +28,26 @@ async function gh(args: string[]): Promise<string> {
       cause: err,
     });
   }
+}
+
+/**
+ * Process-scoped gh auth check shared with scm-github via the same cache key
+ * (`gh-cli-auth`). Both plugins call into this — the second caller hits the
+ * cached promise and adds zero subprocess overhead.
+ */
+async function checkGhCliAuth(): Promise<void> {
+  return memoizeAsync("gh-cli-auth", async () => {
+    try {
+      await gh(["--version"]);
+    } catch {
+      throw new Error("GitHub CLI (gh) is not installed. Install it: https://cli.github.com/");
+    }
+    try {
+      await gh(["auth", "status"]);
+    } catch {
+      throw new Error("GitHub CLI is not authenticated. Run: gh auth login");
+    }
+  });
 }
 
 function getErrorText(err: unknown): string {
@@ -417,19 +438,12 @@ function createGitHubTracker(): Tracker {
     },
 
     async preflight(): Promise<void> {
-      // Tracker is always exercised when issueId is provided AND on lifecycle
-      // polling for issue closure. Check unconditionally so the user gets a
-      // clear error before spawn rather than a cryptic runtime failure later.
-      try {
-        await gh(["--version"]);
-      } catch {
-        throw new Error("GitHub CLI (gh) is not installed. Install it: https://cli.github.com/");
-      }
-      try {
-        await gh(["auth", "status"]);
-      } catch {
-        throw new Error("GitHub CLI is not authenticated. Run: gh auth login");
-      }
+      // Memoize across plugins: tracker-github and scm-github both check the
+      // same gh CLI / auth state. Sharing key "gh-cli-auth" via process-cache
+      // means both plugins' preflights resolve to the same in-flight check
+      // (or cached result) — halving execs on the happy path and giving one
+      // error message instead of two on the failure path.
+      await checkGhCliAuth();
     },
   };
 
