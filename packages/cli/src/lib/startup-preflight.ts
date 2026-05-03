@@ -146,15 +146,15 @@ export function warnAboutLegacyStorage(): void {
     const hashDirs = inventoryHashDirs(getAoBaseDir(), getGlobalConfigPath());
     if (hashDirs.length === 0) return;
 
-    const sessionCount = hashDirs.reduce((sum, d) => {
+    const nonEmptyDirCount = hashDirs.reduce((sum, d) => {
       if (d.empty) return sum;
       return sum + 1;
     }, 0);
-    if (sessionCount === 0) return;
+    if (nonEmptyDirCount === 0) return;
 
     console.log(
       chalk.yellow(
-        `\n  ⚠ Found ${hashDirs.length} legacy storage director${hashDirs.length === 1 ? "y" : "ies"} that need${hashDirs.length === 1 ? "s" : ""} migration.\n` +
+        `\n  ⚠ Found ${nonEmptyDirCount} legacy storage director${nonEmptyDirCount === 1 ? "y" : "ies"} that need${nonEmptyDirCount === 1 ? "s" : ""} migration.\n` +
           `    Sessions stored in the old format won't appear until migrated.\n` +
           `    Run ${chalk.bold("ao migrate-storage")} to upgrade (use ${chalk.bold("--dry-run")} to preview).\n`,
       ),

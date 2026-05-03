@@ -30,13 +30,21 @@ export interface ShutdownContext {
   projectId: string;
 }
 
+// Module-level guards so a second call to installShutdownHandlers within
+// the same process is a no-op (vs. registering duplicate listeners that
+// would each race to writeLastStop / unregister / process.exit on signal).
+let handlersInstalled = false;
+let shuttingDown = false;
+
 /**
- * Install SIGINT/SIGTERM handlers. Idempotent within a process — only the
- * first signal triggers cleanup; subsequent signals are ignored until the
- * 10-second force-exit timer fires.
+ * Install SIGINT/SIGTERM handlers. Process-wide idempotent — calling
+ * this more than once is a no-op. Only the first signal triggers
+ * cleanup; subsequent signals are ignored until the 10-second
+ * force-exit timer fires.
  */
 export function installShutdownHandlers(ctx: ShutdownContext): void {
-  let shuttingDown = false;
+  if (handlersInstalled) return;
+  handlersInstalled = true;
 
   const shutdown = (signal: NodeJS.Signals): void => {
     if (shuttingDown) return;
