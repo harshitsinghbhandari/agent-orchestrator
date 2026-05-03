@@ -199,6 +199,9 @@ function ProjectSidebarInner({
     [visibleProjects],
   );
 
+  // The API (selectPreferredOrchestratorId) sends at most one entry per
+  // project, so collapsing into a Map keyed by projectId is lossless. If a
+  // future API change starts emitting multiples, the last one wins here.
   const orchestratorByProject = useMemo(
     () => new Map((orchestrators ?? []).map((o) => [o.projectId, o])),
     [orchestrators],

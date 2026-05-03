@@ -10,7 +10,12 @@ import {
   type ProjectSidebarOrchestrator,
 } from "@/components/ProjectSidebar";
 import { useMediaQuery, MOBILE_BREAKPOINT } from "@/hooks/useMediaQuery";
-import { type DashboardSession, type ActivityState, getAttentionLevel } from "@/lib/types";
+import {
+  type DashboardSession,
+  type DashboardOrchestratorLink,
+  type ActivityState,
+  getAttentionLevel,
+} from "@/lib/types";
 import { activityIcon } from "@/lib/activity-icons";
 import type { ProjectInfo } from "@/lib/project-name";
 import { getSessionTitle } from "@/lib/format";
@@ -607,7 +612,7 @@ export default function SessionPage() {
     try {
       const body = await fetchJsonWithTimeout<{
         sessions?: DashboardSession[];
-        orchestrators?: ProjectSidebarOrchestrator[];
+        orchestrators?: DashboardOrchestratorLink[];
       } | null>("/api/sessions?fresh=true", {
         signal: controller.signal,
         timeoutMs: PROJECT_SIDEBAR_FETCH_TIMEOUT_MS,
