@@ -9,7 +9,6 @@ import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "@
 import { isOrchestratorSession, isTerminalSession } from "@aoagents/ao-core/types";
 import { getSessionTitle, humanizeBranch } from "@/lib/format";
 import { usePopoverClamp } from "@/hooks/usePopoverClamp";
-import { getOrchestratorSessionId } from "@/lib/orchestrator-utils";
 import { projectDashboardPath, projectSessionPath } from "@/lib/routes";
 import { ThemeToggle } from "./ThemeToggle";
 import { AddProjectModal } from "./AddProjectModal";
@@ -391,20 +390,29 @@ function ProjectSidebarInner({
           const hasActiveSessions = visibleSessions.length > 0;
 
           const projectPrefix = prefixByProject.get(project.id);
-          const canonicalOrchestratorId = projectPrefix
-            ? getOrchestratorSessionId({ sessionPrefix: projectPrefix })
-            : null;
-          const orchestratorSession = sessions?.find(
-            (s) => s.projectId === project.id && s.id === canonicalOrchestratorId,
-          );
-          const liveOrchestrator =
-            orchestratorSession &&
-            !isTerminalSession({
-              status: orchestratorSession.status,
-              activity: orchestratorSession.activity,
-            })
-              ? orchestratorSession
-              : null;
+          // Mirror the worker page's "Orchestrator" button selection
+          // (selectPreferredOrchestratorId in /api/sessions): match by
+          // metadata.role / canonical id / numbered worktree id, prefer the
+          // most recent live orchestrator, fall back to the most recent
+          // terminal one if none are live.
+          const projectOrchestrators = sessions
+            ?.filter(
+              (s) =>
+                s.projectId === project.id &&
+                isOrchestratorSession(s, projectPrefix, allPrefixes),
+            )
+            .sort(
+              (a, b) =>
+                new Date(b.lastActivityAt).getTime() -
+                new Date(a.lastActivityAt).getTime(),
+            );
+          const orchestratorSession =
+            projectOrchestrators?.find(
+              (s) =>
+                !isTerminalSession({ status: s.status, activity: s.activity }),
+            ) ??
+            projectOrchestrators?.[0] ??
+            null;
 
           return (
             <div key={project.id} className="project-sidebar__project">
@@ -571,7 +579,7 @@ function ProjectSidebarInner({
                       role="menu"
                       aria-label={`${project.name} actions`}
                     >
-                      {liveOrchestrator ? (
+                      {orchestratorSession ? (
                         <button
                           type="button"
                           className="project-sidebar__proj-menu-item"
@@ -579,8 +587,8 @@ function ProjectSidebarInner({
                           onClick={() => {
                             setProjectMenuOpenId(null);
                             navigate(
-                              projectSessionPath(project.id, liveOrchestrator.id),
-                              liveOrchestrator,
+                              projectSessionPath(project.id, orchestratorSession.id),
+                              orchestratorSession,
                             );
                           }}
                         >
