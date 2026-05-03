@@ -863,7 +863,7 @@ export default function SessionPage() {
       projectOrchestratorId={projectOrchestratorId}
       projects={projects}
       sidebarSessions={sidebarSessions}
-        sidebarOrchestrators={sidebarOrchestrators}
+      sidebarOrchestrators={sidebarOrchestrators}
       sidebarLoading={sidebarSessions === null}
       sidebarError={sidebarError}
       onRetrySidebar={fetchSidebarSessions}
