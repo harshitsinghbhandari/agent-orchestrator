@@ -86,6 +86,7 @@ import {
   writeWorkspaceOpenCodeAgentsMd,
 } from "./opencode-agents-md.js";
 import { writeOpenCodeConfig } from "./opencode-config.js";
+import { CleanupStack } from "./cleanup-stack.js";
 import {
   getOrchestratorSessionId,
   normalizeOrchestratorSessionStrategy,
@@ -1160,40 +1161,47 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // Get the sessions directory for this project
     const sessionsDir = getProjectSessionsDir(spawnConfig.projectId);
 
-    // Determine session ID — atomically reserve to prevent concurrent collisions
-    const { sessionId, tmuxName } = await reserveNextSessionIdentity(project, sessionsDir);
+    // CleanupStack: each side effect pushes its undo as soon as the resource
+    // exists. On any failure below we runAll() in LIFO order; on success we
+    // dismiss(). Replaces the previous nested rollback ladder — adding a new
+    // step now requires pushing one cleanup, with no risk of forgetting prior
+    // ones.
+    const cleanupStack = new CleanupStack();
+    try {
+      // Determine session ID — atomically reserve to prevent concurrent collisions
+      const { sessionId, tmuxName } = await reserveNextSessionIdentity(project, sessionsDir);
+      cleanupStack.push(() => deleteMetadata(sessionsDir, sessionId));
 
-    // Determine branch name — explicit branch always takes priority
-    let branch: string;
-    if (spawnConfig.branch) {
-      branch = spawnConfig.branch;
-    } else if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
-      const fromIssue = resolvedIssue.branchName;
-      branch =
-        fromIssue && isGitBranchNameSafe(fromIssue)
-          ? fromIssue
-          : plugins.tracker.branchName(spawnConfig.issueId, project);
-    } else if (spawnConfig.issueId) {
-      // If the issueId is already branch-safe (e.g. "INT-9999"), use as-is.
-      // Otherwise sanitize free-text (e.g. "fix login bug") into a valid slug.
-      const id = spawnConfig.issueId;
-      const isBranchSafe = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) && !id.includes("..");
-      const slug = isBranchSafe
-        ? id
-        : id
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .slice(0, 60)
-            .replace(/^-+|-+$/g, "");
-      branch = `feat/${slug || sessionId}`;
-    } else {
-      branch = `session/${sessionId}`;
-    }
+      // Determine branch name — explicit branch always takes priority
+      let branch: string;
+      if (spawnConfig.branch) {
+        branch = spawnConfig.branch;
+      } else if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
+        const fromIssue = resolvedIssue.branchName;
+        branch =
+          fromIssue && isGitBranchNameSafe(fromIssue)
+            ? fromIssue
+            : plugins.tracker.branchName(spawnConfig.issueId, project);
+      } else if (spawnConfig.issueId) {
+        // If the issueId is already branch-safe (e.g. "INT-9999"), use as-is.
+        // Otherwise sanitize free-text (e.g. "fix login bug") into a valid slug.
+        const id = spawnConfig.issueId;
+        const isBranchSafe = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) && !id.includes("..");
+        const slug = isBranchSafe
+          ? id
+          : id
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .slice(0, 60)
+              .replace(/^-+|-+$/g, "");
+        branch = `feat/${slug || sessionId}`;
+      } else {
+        branch = `session/${sessionId}`;
+      }
 
-    // Create workspace (if workspace plugin is available)
-    let workspacePath = project.path;
-    if (plugins.workspace) {
-      try {
+      // Create workspace (if workspace plugin is available)
+      let workspacePath = project.path;
+      if (plugins.workspace) {
         const wsInfo = await plugins.workspace.create({
           projectId: spawnConfig.projectId,
           project,
@@ -1202,110 +1210,54 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           worktreeDir: getProjectWorktreesDir(spawnConfig.projectId),
         });
         workspacePath = wsInfo.path;
-
-        // Run post-create hooks — clean up workspace on failure
+        // Only register destroy when the path is inside a managed root —
+        // matches the prior shouldDestroyWorkspacePath gate so we never
+        // destroy a user-owned project directory.
+        if (shouldDestroyWorkspacePath(project, spawnConfig.projectId, workspacePath)) {
+          const ws = plugins.workspace;
+          cleanupStack.push(() => ws.destroy(workspacePath));
+        }
         if (plugins.workspace.postCreate) {
-          try {
-            await plugins.workspace.postCreate(wsInfo, project);
-          } catch (err) {
-            if (shouldDestroyWorkspacePath(project, spawnConfig.projectId, workspacePath)) {
-              try {
-                await plugins.workspace.destroy(workspacePath);
-              } catch {
-                /* best effort */
-              }
-            }
-            throw err;
-          }
+          await plugins.workspace.postCreate(wsInfo, project);
         }
-      } catch (err) {
-        // Clean up reserved session ID on workspace failure
+      }
+
+      // Generate prompt with validated issue
+      let issueContext: string | undefined;
+      if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
         try {
-          deleteMetadata(sessionsDir, sessionId);
+          issueContext = await plugins.tracker.generatePrompt(spawnConfig.issueId, project);
         } catch {
-          /* best effort */
-        }
-        throw err;
-      }
-    }
-
-    // Generate prompt with validated issue
-    let issueContext: string | undefined;
-    if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
-      try {
-        issueContext = await plugins.tracker.generatePrompt(spawnConfig.issueId, project);
-      } catch {
-        // Non-fatal: continue without detailed issue context
-        // Silently ignore errors - caller can check if issueContext is undefined
-      }
-    }
-
-    const cleanupSpawnWorkspaceAndMetadata = async (
-      promptFile?: string,
-      opencodeConfigFile?: string,
-    ): Promise<void> => {
-      if (
-        plugins.workspace &&
-        shouldDestroyWorkspacePath(project, spawnConfig.projectId, workspacePath)
-      ) {
-        try {
-          await plugins.workspace.destroy(workspacePath);
-        } catch {
-          /* best effort */
+          // Non-fatal: continue without detailed issue context
+          // Silently ignore errors - caller can check if issueContext is undefined
         }
       }
-      try {
-        deleteMetadata(sessionsDir, sessionId);
-      } catch {
-        /* best effort */
-      }
-      if (promptFile) {
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          /* best effort */
-        }
-      }
-      if (opencodeConfigFile) {
-        try {
-          unlinkSync(opencodeConfigFile);
-        } catch {
-          /* best effort */
-        }
-      }
-    };
 
-    const { systemPrompt, taskPrompt } = buildPrompt({
-      project,
-      projectId: spawnConfig.projectId,
-      issueId: spawnConfig.issueId,
-      issueContext,
-      userPrompt: spawnConfig.prompt,
-    });
+      const { systemPrompt, taskPrompt } = buildPrompt({
+        project,
+        projectId: spawnConfig.projectId,
+        issueId: spawnConfig.issueId,
+        issueContext,
+        userPrompt: spawnConfig.prompt,
+      });
 
-    let systemPromptFile: string | undefined;
-
-    // need a seperate config file to pass instructions for opencode session
-    let opencodeConfigFile: string | undefined;
-
-    try {
       const baseDir = getProjectDir(spawnConfig.projectId);
       mkdirSync(baseDir, { recursive: true });
-      systemPromptFile = join(baseDir, `worker-prompt-${sessionId}.md`);
+      const systemPromptFile = join(baseDir, `worker-prompt-${sessionId}.md`);
       writeFileSync(systemPromptFile, systemPrompt, "utf-8");
+      cleanupStack.push(() => unlinkSync(systemPromptFile));
+
+      // need a seperate config file to pass instructions for opencode session
+      let opencodeConfigFile: string | undefined;
       if (plugins.agent.name === "opencode") {
         opencodeConfigFile = writeOpenCodeConfig(baseDir, sessionId, [systemPromptFile]);
+        const cfg = opencodeConfigFile;
+        cleanupStack.push(() => unlinkSync(cfg));
       }
-    } catch (err) {
-      await cleanupSpawnWorkspaceAndMetadata(systemPromptFile, opencodeConfigFile);
-      throw err;
-    }
 
-    // Get agent launch config and create runtime — clean up workspace on failure
-    const opencodeIssueSessionStrategy = project.opencodeIssueSessionStrategy ?? "reuse";
-    let reusedOpenCodeSessionId: string | undefined;
-    try {
-      reusedOpenCodeSessionId =
+      // Get agent launch config and create runtime
+      const opencodeIssueSessionStrategy = project.opencodeIssueSessionStrategy ?? "reuse";
+      const reusedOpenCodeSessionId =
         plugins.agent.name === "opencode" && spawnConfig.issueId
           ? await resolveOpenCodeSessionReuse({
               sessionsDir,
@@ -1313,30 +1265,25 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
               strategy: opencodeIssueSessionStrategy,
             })
           : undefined;
-    } catch (err) {
-      await cleanupSpawnWorkspaceAndMetadata(systemPromptFile, opencodeConfigFile);
-      throw err;
-    }
-    const agentLaunchConfig = {
-      sessionId,
-      projectConfig: {
-        ...project,
-        agentConfig: {
-          ...selection.agentConfig,
-          ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
-        },
-      },
-      workspacePath,
-      issueId: spawnConfig.issueId,
-      prompt: taskPrompt,
-      systemPromptFile,
-      permissions: selection.permissions,
-      model: selection.model,
-      subagent: spawnConfig.subagent ?? selection.subagent,
-    };
 
-    let handle: RuntimeHandle;
-    try {
+      const agentLaunchConfig = {
+        sessionId,
+        projectConfig: {
+          ...project,
+          agentConfig: {
+            ...selection.agentConfig,
+            ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
+          },
+        },
+        workspacePath,
+        issueId: spawnConfig.issueId,
+        prompt: taskPrompt,
+        systemPromptFile,
+        permissions: selection.permissions,
+        model: selection.model,
+        subagent: spawnConfig.subagent ?? selection.subagent,
+      };
+
       const launchCommand = plugins.agent.getLaunchCommand(agentLaunchConfig);
       const environment = plugins.agent.getEnvironment(agentLaunchConfig);
 
@@ -1344,7 +1291,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         await plugins.agent.preLaunchSetup(workspacePath);
       }
 
-      handle = await plugins.runtime.create({
+      const handle = await plugins.runtime.create({
         sessionId: tmuxName ?? sessionId, // Use tmux name for runtime if available
         workspacePath,
         launchCommand,
@@ -1367,54 +1314,50 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
             config.port !== null && { AO_PORT: String(config.port) }),
         },
       });
-    } catch (err) {
-      // Clean up workspace, prompt file, and reserved ID if agent config or runtime creation failed
-      await cleanupSpawnWorkspaceAndMetadata(systemPromptFile, opencodeConfigFile);
-      throw err;
-    }
+      const rt = plugins.runtime;
+      cleanupStack.push(() => rt.destroy(handle));
 
-    // Derive a stable display name from task context. Unlike issue-title
-    // enrichment (which is a live tracker API call), this value is captured at
-    // spawn time and persisted, so the dashboard has a good name even when the
-    // tracker is unavailable or the session has no attached PR yet.
-    const displayName = deriveDisplayName({
-      issueTitle: resolvedIssue?.title,
-      prompt: spawnConfig.prompt,
-    });
+      // Derive a stable display name from task context. Unlike issue-title
+      // enrichment (which is a live tracker API call), this value is captured at
+      // spawn time and persisted, so the dashboard has a good name even when the
+      // tracker is unavailable or the session has no attached PR yet.
+      const displayName = deriveDisplayName({
+        issueTitle: resolvedIssue?.title,
+        prompt: spawnConfig.prompt,
+      });
 
-    // Write metadata and run post-launch setup — clean up on failure
-    const createdAt = new Date();
-    const lifecycle = createInitialCanonicalLifecycle("worker", createdAt);
-    lifecycle.runtime.handle = handle;
-    lifecycle.runtime.tmuxName = tmuxName ?? null;
+      // Write metadata and run post-launch setup
+      const createdAt = new Date();
+      const lifecycle = createInitialCanonicalLifecycle("worker", createdAt);
+      lifecycle.runtime.handle = handle;
+      lifecycle.runtime.tmuxName = tmuxName ?? null;
 
-    const session: Session = {
-      id: sessionId,
-      projectId: spawnConfig.projectId,
-      status: deriveLegacyStatus(lifecycle),
-      activity: "active",
-      activitySignal: createActivitySignal("valid", {
+      const session: Session = {
+        id: sessionId,
+        projectId: spawnConfig.projectId,
+        status: deriveLegacyStatus(lifecycle),
         activity: "active",
-        timestamp: createdAt,
-        source: "runtime",
-      }),
-      lifecycle,
-      branch,
-      issueId: spawnConfig.issueId ?? null,
-      pr: null,
-      workspacePath,
-      runtimeHandle: handle,
-      agentInfo: null,
-      createdAt,
-      lastActivityAt: createdAt,
-      metadata: {
-        ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
-        ...(spawnConfig.prompt ? { userPrompt: spawnConfig.prompt } : {}),
-        ...(displayName ? { displayName } : {}),
-      },
-    };
+        activitySignal: createActivitySignal("valid", {
+          activity: "active",
+          timestamp: createdAt,
+          source: "runtime",
+        }),
+        lifecycle,
+        branch,
+        issueId: spawnConfig.issueId ?? null,
+        pr: null,
+        workspacePath,
+        runtimeHandle: handle,
+        agentInfo: null,
+        createdAt,
+        lastActivityAt: createdAt,
+        metadata: {
+          ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
+          ...(spawnConfig.prompt ? { userPrompt: spawnConfig.prompt } : {}),
+          ...(displayName ? { displayName } : {}),
+        },
+      };
 
-    try {
       writeMetadata(sessionsDir, sessionId, {
         worktree: workspacePath,
         branch,
@@ -1463,71 +1406,69 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         updateMetadata(sessionsDir, sessionId, session.metadata);
       }
       invalidateCache();
-    } catch (err) {
-      // Clean up runtime and workspace on post-launch failure
-      try {
-        await plugins.runtime.destroy(handle);
-      } catch {
-        /* best effort */
-      }
-      await cleanupSpawnWorkspaceAndMetadata(systemPromptFile);
-      throw err;
-    }
 
-    // Send the task-specific prompt post-launch for agents that need it
-    // (e.g. Claude Code exits after -p, so we send the prompt after it starts
-    // in interactive mode).
-    // This is intentionally outside the try/catch above — a prompt delivery failure
-    // should NOT destroy the session. The agent is running; user can retry with `ao send`.
-    let promptDelivered = false;
-    if (plugins.agent.promptDelivery === "post-launch" && agentLaunchConfig.prompt) {
-      const maxRetries = 3;
-      const baseDelayMs = 3_000;
-      let lastError: Error | undefined;
+      // Past this point every resource that needed an undo is on disk in its
+      // final form. Dismiss the stack so the prompt-delivery loop below (which
+      // is intentionally non-fatal) cannot trigger a rollback.
+      cleanupStack.dismiss();
 
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          // Wait for agent to start and be ready for input
-          // Use exponential backoff: 3s, 6s, 9s between attempts
-          await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
-          await plugins.runtime.sendMessage(handle, agentLaunchConfig.prompt);
-          promptDelivered = true;
-          break;
-        } catch (err) {
-          lastError = err instanceof Error ? err : new Error(String(err));
+      // Send the task-specific prompt post-launch for agents that need it
+      // (e.g. Claude Code exits after -p, so we send the prompt after it starts
+      // in interactive mode). Prompt delivery failure must NOT destroy the
+      // session — the agent is running; user can retry with `ao send`.
+      let promptDelivered = false;
+      if (plugins.agent.promptDelivery === "post-launch" && agentLaunchConfig.prompt) {
+        const maxRetries = 3;
+        const baseDelayMs = 3_000;
+        let lastError: Error | undefined;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            // Wait for agent to start and be ready for input
+            // Use exponential backoff: 3s, 6s, 9s between attempts
+            await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
+            await plugins.runtime.sendMessage(handle, agentLaunchConfig.prompt);
+            promptDelivered = true;
+            break;
+          } catch (err) {
+            lastError = err instanceof Error ? err : new Error(String(err));
+            console.error(
+              `[session-manager] Prompt delivery attempt ${attempt}/${maxRetries} failed: ${lastError.message}`,
+            );
+          }
+        }
+
+        if (!promptDelivered) {
           console.error(
-            `[session-manager] Prompt delivery attempt ${attempt}/${maxRetries} failed: ${lastError.message}`,
+            `[session-manager] FAILED to deliver prompt to session ${sessionId} after ${maxRetries} attempts. ` +
+              `User must send manually with 'ao send'. Last error: ${lastError?.message}`,
           );
         }
+
+        session.metadata["promptDelivered"] = String(promptDelivered);
+      } else if (agentLaunchConfig.prompt) {
+        session.metadata["promptDelivered"] = "true";
       }
 
-      if (!promptDelivered) {
-        console.error(
-          `[session-manager] FAILED to deliver prompt to session ${sessionId} after ${maxRetries} attempts. ` +
-            `User must send manually with 'ao send'. Last error: ${lastError?.message}`,
-        );
+      if (session.metadata["promptDelivered"]) {
+        updateMetadata(sessionsDir, sessionId, session.metadata);
+        invalidateCache();
       }
 
-      session.metadata["promptDelivered"] = String(promptDelivered);
-    } else if (agentLaunchConfig.prompt) {
-      session.metadata["promptDelivered"] = "true";
+      recordActivityEvent({
+        projectId: spawnConfig.projectId,
+        sessionId,
+        source: "session-manager",
+        kind: "session.spawned",
+        summary: `spawned: ${sessionId}`,
+        data: { agent: plugins.agent.name, branch: session.branch ?? undefined },
+      });
+
+      return session;
+    } catch (err) {
+      await cleanupStack.runAll();
+      throw err;
     }
-
-    if (session.metadata["promptDelivered"]) {
-      updateMetadata(sessionsDir, sessionId, session.metadata);
-      invalidateCache();
-    }
-
-    recordActivityEvent({
-      projectId: spawnConfig.projectId,
-      sessionId,
-      source: "session-manager",
-      kind: "session.spawned",
-      summary: `spawned: ${sessionId}`,
-      data: { agent: plugins.agent.name, branch: session.branch ?? undefined },
-    });
-
-    return session;
   }
 
   async function spawnOrchestrator(orchestratorConfig: OrchestratorSpawnConfig): Promise<Session> {

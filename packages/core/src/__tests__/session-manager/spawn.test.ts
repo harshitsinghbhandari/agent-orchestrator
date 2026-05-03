@@ -13,6 +13,7 @@ import {
   readMetadata,
   readMetadataRaw,
 } from "../../metadata.js";
+import { getProjectWorktreesDir } from "../../paths.js";
 import type {
   OrchestratorConfig,
   PluginRegistry,
@@ -1286,6 +1287,103 @@ describe("spawn", () => {
     expect(mockRuntime.sendMessage).toHaveBeenCalled();
     vi.useRealTimers();
   }, 20_000);
+
+  describe("rollback on failure", () => {
+    it("cleans up reserved metadata when workspace creation fails", async () => {
+      (mockWorkspace.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("workspace creation failed"),
+      );
+      const sm = createSessionManager({ config, registry: mockRegistry });
+
+      await expect(sm.spawn({ projectId: "my-app" })).rejects.toThrow(
+        "workspace creation failed",
+      );
+
+      expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
+      expect(mockRuntime.create).not.toHaveBeenCalled();
+    });
+
+    it("destroys the worktree and cleans metadata when runtime creation fails", async () => {
+      // Workspace path must be inside the project's managed worktrees root so
+      // shouldDestroyWorkspacePath() permits destroy. Mock paths under tmpDir
+      // would be skipped as out-of-tree (correct, but not the path we want to
+      // characterize here).
+      const worktreePath = join(getProjectWorktreesDir("my-app"), "app-1");
+      (mockWorkspace.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        path: worktreePath,
+        branch: "session/app-1",
+        sessionId: "app-1",
+        projectId: "my-app",
+      });
+      (mockRuntime.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("runtime creation failed"),
+      );
+      const sm = createSessionManager({ config, registry: mockRegistry });
+
+      await expect(sm.spawn({ projectId: "my-app" })).rejects.toThrow(
+        "runtime creation failed",
+      );
+
+      expect(mockWorkspace.destroy).toHaveBeenCalledWith(worktreePath);
+      expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
+    });
+
+    it("destroys runtime and worktree when post-launch setup fails", async () => {
+      const worktreePath = join(getProjectWorktreesDir("my-app"), "app-1");
+      (mockWorkspace.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        path: worktreePath,
+        branch: "session/app-1",
+        sessionId: "app-1",
+        projectId: "my-app",
+      });
+      const postLaunchError = new Error("post-launch setup failed");
+      const agentWithPostLaunch: typeof mockAgent = {
+        ...mockAgent,
+        postLaunchSetup: vi.fn().mockRejectedValueOnce(postLaunchError),
+      };
+      const registryWithPostLaunch: PluginRegistry = {
+        ...mockRegistry,
+        get: vi.fn().mockImplementation((slot: string) => {
+          if (slot === "runtime") return mockRuntime;
+          if (slot === "agent") return agentWithPostLaunch;
+          if (slot === "workspace") return mockWorkspace;
+          return null;
+        }),
+      };
+      const sm = createSessionManager({ config, registry: registryWithPostLaunch });
+
+      await expect(sm.spawn({ projectId: "my-app" })).rejects.toThrow("post-launch setup failed");
+
+      expect(mockRuntime.destroy).toHaveBeenCalled();
+      expect(mockWorkspace.destroy).toHaveBeenCalledWith(worktreePath);
+      expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
+    });
+
+    it("still cleans subsequent resources when one cleanup step throws", async () => {
+      const worktreePath = join(getProjectWorktreesDir("my-app"), "app-1");
+      (mockWorkspace.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        path: worktreePath,
+        branch: "session/app-1",
+        sessionId: "app-1",
+        projectId: "my-app",
+      });
+      // workspace.destroy throws during rollback — metadata cleanup must still run
+      (mockWorkspace.destroy as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("destroy failed"),
+      );
+      (mockRuntime.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("runtime creation failed"),
+      );
+      const sm = createSessionManager({ config, registry: mockRegistry });
+
+      await expect(sm.spawn({ projectId: "my-app" })).rejects.toThrow(
+        "runtime creation failed",
+      );
+
+      // Even though workspace.destroy threw, metadata must have been cleaned up.
+      expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
+    });
+  });
 
   describe("displayName derivation", () => {
     it("persists the issue title as displayName when tracker returns one", async () => {
