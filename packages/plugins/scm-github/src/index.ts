@@ -11,6 +11,7 @@ import {
   CI_STATUS,
   execGhObserved,
   type PluginModule,
+  type PreflightContext,
   type SCM,
   type SCMWebhookEvent,
   type SCMWebhookRequest,
@@ -1250,6 +1251,23 @@ function createGitHubSCM(): SCM {
       if (observer) instanceObserver = observer;
       const batchResult = await enrichSessionsPRBatchImpl(prs, observer, repos);
       return batchResult.enrichment;
+    },
+
+    async preflight(context: PreflightContext): Promise<void> {
+      // SCM is only exercised at spawn time when --claim-pr is set. Skip the
+      // gh-auth check otherwise so spawns that don't touch PRs don't require
+      // gh credentials. Lifecycle polling has its own auth handling.
+      if (!context.intent.willClaimExistingPR) return;
+      try {
+        await execFileAsync("gh", ["--version"]);
+      } catch {
+        throw new Error("GitHub CLI (gh) is not installed. Install it: https://cli.github.com/");
+      }
+      try {
+        await execFileAsync("gh", ["auth", "status"]);
+      } catch {
+        throw new Error("GitHub CLI is not authenticated. Run: gh auth login");
+      }
     },
   };
 }

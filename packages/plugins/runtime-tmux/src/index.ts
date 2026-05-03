@@ -190,6 +190,20 @@ export function create(): Runtime {
         command: `tmux attach -t ${handle.id}`,
       };
     },
+
+    async preflight(): Promise<void> {
+      try {
+        await execFileAsync("tmux", ["-V"], { timeout: TMUX_COMMAND_TIMEOUT_MS });
+      } catch {
+        const hint =
+          process.platform === "darwin"
+            ? "brew install tmux"
+            : process.platform === "win32"
+              ? "tmux is not available on Windows. Use WSL: wsl --install, then: sudo apt install tmux"
+              : "sudo apt install tmux (Debian/Ubuntu) or sudo dnf install tmux (Fedora)";
+        throw new Error(`tmux is not installed. Install it: ${hint}`);
+      }
+    },
   };
 }
 

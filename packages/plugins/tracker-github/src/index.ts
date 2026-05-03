@@ -415,6 +415,22 @@ function createGitHubTracker(): Tracker {
 
       return tracker.getIssue(number, project);
     },
+
+    async preflight(): Promise<void> {
+      // Tracker is always exercised when issueId is provided AND on lifecycle
+      // polling for issue closure. Check unconditionally so the user gets a
+      // clear error before spawn rather than a cryptic runtime failure later.
+      try {
+        await gh(["--version"]);
+      } catch {
+        throw new Error("GitHub CLI (gh) is not installed. Install it: https://cli.github.com/");
+      }
+      try {
+        await gh(["auth", "status"]);
+      } catch {
+        throw new Error("GitHub CLI is not authenticated. Run: gh auth login");
+      }
+    },
   };
 
   return tracker;
