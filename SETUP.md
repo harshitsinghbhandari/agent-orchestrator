@@ -397,6 +397,7 @@ curl -X POST -H 'Content-type: application/json' \
 
    ```bash
    echo 'export COMPOSIO_API_KEY="your-api-key"' >> ~/.zshrc
+   echo 'export COMPOSIO_ENTITY_ID="default"' >> ~/.zshrc
    source ~/.zshrc
    ```
 
