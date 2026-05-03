@@ -1,3 +1,13 @@
+## 2026-05-03
+
+### Files Updated
+- `SETUP.md` - Added missing `COMPOSIO_ENTITY_ID` environment variable to Composio setup.
+
+### Verification
+- [ ] Commands tested
+- [ ] Cross-referenced with code
+- [ ] No broken links
+
 ## 2025-04-12
 
 ### Files Updated
