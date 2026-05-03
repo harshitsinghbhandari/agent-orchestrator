@@ -52,8 +52,18 @@ vi.mock("@aoagents/ao-core", async (importOriginal) => {
   };
 });
 
+// Default registry returns no plugins → preflight loop is a no-op. Tests that
+// need a specific plugin's preflight to fire override mockRegistryGet.
+const mockRegistryGet = vi.fn().mockReturnValue(null);
 vi.mock("../../src/lib/create-session-manager.js", () => ({
   getSessionManager: async (): Promise<SessionManager> => mockSessionManager as SessionManager,
+  getPluginRegistry: async () => ({
+    register: vi.fn(),
+    get: mockRegistryGet,
+    list: vi.fn().mockReturnValue([]),
+    loadBuiltins: vi.fn(),
+    loadFromConfig: vi.fn(),
+  }),
 }));
 
 vi.mock("../../src/lib/running-state.js", () => ({
@@ -124,6 +134,7 @@ beforeEach(() => {
   mockSessionManager.claimPR.mockReset();
   mockExec.mockReset();
   mockGetRunning.mockReset();
+  mockRegistryGet.mockReset().mockReturnValue(null);
   mockGetRunning.mockResolvedValue({ pid: 1234, port: 3000, startedAt: "", projects: ["my-app"] });
 });
 
@@ -673,23 +684,14 @@ describe("spawn command", () => {
 });
 
 describe("spawn pre-flight checks", () => {
-  it("fails with clear error when tmux is not installed (default runtime)", async () => {
-    mockExec.mockRejectedValue(new Error("ENOENT"));
+  // The spawn CLI now iterates the configured plugins and calls each one's
+  // optional preflight(). Plugin-internal checks (e.g. checkTmux, gh auth
+  // status) live in the plugin packages — see runtime-tmux / tracker-github /
+  // scm-github tests for that coverage. These tests verify the orchestration:
+  // the right plugins are iterated, and the intent context is forwarded.
 
-    await expect(program.parseAsync(["node", "test", "spawn"])).rejects.toThrow(
-      "process.exit(1)",
-    );
-
-    const errors = vi
-      .mocked(console.error)
-      .mock.calls.map((c) => String(c[0]))
-      .join("\n");
-    expect(errors).toContain("tmux");
-    expect(mockSessionManager.spawn).not.toHaveBeenCalled();
-  });
-
-  it("skips tmux check when runtime is not tmux", async () => {
-    const fakeSession: Session = {
+  function makeFakeSession(overrides: Partial<Session> = {}): Session {
+    return {
       id: "app-1",
       projectId: "my-app",
       status: "spawning",
@@ -698,98 +700,77 @@ describe("spawn pre-flight checks", () => {
       issueId: null,
       pr: null,
       workspacePath: "/tmp/wt",
-      runtimeHandle: { id: "proc-1", runtimeName: "process", data: {} },
+      runtimeHandle: { id: "hash-1", runtimeName: "tmux", data: {} },
       agentInfo: null,
       createdAt: new Date(),
       lastActivityAt: new Date(),
       metadata: {},
+      ...overrides,
     };
-    mockSessionManager.spawn.mockResolvedValue(fakeSession);
+  }
 
-    // Set runtime to "process"
-    (mockConfigRef.current as Record<string, unknown>).defaults = {
-      runtime: "process",
-      agent: "claude-code",
-      workspace: "worktree",
-      notifiers: ["desktop"],
-    };
+  it("surfaces a plugin's preflight error and aborts before sm.spawn", async () => {
+    mockRegistryGet.mockImplementation((slot: string) => {
+      if (slot === "runtime") {
+        return {
+          name: "tmux",
+          preflight: vi
+            .fn()
+            .mockRejectedValue(new Error("tmux is not installed. Install it: brew install tmux")),
+        };
+      }
+      return null;
+    });
 
-    // exec would fail for tmux but should never be called
-    mockExec.mockRejectedValue(new Error("ENOENT"));
+    await expect(program.parseAsync(["node", "test", "spawn"])).rejects.toThrow("process.exit(1)");
 
-    await program.parseAsync(["node", "test", "spawn"]);
-
-    expect(mockSessionManager.spawn).toHaveBeenCalled();
+    const errors = vi
+      .mocked(console.error)
+      .mock.calls.map((c) => String(c[0]))
+      .join("\n");
+    expect(errors).toContain("tmux is not installed");
+    expect(mockSessionManager.spawn).not.toHaveBeenCalled();
   });
 
-  it("checks gh auth when tracker is github", async () => {
+  it("skips scm.preflight when --claim-pr is not provided", async () => {
+    const trackerPreflight = vi.fn().mockResolvedValue(undefined);
+    const scmPreflight = vi.fn().mockResolvedValue(undefined);
+    mockRegistryGet.mockImplementation((slot: string) => {
+      if (slot === "tracker") return { name: "github", preflight: trackerPreflight };
+      if (slot === "scm") return { name: "github", preflight: scmPreflight };
+      return null;
+    });
+
     const projects = (mockConfigRef.current as Record<string, unknown>).projects as Record<
       string,
       Record<string, unknown>
     >;
     projects["my-app"].tracker = { plugin: "github" };
+    projects["my-app"].scm = { plugin: "github" };
 
-    // tmux check passes, gh --version passes, gh auth status fails
-    mockExec
-      .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" }) // tmux -V
-      .mockResolvedValueOnce({ stdout: "gh version 2.40", stderr: "" }) // gh --version
-      .mockRejectedValueOnce(new Error("not logged in")); // gh auth status
+    mockSessionManager.spawn.mockResolvedValue(makeFakeSession());
 
-    await expect(program.parseAsync(["node", "test", "spawn"])).rejects.toThrow(
-      "process.exit(1)",
-    );
+    await program.parseAsync(["node", "test", "spawn"]);
 
-    const errors = vi
-      .mocked(console.error)
-      .mock.calls.map((c) => String(c[0]))
-      .join("\n");
-    expect(errors).toContain("not authenticated");
-    expect(mockSessionManager.spawn).not.toHaveBeenCalled();
+    expect(trackerPreflight).toHaveBeenCalled();
+    expect(scmPreflight).not.toHaveBeenCalled();
+    expect(mockSessionManager.spawn).toHaveBeenCalled();
   });
 
-  it("checks gh auth when --claim-pr targets a github SCM project", async () => {
+  it("calls scm.preflight with willClaimExistingPR=true when --claim-pr is provided", async () => {
+    const scmPreflight = vi.fn().mockResolvedValue(undefined);
+    mockRegistryGet.mockImplementation((slot: string) => {
+      if (slot === "scm") return { name: "github", preflight: scmPreflight };
+      return null;
+    });
+
     const projects = (mockConfigRef.current as Record<string, unknown>).projects as Record<
       string,
       Record<string, unknown>
     >;
-    projects["my-app"].tracker = { plugin: "linear" };
     projects["my-app"].scm = { plugin: "github" };
 
-    mockExec
-      .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
-      .mockResolvedValueOnce({ stdout: "gh version 2.40", stderr: "" })
-      .mockRejectedValueOnce(new Error("not logged in"));
-
-    await expect(
-      program.parseAsync(["node", "test", "spawn", "--claim-pr", "123"]),
-    ).rejects.toThrow("process.exit(1)");
-
-    const errors = vi
-      .mocked(console.error)
-      .mock.calls.map((c) => String(c[0]))
-      .join("\n");
-    expect(errors).toContain("not authenticated");
-    expect(mockSessionManager.spawn).not.toHaveBeenCalled();
-  });
-
-  it("handles tracker+scm github preflight when claiming during spawn", async () => {
-    const fakeSession: Session = {
-      id: "app-1",
-      projectId: "my-app",
-      status: "spawning",
-      activity: null,
-      branch: null,
-      issueId: null,
-      pr: null,
-      workspacePath: "/tmp/wt",
-      runtimeHandle: { id: "hash-app-1", runtimeName: "tmux", data: {} },
-      agentInfo: null,
-      createdAt: new Date(),
-      lastActivityAt: new Date(),
-      metadata: {},
-    };
-
-    mockSessionManager.spawn.mockResolvedValue(fakeSession);
+    mockSessionManager.spawn.mockResolvedValue(makeFakeSession());
     mockSessionManager.claimPR.mockResolvedValue({
       sessionId: "app-1",
       projectId: "my-app",
@@ -808,86 +789,26 @@ describe("spawn pre-flight checks", () => {
       takenOverFrom: [],
     });
 
-    const projects = (mockConfigRef.current as Record<string, unknown>).projects as Record<
-      string,
-      Record<string, unknown>
-    >;
-    projects["my-app"].tracker = { plugin: "github" };
-    projects["my-app"].scm = { plugin: "github" };
-
-    mockExec
-      .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
-      .mockResolvedValueOnce({ stdout: "gh version 2.40", stderr: "" })
-      .mockResolvedValueOnce({ stdout: "Logged in", stderr: "" });
-
     await program.parseAsync(["node", "test", "spawn", "--claim-pr", "123"]);
 
-    expect(mockExec).toHaveBeenCalledWith("tmux", ["-V"]);
-    const ghCalls = mockExec.mock.calls.filter(([command]) => command === "gh");
-    expect(ghCalls).toHaveLength(2);
-    expect(mockSessionManager.spawn).toHaveBeenCalled();
-    expect(mockSessionManager.claimPR).toHaveBeenCalledWith("app-1", "123", {
-      assignOnGithub: undefined,
-    });
+    expect(scmPreflight).toHaveBeenCalledTimes(1);
+    const ctx = scmPreflight.mock.calls[0]?.[0] as { intent: { willClaimExistingPR: boolean } };
+    expect(ctx.intent.willClaimExistingPR).toBe(true);
   });
 
-  it("skips gh auth check when tracker is not github", async () => {
-    const fakeSession: Session = {
-      id: "app-1",
-      projectId: "my-app",
-      status: "spawning",
-      activity: null,
-      branch: null,
-      issueId: null,
-      pr: null,
-      workspacePath: "/tmp/wt",
-      runtimeHandle: { id: "hash-1", runtimeName: "tmux", data: {} },
-      agentInfo: null,
-      createdAt: new Date(),
-      lastActivityAt: new Date(),
-      metadata: {},
-    };
-    mockSessionManager.spawn.mockResolvedValue(fakeSession);
+  it("does not iterate the tracker slot when no tracker is configured", async () => {
+    const trackerPreflight = vi.fn().mockResolvedValue(undefined);
+    mockRegistryGet.mockImplementation((slot: string) => {
+      if (slot === "tracker") return { name: "github", preflight: trackerPreflight };
+      return null;
+    });
 
-    const projects = (mockConfigRef.current as Record<string, unknown>).projects as Record<
-      string,
-      Record<string, unknown>
-    >;
-    projects["my-app"].tracker = { plugin: "linear" };
-
-    // tmux check passes — gh should never be called
-    mockExec.mockResolvedValue({ stdout: "tmux 3.3a", stderr: "" });
+    // Project intentionally has no tracker configured.
+    mockSessionManager.spawn.mockResolvedValue(makeFakeSession());
 
     await program.parseAsync(["node", "test", "spawn"]);
 
-    // Should only call tmux -V, not gh
-    expect(mockExec).toHaveBeenCalledWith("tmux", ["-V"]);
-    expect(mockExec).not.toHaveBeenCalledWith("gh", expect.anything());
-    expect(mockSessionManager.spawn).toHaveBeenCalled();
-  });
-
-  it("distinguishes gh not installed from gh not authenticated", async () => {
-    const projects = (mockConfigRef.current as Record<string, unknown>).projects as Record<
-      string,
-      Record<string, unknown>
-    >;
-    projects["my-app"].tracker = { plugin: "github" };
-
-    // tmux passes, gh --version fails (not installed)
-    mockExec
-      .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" }) // tmux -V
-      .mockRejectedValueOnce(new Error("ENOENT")); // gh --version fails
-
-    await expect(program.parseAsync(["node", "test", "spawn"])).rejects.toThrow(
-      "process.exit(1)",
-    );
-
-    const errors = vi
-      .mocked(console.error)
-      .mock.calls.map((c) => String(c[0]))
-      .join("\n");
-    expect(errors).toContain("not installed");
-    expect(errors).not.toContain("not authenticated");
+    expect(trackerPreflight).not.toHaveBeenCalled();
   });
 });
 

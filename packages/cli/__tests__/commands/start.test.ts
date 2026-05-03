@@ -175,7 +175,6 @@ vi.mock("../../src/lib/preflight.js", () => ({
   preflight: {
     checkPort: vi.fn(),
     checkBuilt: vi.fn(),
-    checkTmux: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
