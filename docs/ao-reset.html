@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ao reset — implementation</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --bg-elev: #14181d;
+    --bg-code: #0f1318;
+    --border: #1f262e;
+    --text: #d6dde5;
+    --text-dim: #8a949e;
+    --accent: #7dd3fc;
+    --accent-2: #a78bfa;
+    --good: #4ade80;
+    --bad: #f87171;
+    --warn: #facc15;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+    padding: 0;
+  }
+  .wrap {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+  header { margin-bottom: 56px; }
+  .eyebrow {
+    font: 12px/1 var(--mono);
+    color: var(--text-dim);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 40px;
+    line-height: 1.1;
+    margin: 0 0 12px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  h1 code { font-size: 0.9em; color: var(--accent); background: transparent; padding: 0; }
+  .lede {
+    color: var(--text-dim);
+    font-size: 17px;
+    margin: 0;
+    max-width: 60ch;
+  }
+  h2 {
+    font-size: 22px;
+    margin: 56px 0 20px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-size: 16px;
+    margin: 32px 0 12px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  p { margin: 0 0 16px; }
+  ul, ol { margin: 0 0 16px; padding-left: 24px; }
+  li { margin-bottom: 6px; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    background: var(--bg-code);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--accent);
+  }
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+    margin: 16px 0 24px;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 24px;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:hover td { background: var(--bg-elev); }
+  .yes { color: var(--good); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+  .meh { color: var(--warn); font-weight: 600; }
+  .card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .bug {
+    border-left: 3px solid var(--bad);
+  }
+  .fix {
+    border-left: 3px solid var(--good);
+  }
+  .nit {
+    border-left: 3px solid var(--warn);
+  }
+  .pill {
+    display: inline-block;
+    font: 11px/1 var(--mono);
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .pill.bug { color: var(--bad); border-color: var(--bad); }
+  .pill.fix { color: var(--good); border-color: var(--good); }
+  .pill.nit { color: var(--warn); border-color: var(--warn); }
+  .commit {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .flow {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0 18px;
+    margin: 24px 0;
+  }
+  .step {
+    font: 13px/1 var(--mono);
+    color: var(--accent-2);
+    padding-top: 4px;
+    text-align: right;
+  }
+  .step-body {
+    border-left: 1px solid var(--border);
+    padding: 0 0 16px 18px;
+  }
+  .step-body strong { color: var(--text); }
+  .step-body code { font-size: 0.88em; }
+  .file-ref {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 0.88em;
+  }
+  hr { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 18px;
+    border-left: 3px solid var(--accent-2);
+    background: var(--bg-elev);
+    color: var(--text-dim);
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+  }
+  blockquote p:last-child { margin: 0; }
+  .footer {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .footer a { color: var(--accent); text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
+  .out-good { color: var(--good); }
+  .out-bad { color: var(--bad); }
+  .out-dim { color: var(--text-dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">PR #1380 · feat/ao-reset-command</div>
+  <h1><code>ao reset</code> — what it does, how it works</h1>
+  <p class="lede">
+    A maintenance command that wipes a project's local Agent Orchestrator
+    state — disk, registry, preferences, event log — refuses to do so
+    while the orchestrator is live, prints a loud red destructive warning
+    before the prompt, and never touches a persistence layer it doesn't
+    need to. Plus the bugs caught in review, including a silent file
+    side-effect on fresh machines, and how they were fixed.
+  </p>
+</header>
+
+<h2>What it does</h2>
+
+<p>
+  AO accumulates per-project state across <strong>four disjoint persistence layers</strong>.
+  Before <code>ao reset</code>, recovering a corrupted project meant manual
+  <code>rm -rf</code>, hand-editing <code>config.yaml</code>, and surgery on
+  <code>preferences.json</code>. Reset bundles that into one command.
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Layer</th>
+      <th>Path</th>
+      <th>What's there</th>
+      <th>Reset wipes?</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>V2 storage</td>
+      <td><code>~/.agent-orchestrator/projects/&lt;projectId&gt;/</code></td>
+      <td>Sessions, worktrees, feedback reports, orchestrator runtime state, agent JSONL logs</td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td>Global registry</td>
+      <td><code>~/.agent-orchestrator/config.yaml</code></td>
+      <td>The project's entry + its slot in <code>projectOrder</code></td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td>Portfolio prefs</td>
+      <td><code>~/.agent-orchestrator/portfolio/preferences.json</code></td>
+      <td>Pinned/enabled state, displayName, projectOrder, defaultProjectId</td>
+      <td class="yes">Yes</td>
+    </tr>
+    <tr>
+      <td>Activity events</td>
+      <td><code>~/.agent-orchestrator/activity-events.db</code></td>
+      <td>SQLite rows keyed by <code>project_id</code></td>
+      <td class="yes">Yes (per-project DELETE)</td>
+    </tr>
+    <tr>
+      <td>The repo on disk</td>
+      <td>Wherever it lives</td>
+      <td>Your code + <code>agent-orchestrator.yaml</code></td>
+      <td class="no">Never</td>
+    </tr>
+    <tr>
+      <td>Legacy V1 storage</td>
+      <td><code>~/.agent-orchestrator/&lt;storageKey&gt;/</code></td>
+      <td>Pre-V2 sessions/worktrees if migrated</td>
+      <td class="no">No (V2 migration's job)</td>
+    </tr>
+    <tr>
+      <td>Observability</td>
+      <td><code>~/.agent-orchestrator/&lt;hash&gt;-observability/</code></td>
+      <td>Process snapshots / audit logs (shared across projects of one config)</td>
+      <td class="no">No (shared key)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Surface</h2>
+
+<pre><code>ao reset                       # auto-detect from cwd (single-project or matching cwd)
+ao reset &lt;project&gt;             # explicit project id
+ao reset -p &lt;project&gt;          # same, via flag
+ao reset --all                 # every configured project
+ao reset --yes                 # skip the confirmation prompt</code></pre>
+
+<p>
+  Conflicting selectors are rejected up-front:
+  <code>--all</code> with a positional or <code>-p</code>; the positional and
+  <code>--project</code> with different values.
+</p>
+
+<h2>Execution flow</h2>
+
+<div class="flow">
+  <div class="step">0</div>
+  <div class="step-body">
+    <strong>Reject contradictory flags.</strong> Before doing any work, refuse
+    incompatible selector combinations with a non-zero exit.
+  </div>
+
+  <div class="step">1</div>
+  <div class="step-body">
+    <strong>Load config.</strong> <code>loadConfig()</code> returns
+    <code>LoadedConfig</code>; we resolve targets via explicit arg, single-project,
+    or <code>findProjectForDirectory(cwd)</code>.
+  </div>
+
+  <div class="step">2</div>
+  <div class="step-body">
+    <strong>Live-orchestrator guard.</strong> <code>getRunning()</code> reads
+    <code>running.json</code>. If <code>ao start</code> is serving any of the
+    targeted projects, refuse with a clear "stop first" hint and exit 1.
+    <em>Without this, the dashboard's 5-second poll would race with our
+    <code>rmSync</code> and corrupt in-memory orchestrator state.</em>
+  </div>
+
+  <div class="step">3</div>
+  <div class="step-body">
+    <strong>Preview.</strong> For each target, call
+    <code>collectDeletionTargets(projectId)</code> to compute
+    <code>{ baseDir, exists, items }</code>. Print a per-target listing of
+    what will be deleted, including whether the global registry / preferences
+    will also be touched. <span class="file-ref">— packages/cli/src/commands/reset.ts</span>
+  </div>
+
+  <div class="step">4</div>
+  <div class="step-body">
+    <strong>Confirm.</strong> Interactive callers
+    (<code>isHumanCaller()</code>) get a <code>promptConfirm</code> with
+    default <code>false</code>. Non-interactive callers <strong>must</strong>
+    pass <code>--yes</code>; otherwise exit 1.
+  </div>
+
+  <div class="step">5</div>
+  <div class="step-body">
+    <strong>Kill live sessions.</strong>
+    <code>SessionManager.list(projectId)</code> →
+    <code>SessionManager.kill(id)</code> per session.
+    <code>kill()</code> destroys the runtime (tmux/process/etc.), removes
+    the AO-managed worktree, deletes any agent-native session record,
+    and writes a terminated lifecycle entry. Per-session failures are
+    swallowed — a dead session shouldn't block the wipe.
+  </div>
+
+  <div class="step">6</div>
+  <div class="step-body">
+    <strong>Disk wipe.</strong> If <code>baseDir</code> exists,
+    <code>rmSync(baseDir, { recursive: true, force: true })</code>.
+    <code>ENOENT</code> is treated as success (preview→remove race).
+    Other errors are recorded as a per-target failure.
+  </div>
+
+  <div class="step">7</div>
+  <div class="step-body">
+    <strong>Global state cleanup (best-effort).</strong>
+    <code>unregisterProject(projectId)</code> removes the registry entry
+    and prunes <code>projectOrder</code>.
+    <code>updatePreferences()</code> drops the per-project slot, removes
+    the projectId from <code>preferences.projectOrder</code>, and clears
+    <code>defaultProjectId</code> if it pointed at the removed project.
+  </div>
+
+  <div class="step">8</div>
+  <div class="step-body">
+    <strong>Activity events (best-effort).</strong>
+    <code>deleteEventsForProject(projectId)</code> runs
+    <code>DELETE FROM activity_events WHERE project_id = ?</code> against
+    the shared SQLite log.
+  </div>
+
+  <div class="step">9</div>
+  <div class="step-body">
+    <strong>Honest exit.</strong> Aggregate per-target results. If any disk
+    wipe failed, print a summary and exit 1. Otherwise print
+    <code>✓ Reset complete.</code> and exit 0.
+  </div>
+</div>
+
+<h2>Safety guards</h2>
+
+<h3>Don't reset under a live <code>ao start</code></h3>
+<p>
+  The orchestrator polls the V2 storage dir on a 5-second cadence. Wiping
+  files under it produces <code>EBUSY</code> errors, half-killed sessions,
+  and inconsistent dashboard state. The fix is "stop first," not "make the
+  daemon resilient to the rug being pulled." Reset reads
+  <code>running.json</code> via <code>getRunning()</code>; if the targeted
+  project appears in <code>running.projects</code>, we refuse with a clear
+  hint and exit 1.
+</p>
+
+<h3>Confirmation in interactive contexts only</h3>
+<p>
+  <code>promptConfirm</code> only runs for <code>isHumanCaller()</code>.
+  Non-human callers (CI, agent spawn scripts) <strong>must</strong> pass
+  <code>--yes</code>. Symmetric with the rest of the CLI: machines don't
+  give consent implicitly to destructive operations.
+</p>
+
+<h3>Honest exit codes</h3>
+<p>
+  Per-target outcomes are tracked. Any disk wipe failure produces a
+  non-zero exit and a summary block. Shell wrappers (CI pipelines, outer
+  agents) treat exit code as the authoritative signal — printing
+  <code>✓ Reset complete</code> while exiting 0 after a silent failure
+  was the original bug this rework fixed.
+</p>
+
+<hr>
+
+<h2>Bugs caught in review &amp; how they were fixed</h2>
+
+<p>
+  Two passes of review (<code>/pr-review</code> and Copilot bot) found
+  issues that all keyed off the same kind of mistake: <strong>treating a
+  preview list as the source of truth for whether something exists</strong>.
+  Fixes were grouped into two pushes.
+</p>
+
+<div class="card bug">
+  <span class="pill bug">Bug · core</span>
+  <strong>Reset claimed success without removing the directory.</strong>
+  <p>
+    <span class="file-ref">packages/cli/src/commands/reset.ts:393</span> — disk
+    removal only ran when <code>items.length &gt; 0</code>, but
+    <code>items</code> came from a best-effort <code>readdirSync</code>. An
+    existing-but-empty or unreadable directory produced an empty
+    <code>items</code> array, so <code>rmSync</code> never ran — yet the
+    final line still printed <code>✓ Reset complete</code>.
+  </p>
+  <p>
+    <span class="file-ref">packages/cli/src/commands/reset.ts:315</span> — the
+    same proxy fed the "Nothing to reset" early-exit, so the same condition
+    could short-circuit the entire command.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · <span class="commit">a68e9ccb</span></span>
+  <strong>Track <code>baseDir</code> existence as a first-class flag.</strong>
+  <p>
+    <code>collectDeletionTargets</code> now returns
+    <code>{ baseDir, exists, items }</code>. Both the early-exit predicate
+    and the disk-removal branch key off <code>exists</code>:
+  </p>
+<pre><code><span class="out-dim">// before:</span>
+if (allTargets.every(t =&gt; t.items.length === 0 && !registered(t))) return;
+
+if (items.length &gt; 0) rmSync(baseDir, ...);
+
+<span class="out-good">// after:</span>
+if (allTargets.every(t =&gt; !t.exists && !registered(t))) return;
+
+if (exists) {
+  try { rmSync(baseDir, { recursive: true, force: true }); }
+  catch (err) {
+    if (err.code === "ENOENT") diskRemoved = true;  <span class="out-dim">// race: dir vanished</span>
+    else                       diskError   = err.message;
+  }
+}</code></pre>
+  <p>
+    Added a regression test (<em>"removes an empty baseDir when it exists
+    but has no listable contents"</em>) that creates an empty project dir
+    and verifies it gets removed and the output contains
+    <code>Reset complete</code> — not <code>No AO state found</code>.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · <span class="commit">ec7d8201</span></span>
+  <strong>Honest exit codes.</strong>
+  <p>
+    The original code printed <code>✓ Reset complete</code> regardless of
+    per-target outcome and exited 0. The fix tracks each target's disk
+    result, prints a failure summary listing each failed project, and
+    exits 1 on any failure.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · <span class="commit">ec7d8201</span></span>
+  <strong>Live-orchestrator guard.</strong>
+  <p>
+    Reset now refuses while <code>ao start</code> is serving the targeted
+    project. The guard reads <code>running.json</code> through
+    <code>getRunning()</code> and intersects <code>running.projects</code>
+    with the resolved targets. If any overlap, we print which projects are
+    affected, suggest <code>ao stop &lt;project&gt;</code>, and exit 1.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · <span class="commit">ec7d8201</span></span>
+  <strong>Extended scope to all four persistence layers.</strong>
+  <p>
+    The original PR only touched the V2 storage dir. After review, reset
+    also unregisters the project from the global config registry, prunes
+    its slot from portfolio preferences (including
+    <code>defaultProjectId</code> and <code>projectOrder</code>), and runs
+    a per-project <code>DELETE</code> against the activity-events SQLite
+    log. A new core helper <code>deleteEventsForProject(projectId)</code>
+    keeps the SQLite logic in <code>events-db.ts</code> rather than
+    leaking SQL into the CLI.
+  </p>
+</div>
+
+<div class="card nit">
+  <span class="pill nit">Polish · <span class="commit">a68e9ccb</span></span>
+  <strong>Runtime-agnostic wording.</strong>
+  <p>
+    The docstring and CLI doc said <em>"Live tmux sessions are killed
+    first"</em>, but <code>SessionManager.kill</code> is runtime-agnostic
+    — it works for tmux, the process runtime, and any future runtime
+    plugin. Reworded to "Live sessions are killed first via the configured
+    runtime."
+  </p>
+</div>
+
+<div class="card nit">
+  <span class="pill nit">Polish · <span class="commit">a68e9ccb</span></span>
+  <strong>Don't claim atomicity that doesn't exist.</strong>
+  <p>
+    The implementation doc said reset cleans state "atomically per
+    project." It doesn't — global config, prefs, and SQLite cleanup are
+    intentionally best-effort. Disk wipe can succeed independently of
+    global-state cleanup. Replaced with an explicit non-transactional
+    disclaimer; the exit code reflects only the disk-wipe outcome.
+  </p>
+</div>
+
+<div class="card bug">
+  <span class="pill bug">Bug · ux</span>
+  <strong>Reset created an empty <code>preferences.json</code> as a side effect.</strong>
+  <p>
+    Caught by the user on a fresh machine: <code>~/.agent-orchestrator/portfolio/preferences.json</code>
+    didn't exist before reset, but did after. The original
+    <code>pruneGlobalState</code> called <code>updatePreferences()</code>,
+    which always writes back regardless of whether the updater modified
+    anything. On a machine that's never customized the portfolio, this
+    spawned a stub <code>{ "version": 1 }</code> file out of nowhere.
+  </p>
+  <p>
+    <strong>Reporting was also imprecise:</strong> the post-removal line
+    said <em>"Unregistered from global config + portfolio preferences"</em>
+    even when prefs.json didn't exist. And the preview's
+    <em>"+ global registry entry + portfolio preferences"</em> hint was
+    only printed when the project was in the global registry, missing the
+    case of a project that's prefs-referenced but not registered.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · latest</span>
+  <strong>Per-layer accuracy + no spurious writes.</strong>
+  <p>
+    Replaced <code>updatePreferences</code> with explicit
+    <code>loadPreferences</code> + change-detection +
+    <code>savePreferences</code>:
+  </p>
+<pre><code><span class="out-good">// Only write if the prefs file actually references this project.</span>
+<span class="out-good">// Otherwise we'd materialize an empty preferences.json on a fresh machine.</span>
+const prefs = loadPreferences();
+if (preferencesReferenceProject(prefs, projectId)) {
+  <span class="out-dim">// remove the matching keys...</span>
+  savePreferences(prefs);
+  prefsChanged = true;
+}
+return { unregistered, prefsChanged };</code></pre>
+  <p>
+    Each layer reports independently. Preview now shows
+    <em>"+ entry in global config registry"</em> and
+    <em>"+ slot in portfolio preferences"</em> on separate lines, only when
+    each is actually present. Post-removal output uses
+    <em>"Unregistered from global config registry"</em> and
+    <em>"Pruned slot from portfolio preferences"</em> as separate lines —
+    each printed only when that layer actually changed.
+  </p>
+  <p>
+    A new <code>readGlobalReferences(projectId)</code> helper does the
+    pre-execution check so the preview is always accurate. Two new tests
+    pin the behavior: <em>"does NOT create preferences.json when no prefs
+    reference the project"</em> and <em>"does NOT touch preferences.json
+    when prefs exist but reference other projects"</em>.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · latest</span>
+  <strong>Loud red destructive-action warnings.</strong>
+  <p>
+    Before the preview, reset now prints a bold red banner:
+  </p>
+<pre><code><span class="out-bad">  ⚠  WARNING — DESTRUCTIVE OPERATION</span>
+<span class="out-bad">  This permanently deletes project state. It cannot be undone.</span>
+<span class="out-bad">  Make sure you have pushed any work in active worktrees first.</span></code></pre>
+  <p>
+    After the per-target list, a "boundaries" notice tells the user what
+    reset doesn't touch — the most common source of confusion:
+  </p>
+<pre><code><span class="out-bad">  NOT touched by reset:</span>
+<span class="out-bad">    • The repo on disk and your agent-orchestrator.yaml</span>
+<span class="out-bad">    • Legacy V1 storage (~/.agent-orchestrator/&lt;storageKey&gt;/)</span>
+<span class="out-bad">    • The shared observability dir (~/.agent-orchestrator/&lt;hash&gt;-observability/)</span></code></pre>
+  <p>
+    The confirmation prompt itself is now bold red. The
+    live-orchestrator-detected refusal got an upgraded banner too:
+    <em>"⚠  CANNOT RESET — `ao start` IS LIVE"</em> with the affected
+    projects listed underneath.
+  </p>
+</div>
+
+<div class="card fix">
+  <span class="pill fix">Fix · <span class="commit">ec7d8201</span></span>
+  <strong>Test isolation via <code>vi.mock("node:os")</code>.</strong>
+  <p>
+    The original test suite tried to redirect <code>~/.agent-orchestrator/</code>
+    by setting <code>process.env.HOME</code>. <strong>This silently didn't
+    work under Vitest</strong> — libuv's <code>uv_os_homedir</code> didn't
+    honor the per-test HOME mutation, so tests were touching the user's
+    real <code>~/.agent-orchestrator/projects/</code>. The pollution went
+    unnoticed because reset's own <code>rmSync</code> cleaned up after
+    itself.
+  </p>
+  <p>
+    Replaced with a proper <code>vi.mock("node:os", ...)</code> that
+    redirects <code>homedir()</code> to a per-test tmpdir. Now isolation
+    is real, not accidental.
+  </p>
+</div>
+
+<h2>Output contract</h2>
+
+<h3>Successful path</h3>
+<pre><code>The following project state will be deleted:
+
+  <span class="out-dim">my-app:</span>
+    <span class="out-dim">/Users/&lt;you&gt;/.agent-orchestrator/projects/my-app/</span>
+      sessions <span class="out-dim">(24.3 KB)</span>
+      worktrees <span class="out-dim">(412.1 MB)</span>
+    <span class="out-dim">+ global registry entry + portfolio preferences</span>
+
+? This will permanently delete the above project state. Continue? (y/N)
+
+Resetting <span class="out-dim">my-app</span>...
+  Killed 2 live sessions
+  <span class="out-good">✓ Removed</span> /Users/&lt;you&gt;/.agent-orchestrator/projects/my-app
+  Unregistered from global config + portfolio preferences
+  Removed 17 activity events
+
+<span class="out-good">✓ Reset complete.</span></code></pre>
+
+<h3>Failure path</h3>
+<pre><code>Resetting <span class="out-dim">my-app</span>...
+  <span class="out-bad">✗ Failed to remove</span> /Users/&lt;you&gt;/.agent-orchestrator/projects/my-app: EBUSY: resource busy
+
+<span class="out-bad">✗ Reset finished with 1 failure:</span>
+  - my-app: EBUSY: resource busy</code></pre>
+<p>Exit code: <code>0</code> on full success, <code>1</code> on any failure or refusal.</p>
+
+<h2>Test coverage</h2>
+
+<p>
+  22 tests covering: empty-baseDir regression, per-confirmation removal,
+  preview output, no-state path, kill-then-wipe ordering, confirmation
+  denial, <code>--all</code>, unknown project, <code>-p</code> flag,
+  kill-failure tolerance, non-TTY refusal, live-<code>ao start</code>
+  guard (refuse + proceed branches), <code>--all</code> + project-arg
+  rejection, conflicting positional/<code>-p</code> rejection,
+  <code>rmSync</code> failure exit code, registry+prefs pruning, activity
+  events pruning, <code>--all</code> on empty config,
+  <strong>no-prefs-write when file is missing</strong>,
+  <strong>no-prefs-write when prefs reference other projects</strong>, and
+  <strong>destructive-warning banner is rendered</strong>.
+</p>
+
+<blockquote>
+  <p>
+    The biggest find of the review wasn't a bug in production code — it was
+    that the tests had been quietly running against the user's real
+    <code>~/.agent-orchestrator/</code> for the entire life of the PR. The
+    visible failure (chmod ENOENT on a path that "should" have existed)
+    was the symptom that exposed it.
+  </p>
+</blockquote>
+
+<div class="footer">
+  <p>
+    <strong>Source:</strong>
+    <code>packages/cli/src/commands/reset.ts</code> ·
+    <code>packages/cli/__tests__/commands/reset.test.ts</code> ·
+    <code>packages/core/src/events-db.ts</code>
+  </p>
+  <p>
+    <strong>PR:</strong>
+    <a href="https://github.com/ComposioHQ/agent-orchestrator/pull/1380">ComposioHQ/agent-orchestrator#1380</a>
+  </p>
+  <p>
+    <strong>Companion docs:</strong>
+    <code>docs/ao-reset.md</code> (markdown) ·
+    <code>docs/CLI.md</code> (CLI reference)
+  </p>
+</div>
+
+</div>
+</body>
+</html>

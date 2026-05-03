@@ -141,6 +141,26 @@ export function isActivityEventsFtsEnabled(): boolean {
 }
 
 /**
+ * Delete every activity_events row whose project_id matches.
+ * `available` distinguishes "DB couldn't be opened" (skip silently) from
+ * "DB worked, deleted N rows". Callers that want to warn on a locked /
+ * missing DB need that distinction — `removed === 0` alone is ambiguous.
+ */
+export function deleteEventsForProject(projectId: string): {
+  available: boolean;
+  removed: number;
+} {
+  const db = getDb();
+  if (!db) return { available: false, removed: 0 };
+  // better-sqlite3's RunResult guarantees `changes: number`; the local
+  // BetterSqlite3Database shim returns `unknown`, so we narrow.
+  const result = db.prepare(`DELETE FROM activity_events WHERE project_id = ?`).run(projectId) as {
+    changes: number;
+  };
+  return { available: true, removed: result.changes };
+}
+
+/**
  * Get the lazily-initialized DB connection.
  * Returns null if better-sqlite3 failed to load or init — callers should treat null as no-op.
  */
