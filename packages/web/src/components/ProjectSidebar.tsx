@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import type { ProjectInfo } from "@/lib/project-name";
 import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "@/lib/types";
-import { isOrchestratorSession, isTerminalSession } from "@aoagents/ao-core/types";
+import { isOrchestratorSession } from "@aoagents/ao-core/types";
 import { getSessionTitle, humanizeBranch } from "@/lib/format";
 import { usePopoverClamp } from "@/hooks/usePopoverClamp";
 import { projectDashboardPath, projectSessionPath } from "@/lib/routes";
@@ -14,9 +14,22 @@ import { ThemeToggle } from "./ThemeToggle";
 import { AddProjectModal } from "./AddProjectModal";
 import { ProjectSettingsModal } from "./ProjectSettingsModal";
 
+/** Minimal shape needed to render an orchestrator link in the sidebar. */
+export interface ProjectSidebarOrchestrator {
+  id: string;
+  projectId: string;
+}
+
 interface ProjectSidebarProps {
   projects: ProjectInfo[];
   sessions: DashboardSession[] | null;
+  /**
+   * Per-project orchestrator link. Sourced upstream from `/api/sessions`
+   * (the `orchestrators` field), which already applies the canonical
+   * "prefer live, fall back to terminal" selection. Not derivable from
+   * `sessions`: the sessions endpoint strips orchestrators out.
+   */
+  orchestrators?: ProjectSidebarOrchestrator[];
   activeProjectId: string | undefined;
   activeSessionId: string | undefined;
   loading?: boolean;
@@ -77,6 +90,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 function ProjectSidebarInner({
   projects,
   sessions,
+  orchestrators,
   activeProjectId,
   activeSessionId,
   loading = false,
@@ -183,6 +197,11 @@ function ProjectSidebarInner({
   const allPrefixes = useMemo(
     () => visibleProjects.map((p) => p.sessionPrefix ?? p.id),
     [visibleProjects],
+  );
+
+  const orchestratorByProject = useMemo(
+    () => new Map((orchestrators ?? []).map((o) => [o.projectId, o])),
+    [orchestrators],
   );
 
   const sessionsByProject = useMemo(() => {
@@ -389,30 +408,7 @@ function ProjectSidebarInner({
           const visibleSessions = workerSessions;
           const hasActiveSessions = visibleSessions.length > 0;
 
-          const projectPrefix = prefixByProject.get(project.id);
-          // Mirror the worker page's "Orchestrator" button selection
-          // (selectPreferredOrchestratorId in /api/sessions): match by
-          // metadata.role / canonical id / numbered worktree id, prefer the
-          // most recent live orchestrator, fall back to the most recent
-          // terminal one if none are live.
-          const projectOrchestrators = sessions
-            ?.filter(
-              (s) =>
-                s.projectId === project.id &&
-                isOrchestratorSession(s, projectPrefix, allPrefixes),
-            )
-            .sort(
-              (a, b) =>
-                new Date(b.lastActivityAt).getTime() -
-                new Date(a.lastActivityAt).getTime(),
-            );
-          const orchestratorSession =
-            projectOrchestrators?.find(
-              (s) =>
-                !isTerminalSession({ status: s.status, activity: s.activity }),
-            ) ??
-            projectOrchestrators?.[0] ??
-            null;
+          const orchestratorLink = orchestratorByProject.get(project.id) ?? null;
 
           return (
             <div key={project.id} className="project-sidebar__project">
@@ -514,9 +510,9 @@ function ProjectSidebarInner({
                 ) : null}
 
                 {/* Orchestrator button */}
-                {!isDegraded && orchestratorSession && (
+                {!isDegraded && orchestratorLink && (
                   <Link
-                    href={projectSessionPath(project.id, orchestratorSession.id)}
+                    href={projectSessionPath(project.id, orchestratorLink.id)}
                     onClick={(e) => {
                       e.stopPropagation();
                       onMobileClose?.();
@@ -579,17 +575,14 @@ function ProjectSidebarInner({
                       role="menu"
                       aria-label={`${project.name} actions`}
                     >
-                      {orchestratorSession ? (
+                      {orchestratorLink ? (
                         <button
                           type="button"
                           className="project-sidebar__proj-menu-item"
                           role="menuitem"
                           onClick={() => {
                             setProjectMenuOpenId(null);
-                            navigate(
-                              projectSessionPath(project.id, orchestratorSession.id),
-                              orchestratorSession,
-                            );
+                            navigate(projectSessionPath(project.id, orchestratorLink.id));
                           }}
                         >
                           Open orchestrator

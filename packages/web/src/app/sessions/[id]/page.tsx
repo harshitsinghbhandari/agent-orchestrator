@@ -5,7 +5,10 @@ import { useParams, usePathname, useRouter } from "next/navigation";
 import { ACTIVITY_STATE, SESSION_STATUS, isOrchestratorSession } from "@aoagents/ao-core/types";
 import { SessionDetail } from "@/components/SessionDetail";
 import { ErrorDisplay } from "@/components/ErrorDisplay";
-import { ProjectSidebar } from "@/components/ProjectSidebar";
+import {
+  ProjectSidebar,
+  type ProjectSidebarOrchestrator,
+} from "@/components/ProjectSidebar";
 import { useMediaQuery, MOBILE_BREAKPOINT } from "@/hooks/useMediaQuery";
 import { type DashboardSession, type ActivityState, getAttentionLevel } from "@/lib/types";
 import { activityIcon } from "@/lib/activity-icons";
@@ -170,6 +173,7 @@ function SessionPageShell({
   projects,
   projectsLoading,
   sidebarSessions,
+  sidebarOrchestrators,
   sidebarLoading,
   sidebarError,
   onRetrySidebar,
@@ -180,6 +184,7 @@ function SessionPageShell({
   projects: ProjectInfo[];
   projectsLoading: boolean;
   sidebarSessions: DashboardSession[] | null;
+  sidebarOrchestrators?: ProjectSidebarOrchestrator[];
   sidebarLoading: boolean;
   sidebarError: boolean;
   onRetrySidebar: () => void;
@@ -251,6 +256,7 @@ function SessionPageShell({
             <ProjectSidebar
               projects={projects}
               sessions={sidebarSessions}
+              orchestrators={sidebarOrchestrators}
               loading={sidebarLoading}
               error={sidebarError}
               onRetry={onRetrySidebar}
@@ -380,6 +386,9 @@ export default function SessionPage() {
   const [sidebarSessions, setSidebarSessions] = useState<DashboardSession[] | null>(
     () => cachedSidebarSessions,
   );
+  const [sidebarOrchestrators, setSidebarOrchestrators] = useState<
+    ProjectSidebarOrchestrator[] | undefined
+  >(undefined);
   const [loading, setLoading] = useState(cachedSession === null);
   const [routeError, setRouteError] = useState<Error | null>(null);
   const [sessionMissing, setSessionMissing] = useState(false);
@@ -596,18 +605,19 @@ export default function SessionPage() {
     const controller = new AbortController();
     sidebarFetchControllerRef.current = controller;
     try {
-      const body = await fetchJsonWithTimeout<{ sessions?: DashboardSession[] } | null>(
-        "/api/sessions?fresh=true",
-        {
-          signal: controller.signal,
-          timeoutMs: PROJECT_SIDEBAR_FETCH_TIMEOUT_MS,
-          timeoutMessage: `Sidebar sessions request timed out after ${PROJECT_SIDEBAR_FETCH_TIMEOUT_MS}ms`,
-        },
-      );
+      const body = await fetchJsonWithTimeout<{
+        sessions?: DashboardSession[];
+        orchestrators?: ProjectSidebarOrchestrator[];
+      } | null>("/api/sessions?fresh=true", {
+        signal: controller.signal,
+        timeoutMs: PROJECT_SIDEBAR_FETCH_TIMEOUT_MS,
+        timeoutMessage: `Sidebar sessions request timed out after ${PROJECT_SIDEBAR_FETCH_TIMEOUT_MS}ms`,
+      });
       const restSessions = body?.sessions ?? [];
       const nextSessions =
         applyMuxSessionPatches(restSessions, pendingMuxSessionsRef.current ?? []) ?? restSessions;
       cachedSidebarSessions = nextSessions;
+      setSidebarOrchestrators(body?.orchestrators);
       setSidebarError(false);
       setSidebarSessions((current) =>
         areSidebarSessionsEqual(current, nextSessions) ? current : nextSessions,
@@ -724,6 +734,7 @@ export default function SessionPage() {
         projects={projects}
         projectsLoading={projectsLoading}
         sidebarSessions={sidebarSessions}
+        sidebarOrchestrators={sidebarOrchestrators}
         sidebarLoading={sidebarSessions === null}
         sidebarError={sidebarError}
         onRetrySidebar={fetchSidebarSessions}
@@ -754,6 +765,7 @@ export default function SessionPage() {
         projects={projects}
         projectsLoading={projectsLoading}
         sidebarSessions={sidebarSessions}
+        sidebarOrchestrators={sidebarOrchestrators}
         sidebarLoading={sidebarSessions === null}
         sidebarError={sidebarError}
         onRetrySidebar={fetchSidebarSessions}
@@ -782,6 +794,7 @@ export default function SessionPage() {
         projects={projects}
         projectsLoading={projectsLoading}
         sidebarSessions={sidebarSessions}
+        sidebarOrchestrators={sidebarOrchestrators}
         sidebarLoading={sidebarSessions === null}
         sidebarError={sidebarError}
         onRetrySidebar={fetchSidebarSessions}
@@ -819,6 +832,7 @@ export default function SessionPage() {
         projects={projects}
         projectsLoading={projectsLoading}
         sidebarSessions={sidebarSessions}
+        sidebarOrchestrators={sidebarOrchestrators}
         sidebarLoading={sidebarSessions === null}
         sidebarError={sidebarError}
         onRetrySidebar={fetchSidebarSessions}
@@ -849,6 +863,7 @@ export default function SessionPage() {
       projectOrchestratorId={projectOrchestratorId}
       projects={projects}
       sidebarSessions={sidebarSessions}
+        sidebarOrchestrators={sidebarOrchestrators}
       sidebarLoading={sidebarSessions === null}
       sidebarError={sidebarError}
       onRetrySidebar={fetchSidebarSessions}
