@@ -409,6 +409,13 @@ export interface Runtime {
 
   /** Get info needed to attach a human to this session (for Terminal plugin) */
   getAttachInfo?(handle: RuntimeHandle): Promise<AttachInfo>;
+
+  /**
+   * Optional: validate that this runtime's prerequisites are present before
+   * it is exercised by `ao spawn`. Throw with an actionable, human-readable
+   * message; the CLI catches and formats the error.
+   */
+  preflight?(context: PreflightContext): Promise<void>;
 }
 
 export interface RuntimeCreateConfig {
@@ -540,6 +547,12 @@ export interface Agent {
    * `getActivityState` already reads richer data from the agent's own session files.
    */
   recordActivity?(session: Session, terminalOutput: string): Promise<void>;
+
+  /**
+   * Optional: validate that this agent's prerequisites are present before
+   * it is exercised by `ao spawn`. Throw with an actionable error message.
+   */
+  preflight?(context: PreflightContext): Promise<void>;
 }
 
 export interface AgentLaunchConfig {
@@ -640,6 +653,12 @@ export interface Workspace {
 
   /** Optional: restore a workspace (e.g. recreate a worktree for an existing branch) */
   restore?(config: WorkspaceCreateConfig, workspacePath: string): Promise<WorkspaceInfo>;
+
+  /**
+   * Optional: validate that this workspace's prerequisites (e.g. git in PATH,
+   * write access to the worktree root) are present before `ao spawn`.
+   */
+  preflight?(context: PreflightContext): Promise<void>;
 }
 
 export interface WorkspaceCreateConfig {
@@ -694,6 +713,13 @@ export interface Tracker {
 
   /** Optional: create a new issue */
   createIssue?(input: CreateIssueInput, project: ProjectConfig): Promise<Issue>;
+
+  /**
+   * Optional: validate that this tracker's prerequisites (auth tokens, CLI
+   * tools) are present before `ao spawn` runs. Throw with an actionable
+   * error message.
+   */
+  preflight?(context: PreflightContext): Promise<void>;
 }
 
 export interface Issue {
@@ -834,6 +860,14 @@ export interface SCM {
    * @returns Map keyed by "${owner}/${repo}#${number}" containing enrichment data
    */
   enrichSessionsPRBatch?(prs: PRInfo[], observer?: BatchObserver, repos?: string[]): Promise<Map<string, PREnrichmentData>>;
+
+  /**
+   * Optional: validate that this SCM's prerequisites (auth, CLI tools) are
+   * present before `ao spawn` runs. Plugins should consult
+   * `context.intent.willClaimExistingPR` and skip PR-write prereqs when the
+   * spawn won't exercise them.
+   */
+  preflight?(context: PreflightContext): Promise<void>;
 }
 
 /**
@@ -1662,6 +1696,32 @@ export interface PluginModule<T = unknown> {
 
   /** Optional: detect whether this plugin's runtime/binary is available on the system. */
   detect?(): boolean;
+}
+
+/**
+ * Context passed to a plugin's `preflight()` method.
+ *
+ * Describes the **intent** of the operation (what it will do), not the CLI
+ * flags that triggered it. Plugins should never know about specific flag
+ * names — translate flags into intent at the CLI boundary so adding a new
+ * flag doesn't ripple into every plugin that cares about a related operation.
+ */
+export interface PreflightContext {
+  /** The project the operation runs against. */
+  project: ProjectConfig;
+
+  /** What the operation will do. Plugins decide whether their prereqs apply. */
+  intent: {
+    /** Whether the spawn is for a worker session or the orchestrator. */
+    role: "worker" | "orchestrator";
+
+    /**
+     * Whether the operation will exercise SCM PR-write paths
+     * (e.g. claiming an existing PR for the new session). When false, an SCM
+     * plugin's preflight can skip PR-write prereqs.
+     */
+    willClaimExistingPR: boolean;
+  };
 }
 
 // =============================================================================
