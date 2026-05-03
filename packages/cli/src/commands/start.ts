@@ -35,9 +35,7 @@ import {
   registerProjectInGlobalConfig,
   detectScmPlatform,
   sanitizeProjectId,
-  getAoBaseDir,
   getGlobalConfigPath,
-  inventoryHashDirs,
   type OrchestratorConfig,
   type LocalProjectConfig,
   type ProjectConfig,
@@ -74,7 +72,6 @@ import {
   readLastStop,
   clearLastStop,
 } from "../lib/running-state.js";
-import { preventIdleSleep } from "../lib/prevent-sleep.js";
 import { startProjectSupervisor, stopProjectSupervisor } from "../lib/project-supervisor.js";
 import { isHumanCaller } from "../lib/caller-context.js";
 import { detectEnvironment } from "../lib/detect-env.js";
@@ -92,9 +89,16 @@ import {
   formatProjectTypeForDisplay,
 } from "../lib/project-detection.js";
 import { formatCommandError } from "../lib/cli-errors.js";
-import { detectOpenClawInstallation } from "../lib/openclaw-probe.js";
-import { applyOpenClawCredentials } from "../lib/credential-resolver.js";
 import { findProjectForDirectory } from "../lib/project-resolution.js";
+import {
+  type InstallAttempt,
+  canPromptForInstall,
+  genericInstallHints,
+  askYesNo,
+  runInteractiveCommand,
+  tryInstallWithAttempts,
+} from "../lib/install-helpers.js";
+import { ensureGit, runtimePreflight } from "../lib/startup-preflight.js";
 
 import { DEFAULT_PORT } from "../lib/constants.js";
 import { projectSessionUrl } from "../lib/routes.js";
@@ -278,30 +282,6 @@ async function resolveProjectByRepo(
   return await resolveProject(config);
 }
 
-interface InstallAttempt {
-  cmd: string;
-  args: string[];
-  label: string;
-}
-
-function canPromptForInstall(): boolean {
-  return isHumanCaller() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
-}
-
-function genericInstallHints(command: string): string[] {
-  switch (command) {
-    case "node":
-    case "npm":
-      return ["Install Node.js/npm from https://nodejs.org/"];
-    case "pnpm":
-      return ["corepack enable && corepack prepare pnpm@latest --activate", "npm install -g pnpm"];
-    case "pipx":
-      return ["python3 -m pip install --user pipx", "python3 -m pipx ensurepath"];
-    default:
-      return [];
-  }
-}
-
 /**
  * Prompt the user to optionally switch orchestrator/worker agents at startup.
  * Shows only agents detected on the current system (reuses detectAvailableAgents).
@@ -329,47 +309,6 @@ async function promptAgentSelection(): Promise<{
   }
 }
 
-async function askYesNo(
-  question: string,
-  defaultYes = true,
-  nonInteractiveDefault = defaultYes,
-): Promise<boolean> {
-  if (!canPromptForInstall()) return nonInteractiveDefault;
-  return await promptConfirm(question, defaultYes);
-}
-
-function gitInstallAttempts(): InstallAttempt[] {
-  if (process.platform === "darwin") {
-    return [{ cmd: "brew", args: ["install", "git"], label: "brew install git" }];
-  }
-  if (process.platform === "linux") {
-    return [
-      {
-        cmd: "sudo",
-        args: ["apt-get", "install", "-y", "git"],
-        label: "sudo apt-get install -y git",
-      },
-      { cmd: "sudo", args: ["dnf", "install", "-y", "git"], label: "sudo dnf install -y git" },
-    ];
-  }
-  if (process.platform === "win32") {
-    return [
-      {
-        cmd: "winget",
-        args: ["install", "--id", "Git.Git", "-e", "--source", "winget"],
-        label: "winget install --id Git.Git -e --source winget",
-      },
-    ];
-  }
-  return [];
-}
-
-function gitInstallHints(): string[] {
-  if (process.platform === "darwin") return ["brew install git"];
-  if (process.platform === "win32") return ["winget install --id Git.Git -e --source winget"];
-  return ["sudo apt install git      # Debian/Ubuntu", "sudo dnf install git      # Fedora/RHEL"];
-}
-
 function ghInstallAttempts(): InstallAttempt[] {
   if (process.platform === "darwin") {
     return [{ cmd: "brew", args: ["install", "gh"], label: "brew install gh" }];
@@ -394,87 +333,6 @@ function ghInstallAttempts(): InstallAttempt[] {
     ];
   }
   return [];
-}
-
-async function runInteractiveCommand(
-  cmd: string,
-  args: string[],
-  options?: {
-    cwd?: string;
-    env?: Record<string, string>;
-    action?: string;
-    installHints?: string[];
-  },
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      cwd: options?.cwd,
-      env: options?.env ? { ...process.env, ...options.env } : process.env,
-      stdio: "inherit",
-    });
-    child.once("error", (err) => {
-      reject(
-        formatCommandError(err, {
-          cmd,
-          args,
-          action: options?.action ?? "run an interactive command",
-          installHints: options?.installHints ?? genericInstallHints(cmd),
-        }),
-      );
-    });
-    child.once("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`Command failed (${code ?? "unknown"}): ${cmd} ${args.join(" ")}`));
-    });
-  });
-}
-
-async function tryInstallWithAttempts(
-  attempts: InstallAttempt[],
-  verify: () => Promise<boolean>,
-): Promise<boolean> {
-  for (const attempt of attempts) {
-    try {
-      console.log(chalk.dim(`  Running: ${attempt.label}`));
-      await runInteractiveCommand(attempt.cmd, attempt.args, {
-        action: "run an interactive installer",
-        installHints: genericInstallHints(attempt.cmd),
-      });
-      if (await verify()) return true;
-    } catch {
-      // Try next installer
-    }
-  }
-  return verify();
-}
-
-async function ensureGit(context: string): Promise<void> {
-  const hasGit = (await execSilent("git", ["--version"])) !== null;
-  if (hasGit) return;
-
-  console.log(chalk.yellow(`⚠ Git is required for ${context}.`));
-  const shouldInstall = await askYesNo("Install Git now?", true, false);
-  if (shouldInstall) {
-    const installed = await tryInstallWithAttempts(
-      gitInstallAttempts(),
-      async () => (await execSilent("git", ["--version"])) !== null,
-    );
-    if (installed) {
-      console.log(chalk.green("  ✓ Git installed successfully"));
-      return;
-    }
-  }
-
-  console.error(chalk.red("\n✗ Git is required but is not installed.\n"));
-  console.log(chalk.bold("  Install Git manually, then re-run ao start:\n"));
-  for (const hint of gitInstallHints()) {
-    console.log(chalk.cyan(`    ${hint}`));
-  }
-  console.log();
-  process.exit(1);
 }
 
 interface AgentInstallOption {
@@ -1077,122 +935,6 @@ async function startDashboard(
 /* c8 ignore stop */
 
 /**
- * Ensure tmux is available — interactive install with user consent if missing.
- * Called from runStartup() so ALL ao start
- * paths (normal, URL, retry with existing config) are covered.
- */
-function tmuxInstallAttempts(): InstallAttempt[] {
-  if (process.platform === "darwin") {
-    return [{ cmd: "brew", args: ["install", "tmux"], label: "brew install tmux" }];
-  }
-  if (process.platform === "linux") {
-    return [
-      {
-        cmd: "sudo",
-        args: ["apt-get", "install", "-y", "tmux"],
-        label: "sudo apt-get install -y tmux",
-      },
-      { cmd: "sudo", args: ["dnf", "install", "-y", "tmux"], label: "sudo dnf install -y tmux" },
-    ];
-  }
-  return [];
-}
-
-function tmuxInstallHints(): string[] {
-  if (process.platform === "darwin") return ["brew install tmux"];
-  if (process.platform === "win32")
-    return ["# Install WSL first, then inside WSL:", "sudo apt install tmux"];
-  return ["sudo apt install tmux      # Debian/Ubuntu", "sudo dnf install tmux      # Fedora/RHEL"];
-}
-
-async function ensureTmux(): Promise<void> {
-  const hasTmux = (await execSilent("tmux", ["-V"])) !== null;
-  if (hasTmux) return;
-
-  console.log(chalk.yellow('⚠ tmux is required for runtime "tmux".'));
-  const shouldInstall = await askYesNo("Install tmux now?", true, false);
-  if (shouldInstall) {
-    const installed = await tryInstallWithAttempts(
-      tmuxInstallAttempts(),
-      async () => (await execSilent("tmux", ["-V"])) !== null,
-    );
-    if (installed) {
-      console.log(chalk.green("  ✓ tmux installed successfully"));
-      return;
-    }
-  }
-
-  console.error(chalk.red("\n✗ tmux is required but is not installed.\n"));
-  console.log(chalk.bold("  Install tmux manually, then re-run ao start:\n"));
-  for (const hint of tmuxInstallHints()) {
-    console.log(chalk.cyan(`    ${hint}`));
-  }
-  console.log();
-  process.exit(1);
-}
-
-function warnAboutLegacyStorage(): void {
-  try {
-    const hashDirs = inventoryHashDirs(getAoBaseDir(), getGlobalConfigPath());
-    if (hashDirs.length === 0) return;
-
-    const sessionCount = hashDirs.reduce((sum, d) => {
-      if (d.empty) return sum;
-      return sum + 1;
-    }, 0);
-    if (sessionCount === 0) return;
-
-    console.log(
-      chalk.yellow(
-        `\n  ⚠ Found ${hashDirs.length} legacy storage director${hashDirs.length === 1 ? "y" : "ies"} that need${hashDirs.length === 1 ? "s" : ""} migration.\n` +
-          `    Sessions stored in the old format won't appear until migrated.\n` +
-          `    Run ${chalk.bold("ao migrate-storage")} to upgrade (use ${chalk.bold("--dry-run")} to preview).\n`,
-      ),
-    );
-  } catch {
-    // Non-critical — don't block startup
-  }
-}
-
-async function warnAboutOpenClawStatus(config: OrchestratorConfig): Promise<void> {
-  const openclawConfig = config.notifiers?.["openclaw"];
-  const openclawConfigured =
-    openclawConfig !== null &&
-    openclawConfig !== undefined &&
-    typeof openclawConfig === "object" &&
-    openclawConfig.plugin === "openclaw";
-  const configuredUrl =
-    openclawConfigured && typeof openclawConfig.url === "string" ? openclawConfig.url : undefined;
-
-  try {
-    const installation = configuredUrl
-      ? await detectOpenClawInstallation(configuredUrl)
-      : await detectOpenClawInstallation();
-
-    if (openclawConfigured) {
-      if (installation.state !== "running") {
-        console.log(
-          chalk.yellow(
-            `⚠ OpenClaw is configured but the gateway is not reachable at ${installation.gatewayUrl}. Notifications may fail until it is running.`,
-          ),
-        );
-      }
-      return;
-    }
-
-    if (installation.state === "running") {
-      console.log(
-        chalk.yellow(
-          `⚠ OpenClaw is running at ${installation.gatewayUrl} but AO is not configured to use it. Run \`ao setup openclaw\` if you want OpenClaw notifications.`,
-        ),
-      );
-    }
-  } catch {
-    // OpenClaw probing is advisory for `ao start`; never block startup on it.
-  }
-}
-
-/**
  * Shared startup logic: launch dashboard + orchestrator session, print summary.
  * Used by both normal and URL-based start flows.
  */
@@ -1202,40 +944,7 @@ async function runStartup(
   project: ProjectConfig,
   opts?: { dashboard?: boolean; orchestrator?: boolean; rebuild?: boolean; dev?: boolean },
 ): Promise<number> {
-  // Ensure tmux is available before doing anything — covers all entry paths
-  // (normal start, URL start, retry with existing config)
-  const runtime = config.defaults?.runtime ?? "tmux";
-  if (runtime === "tmux") {
-    await ensureTmux();
-  }
-  warnAboutLegacyStorage();
-  await warnAboutOpenClawStatus(config);
-
-  // Prevent macOS idle sleep while AO is running (if enabled in config)
-  // Uses caffeinate -i -w <pid> to hold an assertion tied to this process lifetime.
-  // No-op on non-macOS platforms.
-  if (config.power?.preventIdleSleep !== false) {
-    const sleepHandle = preventIdleSleep();
-    if (sleepHandle) {
-      console.log(chalk.dim("  Preventing macOS idle sleep while AO is running"));
-    }
-  }
-
-  // Only inject OpenClaw credentials when the project actually uses OpenClaw.
-  // This avoids exposing API keys to projects/plugins that don't need them.
-  const openclawNotifier = config.notifiers?.["openclaw"];
-  const hasOpenClaw =
-    openclawNotifier !== null &&
-    openclawNotifier !== undefined &&
-    typeof openclawNotifier === "object" &&
-    openclawNotifier.plugin === "openclaw";
-  if (hasOpenClaw) {
-    const injectedKeys = applyOpenClawCredentials();
-    if (injectedKeys.length > 0) {
-      const names = injectedKeys.map((k) => k.key).join(", ");
-      console.log(chalk.dim(`  Resolved from OpenClaw config: ${names}`));
-    }
-  }
+  await runtimePreflight(config);
 
   const shouldStartLifecycle = opts?.dashboard !== false || opts?.orchestrator !== false;
   let port = config.port ?? DEFAULT_PORT;
