@@ -184,6 +184,18 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function reportProgress(
+  onProgress: ((text: string) => void) | undefined,
+  text: string,
+): void {
+  if (!onProgress) return;
+  try {
+    onProgress(text);
+  } catch {
+    // Progress reporting must never break spawn.
+  }
+}
+
 /** Get the next session number for a project. */
 function getNextSessionNumber(existingSessions: string[], prefix: string): number {
   let max = 0;
@@ -1426,6 +1438,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           try {
             // Wait for agent to start and be ready for input
             // Use exponential backoff: 3s, 6s, 9s between attempts
+            reportProgress(
+              spawnConfig.onProgress,
+              `Delivering prompt (attempt ${attempt}/${maxRetries})`,
+            );
             await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
             await plugins.runtime.sendMessage(handle, agentLaunchConfig.prompt);
             promptDelivered = true;

@@ -368,6 +368,13 @@ export interface SessionSpawnConfig {
   agent?: string;
   /** Override the OpenCode subagent for this session (e.g. "sisyphus", "oracle") */
   subagent?: string;
+  /**
+   * Optional progress reporter. Called with short status strings during
+   * long-running phases (e.g. post-launch prompt delivery, which can wait
+   * up to ~18s across retries). The CLI uses this to update its spinner
+   * text. Errors thrown by the callback are swallowed.
+   */
+  onProgress?: (text: string) => void;
 }
 
 /** Config for creating an orchestrator session */

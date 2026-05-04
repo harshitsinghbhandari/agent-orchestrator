@@ -221,6 +221,9 @@ async function spawnSession(
       issueId,
       agent,
       prompt: sanitizedPrompt,
+      onProgress: (text) => {
+        spinner.text = text;
+      },
     });
 
     let claimedPrUrl: string | null = null;

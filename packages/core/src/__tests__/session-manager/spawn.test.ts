@@ -1258,6 +1258,75 @@ describe("spawn", () => {
     vi.useRealTimers();
   }, 30_000);
 
+  it("invokes onProgress before each post-launch prompt-delivery attempt", async () => {
+    vi.useFakeTimers();
+    const failingRuntime: Runtime = {
+      ...mockRuntime,
+      sendMessage: vi.fn().mockRejectedValue(new Error("tmux send failed")),
+    };
+    const postLaunchAgent = {
+      ...mockAgent,
+      promptDelivery: "post-launch" as const,
+    };
+    const registryWithFailingSend: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return failingRuntime;
+        if (slot === "agent") return postLaunchAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const onProgress = vi.fn();
+    const sm = createSessionManager({ config, registry: registryWithFailingSend });
+    const spawnPromise = sm.spawn({
+      projectId: "my-app",
+      prompt: "Fix the bug",
+      onProgress,
+    });
+    await vi.advanceTimersByTimeAsync(18_000);
+    await spawnPromise;
+
+    expect(onProgress).toHaveBeenCalledWith("Delivering prompt (attempt 1/3)");
+    expect(onProgress).toHaveBeenCalledWith("Delivering prompt (attempt 2/3)");
+    expect(onProgress).toHaveBeenCalledWith("Delivering prompt (attempt 3/3)");
+    vi.useRealTimers();
+  }, 30_000);
+
+  it("does not throw when onProgress callback throws", async () => {
+    vi.useFakeTimers();
+    const postLaunchAgent = {
+      ...mockAgent,
+      promptDelivery: "post-launch" as const,
+    };
+    const registryWithPostLaunch: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return postLaunchAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const onProgress = vi.fn().mockImplementation(() => {
+      throw new Error("spinner blew up");
+    });
+    const sm = createSessionManager({ config, registry: registryWithPostLaunch });
+    const spawnPromise = sm.spawn({
+      projectId: "my-app",
+      prompt: "Fix the bug",
+      onProgress,
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    const session = await spawnPromise;
+
+    expect(session.id).toBe("app-1");
+    expect(mockRuntime.sendMessage).toHaveBeenCalled();
+    vi.useRealTimers();
+  }, 20_000);
+
   it("waits before sending post-launch prompt", async () => {
     vi.useFakeTimers();
     const postLaunchAgent = {
