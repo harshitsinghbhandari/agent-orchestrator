@@ -14,7 +14,7 @@
  * would generate.
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cwd } from "node:process";
 import {
@@ -128,6 +128,20 @@ export interface ResolveOptions {
  */
 function isLocalPath(arg: string): boolean {
   return arg.startsWith("/") || arg.startsWith("~") || arg.startsWith("./") || arg.startsWith("..");
+}
+
+/**
+ * Resolve symlink chains for canonical path comparison. Falls back to the
+ * input on any filesystem error so the caller can compare unreadable paths
+ * literally rather than crash. Mirrors the canonical-compare pattern used
+ * elsewhere in the CLI for global-registry dedup.
+ */
+function canonicalize(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /**
@@ -338,9 +352,16 @@ async function fromPath(arg: string, deps: ResolveDeps, opts: ResolveOptions): P
   if (opts.targetGlobalRegistry) {
     const globalPath = getGlobalConfigPath();
     const globalConfig = existsSync(globalPath) ? loadConfig(globalPath) : loadConfig();
-    const existingEntry = Object.entries(globalConfig.projects).find(
-      ([, p]) => resolve(p.path.replace(/^~/, process.env["HOME"] || "")) === resolvedPath,
-    );
+    // Canonicalize via realpathSync so symlinked paths (e.g. macOS
+    // /tmp -> /private/tmp) match an entry stored under the resolved
+    // target. Without this, `ao start /tmp/foo` against a daemon whose
+    // global config has /private/tmp/foo would fail to dedupe and
+    // double-register the project.
+    const canonicalTarget = canonicalize(resolvedPath);
+    const existingEntry = Object.entries(globalConfig.projects).find(([, p]) => {
+      const expanded = resolve(p.path.replace(/^~/, process.env["HOME"] || ""));
+      return canonicalize(expanded) === canonicalTarget;
+    });
     if (existingEntry) {
       return {
         config: globalConfig,
@@ -352,10 +373,16 @@ async function fromPath(arg: string, deps: ResolveDeps, opts: ResolveOptions): P
     }
     const addedId = await deps.addProjectToConfig(globalConfig, resolvedPath);
     const reloaded = loadConfig(globalConfig.configPath);
+    const project = reloaded.projects[addedId];
+    if (!project) {
+      throw new Error(
+        `Failed to register "${addedId}" in the global config — aborting.`,
+      );
+    }
     return {
       config: reloaded,
       projectId: addedId,
-      project: reloaded.projects[addedId],
+      project,
       source: "path",
       justCreated: true,
     };
