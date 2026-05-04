@@ -22,16 +22,11 @@ import {
   generateSessionPrefix,
   getOrchestratorSessionId,
   isRepoUrl,
-  parseRepoUrl,
-  resolveCloneTarget,
-  isRepoAlreadyCloned,
   configToYaml,
   isCanonicalGlobalConfigPath,
   isTerminalSession,
   loadLocalProjectConfigDetailed,
   registerProjectInGlobalConfig,
-  detectScmPlatform,
-  sanitizeProjectId,
   getGlobalConfigPath,
   type OrchestratorConfig,
   type LocalProjectConfig,
@@ -60,15 +55,16 @@ import {
 import { preflight } from "../lib/preflight.js";
 import {
   register,
-  unregister,
   isAlreadyRunning,
   getRunning,
-  waitForExit,
+  unregister,
   acquireStartupLock,
   writeLastStop,
   readLastStop,
   clearLastStop,
+  type RunningState,
 } from "../lib/running-state.js";
+import { attachToDaemon, killExistingDaemon } from "../lib/daemon.js";
 import { startProjectSupervisor } from "../lib/project-supervisor.js";
 import { isHumanCaller } from "../lib/caller-context.js";
 import { detectEnvironment } from "../lib/detect-env.js";
@@ -426,31 +422,6 @@ async function promptInstallAgentRuntime(available: DetectedAgent[]): Promise<De
  *   3. Final fallback to `git clone --depth 1` with HTTPS URL — works for
  *      public repos without any auth setup.
  */
-/**
- * Detect the actual default branch of a freshly cloned repo.
- * Prefers `origin/HEAD` (the remote's default), falling back to the
- * current local branch. Returns null for empty repos (no commits).
- */
-async function detectClonedRepoDefaultBranch(repoPath: string): Promise<string | null> {
-  // origin/HEAD points at "refs/remotes/origin/<defaultBranch>" — the most
-  // accurate source for what the remote considers default.
-  const symref = await git(["symbolic-ref", "refs/remotes/origin/HEAD"], repoPath);
-  if (symref) {
-    const match = symref.trim().match(/^refs\/remotes\/origin\/(.+)$/);
-    if (match) return match[1];
-  }
-
-  // Some clones don't set origin/HEAD (e.g. older git or `--depth 1` edge
-  // cases). Fall back to the current local branch.
-  const head = await git(["symbolic-ref", "--short", "HEAD"], repoPath);
-  if (head) {
-    const trimmed = head.trim();
-    if (trimmed.length > 0) return trimmed;
-  }
-
-  return null;
-}
-
 async function cloneRepo(parsed: ParsedRepoUrl, targetDir: string, cwd: string): Promise<void> {
   // 1. Try gh repo clone (handles GitHub auth automatically)
   if (parsed.host === "github.com") {
@@ -1230,6 +1201,79 @@ async function stopDashboard(port: number): Promise<void> {
   console.log(chalk.yellow("Could not stop dashboard (may not be running)"));
 }
 
+/**
+ * Spawn an orchestrator session against an already-running daemon, invalidate
+ * the dashboard's project cache, and surface enough context for the user to
+ * find the new session.
+ *
+ * Replaces the per-arg-shape inline blocks (§3.2 URL/path-while-running and
+ * §3.3 project-id-while-running) that previously each carried their own
+ * messaging + reload + browser-open code. The two flows differ only in which
+ * line of "registered" vs "reattached" they print, driven by `justCreated`.
+ */
+async function attachAndSpawnOrchestrator(opts: {
+  running: RunningState;
+  config: OrchestratorConfig;
+  projectId: string;
+  project: ProjectConfig;
+  /** True when this CLI invocation registered the project for the first
+   *  time (URL clone or path register). Drives the "registered" vs
+   *  "reattached" message line. */
+  justCreated: boolean;
+}): Promise<void> {
+  const { running, config, projectId, project, justCreated } = opts;
+  const daemon = attachToDaemon(running);
+
+  console.log(
+    chalk.dim(
+      justCreated
+        ? "\n  Spawning orchestrator session...\n"
+        : "\n  Attaching to running AO instance...\n",
+    ),
+  );
+
+  const sm = await getSessionManager(config);
+  const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
+  const session = await sm.ensureOrchestrator({ projectId, systemPrompt });
+
+  if (justCreated) {
+    console.log(chalk.green(`\n✓ Project "${projectId}" registered in the global config.`));
+    console.log(chalk.green(`✓ Orchestrator session ready: ${session.id}`));
+  } else {
+    console.log(chalk.green(`✓ Orchestrator session ready: ${session.id}`));
+    console.log(
+      chalk.green(`✓ Project "${projectId}" reattached to running daemon (PID ${daemon.pid}).`),
+    );
+  }
+
+  const notifyResult = await daemon.notifyProjectChange();
+  if (notifyResult.ok) {
+    console.log(chalk.dim(`  Dashboard config reloaded.`));
+  } else {
+    console.log(
+      chalk.yellow(
+        `  ⚠ ${notifyResult.reason}. Refresh the page if the project doesn't show up.`,
+      ),
+    );
+  }
+
+  if (!running.projects.includes(projectId)) {
+    console.log(
+      chalk.yellow(
+        `\nℹ Lifecycle polling for "${projectId}" will attach within ~60s\n` +
+          `  because the running ao start process now supervises active global projects.\n`,
+      ),
+    );
+  }
+
+  if (isHumanCaller()) {
+    console.log(chalk.dim(`  Opening dashboard: http://localhost:${daemon.port}\n`));
+    openUrl(`http://localhost:${daemon.port}`);
+  } else {
+    console.log(`Dashboard: http://localhost:${daemon.port}`);
+  }
+}
+
 // =============================================================================
 // COMMAND REGISTRATION
 // =============================================================================
@@ -1271,331 +1315,40 @@ export function registerStart(program: Command): void {
           let project: ProjectConfig;
 
           // ── Already-running detection (before any config mutation) ──
-          const running = await isAlreadyRunning();
+          let running = await isAlreadyRunning();
           let startNewOrchestrator = false;
-          // If the parent is alive but the requested project is not in its
-          // running.json projects list, it was stopped via `ao stop <project>`.
-          // Skip the "already running" menu and go straight to orchestrator
-          // creation — the dashboard and lifecycle worker are still up.
           const isProjectId =
             projectArg && !isRepoUrl(projectArg) && !isLocalPath(projectArg);
           const projectArgIsUrlOrPath =
             !!projectArg && (isRepoUrl(projectArg) || isLocalPath(projectArg));
 
-          // URL/path arg while AO is already running: handle it here instead
-          // of letting the "already running" gate ignore the arg. Falling
-          // through to runStartup would spawn a duplicate dashboard, so we
-          // register against the GLOBAL config (so the dashboard sees it),
-          // spawn the orchestrator session, and open the existing dashboard.
-          //
-          // Non-TTY callers (scripts/agents) keep the old "AO is already
-          // running" message and do NOT mutate config behind the user's back.
-          if (running && projectArgIsUrlOrPath && isHumanCaller()) {
-            const requestedProjectArg = projectArg;
-            if (!requestedProjectArg) {
-              throw new Error("Expected project path or URL argument");
-            }
-            // Always register against the GLOBAL config — never the cwd's
-            // local config. Cross-project visibility lives in the global
-            // registry, and addProjectToConfig only routes to global when
-            // its config arg has the canonical global path.
-            const globalConfigPath = getGlobalConfigPath();
-            const globalCfg = existsSync(globalConfigPath)
-              ? loadConfig(globalConfigPath)
-              : loadConfig();
-
-            let existingId: string | null = null;
-            if (isRepoUrl(requestedProjectArg)) {
-              try {
-                const parsed = parseRepoUrl(requestedProjectArg);
-                for (const [id, p] of Object.entries(globalCfg.projects)) {
-                  if (p.repo === parsed.ownerRepo) {
-                    existingId = id;
-                    break;
-                  }
-                }
-              } catch {
-                /* unparseable URL — fall through to clone */
-              }
-            } else {
-              const resolvedPath = resolve(
-                requestedProjectArg.replace(/^~/, process.env["HOME"] || ""),
-              );
-              let canonicalTarget: string;
-              try {
-                canonicalTarget = realpathSync(resolvedPath);
-              } catch {
-                canonicalTarget = resolvedPath;
-              }
-              for (const [id, p] of Object.entries(globalCfg.projects)) {
-                try {
-                  const expanded = resolve(p.path.replace(/^~/, process.env["HOME"] || ""));
-                  if (realpathSync(expanded) === canonicalTarget) {
-                    existingId = id;
-                    break;
-                  }
-                } catch {
-                  /* skip unreadable */
-                }
-              }
-            }
-
-            // Already registered AND covered by the running daemon — open
-            // the dashboard, no menu, no re-clone.
-            if (existingId && running.projects.includes(existingId)) {
-              console.log(chalk.cyan(`\nℹ AO is already running.`));
-              console.log(`  Dashboard: ${chalk.cyan(`http://localhost:${running.port}`)}`);
-              console.log(`  Project "${existingId}" is already registered and running.\n`);
-              openUrl(`http://localhost:${running.port}`);
+          // ── Already-running dispatch ──
+          // Whether we attach to a live daemon or spawn a new one, the
+          // project-resolution + orchestrator-spawn steps are the same.
+          // The fork lives in two places: this menu (human caller, no
+          // arg) where the user can quit/open/add-cwd/restart/spawn-new,
+          // and the post-resolve branch below that calls either
+          // attachAndSpawnOrchestrator (running) or runStartup (not).
+          if (running) {
+            if (!isHumanCaller() && !isProjectId) {
+              // Non-human caller, no arg or URL/path arg: print info and
+              // exit. Project-id args fall through to attach+spawn so
+              // automation can `ao start <id>` against a live daemon.
+              console.log(`AO is already running.`);
+              console.log(`Dashboard: http://localhost:${running.port}`);
+              console.log(`PID: ${running.pid}`);
+              console.log(`Projects: ${running.projects.join(", ")}`);
+              console.log(`To restart: ao stop && ao start`);
               unlockStartup();
               process.exit(0);
             }
 
-            // Register (or resolve existing) against the global config and
-            // spawn the orchestrator session.
-            let resolvedId: string;
-            if (existingId) {
-              resolvedId = existingId;
-            } else if (isRepoUrl(requestedProjectArg)) {
-              // Clone + register inline. We DO NOT call handleUrlStart —
-              // that helper writes a legacy wrapped (`projects:`) local
-              // config that the new resolver rejects, requiring a repair
-              // pass after the fact. Instead, we write a flat local config
-              // here so the global registry + repo can be loaded cleanly
-              // on the very first read.
-              const parsed = parseRepoUrl(requestedProjectArg);
-              console.log(
-                chalk.bold.cyan(`\n  Cloning ${parsed.ownerRepo} (${parsed.host})\n`),
-              );
-              await ensureGit("repository cloning");
-
-              const cwdDir = cwd();
-              const targetDir = resolveCloneTarget(parsed, cwdDir);
-              if (isRepoAlreadyCloned(targetDir, parsed.cloneUrl)) {
-                console.log(chalk.green(`  Reusing existing clone at ${targetDir}`));
-              } else {
-                try {
-                  await cloneRepo(parsed, targetDir, cwdDir);
-                  console.log(chalk.green(`  Cloned to ${targetDir}`));
-                } catch (err) {
-                  throw new Error(
-                    `Failed to clone ${parsed.ownerRepo}: ${err instanceof Error ? err.message : String(err)}`,
-                    { cause: err },
-                  );
-                }
-              }
-
-              // Detect the default branch from the cloned repo. If the
-              // repo is empty (no commits / no refs), this returns null —
-              // we cannot create a worktree, so fail early with a clear
-              // message rather than letting ensureOrchestrator throw a
-              // confusing "Unable to resolve base ref" error.
-              const detectedBranch = await detectClonedRepoDefaultBranch(targetDir);
-              if (!detectedBranch) {
-                throw new Error(
-                  `Repository "${parsed.ownerRepo}" appears to be empty (no commits or refs).\n` +
-                    `  AO needs at least one commit on the default branch to spawn an orchestrator.\n` +
-                    `  Push an initial commit, then re-run \`ao start ${requestedProjectArg}\`.`,
-                );
-              }
-
-              const platform = detectScmPlatform(parsed.host);
-              const requestedProjectId = sanitizeProjectId(parsed.repo);
-              // The global registry only persists identity (path, repo,
-              // defaultBranch, sessionPrefix). Plugin choices like scm /
-              // tracker live in the local flat config below.
-              resolvedId = registerProjectInGlobalConfig(
-                requestedProjectId,
-                parsed.repo,
-                targetDir,
-                {
-                  repo: parsed.ownerRepo,
-                  defaultBranch: detectedBranch,
-                },
-                globalConfigPath,
-              );
-
-              // Write a flat local config (behavior only, no `projects:`
-              // wrapper, no identity fields). Identity lives in the global
-              // registry; this file holds plugin choices for the project.
-              // Don't clobber a config that ships in the repo — if the
-              // upstream already commits agent-orchestrator.yaml, leave it
-              // for the user to reconcile.
-              const hasCommittedConfig =
-                existsSync(resolve(targetDir, "agent-orchestrator.yaml")) ||
-                existsSync(resolve(targetDir, "agent-orchestrator.yml"));
-              if (!hasCommittedConfig) {
-                writeLocalProjectConfig(targetDir, {
-                  scm: { plugin: platform !== "unknown" ? platform : "github" },
-                  tracker: {
-                    plugin: platform === "gitlab" ? "gitlab" : "github",
-                  },
-                });
-              }
-            } else {
-              const resolvedPath = resolve(
-                requestedProjectArg.replace(/^~/, process.env["HOME"] || ""),
-              );
-              resolvedId = await addProjectToConfig(globalCfg, resolvedPath);
-            }
-
-            // Reload the global config so the new project is visible to
-            // the session manager.
-            const refreshedConfig = loadConfig(globalConfigPath);
-            const newProject = refreshedConfig.projects[resolvedId];
-            if (!newProject) {
-              throw new Error(
-                `Failed to register "${resolvedId}" in the global config — aborting.`,
-              );
-            }
-
-            console.log(chalk.dim("\n  Spawning orchestrator session...\n"));
-            const sm = await getSessionManager(refreshedConfig);
-            const systemPrompt = generateOrchestratorPrompt({
-              config: refreshedConfig,
-              projectId: resolvedId,
-              project: newProject,
-            });
-            const session = await sm.ensureOrchestrator({
-              projectId: resolvedId,
-              systemPrompt,
-            });
-
-            console.log(
-              chalk.green(`\n✓ Project "${resolvedId}" registered in the global config.`),
-            );
-            console.log(chalk.green(`✓ Orchestrator session ready: ${session.id}`));
-
-            // Invalidate the dashboard's cached services so the new project
-            // appears immediately in the routes (otherwise /projects/<id> 404s
-            // until the daemon is restarted).
-            try {
-              const reloadRes = await fetch(
-                `http://localhost:${running.port}/api/projects/reload`,
-                { method: "POST" },
-              );
-              if (reloadRes.ok) {
-                console.log(chalk.dim(`  Dashboard config reloaded.`));
-              } else {
-                console.log(
-                  chalk.yellow(
-                    `  ⚠ Dashboard reload returned ${reloadRes.status}. Refresh the page if the new project doesn't show up.`,
-                  ),
-                );
-              }
-            } catch {
-              console.log(
-                chalk.yellow(
-                  `  ⚠ Could not reach dashboard to reload config. Refresh the page if the new project doesn't show up.`,
-                ),
-              );
-            }
-
-            console.log(
-              chalk.yellow(
-                `\nℹ Lifecycle polling for "${resolvedId}" will attach within ~60s\n` +
-                  `  because the running ao start process now supervises active global projects.\n`,
-              ),
-            );
-            console.log(chalk.dim(`  Opening dashboard: http://localhost:${running.port}\n`));
-            openUrl(`http://localhost:${running.port}`);
-            unlockStartup();
-            process.exit(0);
-          }
-
-          // Project-ID arg + daemon running. Always attach to the existing
-          // daemon: spawn the orchestrator session via the live session
-          // manager and reload the dashboard. We do NOT condition on
-          // `running.projects.includes(projectArg)` — that field is the
-          // truth about whether lifecycle polling is attached, but the
-          // user still expects `ao start <project>` to (re)create the
-          // orchestrator session whether polling is attached or not.
-          //
-          // Critically: do NOT fall through to runStartup() — that would
-          // start a second dashboard on a new port and clobber running.json,
-          // leaving the original parent process orphaned.
-          if (running && isProjectId) {
-            const globalConfigPath = getGlobalConfigPath();
-            const cfg = existsSync(globalConfigPath)
-              ? loadConfig(globalConfigPath)
-              : loadConfig();
-            const project = cfg.projects[projectArg];
-            if (!project) {
-              throw new Error(
-                `Project "${projectArg}" is not registered in the global config (${globalConfigPath}).\n` +
-                  `  Run \`ao project add\` or \`ao start <path|url>\` first.`,
-              );
-            }
-
-            console.log(chalk.dim("\n  Attaching to running AO instance...\n"));
-            const sm = await getSessionManager(cfg);
-            const systemPrompt = generateOrchestratorPrompt({
-              config: cfg,
-              projectId: projectArg,
-              project,
-            });
-            const session = await sm.ensureOrchestrator({
-              projectId: projectArg,
-              systemPrompt,
-            });
-
-            console.log(
-              chalk.green(`✓ Orchestrator session ready: ${session.id}`),
-            );
-            console.log(
-              chalk.green(`✓ Project "${projectArg}" reattached to running daemon (PID ${running.pid}).`),
-            );
-
-            // Invalidate the dashboard's cached services so the project page
-            // works immediately on the existing dashboard.
-            try {
-              const reloadRes = await fetch(
-                `http://localhost:${running.port}/api/projects/reload`,
-                { method: "POST" },
-              );
-              if (reloadRes.ok) {
-                console.log(chalk.dim(`  Dashboard config reloaded.`));
-              } else {
-                console.log(
-                  chalk.yellow(
-                    `  ⚠ Dashboard reload returned ${reloadRes.status}. Refresh the page if the project doesn't show up.`,
-                  ),
-                );
-              }
-            } catch {
-              console.log(
-                chalk.yellow(
-                  `  ⚠ Could not reach dashboard to reload config. Refresh the page if the project doesn't show up.`,
-                ),
-              );
-            }
-
-            if (!running.projects.includes(projectArg)) {
-              console.log(
-                chalk.yellow(
-                  `\nℹ Lifecycle polling for "${projectArg}" will attach within ~60s\n` +
-                    `  because the running ao start process now supervises active global projects.\n`,
-                ),
-              );
-            }
-            if (isHumanCaller()) {
-              console.log(chalk.dim(`  Opening dashboard: http://localhost:${running.port}\n`));
-              openUrl(`http://localhost:${running.port}`);
-            } else {
-              console.log(`Dashboard: http://localhost:${running.port}`);
-            }
-            unlockStartup();
-            process.exit(0);
-          }
-
-          if (running) {
-            if (isHumanCaller()) {
+            if (isHumanCaller() && !projectArg) {
               console.log(chalk.cyan(`\nℹ AO is already running.`));
               console.log(`  Dashboard: ${chalk.cyan(`http://localhost:${running.port}`)}`);
               console.log(`  PID: ${running.pid} | Up since: ${running.startedAt}`);
               console.log(`  Projects: ${running.projects.join(", ")}\n`);
 
-              // Check if cwd is an unregistered git repo — offer to add it
               const cwdResolved = resolve(cwd());
               const cwdIsRegistered = running.projects.some((p) => {
                 try {
@@ -1610,7 +1363,7 @@ export function registerStart(program: Command): void {
                 }
               });
               const cwdHasGit = existsSync(resolve(cwdResolved, ".git"));
-              const _addCwdOption =
+              const addCwdOption =
                 !cwdIsRegistered && cwdHasGit
                   ? [
                       {
@@ -1630,7 +1383,7 @@ export function registerStart(program: Command): void {
                     label: "Start new orchestrator",
                     hint: "Add a new session for this project",
                   },
-                  ..._addCwdOption,
+                  ...addCwdOption,
                   {
                     value: "restart",
                     label: "Restart everything",
@@ -1642,11 +1395,19 @@ export function registerStart(program: Command): void {
               );
 
               if (choice === "open") {
-                const url = `http://localhost:${running.port}`;
-                openUrl(url);
+                openUrl(`http://localhost:${running.port}`);
+                unlockStartup();
+                process.exit(0);
+              } else if (choice === "quit") {
                 unlockStartup();
                 process.exit(0);
               } else if (choice === "add") {
+                // Add cwd against whatever config the cwd walks up to find.
+                // This intentionally does not register globally or spawn an
+                // orchestrator session — the user explicitly chose "add"
+                // (not "new"), so we just persist the project and open the
+                // dashboard. The next `ao start <id>` (or "new" choice)
+                // will spawn an orchestrator.
                 const loadedCfg = loadConfig();
                 const addedId = await addProjectToConfig(loadedCfg, cwdResolved);
                 console.log(
@@ -1658,56 +1419,34 @@ export function registerStart(program: Command): void {
                 unlockStartup();
                 process.exit(0);
               } else if (choice === "new") {
-                // Defer config mutation until after config is loaded below
+                // Spawn a new orchestrator entry against this daemon.
+                // Resolve happens below; the suffix mutation runs after.
                 startNewOrchestrator = true;
               } else if (choice === "restart") {
-                try {
-                  process.kill(running.pid, "SIGTERM");
-                } catch {
-                  /* already dead */
-                }
-                if (!(await waitForExit(running.pid, 5000))) {
-                  console.log(chalk.yellow("  Process didn't exit cleanly, sending SIGKILL..."));
-                  try {
-                    process.kill(running.pid, "SIGKILL");
-                  } catch {
-                    /* already dead */
-                  }
-                  if (!(await waitForExit(running.pid, 3000))) {
-                    throw new Error(
-                      `Failed to stop AO process (PID ${running.pid}). Check permissions or stop it manually.`,
-                    );
-                  }
-                }
-                await unregister();
+                await killExistingDaemon(running);
                 console.log(chalk.yellow("\n  Stopped existing instance. Restarting...\n"));
-                // Continue to startup below
-              } else {
-                unlockStartup();
-                process.exit(0);
+                running = null;
               }
-            } else {
-              // Agent/non-TTY caller — print info and exit
-              console.log(`AO is already running.`);
-              console.log(`Dashboard: http://localhost:${running.port}`);
-              console.log(`PID: ${running.pid}`);
-              console.log(`Projects: ${running.projects.join(", ")}`);
-              console.log(`To restart: ao stop && ao start`);
-              unlockStartup();
-              process.exit(0);
             }
           }
 
           // Unified project resolution. See lib/resolve-project.ts for the
-          // per-arg-shape dispatch (URL / path / project id / cwd).
-          const resolvedProject = await resolveOrCreateProject(projectArg, {
-            addProjectToConfig,
-            autoCreateConfig,
-            resolveProject,
-            resolveProjectByRepo,
-            registerFlatConfig,
-            cloneRepo,
-          });
+          // per-arg-shape dispatch (URL / path / project id / cwd). When
+          // a daemon is up, the resolver registers URL clones / new paths
+          // in the global config — the daemon's source of truth — so they
+          // are visible to the project supervisor without a daemon restart.
+          const resolvedProject = await resolveOrCreateProject(
+            projectArg,
+            {
+              addProjectToConfig,
+              autoCreateConfig,
+              resolveProject,
+              resolveProjectByRepo,
+              registerFlatConfig,
+              cloneRepo,
+            },
+            { targetGlobalRegistry: !!running },
+          );
           ({ config, projectId, project } = resolvedProject);
 
           // ── Handle "new orchestrator" choice (deferred from already-running check) ──
@@ -1744,7 +1483,39 @@ export function registerStart(program: Command): void {
             project = config.projects[newId];
           }
 
-          // ── Agent selection prompt (Step 10)──
+          // ── Daemon-running short-circuit and attach pipeline ──
+          if (running) {
+            // URL/path arg whose project is already registered and supervised
+            // by the running daemon: don't even spawn an orchestrator session,
+            // just open the dashboard. Mirrors the original §3.2 fast path.
+            if (
+              projectArgIsUrlOrPath &&
+              !resolvedProject.justCreated &&
+              running.projects.includes(projectId)
+            ) {
+              console.log(chalk.cyan(`\nℹ AO is already running.`));
+              console.log(`  Dashboard: ${chalk.cyan(`http://localhost:${running.port}`)}`);
+              console.log(`  Project "${projectId}" is already registered and running.\n`);
+              openUrl(`http://localhost:${running.port}`);
+              unlockStartup();
+              process.exit(0);
+            }
+
+            await attachAndSpawnOrchestrator({
+              running,
+              config,
+              projectId,
+              project,
+              justCreated: resolvedProject.justCreated,
+            });
+            unlockStartup();
+            process.exit(0);
+          }
+
+          // ── Agent selection prompt (not-running spawn path only) ──
+          // Skipped when attaching to an existing daemon: changing agents
+          // mid-flight against a live orchestrator session would not take
+          // effect until the next restart anyway.
           const agentOverride = opts?.interactive ? await promptAgentSelection() : null;
           if (agentOverride) {
             const { orchestratorAgent, workerAgent } = agentOverride;

@@ -7,11 +7,11 @@
  * still has its own helper here, but they all return the same shape so
  * the caller can treat them uniformly.
  *
- * Today this module only covers the not-running path. The "AO is already
- * running" branch in start.ts still has its own inline clone+register
- * block (it intentionally avoids handleUrlStart's legacy wrapped local
- * config); migrating it to use resolveOrCreateProject is a follow-up
- * before PR B.2's daemon unification.
+ * The same resolver runs whether or not a daemon is already up. When a
+ * daemon is running, callers pass `targetGlobalRegistry: true` so URL/path
+ * args register the project in the global config (the daemon's source of
+ * truth) rather than into the cwd-local config a non-running fresh start
+ * would generate.
  */
 
 import { existsSync, writeFileSync } from "node:fs";
@@ -19,15 +19,19 @@ import { resolve } from "node:path";
 import { cwd } from "node:process";
 import {
   ConfigNotFoundError,
+  detectScmPlatform,
   findConfigFile,
   generateConfigFromUrl,
   configToYaml,
   isRepoUrl,
   loadConfig,
   parseRepoUrl,
+  registerProjectInGlobalConfig,
   resolveCloneTarget,
   isRepoAlreadyCloned,
   getGlobalConfigPath,
+  sanitizeProjectId,
+  writeLocalProjectConfig,
   type OrchestratorConfig,
   type ParsedRepoUrl,
   type ProjectConfig,
@@ -37,6 +41,7 @@ import ora from "ora";
 import { findFreePort } from "./web-dir.js";
 import { DEFAULT_PORT } from "./constants.js";
 import { ensureGit } from "./startup-preflight.js";
+import { git } from "./shell.js";
 
 export type ProjectSource = "url" | "path" | "cwd" | "existing-id";
 
@@ -99,6 +104,25 @@ export interface ResolveDeps {
 }
 
 /**
+ * Options that change how the resolver writes new state to disk.
+ *
+ * `targetGlobalRegistry`:
+ *   When `true`, URL and path arguments resolve and register against the
+ *   global config (`~/.agent-orchestrator/config.yaml`) rather than a cwd-
+ *   local one. Used when an `ao` daemon is already running — the daemon's
+ *   project supervisor reads from the global registry, so anything we
+ *   freshly clone or add must land there to be visible.
+ *
+ *   When `false` (default), the resolver behaves as if this were the very
+ *   first `ao start`: URL clones generate a wrapped (`projects:`) yaml in
+ *   the cloned repo, paths register against whatever config the cwd walks
+ *   up to find.
+ */
+export interface ResolveOptions {
+  targetGlobalRegistry?: boolean;
+}
+
+/**
  * Decide whether `arg` looks like a path (rather than a project id).
  * Matches start.ts's `isLocalPath`.
  */
@@ -106,7 +130,134 @@ function isLocalPath(arg: string): boolean {
   return arg.startsWith("/") || arg.startsWith("~") || arg.startsWith("./") || arg.startsWith("..");
 }
 
-async function fromUrl(arg: string, deps: ResolveDeps): Promise<Resolved> {
+/**
+ * Detect the actual default branch of a freshly cloned repo. Prefers
+ * `origin/HEAD` (the remote's default), falls back to the current local
+ * branch. Returns null for empty repos (no commits).
+ */
+async function detectClonedRepoDefaultBranch(repoPath: string): Promise<string | null> {
+  const symref = await git(["symbolic-ref", "refs/remotes/origin/HEAD"], repoPath);
+  if (symref) {
+    const match = symref.trim().match(/^refs\/remotes\/origin\/(.+)$/);
+    if (match) return match[1];
+  }
+  const head = await git(["symbolic-ref", "--short", "HEAD"], repoPath);
+  if (head) {
+    const trimmed = head.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Clone (or reuse) a URL and register the project in the global config.
+ * The repo gets a flat local config (behavior only — scm/tracker plugin
+ * choices); identity (path, repo, defaultBranch, sessionPrefix) lives in
+ * the global registry so the daemon's project supervisor can see it.
+ *
+ * Mirrors the inline clone+register block that previously lived in start.ts
+ * for the "AO already running + URL arg" case.
+ */
+async function fromUrlIntoGlobal(arg: string, deps: ResolveDeps): Promise<Resolved> {
+  const parsed = parseRepoUrl(arg);
+  const globalConfigPath = getGlobalConfigPath();
+  const globalConfig = existsSync(globalConfigPath) ? loadConfig(globalConfigPath) : loadConfig();
+
+  // Existing project with the same repo? Skip the clone entirely.
+  for (const [id, p] of Object.entries(globalConfig.projects)) {
+    if (p.repo === parsed.ownerRepo) {
+      return {
+        config: globalConfig,
+        projectId: id,
+        project: p,
+        source: "url",
+        justCreated: false,
+        parsed,
+      };
+    }
+  }
+
+  console.log(chalk.bold.cyan(`\n  Cloning ${parsed.ownerRepo} (${parsed.host})\n`));
+  await ensureGit("repository cloning");
+
+  const cwdDir = process.cwd();
+  const targetDir = resolveCloneTarget(parsed, cwdDir);
+  if (isRepoAlreadyCloned(targetDir, parsed.cloneUrl)) {
+    console.log(chalk.green(`  Reusing existing clone at ${targetDir}`));
+  } else {
+    try {
+      await deps.cloneRepo(parsed, targetDir, cwdDir);
+      console.log(chalk.green(`  Cloned to ${targetDir}`));
+    } catch (err) {
+      throw new Error(
+        `Failed to clone ${parsed.ownerRepo}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+  }
+
+  // Empty repos can't host an orchestrator worktree — fail early with a
+  // clear message instead of a confusing "Unable to resolve base ref" later.
+  const detectedBranch = await detectClonedRepoDefaultBranch(targetDir);
+  if (!detectedBranch) {
+    throw new Error(
+      `Repository "${parsed.ownerRepo}" appears to be empty (no commits or refs).\n` +
+        `  AO needs at least one commit on the default branch to spawn an orchestrator.\n` +
+        `  Push an initial commit, then re-run \`ao start ${arg}\`.`,
+    );
+  }
+
+  const platform = detectScmPlatform(parsed.host);
+  const requestedProjectId = sanitizeProjectId(parsed.repo);
+  const registeredId = registerProjectInGlobalConfig(
+    requestedProjectId,
+    parsed.repo,
+    targetDir,
+    {
+      repo: parsed.ownerRepo,
+      defaultBranch: detectedBranch,
+    },
+    globalConfigPath,
+  );
+
+  // Write a flat local config (behavior only, no `projects:` wrapper, no
+  // identity fields). Identity lives in the global registry; this file
+  // holds plugin choices for the project. Skip if the upstream commits its
+  // own agent-orchestrator.yaml — leave it for the user to reconcile.
+  const hasCommittedConfig =
+    existsSync(resolve(targetDir, "agent-orchestrator.yaml")) ||
+    existsSync(resolve(targetDir, "agent-orchestrator.yml"));
+  if (!hasCommittedConfig) {
+    writeLocalProjectConfig(targetDir, {
+      scm: { plugin: platform !== "unknown" ? platform : "github" },
+      tracker: {
+        plugin: platform === "gitlab" ? "gitlab" : "github",
+      },
+    });
+  }
+
+  const refreshedConfig = loadConfig(globalConfigPath);
+  const project = refreshedConfig.projects[registeredId];
+  if (!project) {
+    throw new Error(
+      `Failed to register "${registeredId}" in the global config — aborting.`,
+    );
+  }
+  return {
+    config: refreshedConfig,
+    projectId: registeredId,
+    project,
+    source: "url",
+    justCreated: true,
+    parsed,
+  };
+}
+
+async function fromUrl(arg: string, deps: ResolveDeps, opts: ResolveOptions): Promise<Resolved> {
+  if (opts.targetGlobalRegistry) {
+    return fromUrlIntoGlobal(arg, deps);
+  }
+
   console.log(chalk.bold.cyan("\n  Agent Orchestrator — Quick Start\n"));
   const spinner = ora();
 
@@ -176,8 +327,39 @@ async function fromUrl(arg: string, deps: ResolveDeps): Promise<Resolved> {
   };
 }
 
-async function fromPath(arg: string, deps: ResolveDeps): Promise<Resolved> {
+async function fromPath(arg: string, deps: ResolveDeps, opts: ResolveOptions): Promise<Resolved> {
   const resolvedPath = resolve(arg.replace(/^~/, process.env["HOME"] || ""));
+
+  // When a daemon is already running, register against the global config
+  // (the daemon's source of truth) instead of whatever cwd-local config
+  // findConfigFile() walks up to. addProjectToConfig is canonical-global-
+  // aware, so handing it a config loaded from the global path routes the
+  // write through registerProjectInGlobalConfig.
+  if (opts.targetGlobalRegistry) {
+    const globalPath = getGlobalConfigPath();
+    const globalConfig = existsSync(globalPath) ? loadConfig(globalPath) : loadConfig();
+    const existingEntry = Object.entries(globalConfig.projects).find(
+      ([, p]) => resolve(p.path.replace(/^~/, process.env["HOME"] || "")) === resolvedPath,
+    );
+    if (existingEntry) {
+      return {
+        config: globalConfig,
+        projectId: existingEntry[0],
+        project: existingEntry[1],
+        source: "path",
+        justCreated: false,
+      };
+    }
+    const addedId = await deps.addProjectToConfig(globalConfig, resolvedPath);
+    const reloaded = loadConfig(globalConfig.configPath);
+    return {
+      config: reloaded,
+      projectId: addedId,
+      project: reloaded.projects[addedId],
+      source: "path",
+      justCreated: true,
+    };
+  }
 
   let configPath: string | undefined;
   try {
@@ -228,7 +410,34 @@ async function fromPath(arg: string, deps: ResolveDeps): Promise<Resolved> {
   };
 }
 
-async function fromCwdOrId(arg: string | undefined, deps: ResolveDeps): Promise<Resolved> {
+async function fromCwdOrId(
+  arg: string | undefined,
+  deps: ResolveDeps,
+  opts: ResolveOptions,
+): Promise<Resolved> {
+  // Daemon-running + project id: the global registry is the source of
+  // truth for project identity, so look there directly. Skipping the cwd-
+  // local loadConfig() also avoids first-run autoCreate prompts when the
+  // user just wants to attach to a known project.
+  if (opts.targetGlobalRegistry && arg) {
+    const globalPath = getGlobalConfigPath();
+    const config = existsSync(globalPath) ? loadConfig(globalPath) : loadConfig();
+    const project = config.projects[arg];
+    if (!project) {
+      throw new Error(
+        `Project "${arg}" is not registered in the global config (${config.configPath}).\n` +
+          `  Run \`ao project add\` or \`ao start <path|url>\` first.`,
+      );
+    }
+    return {
+      config,
+      projectId: arg,
+      project,
+      source: "existing-id",
+      justCreated: false,
+    };
+  }
+
   let config: OrchestratorConfig;
   let recovered = false;
   try {
@@ -283,12 +492,17 @@ async function fromCwdOrId(arg: string | undefined, deps: ResolveDeps): Promise<
  *
  * The same `Resolved` shape comes back regardless of source; callers use
  * `source` and `justCreated` for hints (e.g. dashboard cache invalidation).
+ *
+ * Pass `opts.targetGlobalRegistry: true` when an `ao` daemon is already
+ * running so URL/path args register the project in the global config the
+ * daemon supervises rather than into a fresh cwd-local one.
  */
 export async function resolveOrCreateProject(
   arg: string | undefined,
   deps: ResolveDeps,
+  opts: ResolveOptions = {},
 ): Promise<Resolved> {
-  if (arg && isRepoUrl(arg)) return fromUrl(arg, deps);
-  if (arg && isLocalPath(arg)) return fromPath(arg, deps);
-  return fromCwdOrId(arg, deps);
+  if (arg && isRepoUrl(arg)) return fromUrl(arg, deps, opts);
+  if (arg && isLocalPath(arg)) return fromPath(arg, deps, opts);
+  return fromCwdOrId(arg, deps, opts);
 }
