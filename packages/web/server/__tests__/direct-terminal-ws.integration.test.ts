@@ -283,6 +283,53 @@ describe("mux terminal open", () => {
 
     ws.close();
   });
+
+  it("bounds re-attach attempts when tmux session dies mid-subscription (issue #1639)", async () => {
+    // Reproduces the runaway re-attach loop that exhausts the system PTY
+    // pool in seconds when `ao stop` kills the tmux session out from
+    // under a still-subscribed dashboard.
+    //
+    // Pre-fix behaviour: each "successful" re-attach reset reattachAttempts
+    // to 0, so MAX_REATTACH_ATTEMPTS=3 never engaged; the loop ran at
+    // ~80 spawns/sec and "exited" was never emitted, so this test would
+    // hang until the 2-second timeout.
+    //
+    // Post-fix: the counter is only reset by a 5-second grace timer, so a
+    // PTY that exits in ~40 ms can never reset it. After 3 attempts the
+    // server gives up and emits "exited".
+    const RUNAWAY_TEST_SESSION = `ao-test-runaway-${process.pid}`;
+    execFileSync(TMUX, ["new-session", "-d", "-s", RUNAWAY_TEST_SESSION, "-x", "80", "-y", "24"], {
+      timeout: 5000,
+    });
+
+    try {
+      const ws = await connectMux();
+
+      ws.send(JSON.stringify({ ch: "terminal", id: RUNAWAY_TEST_SESSION, type: "open" }));
+      await waitForMessage(ws, (m) => m.ch === "terminal" && m.type === "opened");
+
+      // Kill the tmux session externally — the attached PTY now has nothing
+      // to attach to and will exit ~40 ms after each re-attach attempt.
+      execFileSync(TMUX, ["kill-session", "-t", RUNAWAY_TEST_SESSION], { timeout: 5000 });
+
+      // 3 re-attach attempts × ~50 ms each = ~150 ms; allow generous margin.
+      const exitedMsg = await waitForMessage(
+        ws,
+        (m) => m.ch === "terminal" && m.type === "exited",
+        2000,
+      );
+      expect(exitedMsg.id).toBe(RUNAWAY_TEST_SESSION);
+
+      ws.close();
+    } finally {
+      // Best-effort cleanup if test fails before kill-session ran
+      try {
+        execFileSync(TMUX, ["kill-session", "-t", RUNAWAY_TEST_SESSION], { timeout: 5000 });
+      } catch {
+        /* already gone */
+      }
+    }
+  });
 });
 
 // =============================================================================
