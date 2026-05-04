@@ -161,10 +161,7 @@ export {
   resetOpenCodeSessionListCache,
 } from "./opencode-shared.js";
 export type { OpenCodeSessionListEntry } from "./opencode-shared.js";
-export {
-  getWorkspaceAgentsMdPath,
-  writeWorkspaceOpenCodeAgentsMd,
-} from "./opencode-agents-md.js";
+export { getWorkspaceAgentsMdPath, writeWorkspaceOpenCodeAgentsMd } from "./opencode-agents-md.js";
 export { writeOpenCodeConfig } from "./opencode-config.js";
 export {
   getOrchestratorSessionId,
@@ -395,6 +392,15 @@ export {
   artifactsDirForRun,
   artifactsFilePath,
   loopFilePath,
+  // v0.2: validation, prompt, executor, engine
+  PipelineConfigError,
+  getSupportedTaskModes,
+  validatePipelineAgentModes,
+  buildStagePrompt,
+  createAgentExecutor,
+  AgentExecutorSpawnError,
+  STAGE_FINDINGS_RELATIVE_PATH,
+  createPipelineEngine,
 } from "./pipeline/index.js";
 
 export type {
@@ -441,6 +447,18 @@ export type {
   PipelineStore,
   PersistedStageRun,
   PipelineLayout,
+} from "./pipeline/index.js";
+
+export type {
+  StagePromptInput,
+  AgentStageExecutor,
+  AgentExecutorDeps,
+  RunningAgentStage,
+  StageOutcome,
+  StartStageInput,
+  PipelineEngine,
+  PipelineEngineDeps,
+  StartRunInput,
 } from "./pipeline/index.js";
 
 // Activity event logging — structured diagnostic event trail

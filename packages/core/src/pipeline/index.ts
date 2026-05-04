@@ -8,11 +8,7 @@
 export * from "./types.js";
 export type { PipelineEvent, PipelineEffect, ReducerResult } from "./events.js";
 export { reduce } from "./reducer.js";
-export {
-  createPipelineStore,
-  type PipelineStore,
-  type PersistedStageRun,
-} from "./store.js";
+export { createPipelineStore, type PipelineStore, type PersistedStageRun } from "./store.js";
 export {
   pipelineLayout,
   runFilePath,
@@ -22,3 +18,29 @@ export {
   loopFilePath,
   type PipelineLayout,
 } from "./paths.js";
+
+export {
+  PipelineConfigError,
+  getSupportedTaskModes,
+  validatePipelineAgentModes,
+} from "./validation.js";
+
+export { buildStagePrompt, type StagePromptInput } from "./stage-prompt.js";
+
+export {
+  createAgentExecutor,
+  AgentExecutorSpawnError,
+  STAGE_FINDINGS_RELATIVE_PATH,
+  type AgentStageExecutor,
+  type AgentExecutorDeps,
+  type RunningAgentStage,
+  type StageOutcome,
+  type StartStageInput,
+} from "./executors/index.js";
+
+export {
+  createPipelineEngine,
+  type PipelineEngine,
+  type PipelineEngineDeps,
+  type StartRunInput,
+} from "./engine.js";
