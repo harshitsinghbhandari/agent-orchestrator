@@ -21,7 +21,7 @@ import {
   type WorkspaceHooksConfig,
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -315,7 +315,6 @@ async function parseEventsJsonlTail(
     if (offset === 0) {
       content = await readFile(filePath, "utf-8");
     } else {
-      const { open } = await import("node:fs/promises");
       const handle = await open(filePath, "r");
       try {
         const length = size - offset;
@@ -610,11 +609,25 @@ function createCopilotAgent(): Agent {
       // system prompt onto the user prompt via shell substitution. This keeps
       // long system prompts out of the tmux command buffer (the file is
       // dereferenced at exec time) and matches the pattern used by claude-code.
+      //
+      // Shell-quoting note for the systemPromptFile branch:
+      //   "$(cat <file>; printf '\n\n'; printf %s <prompt>)"
+      //   ─┬─ ─┬─ ──┬──  ──────┬──────  ──────────┬──────── ─┬─
+      //    │   │    │           │                  │          └─ outer double-quotes:
+      //    │   │    │           │                  │             needed so $(...) substitutes,
+      //    │   │    │           │                  │             but otherwise inert against
+      //    │   │    │           │                  │             the inner single-quoted args.
+      //    │   │    │           │                  └─ printf %s + shellEscape: emits the user
+      //    │   │    │           │                     prompt verbatim, no interpolation.
+      //    │   │    │           └─ printf '\n\n': portable two-newline separator.
+      //    │   │    └─ shellEscape wraps the path in single quotes — safe even if it
+      //    │   │       contains spaces, $, backticks, etc.
+      //    │   └─ semicolons sequence the three subcommands inside one $(...).
+      //    └─ outer double-quotes are required so the shell evaluates the $() and joins
+      //       the three printed strings into a single -i argument.
       const buildPrompt = (): string | null => {
         if (config.systemPromptFile) {
-          // $(cat file) ; printf '\n\n' ; <user prompt>
-          const promptSuffix = config.prompt ? config.prompt : "";
-          // Use printf for portable newlines; fall back to empty user prompt.
+          const promptSuffix = config.prompt ?? "";
           return `"$(cat ${shellEscape(config.systemPromptFile)}; printf '\\n\\n'; printf %s ${shellEscape(promptSuffix)})"`;
         }
         if (config.systemPrompt) {
