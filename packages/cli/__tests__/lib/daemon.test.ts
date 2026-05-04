@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const { mockUnregister, mockWaitForExit, mockProcessKill } = vi.hoisted(() => ({
   mockUnregister: vi.fn(),
@@ -10,11 +10,6 @@ vi.mock("../../src/lib/running-state.js", () => ({
   unregister: mockUnregister,
   waitForExit: mockWaitForExit,
 }));
-
-vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
-  mockProcessKill(pid, signal);
-  return true;
-}) as typeof process.kill);
 
 import { attachToDaemon, killExistingDaemon } from "../../src/lib/daemon.js";
 import type { RunningState } from "../../src/lib/running-state.js";
@@ -32,6 +27,20 @@ beforeEach(() => {
   mockUnregister.mockResolvedValue(undefined);
   mockWaitForExit.mockReset();
   mockProcessKill.mockReset();
+  // Spy is installed per-test and restored in afterEach so the mocked
+  // process.kill cannot leak into sibling test files when Vitest reuses
+  // worker threads.
+  vi.spyOn(process, "kill").mockImplementation(((
+    pid: number,
+    signal?: string | number,
+  ) => {
+    mockProcessKill(pid, signal);
+    return true;
+  }) as typeof process.kill);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("attachToDaemon", () => {

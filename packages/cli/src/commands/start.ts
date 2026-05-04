@@ -1402,12 +1402,16 @@ export function registerStart(program: Command): void {
                 unlockStartup();
                 process.exit(0);
               } else if (choice === "add") {
-                // Add cwd against whatever config the cwd walks up to find.
-                // This intentionally does not register globally or spawn an
-                // orchestrator session — the user explicitly chose "add"
-                // (not "new"), so we just persist the project and open the
-                // dashboard. The next `ao start <id>` (or "new" choice)
-                // will spawn an orchestrator.
+                // Persist cwd against whatever config loadConfig() walks up
+                // to from the current directory. addProjectToConfig is
+                // canonical-aware: when that config happens to be the global
+                // one (the canonical fallback), the project lands in the
+                // global registry; when it is a cwd-local agent-orchestrator
+                // .yaml, the project is appended there. This matches the
+                // pre-B.2 behavior — the menu's "add" path deliberately does
+                // not spawn an orchestrator session, so the user can review
+                // the registration and start one explicitly via `ao start
+                // <id>` or the "new" menu choice.
                 const loadedCfg = loadConfig();
                 const addedId = await addProjectToConfig(loadedCfg, cwdResolved);
                 console.log(
