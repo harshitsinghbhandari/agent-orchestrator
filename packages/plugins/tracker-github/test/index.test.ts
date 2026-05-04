@@ -13,8 +13,11 @@ vi.mock("node:child_process", () => {
 });
 
 import { create, manifest } from "../src/index.js";
-import { _clearProcessCacheForTests } from "@aoagents/ao-core";
-import type { PreflightContext, ProjectConfig } from "@aoagents/ao-core";
+import {
+  _clearProcessCacheForTests,
+  type PreflightContext,
+  type ProjectConfig,
+} from "@aoagents/ao-core";
 
 // ---------------------------------------------------------------------------
 // Fixtures
