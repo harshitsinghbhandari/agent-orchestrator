@@ -4,6 +4,7 @@
  */
 
 import { createServer, type Server } from "node:http";
+import { execFileSync } from "node:child_process";
 import { findTmux } from "./tmux-utils.js";
 import { createMuxWebSocket, type MuxDebugSnapshot } from "./mux-websocket.js";
 
@@ -61,6 +62,31 @@ export function createDirectTerminalServer(tmuxPath?: string): DirectTerminalSer
       const snap = getDebugSnapshot();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(snap, null, 2));
+      return;
+    }
+
+    // Full lsof dump for the dev-terminal process — used to identify which
+    // specific fd type is leaking (issue #1639). Returns plain text so it
+    // pastes cleanly into a GH comment. Filtered to PTY-related lines plus
+    // the PTY-related summary at the top.
+    if (req.url === "/debug/pty/lsof") {
+      try {
+        const out = execFileSync("lsof", ["-p", String(process.pid), "-nP"], {
+          encoding: "utf8",
+          timeout: 8000,
+          stdio: ["ignore", "pipe", "ignore"],
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        const ptyLines = out
+          .split("\n")
+          .filter((l) => /\/dev\/ptmx|\/dev\/ttys\d+|\/dev\/pts\/\d+/.test(l));
+        const summary = `pid=${process.pid} ptyFdCount=${ptyLines.length}\n` + "=".repeat(60) + "\n";
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(summary + ptyLines.join("\n") + "\n");
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
       return;
     }
 
