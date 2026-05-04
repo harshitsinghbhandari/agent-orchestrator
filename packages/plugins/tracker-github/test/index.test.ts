@@ -13,7 +13,8 @@ vi.mock("node:child_process", () => {
 });
 
 import { create, manifest } from "../src/index.js";
-import type { ProjectConfig } from "@aoagents/ao-core";
+import { _clearProcessCacheForTests } from "@aoagents/ao-core";
+import type { PreflightContext, ProjectConfig } from "@aoagents/ao-core";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -563,6 +564,41 @@ describe("tracker-github plugin", () => {
       await expect(
         tracker.createIssue!({ title: "Test", description: "" }, project),
       ).rejects.toThrow("Failed to parse issue URL");
+    });
+  });
+
+  describe("preflight", () => {
+    const ctx: PreflightContext = {
+      project,
+      intent: { role: "worker", willClaimExistingPR: false },
+    };
+
+    beforeEach(() => {
+      // Process cache spans tests; clear so each one starts fresh.
+      _clearProcessCacheForTests();
+    });
+
+    it("resolves when gh is installed and authenticated", async () => {
+      mockGhRaw("gh version 2.40.0"); // gh --version
+      mockGhRaw("Logged in to github.com as alice"); // gh auth status
+      await expect(tracker.preflight!(ctx)).resolves.toBeUndefined();
+    });
+
+    it("throws 'not installed' when `gh --version` fails", async () => {
+      mockGhError("ENOENT");
+      const err = (await tracker.preflight!(ctx).catch((e: unknown) => e)) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain("GitHub CLI (gh) is not installed");
+      expect(err.message).toContain("https://cli.github.com/");
+    });
+
+    it("throws 'not authenticated' when `gh auth status` fails", async () => {
+      mockGhRaw("gh version 2.40.0");
+      mockGhError("not logged in");
+      const err = (await tracker.preflight!(ctx).catch((e: unknown) => e)) as Error;
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toContain("not authenticated");
+      expect(err.message).toContain("gh auth login");
     });
   });
 });

@@ -9,6 +9,22 @@
  * Both successes and failures are cached: if a check fails the user must fix
  * the underlying issue and re-run, so re-checking within the same process is
  * pointless and would muddy the error stream with duplicate messages.
+ *
+ * **Key namespacing convention:**
+ *
+ * The cache is shared across every caller in the process, so two plugins
+ * passing the same key are explicitly opting into shared state. That is the
+ * intended use for cross-cutting checks like the `gh` CLI auth status (used
+ * by both `tracker-github` and `scm-github`).
+ *
+ * For plugin-internal caching (where you do *not* want sharing), namespace
+ * the key with your plugin name to avoid silent collisions:
+ *   - shared cross-plugin check: `"gh-cli-auth"` (intentional sharing)
+ *   - plugin-internal check:     `"tracker-github:rate-limit-check"`
+ *
+ * If two plugins use the same key for semantically different work, callers
+ * will silently receive each other's resolved values — a debugging nightmare.
+ * When in doubt, namespace.
  */
 
 const cache = new Map<string, Promise<unknown>>();

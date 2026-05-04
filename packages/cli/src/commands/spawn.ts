@@ -133,6 +133,10 @@ async function warnIfAONotRunning(projectId: string): Promise<void> {
  * configured, etc.) so this CLI helper does not need to know which plugin
  * needs which tool. Adding a new runtime/tracker/scm plugin only requires
  * the plugin to declare its own preflight — no edits here.
+ *
+ * Collects every plugin's failure rather than aborting at the first one, so a
+ * user with multiple broken prerequisites (e.g. tmux missing AND gh logged
+ * out) sees both errors in a single run instead of fixing one and re-invoking.
  */
 async function runSpawnPreflight(
   config: OrchestratorConfig,
@@ -151,9 +155,11 @@ async function runSpawnPreflight(
   };
 
   const registry = await getPluginRegistry(config);
+  // DefaultPluginsSchema (config.ts) defaults runtime/agent/workspace via
+  // .default(), so these are guaranteed strings — no literal fallback needed.
   const runtimeName = project.runtime ?? config.defaults.runtime;
   const agentName = project.agent ?? config.defaults.agent;
-  const workspaceName = project.workspace ?? config.defaults.workspace ?? "worktree";
+  const workspaceName = project.workspace ?? config.defaults.workspace;
   const trackerName = project.tracker?.plugin;
   const scmName = project.scm?.plugin;
 
@@ -168,10 +174,24 @@ async function runSpawnPreflight(
     options?.claimPr && scmName ? registry.get("scm", scmName) : null,
   ];
 
+  const errors: Error[] = [];
   for (const plugin of candidates) {
     const preflight = (plugin as { preflight?: (ctx: PreflightContext) => Promise<void> } | null)
       ?.preflight;
-    if (preflight) await preflight.call(plugin, ctx);
+    if (!preflight) continue;
+    try {
+      await preflight.call(plugin, ctx);
+    } catch (err) {
+      errors.push(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new Error(
+      `${errors.length} preflight checks failed:\n` +
+        errors.map((e, i) => `  ${i + 1}. ${e.message}`).join("\n"),
+    );
   }
 }
 

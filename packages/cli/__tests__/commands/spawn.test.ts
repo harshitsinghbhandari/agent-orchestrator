@@ -810,6 +810,39 @@ describe("spawn pre-flight checks", () => {
 
     expect(trackerPreflight).not.toHaveBeenCalled();
   });
+
+  it("collects every plugin's preflight failure into one combined error", async () => {
+    const runtimePreflight = vi.fn().mockRejectedValue(new Error("tmux is not installed"));
+    const trackerPreflight = vi
+      .fn()
+      .mockRejectedValue(new Error("GitHub CLI is not authenticated. Run: gh auth login"));
+    mockRegistryGet.mockImplementation((slot: string) => {
+      if (slot === "runtime") return { name: "tmux", preflight: runtimePreflight };
+      if (slot === "tracker") return { name: "github", preflight: trackerPreflight };
+      return null;
+    });
+
+    const projects = (mockConfigRef.current as Record<string, unknown>).projects as Record<
+      string,
+      Record<string, unknown>
+    >;
+    projects["my-app"].tracker = { plugin: "github" };
+
+    await expect(program.parseAsync(["node", "test", "spawn"])).rejects.toThrow("process.exit(1)");
+
+    // Both preflights ran (collect-all, not fail-fast).
+    expect(runtimePreflight).toHaveBeenCalled();
+    expect(trackerPreflight).toHaveBeenCalled();
+
+    const errors = vi
+      .mocked(console.error)
+      .mock.calls.map((c) => String(c[0]))
+      .join("\n");
+    expect(errors).toContain("2 preflight checks failed");
+    expect(errors).toContain("tmux is not installed");
+    expect(errors).toContain("gh auth login");
+    expect(mockSessionManager.spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe("batch-spawn command", () => {

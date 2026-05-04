@@ -578,3 +578,25 @@ describe("runtime.getAttachInfo()", () => {
     });
   });
 });
+
+describe("runtime.preflight()", () => {
+  it("resolves when `tmux -V` succeeds", async () => {
+    mockTmuxSuccess("tmux 3.4");
+    const runtime = create();
+    await expect(runtime.preflight!({} as never)).resolves.toBeUndefined();
+    expect(mockExecFileCustom).toHaveBeenCalledWith("tmux", ["-V"], expectedTmuxOptions);
+  });
+
+  it("throws with platform-specific install hint when tmux is missing", async () => {
+    mockTmuxError("ENOENT");
+    const runtime = create();
+    const err = (await runtime.preflight!({} as never).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain("tmux is not installed");
+    expect(err.message).toContain("Install it:");
+    // Hint must include something runnable for the host platform.
+    if (process.platform === "darwin") expect(err.message).toContain("brew install tmux");
+    else if (process.platform === "win32") expect(err.message).toContain("WSL");
+    else expect(err.message).toMatch(/apt install tmux|dnf install tmux/);
+  });
+});

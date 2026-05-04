@@ -15,7 +15,7 @@ vi.mock("node:child_process", () => {
 });
 
 import { create, manifest } from "../src/index.js";
-import { createActivitySignal, type PRInfo, type SCMWebhookRequest, type Session, type ProjectConfig } from "@aoagents/ao-core";
+import { _clearProcessCacheForTests, createActivitySignal, type PreflightContext, type PRInfo, type SCMWebhookRequest, type Session, type ProjectConfig } from "@aoagents/ao-core";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1425,6 +1425,41 @@ describe("scm-github plugin", () => {
       await scm.getPendingComments(pr);
       await scm.getPendingComments(pr);
       expect(ghMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("preflight", () => {
+    function ctxWith(willClaim: boolean): PreflightContext {
+      return { project, intent: { role: "worker", willClaimExistingPR: willClaim } };
+    }
+
+    beforeEach(() => {
+      _clearProcessCacheForTests();
+    });
+
+    it("is a no-op when willClaimExistingPR is false (no gh calls made)", async () => {
+      await expect(scm.preflight!(ctxWith(false))).resolves.toBeUndefined();
+      expect(ghMock).not.toHaveBeenCalled();
+    });
+
+    it("checks gh installed + authenticated when willClaimExistingPR is true", async () => {
+      mockGhRaw("gh version 2.40.0");
+      mockGhRaw("Logged in to github.com as alice");
+      await expect(scm.preflight!(ctxWith(true))).resolves.toBeUndefined();
+      expect(ghMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws 'not installed' when `gh --version` fails", async () => {
+      mockGhError("ENOENT");
+      const err = (await scm.preflight!(ctxWith(true)).catch((e: unknown) => e)) as Error;
+      expect(err.message).toContain("GitHub CLI (gh) is not installed");
+    });
+
+    it("throws 'not authenticated' when `gh auth status` fails", async () => {
+      mockGhRaw("gh version 2.40.0");
+      mockGhError("not logged in");
+      const err = (await scm.preflight!(ctxWith(true)).catch((e: unknown) => e)) as Error;
+      expect(err.message).toContain("not authenticated");
     });
   });
 });

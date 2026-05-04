@@ -123,7 +123,7 @@ export type { SessionManagerDeps } from "./session-manager.js";
 
 // Process-scoped async memoization — used by plugins to dedupe shared
 // prerequisite checks (e.g. multiple github plugins checking gh auth).
-export { memoizeAsync } from "./process-cache.js";
+export { memoizeAsync, _clearProcessCacheForTests } from "./process-cache.js";
 
 // Lifecycle manager — state machine + reaction engine
 export { createLifecycleManager } from "./lifecycle-manager.js";
