@@ -192,6 +192,14 @@ interface ManagedTerminal {
   buffer: string[];
   bufferBytes: number;
   reattachAttempts: number;
+  /**
+   * Pending grace-period timer that resets reattachAttempts when the
+   * currently-attached PTY survives REATTACH_RESET_GRACE_MS. Tracked so
+   * cleanup paths (last-subscriber unsubscribe, subsequent re-attach) can
+   * clear it and avoid keeping the dead PTY/terminal closure references
+   * reachable for up to 5 s after teardown.
+   */
+  resetTimer?: ReturnType<typeof setTimeout>;
 }
 
 const RING_BUFFER_MAX = 50 * 1024; // 50KB max per terminal
@@ -313,12 +321,19 @@ class TerminalManager {
     // enough to suggest the underlying tmux session is actually usable.
     // The closure-captured `pty` reference is compared with terminal.pty
     // so a stale timer cannot reset the counter for a PTY that has
-    // already exited or been replaced by re-attach.
-    setTimeout(() => {
+    // already exited or been replaced by re-attach. Any previously-
+    // scheduled timer (from a now-replaced PTY) is cleared so we don't
+    // keep its closure references reachable until the timer fires.
+    if (terminal.resetTimer) {
+      clearTimeout(terminal.resetTimer);
+    }
+    terminal.resetTimer = setTimeout(() => {
+      terminal.resetTimer = undefined;
       if (terminal.pty === pty) {
         terminal.reattachAttempts = 0;
       }
-    }, REATTACH_RESET_GRACE_MS).unref();
+    }, REATTACH_RESET_GRACE_MS);
+    terminal.resetTimer.unref();
 
     // Wire up data events
     pty.onData((data: string) => {
@@ -431,6 +446,10 @@ class TerminalManager {
       if (onExit) terminal.exitCallbacks.delete(onExit);
       // Kill PTY and clean up when the last subscriber leaves
       if (terminal.subscribers.size === 0) {
+        if (terminal.resetTimer) {
+          clearTimeout(terminal.resetTimer);
+          terminal.resetTimer = undefined;
+        }
         if (terminal.pty) {
           terminal.pty.kill();
           terminal.pty = null;
