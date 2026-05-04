@@ -8,7 +8,7 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { homedir, userInfo } from "node:os";
-import { spawn, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { findTmux, resolveTmuxSession, validateSessionId } from "./tmux-utils.js";
 
 // ─── PTY-leak diagnostics (issue #1639) ─────────────────────────────────────
@@ -330,17 +330,12 @@ class TerminalManager {
       mapSize: this.terminals.size,
     });
 
-    // Enable mouse mode
-    const mouseProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "mouse", "on"]);
-    mouseProc.on("error", (err) => {
-      console.error(`[MuxServer] Failed to set mouse mode for ${tmuxSessionId}:`, err.message);
-    });
-
-    // Hide the status bar
-    const statusProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "status", "off"]);
-    statusProc.on("error", (err) => {
-      console.error(`[MuxServer] Failed to hide status bar for ${tmuxSessionId}:`, err.message);
-    });
+    // FIX-AND-SEE branch (#1639): mouse-mode and status-bar tmux sub-commands
+    // intentionally removed from this branch to test whether they are the
+    // source of the +3 fd-per-spawn delta observed on the diagnostic branch.
+    // If this branch shows +1 per spawn instead of +3, the leak is
+    // attributable to these short-lived tmux child processes inheriting
+    // ptmx-related fds from the parent.
 
     // Build environment
     const homeDir = process.env.HOME || homedir();
