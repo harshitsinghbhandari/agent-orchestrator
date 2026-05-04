@@ -8,8 +8,72 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { homedir, userInfo } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { findTmux, resolveTmuxSession, validateSessionId } from "./tmux-utils.js";
+
+// ─── PTY-leak diagnostics (issue #1639) ─────────────────────────────────────
+// Lightweight always-on instrumentation. Each lifecycle event prints a single
+// grep-friendly line tagged "[PtyLeak]" so we can correlate PTY counts with
+// mux activity over many hours of normal AO use.
+//
+// Cost: ~50 ms execFileSync(lsof) per logged event. Lifecycle events are
+// infrequent compared to PTY data flow, and the periodic sampler runs at 60 s,
+// so this stays out of any hot path.
+
+let nextPtyId = 0;
+function newPtyId(): number {
+  nextPtyId += 1;
+  return nextPtyId;
+}
+
+function countOpenPtys(): number {
+  try {
+    const out = execFileSync("lsof", ["-p", String(process.pid), "-nP"], {
+      encoding: "utf8",
+      timeout: 4000,
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    let count = 0;
+    for (const line of out.split("\n")) {
+      // Match the master multiplexer (/dev/ptmx) and slave PTY paths
+      // (/dev/ttys000 .. /dev/ttysNNN on macOS, /dev/pts/N on Linux).
+      if (line.includes("/dev/ptmx") || /\/dev\/ttys\d+|\/dev\/pts\/\d+/.test(line)) {
+        count += 1;
+      }
+    }
+    return count;
+  } catch {
+    return -1;
+  }
+}
+
+function logPty(event: string, fields: Record<string, unknown> = {}): void {
+  const ptys = countOpenPtys();
+  const ts = new Date().toISOString();
+  const payload = Object.entries(fields)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? JSON.stringify(v) : v}`)
+    .join(" ");
+  console.log(`[PtyLeak] ts=${ts} event=${event} ptys=${ptys} ${payload}`.trimEnd());
+}
+
+export interface MuxDebugSnapshot {
+  ts: string;
+  ptyCount: number;
+  terminalCount: number;
+  withPty: number;
+  withoutPty: number;
+  totalSubscribers: number;
+  wsClients: number;
+  entries: Array<{
+    key: string;
+    hasPty: boolean;
+    subscribers: number;
+    bufferBytes: number;
+    reattachAttempts: number;
+  }>;
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 // These types mirror src/lib/mux-protocol.ts exactly.
 // tsconfig.server.json constrains rootDir to "server/", so we cannot import
@@ -181,6 +245,8 @@ interface ManagedTerminal {
   id: string;
   tmuxSessionId: string;
   pty: IPty | null;
+  /** Diagnostic id of the currently-attached PTY (issue #1639). */
+  ptyId: number | null;
   subscribers: Set<(data: string) => void>;
   exitCallbacks: Set<(exitCode: number) => void>;
   buffer: string[];
@@ -231,11 +297,13 @@ class TerminalManager {
 
     // Get or create terminal entry
     let terminal = this.terminals.get(key);
+    const isNewEntry = !terminal;
     if (!terminal) {
       terminal = {
         id,
         tmuxSessionId,
         pty: null,
+        ptyId: null,
         subscribers: new Set(),
         exitCallbacks: new Set(),
         buffer: [],
@@ -247,8 +315,20 @@ class TerminalManager {
 
     // If PTY is already attached, we're done
     if (terminal.pty) {
+      logPty("open_reuse", {
+        key,
+        ptyId: terminal.ptyId ?? -1,
+        subs: terminal.subscribers.size,
+        mapSize: this.terminals.size,
+      });
       return tmuxSessionId;
     }
+    logPty("open_begin", {
+      key,
+      newEntry: isNewEntry,
+      subs: terminal.subscribers.size,
+      mapSize: this.terminals.size,
+    });
 
     // Enable mouse mode
     const mouseProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "mouse", "on"]);
@@ -288,7 +368,16 @@ class TerminalManager {
       env,
     });
 
+    const ptyId = newPtyId();
     terminal.pty = pty;
+    terminal.ptyId = ptyId;
+    logPty("pty_spawn", {
+      key,
+      ptyId,
+      tmuxSession: tmuxSessionId,
+      subs: terminal.subscribers.size,
+      mapSize: this.terminals.size,
+    });
 
     // Wire up data events
     pty.onData((data: string) => {
@@ -313,10 +402,25 @@ class TerminalManager {
       }
     });
 
-    // Handle PTY exit
+    // Handle PTY exit. Capture ptyId from closure so the log still carries
+    // the real id even if unsubscribe already cleared terminal.ptyId.
+    const exitPtyId = ptyId;
     pty.onExit(({ exitCode }) => {
       console.log(`[MuxServer] PTY exited for ${id} with code ${exitCode}`);
-      terminal.pty = null;
+      // Only clear if this is still the active PTY (defensive — a re-attach
+      // could have replaced it with a newer PTY by the time exit fires).
+      if (terminal.ptyId === exitPtyId) {
+        terminal.pty = null;
+        terminal.ptyId = null;
+      }
+      logPty("pty_exit", {
+        key,
+        ptyId: exitPtyId,
+        exitCode,
+        subs: terminal.subscribers.size,
+        attempts: terminal.reattachAttempts,
+        mapSize: this.terminals.size,
+      });
 
       // Re-attach if subscribers are still present, up to MAX_REATTACH_ATTEMPTS.
       // The cap prevents an unbounded respawn loop when the PTY crashes immediately
@@ -326,15 +430,33 @@ class TerminalManager {
         console.log(
           `[MuxServer] Re-attaching to ${id} (attempt ${terminal.reattachAttempts}/${MAX_REATTACH_ATTEMPTS})`,
         );
+        logPty("pty_reattach_try", {
+          key,
+          oldPtyId: exitPtyId,
+          attempt: terminal.reattachAttempts,
+        });
         try {
           this.open(id, projectId);
-          terminal.reattachAttempts = 0; // reset on successful attach
+          // BUG SUSPECT (issue #1639): counter reset here means MAX never engages
+          // when each new PTY exits quickly. Logging keeps the existing behavior
+          // intact so we can observe whether the loop actually spins.
+          logPty("pty_reattach_counter_reset", {
+            key,
+            attemptsBefore: terminal.reattachAttempts,
+          });
+          terminal.reattachAttempts = 0;
           return; // re-attached — don't notify exit
         } catch (err) {
           console.error(`[MuxServer] Failed to re-attach ${id}:`, err);
+          logPty("pty_reattach_fail", {
+            key,
+            attempts: terminal.reattachAttempts,
+            err: err instanceof Error ? err.message : String(err),
+          });
         }
       } else if (terminal.reattachAttempts >= MAX_REATTACH_ATTEMPTS) {
         console.error(`[MuxServer] Max re-attach attempts reached for ${id}, giving up`);
+        logPty("pty_reattach_giveup", { key, attempts: terminal.reattachAttempts });
       }
 
       // Notify subscribers that the terminal has exited (re-attach failed or no subscribers)
@@ -396,12 +518,57 @@ class TerminalManager {
       if (onExit) terminal.exitCallbacks.delete(onExit);
       // Kill PTY and clean up when the last subscriber leaves
       if (terminal.subscribers.size === 0) {
+        const killedPtyId = terminal.ptyId;
         if (terminal.pty) {
           terminal.pty.kill();
           terminal.pty = null;
+          terminal.ptyId = null;
         }
         this.terminals.delete(key);
+        logPty("pty_kill_lastsub", {
+          key,
+          ptyId: killedPtyId ?? -1,
+          mapSize: this.terminals.size,
+        });
+      } else {
+        logPty("unsub_keep", {
+          key,
+          ptyId: terminal.ptyId ?? -1,
+          remainingSubs: terminal.subscribers.size,
+        });
       }
+    };
+  }
+
+  /**
+   * Diagnostic snapshot of internal state. Used by the periodic sampler and
+   * the /debug/pty endpoint (issue #1639).
+   */
+  getDebugSnapshot(): Omit<MuxDebugSnapshot, "wsClients"> {
+    let withPty = 0;
+    let withoutPty = 0;
+    let totalSubscribers = 0;
+    const entries: MuxDebugSnapshot["entries"] = [];
+    for (const [key, t] of this.terminals) {
+      if (t.pty) withPty += 1;
+      else withoutPty += 1;
+      totalSubscribers += t.subscribers.size;
+      entries.push({
+        key,
+        hasPty: t.pty !== null,
+        subscribers: t.subscribers.size,
+        bufferBytes: t.bufferBytes,
+        reattachAttempts: t.reattachAttempts,
+      });
+    }
+    return {
+      ts: new Date().toISOString(),
+      ptyCount: countOpenPtys(),
+      terminalCount: this.terminals.size,
+      withPty,
+      withoutPty,
+      totalSubscribers,
+      entries,
     };
   }
 
@@ -416,10 +583,20 @@ class TerminalManager {
 }
 
 /**
- * Create a mux WebSocket server (noServer mode).
- * Returns the WebSocketServer instance for manual upgrade routing.
+ * Bundle returned by createMuxWebSocket. Includes the WebSocketServer plus a
+ * diagnostic snapshot accessor used by the dev-terminal HTTP /debug/pty
+ * endpoint and periodic sampler (issue #1639).
  */
-export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
+export interface MuxWebSocketBundle {
+  wss: WebSocketServer;
+  getDebugSnapshot: () => MuxDebugSnapshot;
+}
+
+/**
+ * Create a mux WebSocket server (noServer mode).
+ * Returns the WebSocketServer instance plus a debug snapshot accessor.
+ */
+export function createMuxWebSocket(tmuxPath?: string): MuxWebSocketBundle | null {
   if (!ptySpawn) {
     console.warn("[MuxServer] node-pty not available — mux WebSocket will be disabled");
     return null;
@@ -431,8 +608,11 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
 
   const wss = new WebSocketServer({ noServer: true });
 
+  let nextWsId = 0;
   wss.on("connection", (ws) => {
+    const wsId = (nextWsId += 1);
     console.log("[MuxServer] New mux connection");
+    logPty("ws_connect", { wsId, clients: wss.clients.size });
 
     const subscriptions = new Map<string, () => void>();
     let sessionUnsubscribe: (() => void) | null = null;
@@ -602,10 +782,16 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
       clearInterval(heartbeatInterval);
       sessionUnsubscribe?.();
       sessionUnsubscribe = null;
+      const subCountBefore = subscriptions.size;
       for (const unsub of subscriptions.values()) {
         unsub();
       }
       subscriptions.clear();
+      logPty("ws_close", {
+        wsId,
+        clients: wss.clients.size,
+        unsubbed: subCountBefore,
+      });
     });
 
     // In the ws library, "error" is always followed by "close", so the close
@@ -616,5 +802,11 @@ export function createMuxWebSocket(tmuxPath?: string): WebSocketServer | null {
   });
 
   console.log("[MuxServer] Mux WebSocket server created (noServer mode)");
-  return wss;
+
+  const getDebugSnapshot = (): MuxDebugSnapshot => {
+    const inner = terminalManager.getDebugSnapshot();
+    return { ...inner, wsClients: wss.clients.size };
+  };
+
+  return { wss, getDebugSnapshot };
 }
