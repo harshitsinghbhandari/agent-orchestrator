@@ -1,4 +1,5 @@
 import type { ObservabilityLevel } from "./observability.js";
+import type { ConfiguredPipeline } from "./pipeline/config-schema.js";
 
 /**
  * Agent Orchestrator — Core Type Definitions
@@ -1501,6 +1502,13 @@ export interface ProjectConfig {
     | "kill-previous";
 
   opencodeIssueSessionStrategy?: "reuse" | "delete" | "ignore";
+
+  /**
+   * Configured pipelines, keyed by pipeline name. Each entry validates
+   * against ConfiguredPipelineSchema; convert to a runtime Pipeline via
+   * configuredPipelineToRuntime (using the map key as the pipeline id).
+   */
+  pipelines?: Record<string, ConfiguredPipeline>;
 }
 
 export interface TrackerConfig {

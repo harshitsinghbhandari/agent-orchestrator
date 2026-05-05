@@ -1,15 +1,20 @@
+import { existsSync } from "node:fs";
 import type { Argument, Command, Option } from "commander";
 import {
   AGENT_REPORTED_STATES,
+  createPipelineStore,
+  getProjectPipelinesDir,
   isTerminalSession,
   loadConfig,
   loadGlobalConfig,
   getGlobalConfigPath,
+  pipelineLayout,
   type OrchestratorConfig,
   type Session,
 } from "@aoagents/ao-core";
 import { getSessionManager } from "./create-session-manager.js";
 import { isOrchestratorSessionName } from "./session-utils.js";
+import { listConfiguredPipelines } from "./pipeline-service.js";
 
 export interface CompletionSuggestion {
   value: string;
@@ -119,6 +124,12 @@ function getArgumentAction(node: CompletionCommandNode, argumentIndex: number): 
   if (key === "session restore" && argumentIndex === 0) return "_ao_complete_all_sessions";
   if (key === "session remap" && argumentIndex === 0) return "_ao_complete_all_sessions";
   if (key === "session claim-pr" && argumentIndex === 1) return "_ao_complete_sessions";
+  if (key === "pipeline run" && argumentIndex === 0) return "_ao_complete_pipelines";
+  if (key === "pipeline show" && argumentIndex === 0) return "_ao_complete_pipeline_runs";
+  if (key === "pipeline cancel" && argumentIndex === 0) return "_ao_complete_pipeline_runs";
+  if (key === "pipeline resume" && argumentIndex === 0) return "_ao_complete_pipeline_runs";
+  if (key === "stage show" && argumentIndex === 0) return "_ao_complete_stage_runs";
+  if (key === "artifact show" && argumentIndex === 0) return "_ao_complete_stage_runs";
 
   const argumentName =
     argumentIndex >= 0 ? node.arguments[argumentIndex]?.name()?.toLowerCase() ?? "" : "";
@@ -159,6 +170,23 @@ function getOptionAction(node: CompletionCommandNode, option: Option): string | 
   }
   if (key === "plugin create" && optionMatches(option, "--slot")) {
     return "_ao_complete_plugin_slots";
+  }
+  if (
+    (key === "pipeline list" ||
+      key === "pipeline runs" ||
+      key === "pipeline show" ||
+      key === "pipeline run" ||
+      key === "pipeline cancel" ||
+      key === "pipeline resume" ||
+      key === "pipeline migrate" ||
+      key === "stage show" ||
+      key === "artifact show") &&
+    (optionMatches(option, "-p") || optionMatches(option, "--project"))
+  ) {
+    return "_ao_complete_projects";
+  }
+  if (key === "pipeline runs" && optionMatches(option, "--pipeline")) {
+    return "_ao_complete_pipelines";
   }
 
   const attributeName = option.attributeName().toLowerCase();
@@ -407,6 +435,79 @@ async function listOpenTargets(): Promise<CompletionSuggestion[]> {
   ];
 }
 
+async function listPipelinesAcrossProjects(): Promise<CompletionSuggestion[]> {
+  try {
+    const config = loadConfig();
+    const out: CompletionSuggestion[] = [];
+    const seen = new Set<string>();
+    for (const projectId of Object.keys(config.projects)) {
+      for (const p of listConfiguredPipelines(config, projectId)) {
+        if (seen.has(p.pipelineId)) continue;
+        seen.add(p.pipelineId);
+        out.push({
+          value: p.pipelineId,
+          description: `${projectId} — ${p.stageCount} stage(s)`,
+        });
+      }
+    }
+    return sortSuggestions(out);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * existsSync-gate the pipeline runs dir before instantiating the store. The
+ * store's `listRuns` calls `ensureLayout()` which mkdirs `runs/`, `stages/`,
+ * `artifacts/`, `loops/` for every project — completion is read-only by
+ * definition and must not materialize empty dirs as a tab-press side effect.
+ */
+function projectHasPipelineState(projectId: string): boolean {
+  return existsSync(pipelineLayout(getProjectPipelinesDir(projectId)).runsDir);
+}
+
+async function listPipelineRuns(): Promise<CompletionSuggestion[]> {
+  try {
+    const config = loadConfig();
+    const out: CompletionSuggestion[] = [];
+    for (const projectId of Object.keys(config.projects)) {
+      if (!projectHasPipelineState(projectId)) continue;
+      const store = createPipelineStore(getProjectPipelinesDir(projectId));
+      for (const run of store.listRuns()) {
+        out.push({
+          value: run.runId,
+          description: `${projectId} — ${run.pipelineName} [${run.loopState}]`,
+        });
+      }
+    }
+    return sortSuggestions(out);
+  } catch {
+    return [];
+  }
+}
+
+async function listStageRuns(): Promise<CompletionSuggestion[]> {
+  try {
+    const config = loadConfig();
+    const out: CompletionSuggestion[] = [];
+    for (const projectId of Object.keys(config.projects)) {
+      if (!projectHasPipelineState(projectId)) continue;
+      const store = createPipelineStore(getProjectPipelinesDir(projectId));
+      for (const run of store.listRuns()) {
+        for (const [stageName, state] of Object.entries(run.stages)) {
+          out.push({
+            value: state.stageRunId,
+            description: `${projectId} — ${stageName} [${state.status}]`,
+          });
+        }
+      }
+    }
+    return sortSuggestions(out);
+  } catch {
+    return [];
+  }
+}
+
 export async function getCompletionSuggestions(
   kind: string,
   options: CompletionDataOptions = {},
@@ -419,6 +520,15 @@ export async function getCompletionSuggestions(
   }
   if (kind === "open-targets") {
     return await listOpenTargets();
+  }
+  if (kind === "pipelines") {
+    return await listPipelinesAcrossProjects();
+  }
+  if (kind === "pipeline-runs") {
+    return await listPipelineRuns();
+  }
+  if (kind === "stage-runs") {
+    return await listStageRuns();
   }
 
   return [];
@@ -493,6 +603,18 @@ _ao_complete_all_sessions() {
 
 _ao_complete_open_targets() {
   _ao_dynamic_describe targets "open target" open-targets
+}
+
+_ao_complete_pipelines() {
+  _ao_dynamic_describe pipelines "configured pipeline" pipelines
+}
+
+_ao_complete_pipeline_runs() {
+  _ao_dynamic_describe runs "pipeline run" pipeline-runs
+}
+
+_ao_complete_stage_runs() {
+  _ao_dynamic_describe stage-runs "stage run" stage-runs
 }
 
 _ao_complete_start_target() {

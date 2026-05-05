@@ -31,6 +31,7 @@ import {
   loadGlobalConfig,
 } from "./global-config.js";
 import { loadEffectiveProjectConfig } from "./project-resolver.js";
+import { PipelinesConfigSchema } from "./pipeline/config-schema.js";
 
 function inferScmPlugin(project: {
   repo?: string;
@@ -264,6 +265,7 @@ const ProjectConfigSchema = z.object({
     .enum(["reuse", "delete", "ignore", "delete-new", "ignore-new", "kill-previous"])
     .optional(),
   opencodeIssueSessionStrategy: z.enum(["reuse", "delete", "ignore"]).optional(),
+  pipelines: PipelinesConfigSchema.optional(),
 });
 
 const DefaultPluginsSchema = z.object({

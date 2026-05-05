@@ -44,3 +44,11 @@ export {
   type PipelineEngineDeps,
   type StartRunInput,
 } from "./engine.js";
+
+export {
+  ConfiguredPipelineSchema,
+  PipelinesConfigSchema,
+  configuredPipelineToRuntime,
+  type ConfiguredPipeline,
+  type PipelinesConfig,
+} from "./config-schema.js";

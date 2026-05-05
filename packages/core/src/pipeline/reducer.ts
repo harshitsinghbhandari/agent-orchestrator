@@ -54,6 +54,8 @@ export function reduce(state: EngineState, event: PipelineEvent): ReducerResult 
       return reduceNewShaDetected(state, event);
     case "RUN_CANCELLED":
       return reduceRunCancelled(state, event);
+    case "RUN_RESUMED":
+      return reduceRunResumed(state, event);
     case "CONFIG_CHANGED":
       return reduceConfigChanged(state, event);
     case "TICK":
@@ -282,6 +284,105 @@ function reduceRunCancelled(state: EngineState, event: RunCancelledEvent): Reduc
 
   const runFinalState: LoopStateName = reason === "stage_failure" ? "stalled" : "terminated";
   return terminateRun(state, run, reason, now, runFinalState);
+}
+
+interface RunResumedEvent {
+  now: number;
+  runId: RunId;
+  stageRunIds: Record<string, StageRunId>;
+}
+
+/**
+ * Resume a stalled/failed run: reset every `failed` stage back to `pending`
+ * with a fresh stageRunId (and incremented `attempt`, capped by stage.retries
+ * when set), then re-arm the loop pointer so the engine picks the run up on
+ * its next tick. No-op when the run has nothing to resume.
+ */
+function reduceRunResumed(state: EngineState, event: RunResumedEvent): ReducerResult {
+  const { runId, stageRunIds, now } = event;
+  const run = state.runs[runId];
+  if (!run) return invalidTransition(state, `RUN_RESUMED for unknown runId=${runId}`);
+
+  const failedStageNames = Object.entries(run.stages)
+    .filter(([, s]) => s.status === "failed")
+    .map(([name]) => name);
+  if (failedStageNames.length === 0) {
+    // Nothing to resume. Keep the state unchanged so the caller can no-op too.
+    return { state, effects: [] };
+  }
+
+  // Cap the attempt bump by the configured retries (when set). The reducer
+  // ignores resumes that would exceed retries — operators can still re-cancel
+  // and re-trigger if they want a fresh run.
+  const stageRetriesByName = new Map<string, number | undefined>();
+  for (const stage of run.pipelineConfigSnapshot.stages) {
+    stageRetriesByName.set(stage.name, stage.retries);
+  }
+
+  const stageDelta: Record<string, StageState> = {};
+  for (const name of failedStageNames) {
+    const fresh = stageRunIds[name];
+    if (!fresh) {
+      return invalidTransition(
+        state,
+        `RUN_RESUMED missing stageRunId for failed stage "${name}"`,
+      );
+    }
+
+    const prior = run.stages[name];
+    const cap = stageRetriesByName.get(name);
+    if (cap !== undefined && prior.attempt >= cap + 1) {
+      return invalidTransition(
+        state,
+        `RUN_RESUMED would exceed stage.retries=${cap} for "${name}" (attempt=${prior.attempt})`,
+      );
+    }
+
+    stageDelta[name] = {
+      stageRunId: fresh,
+      status: "pending",
+      attempt: prior.attempt + 1,
+      artifacts: [],
+    };
+  }
+
+  const updatedRun: RunState = {
+    ...run,
+    stages: { ...run.stages, ...stageDelta },
+    loopState: "running",
+    updatedAt: iso(now),
+  };
+  delete (updatedRun as { terminationReason?: RunTerminationReason }).terminationReason;
+
+  const key = loopKey(run.sessionId, run.pipelineName);
+  const nextState: EngineState = {
+    ...state,
+    runs: { ...state.runs, [runId]: updatedRun },
+    currentRunByLoop: { ...state.currentRunByLoop, [key]: runId },
+  };
+
+  const effects: PipelineEffect[] = [
+    { type: "PERSIST_RUN", runState: updatedRun },
+    {
+      type: "PERSIST_LOOP_STATE",
+      runId,
+      loopState: deriveLoopStateFromRun(updatedRun, now),
+    },
+    ...startableStageEffects(updatedRun),
+    {
+      type: "EMIT_OBSERVATION",
+      event: {
+        name: "pipeline.run.resumed",
+        data: {
+          runId,
+          pipelineName: run.pipelineName,
+          stageNames: failedStageNames,
+        },
+      },
+    },
+  ];
+
+  return { state: nextState, effects };
 }
 
 interface ConfigChangedEvent {

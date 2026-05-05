@@ -370,6 +370,92 @@ describe("pipeline reducer — RUN_CANCELLED / CONFIG_CHANGED", () => {
   });
 });
 
+describe("pipeline reducer — RUN_RESUMED", () => {
+  function failStage(state: EngineState, runId: RunId, stageName: string): EngineState {
+    const started = reduce(state, {
+      type: "STAGE_STARTED",
+      now: NOW + 1,
+      runId,
+      stageName,
+    });
+    const failed = reduce(started.state, {
+      type: "STAGE_FAILED",
+      now: NOW + 2,
+      runId,
+      stageName,
+      errorMessage: "boom",
+    });
+    return failed.state;
+  }
+
+  it("re-arms a stalled run: failed stage → pending with fresh stageRunId, loop → running", () => {
+    const triggered = fireTrigger(emptyEngineState());
+    const stalled = failStage(triggered.state, asRunId("run-1"), "review");
+    expect(stalled.runs[asRunId("run-1")].loopState).toBe("stalled");
+
+    const { state, effects } = reduce(stalled, {
+      type: "RUN_RESUMED",
+      now: NOW + 3,
+      runId: asRunId("run-1"),
+      stageRunIds: { review: asStageRunId("sr-resume-1") },
+    });
+
+    const run = state.runs[asRunId("run-1")];
+    expect(run.loopState).toBe("running");
+    expect(run.terminationReason).toBeUndefined();
+    expect(run.stages.review.status).toBe("pending");
+    expect(run.stages.review.attempt).toBe(2);
+    expect(run.stages.review.stageRunId).toBe("sr-resume-1");
+    expect(run.stages.review.errorMessage).toBeUndefined();
+
+    const types = effects.map((e) => e.type);
+    expect(types).toContain("PERSIST_RUN");
+    expect(types).toContain("PERSIST_LOOP_STATE");
+    expect(types).toContain("START_STAGE");
+    const obs = effects.find(
+      (e) => e.type === "EMIT_OBSERVATION" && e.event.name === "pipeline.run.resumed",
+    );
+    expect(obs).toBeDefined();
+  });
+
+  it("rejects RUN_RESUMED that would exceed stage.retries", () => {
+    const pipeline = makePipeline({
+      stages: [makeStage("review", { retries: 0 })], // 0 retries → cap at 1 attempt
+    });
+    const triggered = fireTrigger(emptyEngineState(), { pipeline });
+    const stalled = failStage(triggered.state, asRunId("run-1"), "review");
+    // attempt is currently 1; retries=0 means cap is 1. Resume would bump to 2 → reject.
+
+    const { state, effects } = reduce(stalled, {
+      type: "RUN_RESUMED",
+      now: NOW + 3,
+      runId: asRunId("run-1"),
+      stageRunIds: { review: asStageRunId("sr-resume-1") },
+    });
+
+    expect(state.runs[asRunId("run-1")].stages.review.status).toBe("failed");
+    expect(state.runs[asRunId("run-1")].loopState).toBe("stalled");
+    const obs = effects.find(
+      (e) => e.type === "EMIT_OBSERVATION" && e.event.name === "pipeline.invalid_transition",
+    );
+    expect(obs).toBeDefined();
+  });
+
+  it("rejects RUN_RESUMED on unknown runId", () => {
+    const { state, effects } = reduce(emptyEngineState(), {
+      type: "RUN_RESUMED",
+      now: NOW,
+      runId: asRunId("missing"),
+      stageRunIds: {},
+    });
+    expect(state).toEqual(emptyEngineState());
+    const obs = effects.find(
+      (e) => e.type === "EMIT_OBSERVATION" && e.event.name === "pipeline.invalid_transition",
+    );
+    expect(obs).toBeDefined();
+  });
+});
+
 describe("pipeline reducer — purity", () => {
   it("does not mutate the input state on TRIGGER_FIRED", () => {
     const initial = emptyEngineState();

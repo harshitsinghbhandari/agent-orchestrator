@@ -241,6 +241,7 @@ export {
   getProjectSessionsDir,
   getProjectWorktreesDir,
   getProjectFeedbackReportsDir,
+  getProjectPipelinesDir,
   getOrchestratorPath,
   getSessionPath,
   parseTmuxNameV2,
@@ -401,6 +402,10 @@ export {
   AgentExecutorSpawnError,
   STAGE_FINDINGS_RELATIVE_PATH,
   createPipelineEngine,
+  // Pipeline config schema (`pipelines:` block)
+  ConfiguredPipelineSchema,
+  PipelinesConfigSchema,
+  configuredPipelineToRuntime,
 } from "./pipeline/index.js";
 
 export type {
@@ -459,6 +464,8 @@ export type {
   PipelineEngine,
   PipelineEngineDeps,
   StartRunInput,
+  ConfiguredPipeline,
+  PipelinesConfig,
 } from "./pipeline/index.js";
 
 // Activity event logging — structured diagnostic event trail

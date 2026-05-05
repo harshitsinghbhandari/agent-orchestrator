@@ -67,6 +67,15 @@ export type PipelineEvent =
       reason: RunTerminationReason;
     })
   | (EventBase & {
+      type: "RUN_RESUMED";
+      runId: RunId;
+      /**
+       * Driver-allocated stage run ids for the failed stages being re-armed.
+       * Required so the new attempt has a fresh, non-colliding stageRunId.
+       */
+      stageRunIds: Record<string, StageRunId>;
+    })
+  | (EventBase & {
       type: "CONFIG_CHANGED";
       sessionId: string;
       pipelineName: string;
