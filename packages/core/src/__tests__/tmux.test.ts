@@ -4,7 +4,6 @@ import {
   isTmuxAvailable,
   listSessions,
   hasSession,
-  newSession,
   sendKeys,
   capturePane,
   killSession,
@@ -115,68 +114,6 @@ describe("hasSession", () => {
   it("returns false when session does not exist", async () => {
     mockTmuxError("session not found");
     expect(await hasSession("app-99")).toBe(false);
-  });
-});
-
-describe("newSession", () => {
-  it("creates a basic session", async () => {
-    mockTmuxSuccess("");
-
-    await newSession({ name: "test-1", cwd: "/tmp/workspace" });
-
-    expect(mockExecFile).toHaveBeenCalledWith(
-      "tmux",
-      ["new-session", "-d", "-s", "test-1", "-c", "/tmp/workspace"],
-      expect.any(Object),
-      expect.any(Function),
-    );
-  });
-
-  it("includes environment variables", async () => {
-    mockTmuxSuccess("");
-
-    await newSession({
-      name: "test-2",
-      cwd: "/tmp",
-      environment: { AO_SESSION: "test-2", SOME_VAR: "value" },
-    });
-
-    const args = mockExecFile.mock.calls[0][1] as string[];
-    expect(args).toContain("-e");
-    expect(args).toContain("AO_SESSION=test-2");
-    expect(args).toContain("SOME_VAR=value");
-  });
-
-  it("includes window size", async () => {
-    mockTmuxSuccess("");
-
-    await newSession({ name: "test-3", cwd: "/tmp", width: 200, height: 50 });
-
-    const args = mockExecFile.mock.calls[0][1] as string[];
-    expect(args).toContain("-x");
-    expect(args).toContain("200");
-    expect(args).toContain("-y");
-    expect(args).toContain("50");
-  });
-
-  it("sends initial command after creation", async () => {
-    // Calls: new-session, set-option status off, send-keys Escape, send-keys text, send-keys Enter
-    mockTmuxSequence([{ stdout: "" }, { stdout: "" }, { stdout: "" }, { stdout: "" }, { stdout: "" }]);
-
-    await newSession({ name: "test-4", cwd: "/tmp", command: "echo hello" });
-
-    expect(mockExecFile).toHaveBeenCalledTimes(5);
-    // Call 0: new-session
-    // Call 1: set-option status off (hide status bar)
-    const statusArgs = mockExecFile.mock.calls[1][1] as string[];
-    expect(statusArgs).toEqual(["set-option", "-t", "test-4", "status", "off"]);
-    // Call 2: send-keys Escape (clear partial input)
-    const escapeArgs = mockExecFile.mock.calls[2][1] as string[];
-    expect(escapeArgs).toEqual(["send-keys", "-t", "test-4", "Escape"]);
-    // Call 3: send-keys text
-    const textArgs = mockExecFile.mock.calls[3][1] as string[];
-    expect(textArgs).toContain("send-keys");
-    expect(textArgs).toContain("echo hello");
   });
 });
 

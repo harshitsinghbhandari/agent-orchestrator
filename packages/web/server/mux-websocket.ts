@@ -192,17 +192,47 @@ interface ManagedTerminal {
   buffer: string[];
   bufferBytes: number;
   reattachAttempts: number;
+  /**
+   * Pending grace-period timer that resets reattachAttempts when the
+   * currently-attached PTY survives REATTACH_RESET_GRACE_MS. Tracked so
+   * cleanup paths (last-subscriber unsubscribe, subsequent re-attach) can
+   * clear it and avoid keeping the dead PTY/terminal closure references
+   * reachable for up to 5 s after teardown.
+   */
+  resetTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Pending kill scheduled when the last subscriber leaves. macOS never
+   * recycles ptmx slot numbers within a boot, so churning PTYs across
+   * tab reloads / sleep-wake / network blips burns slots and eventually
+   * exhausts kern.tty.ptmx_max=511 (issue #1718). A grace window lets a
+   * quick reconnect reuse the existing PTY instead of allocating a fresh
+   * one.
+   */
+  idleGraceTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const RING_BUFFER_MAX = 50 * 1024; // 50KB max per terminal
 const WS_BUFFER_HIGH_WATERMARK = 64 * 1024; // 64KB
 const MAX_REATTACH_ATTEMPTS = 3;
+/**
+ * Grace period a freshly-attached PTY must survive before its successful
+ * attach is allowed to reset the re-attach counter. Prevents tight crash
+ * loops (e.g. attaching to a tmux session that no longer exists) from
+ * gaming the MAX_REATTACH_ATTEMPTS cap by resetting the counter to 0
+ * between every failed attempt.
+ *
+ * 5 s is comfortably longer than the ~40 ms a doomed `tmux attach-session`
+ * takes to exit, while still being short enough that a healthy PTY which
+ * crashes hours later gets a fresh retry budget.
+ */
+const REATTACH_RESET_GRACE_MS = 5_000;
+const PTY_IDLE_GRACE_MS = 30_000; // delay before killing an unsubscribed PTY (issue #1718)
 
 /**
  * TerminalManager manages PTY processes independently of WebSocket connections.
  * A single manager instance is shared across all mux connections.
  */
-class TerminalManager {
+export class TerminalManager {
   private terminals = new Map<string, ManagedTerminal>();
   private TMUX: string;
 
@@ -245,6 +275,7 @@ class TerminalManager {
         buffer: [],
         bufferBytes: 0,
         reattachAttempts: 0,
+        idleGraceTimer: null,
       };
       this.terminals.set(key, terminal);
     }
@@ -254,16 +285,18 @@ class TerminalManager {
       return tmuxSessionId;
     }
 
-    // Enable mouse mode
-    const exactTmuxTarget = `=${tmuxSessionId}`;
+    // tmux 3.4 only honours the `=` exact-match prefix on has-session and
+    // attach-session; set-option silently ignores it, so we use the bare id
+    // here. The `=`-prefixed form is built below for attach-session.
 
-    const mouseProc = spawn(this.TMUX, ["set-option", "-t", exactTmuxTarget, "mouse", "on"]);
+    // Enable mouse mode
+    const mouseProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "mouse", "on"]);
     mouseProc.on("error", (err) => {
       console.error(`[MuxServer] Failed to set mouse mode for ${tmuxSessionId}:`, err.message);
     });
 
     // Hide the status bar
-    const statusProc = spawn(this.TMUX, ["set-option", "-t", exactTmuxTarget, "status", "off"]);
+    const statusProc = spawn(this.TMUX, ["set-option", "-t", tmuxSessionId, "status", "off"]);
     statusProc.on("error", (err) => {
       console.error(`[MuxServer] Failed to hide status bar for ${tmuxSessionId}:`, err.message);
     });
@@ -285,7 +318,9 @@ class TerminalManager {
       throw new Error("node-pty not available");
     }
 
-    // Spawn PTY
+    // Spawn PTY — use `=`-prefixed exact-match target so we never attach to
+    // a session whose name happens to be a prefix of the requested id.
+    const exactTmuxTarget = `=${tmuxSessionId}`;
     const pty = ptySpawn(this.TMUX, ["attach-session", "-t", exactTmuxTarget], {
       name: "xterm-256color",
       cols: 80,
@@ -295,6 +330,25 @@ class TerminalManager {
     });
 
     terminal.pty = pty;
+
+    // Schedule a grace-period reset of the re-attach counter. We only
+    // consider an attach "really successful" if the PTY survives long
+    // enough to suggest the underlying tmux session is actually usable.
+    // The closure-captured `pty` reference is compared with terminal.pty
+    // so a stale timer cannot reset the counter for a PTY that has
+    // already exited or been replaced by re-attach. Any previously-
+    // scheduled timer (from a now-replaced PTY) is cleared so we don't
+    // keep its closure references reachable until the timer fires.
+    if (terminal.resetTimer) {
+      clearTimeout(terminal.resetTimer);
+    }
+    terminal.resetTimer = setTimeout(() => {
+      terminal.resetTimer = undefined;
+      if (terminal.pty === pty) {
+        terminal.reattachAttempts = 0;
+      }
+    }, REATTACH_RESET_GRACE_MS);
+    terminal.resetTimer.unref();
 
     // Wire up data events
     pty.onData((data: string) => {
@@ -327,6 +381,12 @@ class TerminalManager {
       // Re-attach if subscribers are still present, up to MAX_REATTACH_ATTEMPTS.
       // The cap prevents an unbounded respawn loop when the PTY crashes immediately
       // after every attach (e.g. resource exhaustion or a broken tmux session).
+      // The counter is reset by a delayed timer in open() once the new PTY has
+      // survived REATTACH_RESET_GRACE_MS — see the comment on that constant.
+      // Resetting here would defeat the cap: when ao stop kills the tmux session
+      // out from under a still-subscribed dashboard, attach-session exits ~40 ms
+      // after spawn and the loop runs at ~80 spawns/sec, exhausting the system
+      // PTY pool in seconds (issue #1639).
       if (terminal.subscribers.size > 0 && terminal.reattachAttempts < MAX_REATTACH_ATTEMPTS) {
         terminal.reattachAttempts += 1;
         console.log(
@@ -334,7 +394,6 @@ class TerminalManager {
         );
         try {
           this.open(id, projectId, tmuxSessionId);
-          terminal.reattachAttempts = 0; // reset on successful attach
           return; // re-attached — don't notify exit
         } catch (err) {
           console.error(`[MuxServer] Failed to re-attach ${id}:`, err);
@@ -396,17 +455,48 @@ class TerminalManager {
     terminal.subscribers.add(callback);
     if (onExit) terminal.exitCallbacks.add(onExit);
 
+    // A subscriber arrived in time — cancel any pending idle-grace kill
+    // (e.g. tab reload landed within the grace window after a previous
+    // unsubscribe). The PTY is preserved; no new ptmx slot is allocated.
+    if (terminal.idleGraceTimer) {
+      clearTimeout(terminal.idleGraceTimer);
+      terminal.idleGraceTimer = null;
+    }
+
     // Return unsubscribe function
     return () => {
       terminal.subscribers.delete(callback);
       if (onExit) terminal.exitCallbacks.delete(onExit);
-      // Kill PTY and clean up when the last subscriber leaves
-      if (terminal.subscribers.size === 0) {
-        if (terminal.pty) {
-          terminal.pty.kill();
-          terminal.pty = null;
-        }
-        this.terminals.delete(key);
+      // Defer PTY kill when the last subscriber leaves. macOS burns a ptmx
+      // slot per allocation for the lifetime of a boot (issue #1718), so
+      // killing immediately on every disconnect drains kern.tty.ptmx_max.
+      // A grace window lets a quick reconnect reuse the existing PTY.
+      // The reattach-counter resetTimer (#1640) is cleared at kill time so
+      // its closure doesn't keep the evicted terminal reachable.
+      // The terminals.has(key) guard makes unsub idempotent: once the grace
+      // timer has fired and evicted the entry, a defensive double-unsub
+      // (React strict-mode double-invoke, redundant teardown) must not arm
+      // a fresh 30 s timer on the dead `terminal` closure.
+      if (
+        terminal.subscribers.size === 0 &&
+        terminal.idleGraceTimer === null &&
+        this.terminals.has(key)
+      ) {
+        terminal.idleGraceTimer = setTimeout(() => {
+          terminal.idleGraceTimer = null;
+          // Re-check: a subscriber may have arrived during the window.
+          if (terminal.subscribers.size > 0) return;
+          if (terminal.resetTimer) {
+            clearTimeout(terminal.resetTimer);
+            terminal.resetTimer = undefined;
+          }
+          if (terminal.pty) {
+            terminal.pty.kill();
+            terminal.pty = null;
+          }
+          this.terminals.delete(key);
+        }, PTY_IDLE_GRACE_MS);
+        terminal.idleGraceTimer.unref();
       }
     };
   }

@@ -1411,6 +1411,14 @@ export function registerStart(program: Command): void {
                     `\n✓ Added "${addedId}" — open the dashboard to start an orchestrator.\n`,
                   ),
                 );
+                const notifyResult = await attachToDaemon(running).notifyProjectChange();
+                if (!notifyResult.ok) {
+                  console.log(
+                    chalk.yellow(
+                      `  ⚠ ${notifyResult.reason}. Refresh the page if the project doesn't show up.`,
+                    ),
+                  );
+                }
                 openUrl(`http://localhost:${running.port}`);
                 unlockStartup();
                 process.exit(0);

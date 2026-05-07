@@ -1,12 +1,48 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { SessionBroadcaster } from "../mux-websocket";
+import { EventEmitter } from "node:events";
+import type { SessionBroadcaster as SessionBroadcasterType } from "../mux-websocket";
+
+// vi.mock factories run before module-level statements. Hoist the mock
+// fns so the factories close over the same instances the tests use.
+const { mockSpawn, mockPtySpawn } = vi.hoisted(() => ({
+  mockSpawn: vi.fn(),
+  mockPtySpawn: vi.fn(),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  const spawnFn = (...args: unknown[]) => mockSpawn(...args);
+  return {
+    ...actual,
+    default: { ...(actual.default as object), spawn: spawnFn },
+    spawn: spawnFn,
+  };
+});
+
+vi.mock("node-pty", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    spawn: (...args: unknown[]) => mockPtySpawn(...args),
+  };
+});
+
+// Mock tmux-utils so resolveTmuxSession returns a deterministic session id
+// and we don't shell out to a real tmux binary.
+vi.mock("../tmux-utils.js", () => ({
+  findTmux: () => "/usr/bin/tmux",
+  validateSessionId: () => true,
+  resolveTmuxSession: () => "ao-177",
+}));
+
+const { SessionBroadcaster, TerminalManager } = await import("../mux-websocket");
 
 // Mock global fetch
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
 describe("SessionBroadcaster", () => {
-  let broadcaster: SessionBroadcaster;
+  let broadcaster: SessionBroadcasterType;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -223,5 +259,187 @@ describe("SessionBroadcaster", () => {
       // Should only have 1 fetch (initial snapshot)
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("TerminalManager.open — tmux target args (regression for #1714)", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    mockPtySpawn.mockReset();
+
+    // spawn() returns an object that emits "error" — we just need .on() to work.
+    mockSpawn.mockImplementation(() => new EventEmitter());
+
+    // ptySpawn() returns a minimal IPty-like stub so terminal wiring doesn't crash.
+    mockPtySpawn.mockImplementation(() => ({
+      onData: vi.fn(),
+      onExit: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(),
+    }));
+  });
+
+  it("invokes set-option mouse on with the bare session id (no = prefix)", () => {
+    const mgr = new TerminalManager("/usr/bin/tmux");
+    mgr.open("ao-177");
+
+    const mouseCall = mockSpawn.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1].includes("mouse"),
+    );
+    expect(mouseCall).toBeDefined();
+    expect(mouseCall?.[1]).toEqual(["set-option", "-t", "ao-177", "mouse", "on"]);
+  });
+
+  it("invokes set-option status off with the bare session id (no = prefix)", () => {
+    const mgr = new TerminalManager("/usr/bin/tmux");
+    mgr.open("ao-177");
+
+    const statusCall = mockSpawn.mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1].includes("status"),
+    );
+    expect(statusCall).toBeDefined();
+    expect(statusCall?.[1]).toEqual(["set-option", "-t", "ao-177", "status", "off"]);
+  });
+
+  it("still uses the = exact-match prefix for attach-session", () => {
+    const mgr = new TerminalManager("/usr/bin/tmux");
+    mgr.open("ao-177");
+
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+    const [, args] = mockPtySpawn.mock.calls[0];
+    expect(args).toEqual(["attach-session", "-t", "=ao-177"]);
+  });
+});
+
+describe("TerminalManager — PTY idle grace period (issue #1718)", () => {
+  // Stable mock fns shared across spawns within a single test, reset per test.
+  // The unit under test relies on `pty.kill()` being called exactly once on
+  // grace expiry, so kill needs a stable identity to count against.
+  let ptyKill: ReturnType<typeof vi.fn>;
+  let ptyOnData: ReturnType<typeof vi.fn>;
+  let ptyOnExit: ReturnType<typeof vi.fn>;
+  let manager: InstanceType<typeof TerminalManager>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockSpawn.mockReset();
+    mockPtySpawn.mockReset();
+
+    ptyKill = vi.fn();
+    ptyOnData = vi.fn();
+    ptyOnExit = vi.fn();
+
+    mockSpawn.mockImplementation(() => new EventEmitter());
+    mockPtySpawn.mockImplementation(() => ({
+      onData: ptyOnData,
+      onExit: ptyOnExit,
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: ptyKill,
+    }));
+
+    manager = new TerminalManager("/usr/bin/tmux");
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("does not kill the PTY immediately when the last subscriber unsubscribes", () => {
+    const unsub = manager.subscribe("ao-177", undefined, vi.fn());
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+
+    unsub();
+
+    // PTY must remain alive during the grace window — killing here would
+    // burn a fresh ptmx slot on the next reconnect (issue #1718).
+    expect(ptyKill).not.toHaveBeenCalled();
+  });
+
+  it("kills the PTY after the grace period expires with no reconnect", () => {
+    const unsub = manager.subscribe("ao-177", undefined, vi.fn());
+    unsub();
+
+    // Just before the window closes — still alive.
+    vi.advanceTimersByTime(29_999);
+    expect(ptyKill).not.toHaveBeenCalled();
+
+    // Window closes — kill fires.
+    vi.advanceTimersByTime(1);
+    expect(ptyKill).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the PTY when a new subscriber arrives within the grace window", () => {
+    const unsub1 = manager.subscribe("ao-177", undefined, vi.fn());
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+    unsub1();
+
+    // A reconnect lands halfway through the grace window.
+    vi.advanceTimersByTime(15_000);
+    const unsub2 = manager.subscribe("ao-177", undefined, vi.fn());
+
+    // No new PTY allocated and the original is still alive — reconnect
+    // reused the existing slot, which is the whole point of the fix.
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+    expect(ptyKill).not.toHaveBeenCalled();
+
+    // After the original timer's deadline passes, the cancelled timer must
+    // not retroactively kill the still-subscribed PTY.
+    vi.advanceTimersByTime(60_000);
+    expect(ptyKill).not.toHaveBeenCalled();
+
+    unsub2();
+  });
+
+  it("only kills once when last subscriber leaves and grace expires", () => {
+    const unsub1 = manager.subscribe("ao-177", undefined, vi.fn());
+    const unsub2 = manager.subscribe("ao-177", undefined, vi.fn());
+
+    unsub1();
+    // First unsubscribe is not the last subscriber — no timer scheduled.
+    vi.advanceTimersByTime(60_000);
+    expect(ptyKill).not.toHaveBeenCalled();
+
+    unsub2();
+    // Now we are at zero subscribers — schedule the grace timer.
+    vi.advanceTimersByTime(30_000);
+    expect(ptyKill).toHaveBeenCalledTimes(1);
+  });
+
+  it("buffer is preserved across an unsubscribe/resubscribe within grace", () => {
+    const cb = vi.fn();
+    const unsub = manager.subscribe("ao-177", undefined, cb);
+
+    // Simulate the PTY emitting some output by invoking the captured handler.
+    const onDataHandler = ptyOnData.mock.calls[0]?.[0] as (data: string) => void;
+    onDataHandler("hello");
+
+    unsub();
+    vi.advanceTimersByTime(10_000);
+
+    // The terminal entry must still exist — buffered output is still there.
+    expect(manager.getBuffer("ao-177")).toBe("hello");
+
+    // After full grace expiry, the entry is cleaned up.
+    vi.advanceTimersByTime(20_001);
+    expect(manager.getBuffer("ao-177")).toBe("");
+  });
+
+  it("double-unsub after grace eviction does not re-arm the timer", () => {
+    const unsub = manager.subscribe("ao-177", undefined, vi.fn());
+
+    // First unsub schedules the grace timer; expiry kills + evicts the entry.
+    unsub();
+    vi.advanceTimersByTime(30_000);
+    expect(ptyKill).toHaveBeenCalledTimes(1);
+    expect(manager.getBuffer("ao-177")).toBe(""); // entry evicted
+
+    // A defensive second unsub (e.g. React strict-mode double-invoke) must
+    // be a no-op — no new timer scheduled on the dead terminal closure.
+    unsub();
+    vi.advanceTimersByTime(30_000 * 2);
+    expect(ptyKill).toHaveBeenCalledTimes(1); // still exactly one kill
   });
 });
