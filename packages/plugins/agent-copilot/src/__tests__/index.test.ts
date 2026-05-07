@@ -18,6 +18,10 @@ const {
   mockWriteFile,
   mockRename,
   mockHomedir,
+  mockTmpdir,
+  mockMkdirSync,
+  mockWriteFileSync,
+  mockCopyFileSync,
   mockReadLastJsonlEntry,
   mockReadLastActivityEntry,
   mockCheckActivityLogState,
@@ -32,6 +36,10 @@ const {
   mockWriteFile: vi.fn().mockResolvedValue(undefined),
   mockRename: vi.fn().mockResolvedValue(undefined),
   mockHomedir: vi.fn(() => "/mock/home"),
+  mockTmpdir: vi.fn(() => "/mock/tmp"),
+  mockMkdirSync: vi.fn(),
+  mockWriteFileSync: vi.fn(),
+  mockCopyFileSync: vi.fn(),
   mockReadLastJsonlEntry: vi.fn(),
   mockReadLastActivityEntry: vi.fn(),
   mockCheckActivityLogState: vi.fn(),
@@ -57,6 +65,13 @@ vi.mock("node:fs/promises", () => ({
 
 vi.mock("node:os", () => ({
   homedir: mockHomedir,
+  tmpdir: mockTmpdir,
+}));
+
+vi.mock("node:fs", () => ({
+  mkdirSync: mockMkdirSync,
+  writeFileSync: mockWriteFileSync,
+  copyFileSync: mockCopyFileSync,
 }));
 
 vi.mock("@aoagents/ao-core", async (importOriginal) => {
@@ -316,43 +331,32 @@ describe("getLaunchCommand", () => {
     expect(cmd).toContain("--no-auto-update");
   });
 
-  it("inlines systemPrompt as a prefix to the user prompt", () => {
+  it("does NOT inline systemPrompt into the launch command (would be visible to user)", () => {
+    // systemPrompt must travel via COPILOT_CUSTOM_INSTRUCTIONS_DIRS, not -i,
+    // otherwise Copilot echoes it as the first user message and leaks
+    // orchestrator instructions to the user.
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ systemPrompt: "You are helpful", prompt: "Fix the bug" }),
+      makeLaunchConfig({ systemPrompt: "Secret orchestrator prompt", prompt: "Fix the bug" }),
     );
-    expect(cmd).toContain("-i 'You are helpful\n\nFix the bug'");
+    expect(cmd).not.toContain("Secret orchestrator prompt");
+    expect(cmd).toContain("-i 'Fix the bug'");
   });
 
-  it("uses systemPrompt alone when no user prompt is given", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ systemPrompt: "You are helpful" }));
-    expect(cmd).toContain("-i 'You are helpful'");
-  });
-
-  it("uses systemPromptFile via shell substitution when provided", () => {
+  it("does NOT inline systemPromptFile path into the launch command", () => {
     const cmd = agent.getLaunchCommand(
       makeLaunchConfig({ systemPromptFile: "/tmp/sys.md", prompt: "Go" }),
     );
-    expect(cmd).toContain("-i ");
-    expect(cmd).toContain("$(cat '/tmp/sys.md'");
-    expect(cmd).toContain("'Go'");
+    expect(cmd).not.toContain("/tmp/sys.md");
+    expect(cmd).not.toContain("$(cat");
+    expect(cmd).toContain("-i 'Go'");
   });
 
-  it("prefers systemPromptFile over systemPrompt when both are set", () => {
-    const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({
-        systemPromptFile: "/tmp/sys.md",
-        systemPrompt: "ignored",
-        prompt: "Go",
-      }),
-    );
-    expect(cmd).toContain("$(cat '/tmp/sys.md'");
-    expect(cmd).not.toContain("'ignored'");
-  });
-
-  it("works with systemPromptFile but no user prompt", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ systemPromptFile: "/tmp/sys.md" }));
-    expect(cmd).toContain("-i ");
-    expect(cmd).toContain("$(cat '/tmp/sys.md'");
+  it("omits -i entirely when only systemPrompt is given (no user prompt)", () => {
+    // With only a system prompt, there's no user message to deliver. The
+    // system prompt is loaded via COPILOT_CUSTOM_INSTRUCTIONS_DIRS instead.
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ systemPrompt: "You are helpful" }));
+    expect(cmd).not.toContain("-i");
+    expect(cmd).not.toContain("You are helpful");
   });
 });
 
@@ -385,6 +389,70 @@ describe("getEnvironment", () => {
   it("does not set PATH (injected by session-manager)", () => {
     const env = agent.getEnvironment(makeLaunchConfig());
     expect(env["PATH"]).toBeUndefined();
+  });
+
+  it("does NOT set COPILOT_CUSTOM_INSTRUCTIONS_DIRS when no system prompt is configured", () => {
+    const env = agent.getEnvironment(makeLaunchConfig());
+    expect(env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]).toBeUndefined();
+  });
+
+  it("writes systemPrompt to a per-session AGENTS.md and points env at its dir", () => {
+    const env = agent.getEnvironment(
+      makeLaunchConfig({ sessionId: "abc-123", systemPrompt: "You are an orchestrator" }),
+    );
+
+    const expectedDir = "/mock/tmp/ao-copilot-instructions/abc-123";
+    expect(env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]).toBe(expectedDir);
+    expect(mockMkdirSync).toHaveBeenCalledWith(expectedDir, { recursive: true });
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      `${expectedDir}/AGENTS.md`,
+      "You are an orchestrator",
+      "utf-8",
+    );
+    // System prompt content must NEVER appear in the launch command
+    expect(mockCopyFileSync).not.toHaveBeenCalled();
+  });
+
+  it("copies systemPromptFile into the per-session AGENTS.md", () => {
+    const env = agent.getEnvironment(
+      makeLaunchConfig({ sessionId: "xyz-789", systemPromptFile: "/data/orch-prompt.md" }),
+    );
+
+    const expectedDir = "/mock/tmp/ao-copilot-instructions/xyz-789";
+    expect(env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]).toBe(expectedDir);
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      "/data/orch-prompt.md",
+      `${expectedDir}/AGENTS.md`,
+    );
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("prefers systemPromptFile over systemPrompt when both are set", () => {
+    agent.getEnvironment(
+      makeLaunchConfig({
+        sessionId: "sess-1",
+        systemPromptFile: "/data/from-file.md",
+        systemPrompt: "from inline (should be ignored)",
+      }),
+    );
+
+    expect(mockCopyFileSync).toHaveBeenCalled();
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("skips COPILOT_CUSTOM_INSTRUCTIONS_DIRS when filesystem write fails (best-effort)", () => {
+    mockMkdirSync.mockImplementationOnce(() => {
+      throw new Error("EACCES");
+    });
+
+    const env = agent.getEnvironment(
+      makeLaunchConfig({ sessionId: "sess-fail", systemPrompt: "blocked" }),
+    );
+
+    expect(env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]).toBeUndefined();
+    // Other env vars must still be set so the launch proceeds
+    expect(env["AO_SESSION_ID"]).toBe("sess-fail");
+    expect(env["COPILOT_AUTO_UPDATE"]).toBe("false");
   });
 });
 

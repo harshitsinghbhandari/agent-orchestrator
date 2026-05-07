@@ -21,8 +21,9 @@ import {
   type WorkspaceHooksConfig,
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -151,6 +152,48 @@ async function ensureFolderTrusted(workspacePath: string): Promise<void> {
   }
   // Best-effort: don't throw — folder trust is a UX optimization, not a
   // correctness requirement. The dialog will show but Copilot still launches.
+}
+
+// =============================================================================
+// System Prompt Delivery (via COPILOT_CUSTOM_INSTRUCTIONS_DIRS)
+// =============================================================================
+
+/**
+ * Write the launch config's systemPrompt/systemPromptFile to a per-session
+ * temp directory and return that path so getEnvironment can set
+ * COPILOT_CUSTOM_INSTRUCTIONS_DIRS. Returns null if no system prompt is
+ * configured or if the write fails (best-effort — we'd rather launch without
+ * the prompt than block startup).
+ *
+ * Why a temp dir instead of the workspace's `.ao/`: getEnvironment is sync
+ * and doesn't have the workspace path. Using `os.tmpdir()/ao-copilot/<sessionId>/`
+ * gives us a deterministic, cleanly-namespaced location reachable from any
+ * cwd.
+ *
+ * Exported for testing only.
+ */
+export function writeCopilotInstructionsDir(config: AgentLaunchConfig): string | null {
+  if (!config.systemPrompt && !config.systemPromptFile) return null;
+
+  try {
+    const dir = join(tmpdir(), "ao-copilot-instructions", config.sessionId);
+    mkdirSync(dir, { recursive: true });
+    const dest = join(dir, "AGENTS.md");
+
+    if (config.systemPromptFile) {
+      // Copy the file so Copilot reads a stable snapshot, even if the source
+      // is rewritten mid-session.
+      copyFileSync(config.systemPromptFile, dest);
+    } else if (config.systemPrompt) {
+      writeFileSync(dest, config.systemPrompt, "utf-8");
+    }
+
+    return dir;
+  } catch {
+    // Filesystem error — skip the env var so launch proceeds without the
+    // system prompt rather than failing the spawn.
+    return null;
+  }
 }
 
 // =============================================================================
@@ -605,47 +648,14 @@ function createCopilotAgent(): Agent {
       // Prevent update prompts during agent execution
       parts.push("--no-auto-update");
 
-      // Copilot has no separate `--system-prompt` flag, so we prepend the
-      // system prompt onto the user prompt via shell substitution. This keeps
-      // long system prompts out of the tmux command buffer (the file is
-      // dereferenced at exec time) and matches the pattern used by claude-code.
-      //
-      // Shell-quoting note for the systemPromptFile branch:
-      //   "$(cat <file>; printf '\n\n'; printf %s <prompt>)"
-      //   ─┬─ ─┬─ ──┬──  ──────┬──────  ──────────┬──────── ─┬─
-      //    │   │    │           │                  │          └─ outer double-quotes:
-      //    │   │    │           │                  │             needed so $(...) substitutes,
-      //    │   │    │           │                  │             but otherwise inert against
-      //    │   │    │           │                  │             the inner single-quoted args.
-      //    │   │    │           │                  └─ printf %s + shellEscape: emits the user
-      //    │   │    │           │                     prompt verbatim, no interpolation.
-      //    │   │    │           └─ printf '\n\n': portable two-newline separator.
-      //    │   │    └─ shellEscape wraps the path in single quotes — safe even if it
-      //    │   │       contains spaces, $, backticks, etc.
-      //    │   └─ semicolons sequence the three subcommands inside one $(...).
-      //    └─ outer double-quotes are required so the shell evaluates the $() and joins
-      //       the three printed strings into a single -i argument.
-      const buildPrompt = (): string | null => {
-        if (config.systemPromptFile) {
-          const promptSuffix = config.prompt ?? "";
-          return `"$(cat ${shellEscape(config.systemPromptFile)}; printf '\\n\\n'; printf %s ${shellEscape(promptSuffix)})"`;
-        }
-        if (config.systemPrompt) {
-          const combined = config.prompt
-            ? `${config.systemPrompt}\n\n${config.prompt}`
-            : config.systemPrompt;
-          return shellEscape(combined);
-        }
-        if (config.prompt) {
-          return shellEscape(config.prompt);
-        }
-        return null;
-      };
-
-      const promptArg = buildPrompt();
-      if (promptArg) {
+      // Note: system prompt is NOT inlined into -i. Copilot would echo it
+      // as the first user message, which leaks orchestrator instructions to
+      // the user. Instead, getEnvironment writes the system prompt to a
+      // COPILOT_CUSTOM_INSTRUCTIONS_DIRS path so Copilot loads it as
+      // instructions (invisible) rather than user input.
+      if (config.prompt) {
         // -i keeps Copilot interactive after the prompt is delivered.
-        parts.push("-i", promptArg);
+        parts.push("-i", shellEscape(config.prompt));
       }
 
       return parts.join(" ");
@@ -662,6 +672,19 @@ function createCopilotAgent(): Agent {
 
       // Prevent auto-update prompts during execution
       env["COPILOT_AUTO_UPDATE"] = "false";
+
+      // Deliver the system prompt via Copilot's custom-instructions mechanism
+      // so it doesn't appear in the user-visible terminal. Copilot loads
+      // AGENTS.md from any directory in COPILOT_CUSTOM_INSTRUCTIONS_DIRS as
+      // system-level instructions (not as a user message, unlike `-i <prompt>`).
+      //
+      // This is sync I/O on purpose — getEnvironment is sync and the cost is
+      // a single file write at session start. Best-effort: if writing fails,
+      // we skip the env var rather than blocking the launch.
+      const systemPromptDir = writeCopilotInstructionsDir(config);
+      if (systemPromptDir) {
+        env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"] = systemPromptDir;
+      }
 
       return env;
     },
