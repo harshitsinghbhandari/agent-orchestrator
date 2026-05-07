@@ -473,7 +473,15 @@ export class TerminalManager {
       // A grace window lets a quick reconnect reuse the existing PTY.
       // The reattach-counter resetTimer (#1640) is cleared at kill time so
       // its closure doesn't keep the evicted terminal reachable.
-      if (terminal.subscribers.size === 0 && terminal.idleGraceTimer === null) {
+      // The terminals.has(key) guard makes unsub idempotent: once the grace
+      // timer has fired and evicted the entry, a defensive double-unsub
+      // (React strict-mode double-invoke, redundant teardown) must not arm
+      // a fresh 30 s timer on the dead `terminal` closure.
+      if (
+        terminal.subscribers.size === 0 &&
+        terminal.idleGraceTimer === null &&
+        this.terminals.has(key)
+      ) {
         terminal.idleGraceTimer = setTimeout(() => {
           terminal.idleGraceTimer = null;
           // Re-check: a subscriber may have arrived during the window.

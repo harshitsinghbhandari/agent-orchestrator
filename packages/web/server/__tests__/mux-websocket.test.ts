@@ -426,4 +426,20 @@ describe("TerminalManager — PTY idle grace period (issue #1718)", () => {
     vi.advanceTimersByTime(20_001);
     expect(manager.getBuffer("ao-177")).toBe("");
   });
+
+  it("double-unsub after grace eviction does not re-arm the timer", () => {
+    const unsub = manager.subscribe("ao-177", undefined, vi.fn());
+
+    // First unsub schedules the grace timer; expiry kills + evicts the entry.
+    unsub();
+    vi.advanceTimersByTime(30_000);
+    expect(ptyKill).toHaveBeenCalledTimes(1);
+    expect(manager.getBuffer("ao-177")).toBe(""); // entry evicted
+
+    // A defensive second unsub (e.g. React strict-mode double-invoke) must
+    // be a no-op — no new timer scheduled on the dead terminal closure.
+    unsub();
+    vi.advanceTimersByTime(30_000 * 2);
+    expect(ptyKill).toHaveBeenCalledTimes(1); // still exactly one kill
+  });
 });
