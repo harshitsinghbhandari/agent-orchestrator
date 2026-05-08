@@ -334,6 +334,80 @@ describe("workspace-worktree (integration)", () => {
     }
   }, 30_000);
 
+  // Direct repro of the user-reported failure on PR #1742: the workspace dir
+  // physically exists on disk but is no longer a valid git working tree
+  // (workspace.exists() returned false because rev-parse failed). The first
+  // `git worktree add <path> <branch>` fails with `'<path>' already exists`,
+  // so restore must rmSync the stale dir before retrying. Without this, my
+  // first fix attempt cleaned the registry but left the dir, so the retry
+  // failed identically.
+  it("restore recovers when a stale (non-worktree) directory exists at the path", async () => {
+    const { bareDir, cloneParent, repoDir: isolatedRepoDir } = await createRepoClone();
+    const rawBase = await mkdtemp(join(tmpdir(), "ao-inttest-wt-restore-junkdir-"));
+    const isolatedWorktreeBaseDir = await realpath(rawBase);
+
+    try {
+      await git(isolatedRepoDir, "switch", "-c", "main");
+      const mainSha = await createCommit(isolatedRepoDir, "base.txt", "main\n");
+      await git(isolatedRepoDir, "push", "-u", "origin", "main");
+
+      const isolatedWorkspace = worktreePlugin.create({ worktreeDir: isolatedWorktreeBaseDir });
+      const proj: ProjectConfig = {
+        name: "restore-junkdir",
+        repo: "test/restore-junkdir",
+        path: isolatedRepoDir,
+        defaultBranch: "main",
+        sessionPrefix: "ao",
+      };
+
+      const created = await isolatedWorkspace.create({
+        projectId: "restore-junkdir",
+        sessionId: "ao-1",
+        project: proj,
+        branch: "session/ao-1",
+      });
+
+      await git(created.path, "config", "user.email", "test@test.com");
+      await git(created.path, "config", "user.name", "Test");
+      const sessionSha = await createCommit(created.path, "session.txt", "session work\n");
+      expect(sessionSha).not.toBe(mainSha);
+
+      // Clean teardown — registry and dir both gone, branch preserved.
+      await isolatedWorkspace.destroy(created.path);
+      expect(existsSync(created.path)).toBe(false);
+
+      // Now simulate a partially-restored or hand-mucked state: the dir
+      // exists at workspacePath but is just leftover files, not a working
+      // tree. workspace.exists() will return false (rev-parse fails), so
+      // restore is invoked, and its first `worktree add` will fail with
+      // `'<path>' already exists`.
+      await execFileAsync("mkdir", ["-p", created.path]);
+      await writeFile(join(created.path, "stale.txt"), "junk\n");
+      expect(existsSync(created.path)).toBe(true);
+
+      const restored = await isolatedWorkspace.restore!(
+        {
+          projectId: "restore-junkdir",
+          sessionId: "ao-1",
+          project: proj,
+          branch: "session/ao-1",
+        },
+        created.path,
+      );
+
+      expect(restored.branch).toBe("session/ao-1");
+      // Junk file must be gone (restore rmSync'd the stale dir before retry).
+      expect(existsSync(join(created.path, "stale.txt"))).toBe(false);
+      // Session commit must survive — anything using -B would have lost it.
+      expect(await git(restored.path, "rev-parse", "HEAD")).toBe(sessionSha);
+      expect(await git(isolatedRepoDir, "rev-parse", "refs/heads/session/ao-1")).toBe(sessionSha);
+    } finally {
+      await rm(isolatedWorktreeBaseDir, { recursive: true, force: true }).catch(() => {});
+      await rm(cloneParent, { recursive: true, force: true }).catch(() => {});
+      await rm(bareDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30_000);
+
   it("resets a stale session branch when origin default branch advances", async () => {
     const { bareDir, cloneParent, repoDir: isolatedRepoDir } = await createRepoClone();
     const rawBase = await mkdtemp(join(tmpdir(), "ao-inttest-wt-stale-origin-"));

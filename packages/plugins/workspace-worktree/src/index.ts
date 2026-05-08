@@ -460,20 +460,19 @@ export function create(config?: Record<string, unknown>): Workspace {
         const branchRef = `refs/heads/${cfg.branch}`;
         if (await refExists(repoPath, branchRef)) {
           // Branch exists locally — destroy() intentionally preserves session
-          // branches so commits aren't lost. The first attempt likely failed
-          // due to a stale worktree registry entry at workspacePath. Clear any
-          // such entry and retry; never fall through to -b/-B, which would
-          // either fail ("branch already exists") or discard commits.
+          // branches so commits aren't lost. The first attempt failed because
+          // workspacePath has a stale registry entry, a stale directory, or
+          // both (workspace.exists() returned false to even reach restore, so
+          // the dir is not a valid working tree). Force-remove any registered
+          // worktree, then clearStaleWorktreePath rmSyncs leftover files.
+          // Never fall through to -b/-B, which would either fail ("branch
+          // already exists") or discard the session's commits.
           try {
             await git(repoPath, "worktree", "remove", "--force", workspacePath);
           } catch {
             // Best-effort — path may not be a registered worktree
           }
-          try {
-            await git(repoPath, "worktree", "prune");
-          } catch {
-            // Best-effort
-          }
+          await clearStaleWorktreePath(repoPath, workspacePath);
           await git(repoPath, "worktree", "add", workspacePath, cfg.branch);
         } else {
           const baseRef = await resolveBaseRef(repoPath, cfg.project.defaultBranch, {
