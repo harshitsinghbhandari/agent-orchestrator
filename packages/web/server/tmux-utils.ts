@@ -129,6 +129,31 @@ export function findTmux(
 }
 
 /**
+ * Check whether a tmux session with the given name exists.
+ *
+ * Uses `=` exact-match prefix so the lookup never falls back to tmux's
+ * default prefix matching (where "ao-1" would match "ao-15"). The caller
+ * must already have the canonical tmux session name (typically the value
+ * returned by `resolveTmuxSession`).
+ *
+ * @returns true if the session exists, false otherwise (including tmux
+ *   not running, no sessions, or any unexpected error)
+ */
+export function tmuxHasSession(
+  tmuxPath: string | null,
+  tmuxSessionName: string,
+  execFn: typeof execFileSync = execFileSync,
+): boolean {
+  if (!tmuxPath) return false;
+  try {
+    execFn(tmuxPath, ["has-session", "-t", `=${tmuxSessionName}`], { timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve a user-facing session ID to its actual tmux session name.
  *
  * ao-core names tmux sessions as `{storageKey}-{sessionId}`, where

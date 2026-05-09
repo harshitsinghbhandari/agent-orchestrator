@@ -9,7 +9,13 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { spawn } from "node:child_process";
 import { type Socket, connect as netConnect } from "node:net";
-import { findTmux, resolveTmuxSession, resolvePipePath, validateSessionId } from "./tmux-utils.js";
+import {
+  findTmux,
+  resolveTmuxSession,
+  resolvePipePath,
+  tmuxHasSession,
+  validateSessionId,
+} from "./tmux-utils.js";
 import { getEnvDefaults, isWindows } from "@aoagents/ao-core";
 
 // These types mirror src/lib/mux-protocol.ts exactly.
@@ -371,6 +377,26 @@ export class TerminalManager {
     pty.onExit(({ exitCode }) => {
       console.log(`[MuxServer] PTY exited for ${id} with code ${exitCode}`);
       terminal.pty = null;
+
+      // Skip the re-attach loop entirely when the underlying tmux session is
+      // gone (e.g. user pressed Ctrl-C in the pane and the launch command
+      // exited, taking the only window with it). Without this guard we
+      // burn three doomed attach-session spawns and emit a noisy
+      // "Max re-attach attempts reached" log line for what is actually a
+      // clean user-initiated termination — see issue #1756. The
+      // MAX_REATTACH_ATTEMPTS bound from #1640 still covers tmux server
+      // hiccups where the session does still exist.
+      if (terminal.subscribers.size > 0 && !tmuxHasSession(this.TMUX, tmuxSessionId)) {
+        console.log(`[MuxServer] tmux session ${tmuxSessionId} is gone, not re-attaching`);
+        if (terminal.resetTimer) {
+          clearTimeout(terminal.resetTimer);
+          terminal.resetTimer = undefined;
+        }
+        for (const cb of terminal.exitCallbacks) {
+          cb(exitCode);
+        }
+        return;
+      }
 
       // Re-attach if subscribers are still present, up to MAX_REATTACH_ATTEMPTS.
       // The cap prevents an unbounded respawn loop when the PTY crashes immediately

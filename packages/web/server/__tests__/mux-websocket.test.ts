@@ -4,9 +4,10 @@ import type { SessionBroadcaster as SessionBroadcasterType } from "../mux-websoc
 
 // vi.mock factories run before module-level statements. Hoist the mock
 // fns so the factories close over the same instances the tests use.
-const { mockSpawn, mockPtySpawn } = vi.hoisted(() => ({
+const { mockSpawn, mockPtySpawn, mockTmuxHasSession } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockPtySpawn: vi.fn(),
+  mockTmuxHasSession: vi.fn(),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -33,6 +34,7 @@ vi.mock("../tmux-utils.js", () => ({
   findTmux: () => "/usr/bin/tmux",
   validateSessionId: () => true,
   resolveTmuxSession: () => "ao-177",
+  tmuxHasSession: (...args: unknown[]) => mockTmuxHasSession(...args),
 }));
 
 const { SessionBroadcaster, TerminalManager } = await import("../mux-websocket");
@@ -309,5 +311,62 @@ describe("TerminalManager.open — tmux target args (regression for #1714)", () 
     expect(mockPtySpawn).toHaveBeenCalledTimes(1);
     const [, args] = mockPtySpawn.mock.calls[0];
     expect(args).toEqual(["attach-session", "-t", "=ao-177"]);
+  });
+});
+
+describe("TerminalManager.open — re-attach skipped when tmux session is gone (regression for #1756)", () => {
+  // Captures the latest onExit callback registered by ptySpawn so tests can
+  // synthesise a PTY exit without spawning a real process.
+  let capturedOnExit: ((evt: { exitCode: number }) => void) | undefined;
+
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    mockPtySpawn.mockReset();
+    mockTmuxHasSession.mockReset();
+    capturedOnExit = undefined;
+
+    mockSpawn.mockImplementation(() => new EventEmitter());
+    mockPtySpawn.mockImplementation(() => ({
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (evt: { exitCode: number }) => void) => {
+        capturedOnExit = cb;
+      }),
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(),
+    }));
+  });
+
+  it("skips re-attach and notifies subscribers when has-session reports the tmux session is gone", () => {
+    const mgr = new TerminalManager("/usr/bin/tmux");
+    const exitCb = vi.fn();
+    mgr.subscribe("ao-177", undefined, vi.fn(), exitCb);
+
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+    expect(capturedOnExit).toBeDefined();
+
+    mockTmuxHasSession.mockReturnValueOnce(false);
+    capturedOnExit!({ exitCode: 0 });
+
+    // No second attach-session was spawned — the re-attach loop was skipped.
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+    // Subscribers were notified with the original exit code.
+    expect(exitCb).toHaveBeenCalledTimes(1);
+    expect(exitCb).toHaveBeenCalledWith(0);
+  });
+
+  it("still re-attaches when has-session reports the tmux session is alive", () => {
+    const mgr = new TerminalManager("/usr/bin/tmux");
+    const exitCb = vi.fn();
+    mgr.subscribe("ao-177", undefined, vi.fn(), exitCb);
+
+    expect(mockPtySpawn).toHaveBeenCalledTimes(1);
+
+    mockTmuxHasSession.mockReturnValueOnce(true);
+    capturedOnExit!({ exitCode: 1 });
+
+    // Re-attach happened: ptySpawn called a second time, exit not yet notified.
+    expect(mockPtySpawn).toHaveBeenCalledTimes(2);
+    expect(exitCb).not.toHaveBeenCalled();
   });
 });
