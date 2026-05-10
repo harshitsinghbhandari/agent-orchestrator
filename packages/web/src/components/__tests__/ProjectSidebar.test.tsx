@@ -678,6 +678,30 @@ describe("ProjectSidebar", () => {
       });
     });
 
+    it("does not shadow PR title with auto-derived displayName (displayNameUserSet=false)", () => {
+      // Regression: an auto-derived displayName captured at spawn time must not
+      // beat a live PR title in the sidebar. Mirrors the gate in getSessionTitle.
+      render(
+        <ProjectSidebar
+          projects={projects}
+          sessions={[
+            makeSession({
+              id: "worker-1",
+              projectId: "project-1",
+              displayName: "Stale spawn-time label",
+              displayNameUserSet: false,
+              branch: null,
+              pr: makePR({ title: "feat: live PR title" }),
+            }),
+          ]}
+          activeProjectId="project-1"
+          activeSessionId="worker-1"
+        />,
+      );
+      expect(screen.getByRole("link", { name: "Open feat: live PR title" })).toBeInTheDocument();
+      expect(screen.queryByText("Stale spawn-time label")).not.toBeInTheDocument();
+    });
+
     it("rolls back the optimistic name when the PATCH fails", async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,

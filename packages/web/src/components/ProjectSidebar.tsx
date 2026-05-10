@@ -321,7 +321,7 @@ function ProjectSidebarInner({
     // from the live title so the user types over the visible label.
     const pending = pendingRenames.get(session.id);
     const initial =
-      pending ?? (session.displayNameUserSet ? (session.displayName ?? "") : "") ?? currentTitle;
+      pending ?? (session.displayNameUserSet ? (session.displayName ?? "") : "");
     setEditingSessionId(session.id);
     setEditingValue(initial || currentTitle);
   };
@@ -784,10 +784,18 @@ function ProjectSidebarInner({
                       const level = getAttentionLevel(session);
                       const isSessionActive = activeSessionId === session.id;
                       // Display precedence: optimistic rename (just-saved value)
-                      // → server displayName → branch → fallback chain.
+                      // → user-set displayName → branch → fallback chain.
+                      // Auto-derived displayName (displayNameUserSet=false) is
+                      // intentionally skipped here so PR/issue titles surfaced
+                      // by getSessionTitle aren't shadowed — mirrors the gate in
+                      // format.ts:getSessionTitle.
                       const pending = pendingRenames.get(session.id);
                       const effectiveDisplayName =
-                        pending !== undefined ? pending : (session.displayName ?? "");
+                        pending !== undefined
+                          ? pending
+                          : session.displayNameUserSet
+                            ? (session.displayName ?? "")
+                            : "";
                       const title =
                         effectiveDisplayName !== ""
                           ? effectiveDisplayName
@@ -879,7 +887,7 @@ function ProjectSidebarInner({
                               e.stopPropagation();
                               startRename(session, title);
                             }}
-                            className="project-sidebar__sess-rename-btn opacity-0 group-hover:opacity-100 focus:opacity-100"
+                            className="project-sidebar__sess-rename-btn opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100"
                             title="Rename session"
                             aria-label={`Rename ${session.id}`}
                           >

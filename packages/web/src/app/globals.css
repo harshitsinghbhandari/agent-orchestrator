@@ -4552,7 +4552,7 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   background: transparent;
   cursor: pointer;
   color: var(--color-text-muted);
-  border-radius: 3px;
+  border-radius: 0;
   transition:
     opacity 80ms,
     color 80ms,
@@ -4574,7 +4574,7 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   color: var(--color-text-primary);
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-strong);
-  border-radius: 3px;
+  border-radius: 0;
   padding: 1px 6px;
   outline: none;
 }

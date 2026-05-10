@@ -175,10 +175,14 @@ export function readMetadata(dataDir: string, sessionId: SessionId): SessionMeta
     userPrompt: raw["userPrompt"] as string | undefined,
     displayName: raw["displayName"] as string | undefined,
     displayNameUserSet:
-      raw["displayNameUserSet"] === "true" || raw["displayNameUserSet"] === true
-        ? true
-        : raw["displayNameUserSet"] === "false" || raw["displayNameUserSet"] === false
-          ? false
+      raw["displayNameUserSet"] === "off" ||
+      raw["displayNameUserSet"] === "false" ||
+      raw["displayNameUserSet"] === false
+        ? false
+        : raw["displayNameUserSet"] === "on" ||
+            raw["displayNameUserSet"] === "true" ||
+            raw["displayNameUserSet"] === true
+          ? true
           : undefined,
   };
 }

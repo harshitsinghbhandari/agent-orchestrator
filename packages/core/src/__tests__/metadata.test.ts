@@ -168,6 +168,33 @@ describe("writeMetadata + readMetadata", () => {
     expect(meta?.displayNameUserSet).toBe(true);
   });
 
+  it("accepts on/off and true/false for displayNameUserSet (matches prAutoDetect)", () => {
+    // Defensive: storage paths that flow through unflattenFromStringRecord
+    // already convert "on"/"off" → boolean before write, but readMetadata
+    // should still tolerate the legacy string forms for parity with prAutoDetect.
+    for (const [stored, expected] of [
+      ["on", true],
+      ["off", false],
+      ["true", true],
+      ["false", false],
+      [true, true],
+      [false, false],
+    ] as const) {
+      writeFileSync(
+        join(dataDir, `flag-${String(stored)}.json`),
+        JSON.stringify({
+          worktree: "/tmp/w",
+          branch: "feat/test",
+          status: "working",
+          displayNameUserSet: stored,
+        }),
+        "utf-8",
+      );
+      const meta = readMetadata(dataDir, `flag-${String(stored)}` as never);
+      expect(meta?.displayNameUserSet).toBe(expected);
+    }
+  });
+
   it("omits displayNameUserSet when undefined and does not flag auto-derived sessions", () => {
     writeMetadata(dataDir, "app-8", {
       worktree: "/tmp/w",
