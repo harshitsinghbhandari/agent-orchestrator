@@ -371,24 +371,24 @@ describe("findTmux", () => {
 describe("tmuxHasSession", () => {
   const TMUX = "/opt/homebrew/bin/tmux";
 
-  it("returns true when has-session succeeds", () => {
-    const mockExec = vi.fn().mockReturnValue("");
+  it("returns true when has-session resolves", async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
 
-    expect(tmuxHasSession(TMUX, "ao-104", mockExec)).toBe(true);
+    await expect(tmuxHasSession(TMUX, "ao-104", mockExec)).resolves.toBe(true);
   });
 
-  it("returns false when has-session throws (session missing)", () => {
-    const mockExec = vi.fn().mockImplementation(() => {
-      throw new Error("can't find session: ao-104");
-    });
+  it("returns false when has-session rejects (session missing)", async () => {
+    const mockExec = vi
+      .fn()
+      .mockRejectedValue(new Error("can't find session: ao-104"));
 
-    expect(tmuxHasSession(TMUX, "ao-104", mockExec)).toBe(false);
+    await expect(tmuxHasSession(TMUX, "ao-104", mockExec)).resolves.toBe(false);
   });
 
-  it("uses the = exact-match prefix to avoid tmux prefix matching", () => {
-    const mockExec = vi.fn().mockReturnValue("");
+  it("uses the = exact-match prefix to avoid tmux prefix matching", async () => {
+    const mockExec = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
 
-    tmuxHasSession(TMUX, "ao-1", mockExec);
+    await tmuxHasSession(TMUX, "ao-1", mockExec);
 
     expect(mockExec).toHaveBeenCalledWith(
       TMUX,
@@ -397,10 +397,10 @@ describe("tmuxHasSession", () => {
     );
   });
 
-  it("returns false when tmuxPath is null without invoking exec", () => {
+  it("returns false when tmuxPath is null without invoking exec", async () => {
     const mockExec = vi.fn();
 
-    expect(tmuxHasSession(null, "ao-104", mockExec)).toBe(false);
+    await expect(tmuxHasSession(null, "ao-104", mockExec)).resolves.toBe(false);
     expect(mockExec).not.toHaveBeenCalled();
   });
 });

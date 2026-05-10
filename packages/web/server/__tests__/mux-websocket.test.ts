@@ -316,8 +316,10 @@ describe("TerminalManager.open — tmux target args (regression for #1714)", () 
 
 describe("TerminalManager.open — re-attach skipped when tmux session is gone (regression for #1756)", () => {
   // Captures the latest onExit callback registered by ptySpawn so tests can
-  // synthesise a PTY exit without spawning a real process.
-  let capturedOnExit: ((evt: { exitCode: number }) => void) | undefined;
+  // synthesise a PTY exit without spawning a real process. The handler is
+  // async (so it can await the promisified has-session probe), so tests
+  // await its return value before asserting.
+  let capturedOnExit: ((evt: { exitCode: number }) => Promise<void> | void) | undefined;
 
   beforeEach(() => {
     mockSpawn.mockReset();
@@ -328,7 +330,7 @@ describe("TerminalManager.open — re-attach skipped when tmux session is gone (
     mockSpawn.mockImplementation(() => new EventEmitter());
     mockPtySpawn.mockImplementation(() => ({
       onData: vi.fn(),
-      onExit: vi.fn((cb: (evt: { exitCode: number }) => void) => {
+      onExit: vi.fn((cb: (evt: { exitCode: number }) => Promise<void> | void) => {
         capturedOnExit = cb;
       }),
       write: vi.fn(),
@@ -337,7 +339,7 @@ describe("TerminalManager.open — re-attach skipped when tmux session is gone (
     }));
   });
 
-  it("skips re-attach and notifies subscribers when has-session reports the tmux session is gone", () => {
+  it("skips re-attach and notifies subscribers when has-session reports the tmux session is gone", async () => {
     const mgr = new TerminalManager("/usr/bin/tmux");
     const exitCb = vi.fn();
     mgr.subscribe("ao-177", undefined, vi.fn(), exitCb);
@@ -345,8 +347,8 @@ describe("TerminalManager.open — re-attach skipped when tmux session is gone (
     expect(mockPtySpawn).toHaveBeenCalledTimes(1);
     expect(capturedOnExit).toBeDefined();
 
-    mockTmuxHasSession.mockReturnValueOnce(false);
-    capturedOnExit!({ exitCode: 0 });
+    mockTmuxHasSession.mockResolvedValueOnce(false);
+    await capturedOnExit!({ exitCode: 0 });
 
     // No second attach-session was spawned — the re-attach loop was skipped.
     expect(mockPtySpawn).toHaveBeenCalledTimes(1);
@@ -355,15 +357,15 @@ describe("TerminalManager.open — re-attach skipped when tmux session is gone (
     expect(exitCb).toHaveBeenCalledWith(0);
   });
 
-  it("still re-attaches when has-session reports the tmux session is alive", () => {
+  it("still re-attaches when has-session reports the tmux session is alive", async () => {
     const mgr = new TerminalManager("/usr/bin/tmux");
     const exitCb = vi.fn();
     mgr.subscribe("ao-177", undefined, vi.fn(), exitCb);
 
     expect(mockPtySpawn).toHaveBeenCalledTimes(1);
 
-    mockTmuxHasSession.mockReturnValueOnce(true);
-    capturedOnExit!({ exitCode: 1 });
+    mockTmuxHasSession.mockResolvedValueOnce(true);
+    await capturedOnExit!({ exitCode: 1 });
 
     // Re-attach happened: ptySpawn called a second time, exit not yet notified.
     expect(mockPtySpawn).toHaveBeenCalledTimes(2);

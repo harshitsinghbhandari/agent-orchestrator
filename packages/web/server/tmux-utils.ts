@@ -5,11 +5,14 @@
  * so the logic can be properly unit tested.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { isWindows } from "@aoagents/ao-core";
+
+const execFileAsync = promisify(execFile);
 
 /** Session ID validation regex — alphanumeric, hyphens, underscores only */
 export const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -128,6 +131,13 @@ export function findTmux(
   return "tmux"; // Fall back to bare name
 }
 
+/** Async exec signature used by `tmuxHasSession` (and injectable for tests). */
+export type ExecFileAsync = (
+  file: string,
+  args: readonly string[],
+  options: { timeout: number },
+) => Promise<unknown>;
+
 /**
  * Check whether a tmux session with the given name exists.
  *
@@ -136,17 +146,24 @@ export function findTmux(
  * must already have the canonical tmux session name (typically the value
  * returned by `resolveTmuxSession`).
  *
+ * Async: this runs from inside node-pty's `onExit` callback on every agent
+ * exit, and the WebSocket server is single-threaded. A synchronous
+ * `execFileSync` here would block the event loop — and every WebSocket
+ * connection, HTTP request, and in-flight terminal — for up to the 5 s
+ * subprocess timeout when tmux is slow to respond. Use the promisified
+ * `execFile` form instead.
+ *
  * @returns true if the session exists, false otherwise (including tmux
  *   not running, no sessions, or any unexpected error)
  */
-export function tmuxHasSession(
+export async function tmuxHasSession(
   tmuxPath: string | null,
   tmuxSessionName: string,
-  execFn: typeof execFileSync = execFileSync,
-): boolean {
+  execFn: ExecFileAsync = execFileAsync as unknown as ExecFileAsync,
+): Promise<boolean> {
   if (!tmuxPath) return false;
   try {
-    execFn(tmuxPath, ["has-session", "-t", `=${tmuxSessionName}`], { timeout: 5000 });
+    await execFn(tmuxPath, ["has-session", "-t", `=${tmuxSessionName}`], { timeout: 5000 });
     return true;
   } catch {
     return false;

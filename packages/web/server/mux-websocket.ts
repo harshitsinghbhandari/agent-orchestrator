@@ -374,7 +374,13 @@ export class TerminalManager {
     });
 
     // Handle PTY exit
-    pty.onExit(({ exitCode }) => {
+    //
+    // Async: the has-session probe shells out via promisified execFile and
+    // must be awaited. node-pty fires onExit on the main thread; a sync
+    // probe would freeze the entire web server (every WebSocket, HTTP
+    // request, in-flight terminal) for up to the subprocess timeout when
+    // tmux is slow to respond.
+    pty.onExit(async ({ exitCode }) => {
       console.log(`[MuxServer] PTY exited for ${id} with code ${exitCode}`);
       terminal.pty = null;
 
@@ -386,7 +392,10 @@ export class TerminalManager {
       // clean user-initiated termination — see issue #1756. The
       // MAX_REATTACH_ATTEMPTS bound from #1640 still covers tmux server
       // hiccups where the session does still exist.
-      if (terminal.subscribers.size > 0 && !tmuxHasSession(this.TMUX, tmuxSessionId)) {
+      if (
+        terminal.subscribers.size > 0 &&
+        !(await tmuxHasSession(this.TMUX, tmuxSessionId))
+      ) {
         console.log(`[MuxServer] tmux session ${tmuxSessionId} is gone, not re-attaching`);
         if (terminal.resetTimer) {
           clearTimeout(terminal.resetTimer);
