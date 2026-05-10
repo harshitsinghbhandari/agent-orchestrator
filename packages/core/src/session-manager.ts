@@ -1248,12 +1248,20 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         }
       }
 
+      // If an orchestrator session exists on disk for this project, give the
+      // worker the literal command to message it. Existence-on-disk is the
+      // signal: if metadata was ever written for the canonical orchestrator
+      // ID, the orchestrator workflow is in play here.
+      const orchestratorSessionId = `${project.sessionPrefix}-orchestrator`;
+      const orchestratorExists = readMetadataRaw(sessionsDir, orchestratorSessionId) !== null;
+
       const { systemPrompt, taskPrompt } = buildPrompt({
         project,
         projectId: spawnConfig.projectId,
         issueId: spawnConfig.issueId,
         issueContext,
         userPrompt: spawnConfig.prompt,
+        ...(orchestratorExists && { orchestratorSessionId }),
       });
 
       const baseDir = getProjectDir(spawnConfig.projectId);
@@ -1281,18 +1289,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
             })
           : undefined;
 
-      // Only expose AO_ORCHESTRATOR_SESSION_ID to the worker if an orchestrator
-      // was actually spawned in this project — otherwise the worker would see
-      // an env var pointing to a session that never existed and `ao send` would
-      // fail opaquely. Existence-on-disk is a sufficient signal: if metadata
-      // was ever written for the canonical orchestrator ID, the orchestrator
-      // workflow is in play for this project.
-      const orchestratorSessionId = `${project.sessionPrefix}-orchestrator`;
-      const orchestratorExists = readMetadataRaw(sessionsDir, orchestratorSessionId) !== null;
-
       const agentLaunchConfig = {
         sessionId,
-        ...(orchestratorExists && { orchestratorSessionId }),
         projectConfig: {
           ...project,
           agentConfig: {
@@ -2899,18 +2897,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       return existsSync(file) ? file : undefined;
     })();
 
-    // Mirror spawn(): only expose AO_ORCHESTRATOR_SESSION_ID when the
-    // orchestrator session actually exists on disk. An ad-hoc worker
-    // restored in a project that never had an orchestrator should not
-    // get a phantom env var.
-    const orchestratorSessionId = `${project.sessionPrefix}-orchestrator`;
-    const orchestratorExists =
-      selection.role !== "orchestrator" &&
-      readMetadataRaw(sessionsDir, orchestratorSessionId) !== null;
-
     const agentLaunchConfig = {
       sessionId,
-      ...(orchestratorExists && { orchestratorSessionId }),
       projectConfig: projectConfigForLaunch,
       workspacePath,
       issueId: session.issueId ?? undefined,
