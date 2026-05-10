@@ -73,11 +73,15 @@ describe("buildPrompt split output", () => {
     expect(taskPrompt).toBeUndefined();
   });
 
-  it("teaches workers to message the orchestrator via AO_ORCHESTRATOR_SESSION_ID", () => {
+  it("teaches workers to message the orchestrator with shell-specific syntax", () => {
     const { systemPrompt } = buildPrompt({ project, projectId: "test-app" });
     expect(systemPrompt).toContain("AO_ORCHESTRATOR_SESSION_ID");
-    expect(systemPrompt).toContain("ao send $AO_ORCHESTRATOR_SESSION_ID");
-    expect(systemPrompt).toContain("[from $AO_SESSION_ID]");
+    // POSIX form
+    expect(systemPrompt).toContain('ao send "$AO_ORCHESTRATOR_SESSION_ID"');
+    // PowerShell form (Windows default shell — bare $VAR resolves to null there)
+    expect(systemPrompt).toContain("$env:AO_ORCHESTRATOR_SESSION_ID");
+    // cmd.exe form
+    expect(systemPrompt).toContain("%AO_ORCHESTRATOR_SESSION_ID%");
   });
 
   it("teaches the same in the no-repo prompt variant", () => {
@@ -86,8 +90,9 @@ describe("buildPrompt split output", () => {
       projectId: "test-app",
     });
     expect(systemPrompt).toContain(BASE_AGENT_PROMPT_NO_REPO);
-    expect(systemPrompt).toContain("AO_ORCHESTRATOR_SESSION_ID");
-    expect(systemPrompt).toContain("[from $AO_SESSION_ID]");
+    expect(systemPrompt).toContain('ao send "$AO_ORCHESTRATOR_SESSION_ID"');
+    expect(systemPrompt).toContain("$env:AO_ORCHESTRATOR_SESSION_ID");
+    expect(systemPrompt).toContain("%AO_ORCHESTRATOR_SESSION_ID%");
   });
 });
 

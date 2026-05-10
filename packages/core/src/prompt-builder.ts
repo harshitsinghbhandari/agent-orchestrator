@@ -45,12 +45,14 @@ Rules:
 - Use \`--note "<text>"\` to attach a short rationale when the state change is non-obvious.
 
 ## Talking to the Orchestrator
-If \`AO_ORCHESTRATOR_SESSION_ID\` is set in your env, you can message the orchestrator session that spawned you:
+If \`AO_ORCHESTRATOR_SESSION_ID\` is set in your env, you can message the orchestrator session that spawned you. Use the form for your shell:
 
-\`ao send $AO_ORCHESTRATOR_SESSION_ID "[from $AO_SESSION_ID] <your message>"\`
+- POSIX shells (bash/zsh/sh): \`ao send "$AO_ORCHESTRATOR_SESSION_ID" "[from $AO_SESSION_ID] <your message>"\`
+- PowerShell (Windows default): \`ao send $env:AO_ORCHESTRATOR_SESSION_ID "[from $env:AO_SESSION_ID] <your message>"\`
+- cmd.exe: \`ao send %AO_ORCHESTRATOR_SESSION_ID% "[from %AO_SESSION_ID%] <your message>"\`
 
 - **Only do this when you genuinely cannot proceed alone** — e.g. cross-session coordination, a decision only the human-facing orchestrator can make, or a blocker outside your repo's scope. Do NOT ping for things you can resolve yourself (research, retries, normal CI/review fixes go through \`ao report\` and the existing flow).
-- **Always prefix your message with \`[from $AO_SESSION_ID]\`** — the orchestrator receives your text as raw input with no \`from:\` metadata and won't otherwise know who's writing.
+- **Always prefix your message with \`[from <your session ID>]\`** — the orchestrator receives your text as raw input with no \`from:\` metadata and won't otherwise know who's writing.
 
 ## Git Workflow
 - Always create a feature branch from the default branch (never commit directly to it).
@@ -80,9 +82,11 @@ Explicit reports help the orchestrator track your state accurately. Run these fr
 Do NOT self-report \`done\` or \`terminated\` — AO owns those transitions.
 
 ## Talking to the Orchestrator
-If \`AO_ORCHESTRATOR_SESSION_ID\` is set, you can message the orchestrator that spawned you:
-\`ao send $AO_ORCHESTRATOR_SESSION_ID "[from $AO_SESSION_ID] <your message>"\`
-Only ping when you genuinely cannot proceed alone. Always prefix with \`[from $AO_SESSION_ID]\` — there is no \`from:\` metadata.
+If \`AO_ORCHESTRATOR_SESSION_ID\` is set, you can message the orchestrator that spawned you. Pick the form for your shell:
+- POSIX: \`ao send "$AO_ORCHESTRATOR_SESSION_ID" "[from $AO_SESSION_ID] <your message>"\`
+- PowerShell: \`ao send $env:AO_ORCHESTRATOR_SESSION_ID "[from $env:AO_SESSION_ID] <your message>"\`
+- cmd.exe: \`ao send %AO_ORCHESTRATOR_SESSION_ID% "[from %AO_SESSION_ID%] <your message>"\`
+Only ping when you genuinely cannot proceed alone. Always prefix with \`[from <your session ID>]\` — there is no \`from:\` metadata.
 
 ## Git Workflow
 - Always create a feature branch from the default branch (never commit directly to it).
