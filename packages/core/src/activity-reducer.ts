@@ -121,15 +121,13 @@ export function applyLivenessTick(sessionId: SessionId, now: Date): ActivityRedu
   return cloneState(state);
 }
 
-export function applyProcessProbe(sessionId: SessionId, alive: boolean): ActivityReducerState {
+export function applyProcessProbe(
+  sessionId: SessionId,
+  alive: boolean,
+): ActivityReducerState | null {
   const existing = reducerStates.get(sessionId);
   if (alive && !existing) {
-    return {
-      liveness: "idle",
-      inbox: null,
-      lastEventAt: new Date(),
-      source: "process-probe",
-    };
+    return null;
   }
   const state = getOrCreateState(sessionId);
   const before = cloneState(state);
@@ -158,6 +156,8 @@ export function clearInbox(
   sessionId: SessionId,
   _reason: ActivityReducerClearReason,
 ): ActivityReducerState {
+  // Kept as part of the reducer boundary so PR-D/PR-E can route explicit
+  // clear causes into activity-event logging without changing call sites.
   const state = getOrCreateState(sessionId);
   const before = cloneState(state);
   state.inbox = null;
@@ -178,6 +178,7 @@ export function composeActivity(state: ActivityReducerState | null): ActivityDet
 
 export function resetActivity(sessionId: SessionId): void {
   reducerStates.delete(sessionId);
+  listeners.delete(sessionId);
 }
 
 export function subscribe(sessionId: SessionId, listener: ActivityReducerListener): () => void {

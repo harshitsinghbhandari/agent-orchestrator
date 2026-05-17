@@ -4,6 +4,7 @@ import {
   applyLivenessTick,
   applyProcessProbe,
   composeActivity,
+  resetActivity,
   snapshot,
   subscribe,
 } from "../activity-reducer.js";
@@ -24,6 +25,13 @@ describe("activity-reducer", () => {
 
     expect(snapshot(id)?.inbox).toBe("waiting_input");
     expect(snapshot(id)?.liveness).toBe("active");
+  });
+
+  it("returns null for live process probes before reducer state exists", () => {
+    const id = sessionId("live-no-state");
+
+    expect(applyProcessProbe(id, true)).toBeNull();
+    expect(snapshot(id)).toBeNull();
   });
 
   it("clears inbox and marks liveness exited when process probe reports dead", () => {
@@ -53,6 +61,18 @@ describe("activity-reducer", () => {
     applyEvent(liveId, { state: "ready" });
 
     expect(composeActivity(snapshot(liveId))?.state).toBe("ready");
+  });
+
+  it("drops listeners when resetting activity", () => {
+    const id = sessionId("reset-listeners");
+    const listener = vi.fn();
+    const unsubscribe = subscribe(id, listener);
+
+    resetActivity(id);
+    applyEvent(id, { state: "active" });
+    unsubscribe();
+
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it("notifies subscribers on inbox change and liveness class change", () => {

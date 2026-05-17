@@ -1090,7 +1090,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           }
           if (composedActivity.state === "exited" && canProbeRuntimeIdentity) {
             processProbe = { state: "dead", failed: false };
-            applyProcessProbe(session.id, false);
             lifecycle.runtime.state = "exited";
             lifecycle.runtime.reason = "process_missing";
           }
