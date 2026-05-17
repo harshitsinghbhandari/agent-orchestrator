@@ -21,6 +21,7 @@ import {
   isIssueNotFoundError,
   isRestorable,
   isTerminalSession,
+  normalizeAgentPermissionMode,
   NON_RESTORABLE_STATUSES,
   SessionNotFoundError,
   SessionNotRestorableError,
@@ -900,6 +901,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     sessionId: string,
     metadata: Record<string, string>,
   ) {
+    // Per-session resolved values are persisted to metadata at spawn time
+    // (see _spawnInner / spawnOrchestrator). Without this, restoring a
+    // session resolves against the *current* project config — silently
+    // dropping the original spawn-time permissions/model/subagent if the
+    // project config has drifted. See issue #1475.
+    const persistedPermissionsRaw = metadata["spawnedPermissions"];
     return resolveAgentSelection({
       role: resolveSessionRole(
         sessionId,
@@ -910,6 +917,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       project,
       defaults: config.defaults,
       persistedAgent: metadata["agent"],
+      persistedPermissions: normalizeAgentPermissionMode(persistedPermissionsRaw),
+      persistedModel: metadata["spawnedModel"] || undefined,
+      persistedSubagent: metadata["spawnedSubagent"] || undefined,
     });
   }
 
@@ -1442,6 +1452,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
           ...(spawnConfig.prompt ? { userPrompt: spawnConfig.prompt } : {}),
           ...(displayName ? { displayName } : {}),
+          // Persist resolved per-session values so restore preserves the
+          // session's original spawn-time selection even after project
+          // config drift. See issue #1475.
+          ...(selection.permissions ? { spawnedPermissions: selection.permissions } : {}),
+          ...(selection.model ? { spawnedModel: selection.model } : {}),
+          ...(selection.subagent ? { spawnedSubagent: selection.subagent } : {}),
         },
       };
 
@@ -1774,6 +1790,14 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       metadata: {
         ...(reusableOpenCodeSessionId ? { opencodeSessionId: reusableOpenCodeSessionId } : {}),
         ...(displayName ? { displayName } : {}),
+        // Persist resolved per-session values so restore preserves the
+        // orchestrator's spawn-time selection. The restore path still
+        // forces permissions:"permissionless" for orchestrator role (see
+        // projectConfigForLaunch/agentLaunchConfig construction below),
+        // but model and subagent must round-trip. See issue #1475.
+        ...(selection.permissions ? { spawnedPermissions: selection.permissions } : {}),
+        ...(selection.model ? { spawnedModel: selection.model } : {}),
+        ...(selection.subagent ? { spawnedSubagent: selection.subagent } : {}),
       },
     };
 

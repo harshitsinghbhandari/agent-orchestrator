@@ -35,8 +35,26 @@ export function resolveAgentSelection(params: {
   defaults: DefaultPlugins;
   persistedAgent?: string;
   spawnAgentOverride?: string;
+  /**
+   * Values resolved at spawn time and persisted to session metadata. When
+   * present, they take precedence over project defaults — this is how a
+   * restored session preserves its original spawn-time permissions / model /
+   * subagent even after the project config has drifted. See issue #1475.
+   */
+  persistedPermissions?: AgentPermissionMode;
+  persistedModel?: string;
+  persistedSubagent?: string;
 }): ResolvedAgentSelection {
-  const { role, project, defaults, persistedAgent, spawnAgentOverride } = params;
+  const {
+    role,
+    project,
+    defaults,
+    persistedAgent,
+    spawnAgentOverride,
+    persistedPermissions,
+    persistedModel,
+    persistedSubagent,
+  } = params;
   const roleProjectConfig = role === "orchestrator" ? project.orchestrator : project.worker;
   const roleDefaults = role === "orchestrator" ? defaults.orchestrator : defaults.worker;
   const sharedConfig = project.agentConfig ?? {};
@@ -62,25 +80,32 @@ export function resolveAgentSelection(params: {
   }
 
   const model =
-    role === "orchestrator"
+    persistedModel ??
+    (role === "orchestrator"
       ? (roleAgentConfig.orchestratorModel ??
         roleAgentConfig.model ??
         sharedConfig.orchestratorModel ??
         sharedConfig.model)
-      : (roleAgentConfig.model ?? sharedConfig.model);
+      : (roleAgentConfig.model ?? sharedConfig.model));
 
   if (model !== undefined) {
     agentConfig.model = model;
   }
 
-  const permissions = normalizeAgentPermissionMode(
-    typeof agentConfig.permissions === "string" ? agentConfig.permissions : undefined,
-  );
+  const permissions =
+    persistedPermissions ??
+    normalizeAgentPermissionMode(
+      typeof agentConfig.permissions === "string" ? agentConfig.permissions : undefined,
+    );
   if (permissions !== undefined) {
     agentConfig.permissions = permissions;
   }
   const subagent =
-    typeof agentConfig["subagent"] === "string" ? agentConfig["subagent"] : undefined;
+    persistedSubagent ??
+    (typeof agentConfig["subagent"] === "string" ? agentConfig["subagent"] : undefined);
+  if (subagent !== undefined) {
+    agentConfig["subagent"] = subagent;
+  }
 
   return {
     role,
