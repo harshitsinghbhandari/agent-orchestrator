@@ -13,6 +13,13 @@
 
 import { statSync, existsSync, writeFileSync, mkdirSync, utimesSync, unlinkSync } from "node:fs";
 import { recordActivityEvent } from "./activity-events.js";
+import {
+  applyProcessProbe,
+  composeActivity,
+  resetActivity,
+  snapshot as snapshotActivity,
+  subscribe as subscribeActivity,
+} from "./activity-reducer.js";
 import { execFile } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -108,7 +115,6 @@ const OPENCODE_INTERACTIVE_DISCOVERY_TIMEOUT_MS = 10_000;
 // windowsHide:true suppresses the conhost popup that the shell would otherwise flash.
 const EXEC_SHELL_OPTION =
   process.platform === "win32" ? ({ shell: true, windowsHide: true } as const) : ({} as const);
-
 
 function errorIncludesSessionNotFound(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -308,7 +314,10 @@ async function isAgentProcessNotDefinitelyMissing(
 }
 
 function isFixedOrchestratorReservationError(err: unknown, sessionId: string): boolean {
-  return err instanceof Error && err.message.includes(`Orchestrator session "${sessionId}" already exists`);
+  return (
+    err instanceof Error &&
+    err.message.includes(`Orchestrator session "${sessionId}" already exists`)
+  );
 }
 
 async function getTmuxForegroundCommand(sessionName: string): Promise<string | null> {
@@ -326,9 +335,7 @@ async function getTmuxForegroundCommand(sessionName: string): Promise<string | n
 }
 
 /** Parse lifecycle from raw metadata for writeMetadata (restore path). */
-function parseLifecycleFromRaw(
-  raw: Record<string, string>,
-): CanonicalSessionLifecycle | undefined {
+function parseLifecycleFromRaw(raw: Record<string, string>): CanonicalSessionLifecycle | undefined {
   const source = raw["lifecycle"] ?? raw["statePayload"];
   if (!source) return undefined;
   try {
@@ -605,7 +612,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const duplicatePRAttachments = new Map<string, ActiveSessionRecord[]>();
 
     for (const record of repaired) {
-      if (!record.raw["lifecycle"] && (!record.raw["statePayload"] || record.raw["stateVersion"] !== "2")) {
+      if (
+        !record.raw["lifecycle"] &&
+        (!record.raw["statePayload"] || record.raw["stateVersion"] !== "2")
+      ) {
         const lifecycle = cloneLifecycle(
           parseCanonicalLifecycle(record.raw, {
             sessionId: record.sessionName,
@@ -687,7 +697,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return repaired;
   }
 
-  function loadActiveSessionRecords(projectId: string, project: ProjectConfig): ActiveSessionRecord[] {
+  function loadActiveSessionRecords(
+    projectId: string,
+    project: ProjectConfig,
+  ): ActiveSessionRecord[] {
     const sessionsDir = getProjectSessionsDir(projectId);
     if (!existsSync(sessionsDir)) return [];
 
@@ -843,9 +856,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     );
     for (let attempts = 0; attempts < 10_000; attempts++) {
       const sessionId = `${project.sessionPrefix}-${num}`;
-      const tmuxName = project.path
-        ? generateSessionName(project.sessionPrefix, num)
-        : undefined;
+      const tmuxName = project.path ? generateSessionName(project.sessionPrefix, num) : undefined;
 
       if (!usedNumbers.has(num) && reserveSessionId(sessionsDir, sessionId)) {
         return { num, sessionId, tmuxName };
@@ -1093,6 +1104,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     ) {
       try {
         const alive = await plugins.runtime.isAlive(session.runtimeHandle);
+        if (alive) {
+          applyProcessProbe(session.id, true);
+        }
         if (!alive) {
           session.lifecycle.runtime.state = "missing";
           session.lifecycle.runtime.reason =
@@ -1111,6 +1125,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           if (!TERMINAL_SESSION_STATUSES.has(session.status)) {
             session.status = "killed";
           }
+          applyProcessProbe(session.id, false);
           session.activity = "exited";
           session.activitySignal = createActivitySignal("valid", {
             activity: "exited",
@@ -1131,30 +1146,29 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       }
     }
 
-    // Detect activity independently of runtime handle and session status.
-    // Activity detection reads JSONL files on disk — it only needs workspacePath,
-    // not a runtime handle. Gating on runtimeHandle caused sessions created by
-    // external scripts (which don't store runtimeHandle) to always show "unknown".
-    // This now runs for ALL sessions, including terminal statuses, so a merged
-    // session with a live agent shows accurate activity (ready/idle/waiting_input).
+    // Lifecycle-manager is the single writer for activity probes. Session-manager
+    // only mirrors the reducer snapshot into legacy session fields for consumers.
     session.activitySignal = createActivitySignal("unavailable");
     if (plugins.agent) {
-      try {
-        const detected = await plugins.agent.getActivityState(session, config.readyThresholdMs);
-        if (detected !== null) {
-          session.activitySignal = classifyActivitySignal(detected, "native");
-          session.activity = detected.state;
+      const reducedSnapshot = snapshotActivity(session.id);
+      if (reducedSnapshot && session.createdAt > reducedSnapshot.lastEventAt) {
+        resetActivity(session.id);
+      }
+      const reducedActivity = composeActivity(snapshotActivity(session.id));
+      if (reducedActivity) {
+        session.activitySignal = classifyActivitySignal(reducedActivity, "native");
+        session.activity = reducedActivity.state;
+        if (reducedActivity.state === "exited") {
+          session.lifecycle.runtime.state = "exited";
+          session.lifecycle.runtime.reason = "process_missing";
+        } else {
           session.lifecycle.runtime.state = "alive";
           session.lifecycle.runtime.reason = "process_running";
-          session.lifecycle.runtime.lastObservedAt = new Date().toISOString();
-          if (detected.timestamp && detected.timestamp > session.lastActivityAt) {
-            session.lastActivityAt = detected.timestamp;
-          }
-        } else {
-          session.activitySignal = createActivitySignal("null", { source: "native" });
         }
-      } catch {
-        session.activitySignal = createActivitySignal("probe_failure", { source: "native" });
+        session.lifecycle.runtime.lastObservedAt = new Date().toISOString();
+        if (reducedActivity.timestamp && reducedActivity.timestamp > session.lastActivityAt) {
+          session.lastActivityAt = reducedActivity.timestamp;
+        }
       }
 
       // Enrich with agent session info (summary, cost, native restore metadata).
@@ -1844,7 +1858,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return null;
   }
 
-  async function ensureOrchestratorInternal(orchestratorConfig: OrchestratorSpawnConfig): Promise<Session> {
+  async function ensureOrchestratorInternal(
+    orchestratorConfig: OrchestratorSpawnConfig,
+  ): Promise<Session> {
     const project = config.projects[orchestratorConfig.projectId];
     if (!project) {
       throw new Error(`Unknown project: ${orchestratorConfig.projectId}`);
@@ -1870,10 +1886,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       const orchestratorSessionStrategy = normalizeOrchestratorSessionStrategy(
         project.orchestratorSessionStrategy,
       );
-      if (
-        orchestratorSessionStrategy === "delete" ||
-        orchestratorSessionStrategy === "ignore"
-      ) {
+      if (orchestratorSessionStrategy === "delete" || orchestratorSessionStrategy === "ignore") {
         await kill(sessionId, { purgeOpenCode: orchestratorSessionStrategy === "delete" });
         deleteMetadata(getProjectSessionsDir(orchestratorConfig.projectId), sessionId);
         return spawnOrchestrator(orchestratorConfig);
@@ -2402,8 +2415,14 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           continue;
         }
 
-        const cleanupAgent = resolveSelectionForSession(project, terminatedId, terminatedRaw).agentName;
-        const mappedOpenCodeSessionId = asValidOpenCodeSessionId(terminatedRaw["opencodeSessionId"]);
+        const cleanupAgent = resolveSelectionForSession(
+          project,
+          terminatedId,
+          terminatedRaw,
+        ).agentName;
+        const mappedOpenCodeSessionId = asValidOpenCodeSessionId(
+          terminatedRaw["opencodeSessionId"],
+        );
         if (cleanupAgent === "opencode" && terminatedRaw["opencodeCleanedAt"]) {
           pushSkipped(projectKey, terminatedId);
           continue;
@@ -2487,15 +2506,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         return (await runtimePlugin.getOutput(handle, SEND_CONFIRMATION_OUTPUT_LINES)) ?? "";
       } catch {
         return "";
-      }
-    };
-
-    const detectActivityFromOutput = (output: string) => {
-      if (!output) return null;
-      try {
-        return agentPlugin.detectActivity(output);
-      } catch {
-        return null;
       }
     };
 
@@ -2672,39 +2682,52 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       }
 
       const baselineOutput = await captureOutput(handle);
-      const baselineActivity = detectActivityFromOutput(baselineOutput) ?? session.activity;
+      const baselineActivity =
+        composeActivity(snapshotActivity(sessionId))?.state ?? session.activity;
       const baselineUpdatedAt = await getOpenCodeSessionUpdatedAt();
+      let reducerObservedDelivery = false;
+      const unsubscribe = subscribeActivity(sessionId, (state) => {
+        const activity = composeActivity(state)?.state;
+        if (
+          (baselineActivity !== "active" && activity === "active") ||
+          (baselineActivity !== "waiting_input" && activity === "waiting_input")
+        ) {
+          reducerObservedDelivery = true;
+        }
+      });
 
       await runtimePlugin.sendMessage(handle, message);
 
-      for (let attempt = 1; attempt <= SEND_CONFIRMATION_ATTEMPTS; attempt++) {
-        // Sleep before each check (including the first) so the runtime has time
-        // to reflect the message in its output.
-        await sleep(SEND_CONFIRMATION_POLL_MS);
+      try {
+        for (let attempt = 1; attempt <= SEND_CONFIRMATION_ATTEMPTS; attempt++) {
+          // Sleep before each check (including the first) so the runtime has time
+          // to reflect the message in its output.
+          await sleep(SEND_CONFIRMATION_POLL_MS);
 
-        const output = await captureOutput(handle);
-        const activity = detectActivityFromOutput(output) ?? session.activity;
-        const updatedAt = await getOpenCodeSessionUpdatedAt();
-        const delivered =
-          (baselineUpdatedAt !== undefined &&
-            updatedAt !== undefined &&
-            updatedAt > baselineUpdatedAt) ||
-          hasQueuedMessage(output) ||
-          (output.length > 0 && output !== baselineOutput) ||
-          (baselineActivity !== "active" && activity === "active") ||
-          (baselineActivity !== "waiting_input" && activity === "waiting_input");
+          const output = await captureOutput(handle);
+          const updatedAt = await getOpenCodeSessionUpdatedAt();
+          const delivered =
+            reducerObservedDelivery ||
+            (baselineUpdatedAt !== undefined &&
+              updatedAt !== undefined &&
+              updatedAt > baselineUpdatedAt) ||
+            hasQueuedMessage(output) ||
+            (output.length > 0 && output !== baselineOutput);
 
-        if (delivered) {
-          return;
+          if (delivered) {
+            return;
+          }
         }
-      }
 
-      // Message was already sent via runtimePlugin.sendMessage above — if we
-      // cannot *confirm* delivery (e.g. agent is slow to show output), treat it
-      // as a soft success rather than throwing.  Throwing here caused the caller
-      // to report failure, which prevented the dispatch-hash from updating and
-      // led to duplicate messages on the next poll cycle.
-      return;
+        // Message was already sent via runtimePlugin.sendMessage above — if we
+        // cannot *confirm* delivery (e.g. agent is slow to show output), treat it
+        // as a soft success rather than throwing.  Throwing here caused the caller
+        // to report failure, which prevented the dispatch-hash from updating and
+        // led to duplicate messages on the next poll cycle.
+        return;
+      } finally {
+        unsubscribe();
+      }
     };
 
     let prepared = await prepareSession();
@@ -2774,7 +2797,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
       const samePr = otherRaw["pr"] === pr.url;
       const sameBranch =
-        otherRaw["branch"] === pr.branch && (otherRaw["prAutoDetect"] ?? "on") !== "off" && otherRaw["prAutoDetect"] !== "false";
+        otherRaw["branch"] === pr.branch &&
+        (otherRaw["prAutoDetect"] ?? "on") !== "off" &&
+        otherRaw["prAutoDetect"] !== "false";
 
       if (samePr || sameBranch) {
         conflictingSessions.add(sessionName);
@@ -2824,9 +2849,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       updateMetadata(sessionsDir, previousSessionId, {
         pr: "",
         prAutoDetect: "false",
-        ...(PR_TRACKING_STATUSES.has(previousRaw["status"] ?? "")
-          ? { status: "working" }
-          : {}),
+        ...(PR_TRACKING_STATUSES.has(previousRaw["status"] ?? "") ? { status: "working" } : {}),
         ...lifecycleMetadataUpdates(previousRaw, previousLifecycle),
       });
       invalidateCache();

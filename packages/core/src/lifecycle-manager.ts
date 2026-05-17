@@ -15,6 +15,15 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { recordActivityEvent } from "./activity-events.js";
 import {
+  applyEvent,
+  applyLivenessTick,
+  applyProcessProbe,
+  clearInbox,
+  composeActivity,
+  resetActivity,
+  snapshot as snapshotActivity,
+} from "./activity-reducer.js";
+import {
   ACTIVITY_STATE,
   SESSION_STATUS,
   TERMINAL_STATUSES,
@@ -671,7 +680,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // When Guard 1 returned 304, the repo is in prListUnchangedRepos — no new PRs exist.
     for (const session of sessions) {
       if (!session.branch) continue;
-      if (session.metadata["prAutoDetect"] === "off" || session.metadata["prAutoDetect"] === "false") continue;
+      if (
+        session.metadata["prAutoDetect"] === "off" ||
+        session.metadata["prAutoDetect"] === "false"
+      )
+        continue;
       if (session.metadata["role"] === "orchestrator" || session.id.endsWith("-orchestrator"))
         continue;
       if (
@@ -1020,26 +1033,53 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
         const detectedActivity = await agent.getActivityState(session, config.readyThresholdMs);
         if (detectedActivity) {
-          activitySignal = classifyActivitySignal(detectedActivity, "native");
+          const reducedSnapshot = snapshotActivity(session.id);
+          if (reducedSnapshot && session.createdAt > reducedSnapshot.lastEventAt) {
+            resetActivity(session.id);
+          }
+          const hasObservedActivity = activityStateCache.has(session.id);
+          if (
+            !hasObservedActivity &&
+            detectedActivity.state !== "waiting_input" &&
+            detectedActivity.state !== "blocked"
+          ) {
+            clearInbox(session.id, "override");
+          }
+          applyEvent(session.id, {
+            state: detectedActivity.state,
+            timestamp: detectedActivity.timestamp,
+            source: "native-poll",
+          });
+          applyLivenessTick(session.id, new Date(nowIso));
+          const composedActivity =
+            composeActivity(snapshotActivity(session.id)) ?? detectedActivity;
+          const activitySignalDetection =
+            (composedActivity.state === "waiting_input" ||
+              composedActivity.state === "blocked" ||
+              composedActivity.state === "exited") &&
+            composedActivity.state !== detectedActivity.state
+              ? composedActivity
+              : detectedActivity;
+          activitySignal = classifyActivitySignal(activitySignalDetection, "native");
           activityEvidence = formatActivitySignalEvidence(activitySignal);
           lifecycle.runtime.lastObservedAt = nowIso;
           const prevActivity = activityStateCache.get(session.id);
-          activityStateCache.set(session.id, detectedActivity.state);
-          if (prevActivity !== undefined && prevActivity !== detectedActivity.state) {
+          activityStateCache.set(session.id, composedActivity.state);
+          if (prevActivity !== undefined && prevActivity !== composedActivity.state) {
             recordActivityEvent({
               projectId: session.projectId,
               sessionId: session.id,
               source: "lifecycle",
               kind: "activity.transition",
-              summary: `${prevActivity} → ${detectedActivity.state}`,
-              data: { from: prevActivity, to: detectedActivity.state },
+              summary: `${prevActivity} → ${composedActivity.state}`,
+              data: { from: prevActivity, to: composedActivity.state },
             });
           }
           if (lifecycle.runtime.state !== "missing" && lifecycle.runtime.state !== "probe_failed") {
             lifecycle.runtime.state = "alive";
             lifecycle.runtime.reason = "process_running";
           }
-          if (detectedActivity.state === "waiting_input") {
+          if (composedActivity.state === "waiting_input") {
             return commit({
               status: SESSION_STATUS.NEEDS_INPUT,
               evidence: activityEvidence,
@@ -1048,8 +1088,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               sessionReason: "awaiting_user_input",
             });
           }
-          if (detectedActivity.state === "exited" && canProbeRuntimeIdentity) {
+          if (composedActivity.state === "exited" && canProbeRuntimeIdentity) {
             processProbe = { state: "dead", failed: false };
+            applyProcessProbe(session.id, false);
             lifecycle.runtime.state = "exited";
             lifecycle.runtime.reason = "process_missing";
           }
@@ -1068,9 +1109,24 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           const terminalOutput = runtime ? await runtime.getOutput(session.runtimeHandle, 10) : "";
           if (terminalOutput) {
             const activity = agent.detectActivity(terminalOutput);
-            activitySignal = classifyActivitySignal({ state: activity }, "terminal");
+            if (
+              !activityStateCache.has(session.id) &&
+              activity !== "waiting_input" &&
+              activity !== "blocked"
+            ) {
+              clearInbox(session.id, "override");
+            }
+            applyEvent(session.id, { state: activity, source: "terminal" });
+            applyLivenessTick(session.id, new Date(nowIso));
+            const composedActivity = composeActivity(snapshotActivity(session.id)) ?? {
+              state: activity,
+            };
+            activitySignal = classifyActivitySignal(
+              composedActivity.state === activity ? { state: activity } : composedActivity,
+              "terminal",
+            );
             activityEvidence = formatActivitySignalEvidence(activitySignal);
-            if (activity === "waiting_input") {
+            if (composedActivity.state === "waiting_input") {
               return commit({
                 status: SESSION_STATUS.NEEDS_INPUT,
                 evidence: activityEvidence,
@@ -1083,6 +1139,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             try {
               const processAlive = await agent.isProcessRunning(session.runtimeHandle);
               processProbe = processProbeResultToProbeResult(processAlive);
+              if (processAlive === true || processAlive === false) {
+                applyProcessProbe(session.id, processAlive);
+              }
               if (processAlive === false) {
                 lifecycle.runtime.state = "exited";
                 lifecycle.runtime.reason = "process_missing";
@@ -1157,6 +1216,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       try {
         const processAlive = await agent.isProcessRunning(session.runtimeHandle);
         processProbe = processProbeResultToProbeResult(processAlive);
+        if (processAlive === true || processAlive === false) {
+          applyProcessProbe(session.id, processAlive);
+        }
         if (processAlive === false) {
           lifecycle.runtime.state = "exited";
           lifecycle.runtime.reason = "process_missing";
@@ -1316,16 +1378,14 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     ) {
       const mapped = mapAgentReportToLifecycle(agentReport.state);
       return commit({
-        status: deriveLegacyStatus(
-          {
-            ...lifecycle,
-            session: {
-              ...lifecycle.session,
-              state: mapped.sessionState,
-              reason: mapped.sessionReason,
-            },
+        status: deriveLegacyStatus({
+          ...lifecycle,
+          session: {
+            ...lifecycle.session,
+            state: mapped.sessionState,
+            reason: mapped.sessionReason,
           },
-        ),
+        }),
         evidence: `agent_report:${agentReport.state}`,
         detecting: { attempts: 0 },
         sessionState: mapped.sessionState,
@@ -1623,9 +1683,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     if (!project) return;
 
     const sessionsDir = getProjectSessionsDir(session.projectId);
-    const lifecycleUpdates = buildLifecycleMetadataPatch(
-      cloneLifecycle(session.lifecycle),
-    );
+    const lifecycleUpdates = buildLifecycleMetadataPatch(cloneLifecycle(session.lifecycle));
     const mergedUpdates = { ...updates, ...lifecycleUpdates };
     updateMetadata(sessionsDir, session.id, mergedUpdates);
     sessionManager.invalidateCache();
@@ -2310,9 +2368,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           activity,
           // Elapsed wall-time since cleanup was first deferred. NOT a Unix
           // timestamp — naming it `pendingSinceMs` was misleading (Greptile).
-          pendingElapsedMs: Number.isFinite(pendingSinceMs)
-            ? Date.now() - pendingSinceMs
-            : null,
+          pendingElapsedMs: Number.isFinite(pendingSinceMs) ? Date.now() - pendingSinceMs : null,
           graceMs,
         },
       });

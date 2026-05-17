@@ -173,6 +173,27 @@ export {
 export { resolveSpawnTarget } from "./spawn-target.js";
 export type { SpawnTarget } from "./spawn-target.js";
 
+// ActivityReducer — single-writer activity state projection
+export {
+  applyEvent,
+  applyLivenessTick,
+  applyProcessProbe,
+  clearInbox,
+  composeActivity,
+  resetActivity,
+  snapshot as snapshotActivityReducer,
+  subscribe as subscribeActivityReducer,
+} from "./activity-reducer.js";
+export type {
+  ActivityReducerClearReason,
+  ActivityReducerEvent,
+  ActivityReducerInbox,
+  ActivityReducerListener,
+  ActivityReducerLiveness,
+  ActivityReducerSource,
+  ActivityReducerState,
+} from "./activity-reducer.js";
+
 // Activity log — JSONL activity tracking for agents without native JSONL
 export {
   appendActivityEntry,

@@ -1,15 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import {
-  readFileSync,
-  utimesSync,
-} from "node:fs";
+import { readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { createSessionManager } from "../../session-manager.js";
-import {
-  writeMetadata,
-  readMetadataRaw,
-  updateMetadata,
-} from "../../metadata.js";
+import { writeMetadata, readMetadataRaw, updateMetadata } from "../../metadata.js";
 import { createInitialCanonicalLifecycle } from "../../lifecycle-state.js";
 import type {
   OrchestratorConfig,
@@ -20,8 +13,14 @@ import type {
   RuntimeHandle,
   Session,
 } from "../../types.js";
-import { setupTestContext, teardownTestContext, makeHandle, type TestContext } from "../test-utils.js";
+import {
+  setupTestContext,
+  teardownTestContext,
+  makeHandle,
+  type TestContext,
+} from "../test-utils.js";
 import { installMockOpencode, PATH_SEP } from "./opencode-helpers.js";
+import { applyEvent, resetActivity } from "../../activity-reducer.js";
 
 let ctx: TestContext;
 let tmpDir: string;
@@ -34,8 +33,21 @@ let config: OrchestratorConfig;
 let originalPath: string | undefined;
 
 beforeEach(() => {
+  resetActivity("app-1");
+  resetActivity("app-2");
+  resetActivity("app-orchestrator");
+  resetActivity("my-app-orchestrator");
   ctx = setupTestContext();
-  ({ tmpDir, sessionsDir, mockRuntime, mockAgent, mockWorkspace, mockRegistry, config, originalPath } = ctx);
+  ({
+    tmpDir,
+    sessionsDir,
+    mockRuntime,
+    mockAgent,
+    mockWorkspace,
+    mockRegistry,
+    config,
+    originalPath,
+  } = ctx);
 });
 
 afterEach(() => {
@@ -288,7 +300,10 @@ describe("list", () => {
       status: "working",
       project: "my-app",
       runtimeHandle: makeHandle("rt-1"),
+      createdAt: new Date(0).toISOString(),
     });
+
+    applyEvent("app-1", { state: "active" });
 
     const sm = createSessionManager({
       config,
@@ -296,9 +311,7 @@ describe("list", () => {
     });
     const sessions = await sm.list();
 
-    // Verify getActivityState was called
-    expect(agentWithState.getActivityState).toHaveBeenCalled();
-    // Verify activity state was set
+    expect(agentWithState.getActivityState).not.toHaveBeenCalled();
     expect(sessions[0].activity).toBe("active");
   });
 
@@ -340,8 +353,8 @@ describe("list", () => {
 
       expect(sessions).toHaveLength(1);
       expect(sessions[0].runtimeHandle?.id).toBe(expectedTmuxName);
-      expect(sessions[0].activity).toBe("active");
-      expect(selectedAgent.getActivityState).toHaveBeenCalled();
+      expect(sessions[0].activity).toBeNull();
+      expect(selectedAgent.getActivityState).not.toHaveBeenCalled();
     },
   );
 
@@ -411,9 +424,9 @@ describe("list", () => {
     const sm = createSessionManager({ config, registry: registryWithError });
     const sessions = await sm.list();
 
-    // Should keep null (absent) when getActivityState fails
+    expect(agentWithError.getActivityState).not.toHaveBeenCalled();
     expect(sessions[0].activity).toBeNull();
-    expect(sessions[0].activitySignal.state).toBe("probe_failure");
+    expect(sessions[0].activitySignal.state).toBe("unavailable");
   });
 
   it("keeps existing activity when getActivityState returns null", async () => {
@@ -441,10 +454,9 @@ describe("list", () => {
     const sm = createSessionManager({ config, registry: registryWithNull });
     const sessions = await sm.list();
 
-    // null = "I don't know" — activity stays null (absent)
-    expect(agentWithNull.getActivityState).toHaveBeenCalled();
+    expect(agentWithNull.getActivityState).not.toHaveBeenCalled();
     expect(sessions[0].activity).toBeNull();
-    expect(sessions[0].activitySignal.state).toBe("null");
+    expect(sessions[0].activitySignal.state).toBe("unavailable");
   });
 
   it("does not persist runtime_lost from list() when agent activity probe is indeterminate", async () => {
@@ -506,7 +518,10 @@ describe("list", () => {
       status: "working",
       project: "my-app",
       runtimeHandle: makeHandle("rt-1"),
+      createdAt: new Date(0).toISOString(),
     });
+
+    applyEvent("app-1", { state: "idle" });
 
     const sm = createSessionManager({ config, registry: registryWithStaleSignal });
     const sessions = await sm.list();
@@ -538,6 +553,8 @@ describe("list", () => {
       runtimeHandle: makeHandle("rt-1"),
     });
 
+    applyEvent("app-1", { state: "active", timestamp: newerTimestamp });
+
     const sm = createSessionManager({ config, registry: registryWithTimestamp });
     const sessions = await sm.list();
 
@@ -567,11 +584,15 @@ describe("list", () => {
       status: "working",
       project: "my-app",
       runtimeHandle: makeHandle("rt-1"),
+      createdAt: new Date(0).toISOString(),
     });
+
+    applyEvent("app-1", { state: "active" });
 
     const sm = createSessionManager({ config, registry: registryWithOldTimestamp });
     const sessions = await sm.list();
 
+    expect(agentWithOldTimestamp.getActivityState).not.toHaveBeenCalled();
     expect(sessions[0].activity).toBe("active");
     // lastActivityAt should NOT be downgraded to the older detection timestamp
     expect(sessions[0].lastActivityAt.getTime()).toBeGreaterThan(olderTimestamp.getTime());
@@ -618,7 +639,10 @@ describe("get", () => {
       status: "working",
       project: "my-app",
       runtimeHandle: makeHandle("rt-1"),
+      createdAt: new Date(0).toISOString(),
     });
+
+    applyEvent("app-1", { state: "idle" });
 
     const sm = createSessionManager({
       config,
@@ -626,9 +650,7 @@ describe("get", () => {
     });
     const session = await sm.get("app-1");
 
-    // Verify getActivityState was called
-    expect(agentWithState.getActivityState).toHaveBeenCalled();
-    // Verify activity state was set
+    expect(agentWithState.getActivityState).not.toHaveBeenCalled();
     expect(session!.activity).toBe("idle");
   });
 
