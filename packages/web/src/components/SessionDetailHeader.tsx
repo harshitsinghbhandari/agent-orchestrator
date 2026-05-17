@@ -304,7 +304,7 @@ export function SessionDetailHeader({
           </button>
         ) : null}
 
-        {isOrchestrator && !terminalEnded && onRelaunchClean ? (
+        {isOrchestrator && onRelaunchClean ? (
           <button
             type="button"
             className="dashboard-app-btn dashboard-app-btn--amber"

@@ -1822,7 +1822,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // relaunch's spawnOrchestrator on the same reservation.
     const pendingRelaunch = relaunchOrchestratorPromises.get(sessionId);
     if (pendingRelaunch) {
-      await pendingRelaunch.catch(() => {});
+      await pendingRelaunch.catch((err) => {
+        console.warn(
+          `[ensureOrchestrator] in-flight relaunch for ${sessionId} failed before ensure proceeded:`,
+          err,
+        );
+      });
     }
 
     const existing = await get(sessionId);
@@ -1902,7 +1907,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // reservation — surfacing "session already exists" instead of replacing.
     const pendingEnsure = ensureOrchestratorPromises.get(sessionId);
     if (pendingEnsure) {
-      await pendingEnsure.catch(() => {});
+      await pendingEnsure.catch((err) => {
+        console.warn(
+          `[relaunchOrchestrator] in-flight ensure for ${sessionId} failed before relaunch proceeded:`,
+          err,
+        );
+      });
     }
 
     const existing = await get(sessionId);

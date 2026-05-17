@@ -304,12 +304,29 @@ describe("SessionDetail desktop layout", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders Relaunch (clean) on live orchestrator sessions and POSTs after confirm", async () => {
+  it("renders Relaunch (clean) on live orchestrator sessions and navigates to the new session", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    const reloadSpy = vi.fn();
+    const hrefSetter = vi.fn();
     Object.defineProperty(window, "location", {
-      value: { ...window.location, reload: reloadSpy },
+      value: {
+        ...window.location,
+        set href(value: string) {
+          hrefSetter(value);
+        },
+      },
       writable: true,
+    });
+    vi.mocked(global.fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/orchestrators") {
+        return {
+          ok: true,
+          json: async () => ({
+            orchestrator: { id: "my-app-orchestrator", projectId: "my-app" },
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({}), text: async () => "" } as Response;
     });
 
     render(
@@ -348,8 +365,34 @@ describe("SessionDetail desktop layout", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId: "my-app", clean: true }),
     });
+    expect(hrefSetter).toHaveBeenCalledWith("/projects/my-app/sessions/my-app-orchestrator");
 
     confirmSpy.mockRestore();
+  });
+
+  it("keeps Relaunch (clean) visible on terminated orchestrator sessions", () => {
+    render(
+      <SessionDetail
+        session={makeSession({
+          id: "my-app-orchestrator",
+          projectId: "my-app",
+          status: "terminated",
+          activity: "exited",
+          summary: "Project orchestrator",
+          pr: null,
+        })}
+        isOrchestrator
+        orchestratorZones={{ merge: 0, respond: 0, review: 0, pending: 0, working: 0, done: 0 }}
+        projectOrchestratorId="my-app-orchestrator"
+        projects={[{ id: "my-app", name: "My App", path: "/tmp/my-app" }]}
+      />,
+    );
+
+    expect(
+      within(screen.getByRole("banner")).getByRole("button", {
+        name: /launch orchestrator \(clean context\)/i,
+      }),
+    ).toBeInTheDocument();
   });
 
   it("surfaces a relaunch error banner when POST fails after confirm", async () => {

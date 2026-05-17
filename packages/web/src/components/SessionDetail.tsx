@@ -146,13 +146,20 @@ export function SessionDetail({
         }
         throw new Error(message || `HTTP ${res.status}`);
       }
-      window.location.reload();
+      // Hard-navigate to the freshly spawned orchestrator's session page.
+      // Orchestrator session IDs are fixed per project, so this is the same
+      // path in practice — but reading from the response keeps us correct if
+      // the contract ever changes (and a hard nav forces the terminal
+      // WebSocket to reconnect against the new tmux session).
+      const data = (await res.json()) as { orchestrator?: { id: string } };
+      const newId = data.orchestrator?.id ?? session.id;
+      window.location.href = projectSessionPath(session.projectId, newId);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to relaunch orchestrator";
       console.error("Failed to relaunch orchestrator:", err);
       setRelaunchError(message);
     }
-  }, [session.projectId]);
+  }, [session.id, session.projectId]);
 
   const orchestratorHref = useMemo(() => {
     if (isOrchestrator) return projectSessionPath(session.projectId, session.id);
