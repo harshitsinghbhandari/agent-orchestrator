@@ -66,6 +66,7 @@ export function SessionDetail({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [relaunchError, setRelaunchError] = useState<string | null>(null);
   const pr = session.pr;
   const terminalEnded = isDashboardSessionTerminal(session);
   const isRestorable = isDashboardSessionRestorable(session);
@@ -124,6 +125,7 @@ export function SessionDetail({
       "This will discard the current orchestrator's conversation and state. Continue?",
     );
     if (!confirmed) return;
+    setRelaunchError(null);
     try {
       const res = await fetch("/api/orchestrators", {
         method: "POST",
@@ -131,12 +133,24 @@ export function SessionDetail({
         body: JSON.stringify({ projectId: session.projectId, clean: true }),
       });
       if (!res.ok) {
-        const message = await res.text().catch(() => "");
+        // Surface server-side errors. Note: a failure here may indicate the
+        // existing orchestrator was killed but respawn failed — the banner
+        // tells the user the previous session was terminated so they don't
+        // assume the page they're looking at is still live.
+        let message = "";
+        try {
+          const data = (await res.json()) as { error?: string };
+          message = data.error ?? "";
+        } catch {
+          message = await res.text().catch(() => "");
+        }
         throw new Error(message || `HTTP ${res.status}`);
       }
       window.location.reload();
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to relaunch orchestrator";
       console.error("Failed to relaunch orchestrator:", err);
+      setRelaunchError(message);
     }
   }, [session.projectId]);
 
@@ -214,6 +228,31 @@ export function SessionDetail({
 
           <div className="dashboard-main dashboard-main--desktop">
             <main className="session-detail-page flex-1 min-h-0 flex flex-col bg-[var(--color-bg-base)]">
+              {relaunchError ? (
+                <div
+                  className="border-b border-[color-mix(in_srgb,var(--color-status-error)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-status-error)_10%,transparent)] px-4 py-2 text-[12px] text-[var(--color-status-error)]"
+                  role="alert"
+                  aria-live="assertive"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <span className="font-semibold">Relaunch failed:</span> {relaunchError}
+                      <div className="mt-1 text-[var(--color-text-secondary)]">
+                        The previous orchestrator may already be terminated. Try again from the
+                        project dashboard.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setRelaunchError(null)}
+                      className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                      aria-label="Dismiss"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="flex-1 min-h-0 flex flex-col">
                 {!showTerminal ? (
                   <div className="session-detail-terminal-placeholder h-full" />

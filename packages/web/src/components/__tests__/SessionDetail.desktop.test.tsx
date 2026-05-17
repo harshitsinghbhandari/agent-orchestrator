@@ -352,6 +352,53 @@ describe("SessionDetail desktop layout", () => {
     confirmSpy.mockRestore();
   });
 
+  it("surfaces a relaunch error banner when POST fails after confirm", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(global.fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/orchestrators") {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: "kill+respawn failed" }),
+          text: async () => "kill+respawn failed",
+        } as Response;
+      }
+      return { ok: true, json: async () => ({}), text: async () => "" } as Response;
+    });
+
+    render(
+      <SessionDetail
+        session={makeSession({
+          id: "my-app-orchestrator",
+          projectId: "my-app",
+          status: "working",
+          activity: "active",
+          summary: "Project orchestrator",
+        })}
+        isOrchestrator
+        orchestratorZones={{ merge: 0, respond: 0, review: 0, pending: 0, working: 0, done: 0 }}
+        projectOrchestratorId="my-app-orchestrator"
+        projects={[{ id: "my-app", name: "My App", path: "/tmp/my-app" }]}
+      />,
+    );
+
+    fireEvent.click(
+      within(screen.getByRole("banner")).getByRole("button", {
+        name: /launch orchestrator \(clean context\)/i,
+      }),
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/kill\+respawn failed/i);
+    expect(alert).toHaveTextContent(/previous orchestrator may already be terminated/i);
+
+    fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    confirmSpy.mockRestore();
+  });
+
   it("does not render Relaunch (clean) on worker sessions", () => {
     render(
       <SessionDetail
