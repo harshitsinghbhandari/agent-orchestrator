@@ -202,6 +202,25 @@ describe("Claude Code Activity Detection", () => {
       expect((await agent.getActivityState(makeSession()))?.state).toBe("waiting_input");
     });
 
+    it("falls back to AO JSONL waiting_input when native session entry predates this session", async () => {
+      writeJsonl([{ type: "assistant", message: { content: "Previous session done" } }], 120_000);
+      const session = makeSession({ createdAt: new Date() });
+
+      await agent.recordActivity?.(session, "Do you want to proceed?\n(Y)es / (N)o");
+
+      expect((await agent.getActivityState(session))?.state).toBe("waiting_input");
+    });
+
+    it("returns idle for stale native session entry when AO JSONL is unavailable", async () => {
+      writeJsonl([{ type: "assistant", message: { content: "Previous session done" } }], 120_000);
+      const session = makeSession({ createdAt: new Date() });
+
+      const result = await agent.getActivityState(session);
+
+      expect(result?.state).toBe("idle");
+      expect(result?.timestamp).toBe(session.createdAt);
+    });
+
     it("falls back to AO JSONL age-decay when native session lookup is unavailable", async () => {
       writeActivityLog("active", 400_000);
 

@@ -987,41 +987,44 @@ function createClaudeCodeAgent(): Agent {
       const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
       const sessionFile = await findLatestSessionFile(projectDir);
+      let staleNativeState: ActivityDetection | null = null;
       if (sessionFile) {
         const entry = await readLastJsonlEntry(sessionFile);
         if (entry) {
           // If the JSONL entry predates this session, it's from a previous session
-          // in the same worktree. Treat as no data (agent hasn't written yet).
+          // in the same worktree. Fall through to the AO safety net first: the
+          // terminal may have already surfaced waiting_input/blocked before
+          // Claude writes this session's first native JSONL entry.
           if (session.createdAt && entry.modifiedAt < session.createdAt) {
-            return { state: "idle", timestamp: session.createdAt };
-          }
+            staleNativeState = { state: "idle", timestamp: session.createdAt };
+          } else {
+            const ageMs = Date.now() - entry.modifiedAt.getTime();
+            const timestamp = entry.modifiedAt;
 
-          const ageMs = Date.now() - entry.modifiedAt.getTime();
-          const timestamp = entry.modifiedAt;
+            const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
+            switch (entry.lastType) {
+              case "user":
+              case "tool_use":
+              case "progress":
+                if (ageMs <= activeWindowMs) return { state: "active", timestamp };
+                return { state: ageMs > threshold ? "idle" : "ready", timestamp };
 
-          const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
-          switch (entry.lastType) {
-            case "user":
-            case "tool_use":
-            case "progress":
-              if (ageMs <= activeWindowMs) return { state: "active", timestamp };
-              return { state: ageMs > threshold ? "idle" : "ready", timestamp };
+              case "assistant":
+              case "system":
+              case "summary":
+              case "result":
+                return { state: ageMs > threshold ? "idle" : "ready", timestamp };
 
-            case "assistant":
-            case "system":
-            case "summary":
-            case "result":
-              return { state: ageMs > threshold ? "idle" : "ready", timestamp };
+              case "permission_request":
+                return { state: "waiting_input", timestamp };
 
-            case "permission_request":
-              return { state: "waiting_input", timestamp };
+              case "error":
+                return { state: "blocked", timestamp };
 
-            case "error":
-              return { state: "blocked", timestamp };
-
-            default:
-              if (ageMs <= activeWindowMs) return { state: "active", timestamp };
-              return { state: ageMs > threshold ? "idle" : "ready", timestamp };
+              default:
+                if (ageMs <= activeWindowMs) return { state: "active", timestamp };
+                return { state: ageMs > threshold ? "idle" : "ready", timestamp };
+            }
           }
         }
 
@@ -1041,6 +1044,8 @@ function createClaudeCodeAgent(): Agent {
       const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
       const fallback = getActivityFallbackState(activityResult, activeWindowMs, threshold);
       if (fallback) return fallback;
+
+      if (staleNativeState) return staleNativeState;
 
       return null;
     },
