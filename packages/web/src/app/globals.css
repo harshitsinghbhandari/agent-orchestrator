@@ -719,10 +719,12 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   justify-content: center;
   min-height: 36px;
   border-radius: 999px;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 650;
   padding: 0 15px;
   text-decoration: none;
+  cursor: pointer;
   transition:
     transform 120ms ease,
     border-color 120ms ease,
