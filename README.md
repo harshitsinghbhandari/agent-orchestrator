@@ -14,7 +14,7 @@ Spawn parallel AI coding agents, each in its own git worktree. Agents autonomous
 [![npm version](https://img.shields.io/npm/v/%40aoagents%2Fao?style=flat-square)](https://www.npmjs.com/package/@aoagents/ao)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![PRs merged](https://img.shields.io/badge/PRs_merged-61-brightgreen?style=flat-square)](https://github.com/ComposioHQ/agent-orchestrator/pulls?q=is%3Amerged)
-[![Tests](https://img.shields.io/badge/test_cases-3%2C288-blue?style=flat-square)](https://github.com/ComposioHQ/agent-orchestrator/releases/tag/metrics-v1)
+[![Tests](https://img.shields.io/badge/Tests-passing-blue?style=flat-square)](https://github.com/ComposioHQ/agent-orchestrator/releases/tag/metrics-v1)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/UZv7JjxbwG)
 
 </div>
@@ -176,7 +176,7 @@ Running one AI agent in a terminal is easy. Running 30 across different issues, 
 
 ```bash
 pnpm install && pnpm build    # Install and build all packages
-pnpm test                      # Run tests (3,288 test cases)
+pnpm test                      # Run tests
 pnpm dev                       # Start web dashboard dev server
 ```
 

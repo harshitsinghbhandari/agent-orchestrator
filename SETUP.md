@@ -329,7 +329,7 @@ gh auth status
 **Setup:**
 
 1. Get your API key: https://linear.app/settings/api
-2. Add to environment:
+2. Add to environment (Alternatively, you can use COMPOSIO_API_KEY and COMPOSIO_ENTITY_ID instead):
 
    ```bash
    echo 'export LINEAR_API_KEY="lin_api_..."' >> ~/.zshrc
@@ -393,10 +393,11 @@ curl -X POST -H 'Content-type: application/json' \
 **Setup:**
 
 1. Get your API key from Composio.
-2. Add to environment:
+2. Add to environment (COMPOSIO_ENTITY_ID is optional and defaults to "default"):
 
    ```bash
    echo 'export COMPOSIO_API_KEY="your-api-key"' >> ~/.zshrc
+   echo 'export COMPOSIO_ENTITY_ID="your-entity-id"' >> ~/.zshrc
    source ~/.zshrc
    ```
 
@@ -530,6 +531,9 @@ source ~/.zshrc
 
 # Verify
 echo $LINEAR_API_KEY
+
+# Alternatively, you can use Composio SDK for Linear Tracker by setting:
+# export COMPOSIO_API_KEY="your-composio-key"
 ```
 
 ### "Port already in use"

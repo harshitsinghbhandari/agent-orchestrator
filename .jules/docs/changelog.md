@@ -1,3 +1,14 @@
+## 2026-05-17
+
+### Files Updated
+- `README.md` - Removed exact test cases count from `pnpm test` and the Tests badge to prevent stale numbers.
+- `SETUP.md` - Documented `COMPOSIO_ENTITY_ID` environment variable alongside `COMPOSIO_API_KEY` for Composio notifier and Linear tracker configurations. Mentioned `COMPOSIO_API_KEY` as an alternative resolution for missing `LINEAR_API_KEY` errors.
+
+### Verification
+- [x] Commands tested
+- [x] Cross-referenced with code
+- [x] No broken links
+
 ## 2025-04-12
 
 ### Files Updated
