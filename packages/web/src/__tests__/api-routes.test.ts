@@ -129,6 +129,7 @@ const mockSessionManager: SessionManager = {
   cleanup: vi.fn(async () => ({ killed: [], skipped: [], errors: [] })),
   spawnOrchestrator: vi.fn(),
   ensureOrchestrator: vi.fn(),
+  relaunchOrchestrator: vi.fn(),
   remap: vi.fn(async () => "ses_mock"),
   restore: vi.fn(async (id: string) => {
     const session = testSessions.find((s) => s.id === id);
@@ -1172,6 +1173,50 @@ describe("API Routes", () => {
       const data = await res.json();
       expect(data.recovery).toBe("reuse-or-recreate-workspace");
       expect(data.error).toContain('AO found an older orchestrator workspace for "my-app"');
+    });
+
+    it("calls relaunchOrchestrator instead of spawnOrchestrator when clean is true", async () => {
+      (mockSessionManager.relaunchOrchestrator as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        makeSession({
+          id: "my-app-orchestrator",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+        }),
+      );
+
+      const req = makeRequest("/api/orchestrators", {
+        method: "POST",
+        body: JSON.stringify({ projectId: "my-app", clean: true }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await orchestratorsPOST(req);
+
+      expect(res.status).toBe(201);
+      expect(mockSessionManager.relaunchOrchestrator).toHaveBeenCalledWith({
+        projectId: "my-app",
+        systemPrompt: expect.stringContaining("# My App Orchestrator"),
+      });
+      expect(mockSessionManager.spawnOrchestrator).not.toHaveBeenCalled();
+    });
+
+    it("uses spawnOrchestrator when clean is false or omitted", async () => {
+      (mockSessionManager.spawnOrchestrator as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        makeSession({
+          id: "my-app-orchestrator",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+        }),
+      );
+
+      const req = makeRequest("/api/orchestrators", {
+        method: "POST",
+        body: JSON.stringify({ projectId: "my-app", clean: false }),
+        headers: { "Content-Type": "application/json" },
+      });
+      await orchestratorsPOST(req);
+
+      expect(mockSessionManager.spawnOrchestrator).toHaveBeenCalled();
+      expect(mockSessionManager.relaunchOrchestrator).not.toHaveBeenCalled();
     });
   });
 

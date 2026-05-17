@@ -98,7 +98,7 @@ export function OrchestratorSelector({
   const [spawnError, setSpawnError] = useState<string | null>(null);
   const spawnLockRef = useRef(false);
 
-  const handleSpawnNew = async () => {
+  const postOrchestrator = async (body: { projectId: string; clean?: boolean }) => {
     // Synchronous re-entrancy guard: React state updates are async,
     // so two clicks before rerender would fire two POSTs without this.
     if (spawnLockRef.current) return;
@@ -110,7 +110,7 @@ export function OrchestratorSelector({
       const response = await fetch("/api/orchestrators", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -126,6 +126,18 @@ export function OrchestratorSelector({
       setIsSpawning(false);
       spawnLockRef.current = false;
     }
+  };
+
+  const handleSpawnNew = () => postOrchestrator({ projectId });
+
+  const handleRelaunchClean = () => {
+    if (orchestrators.length > 0) {
+      const confirmed = window.confirm(
+        "This will discard the current orchestrator's conversation and state. Continue?",
+      );
+      if (!confirmed) return;
+    }
+    void postOrchestrator({ projectId, clean: true });
   };
 
   if (error) {
@@ -261,6 +273,17 @@ export function OrchestratorSelector({
               ) : (
                 "Open Orchestrator"
               )}
+            </button>
+            <button
+              type="button"
+              onClick={handleRelaunchClean}
+              disabled={isSpawning}
+              className={cn(
+                "orchestrator-btn mt-2 w-full px-4 py-3 text-sm font-medium",
+                "disabled:cursor-wait disabled:opacity-70",
+              )}
+            >
+              Launch Orchestrator (clean context)
             </button>
             {spawnError && (
               <p className="mt-2 text-sm text-[var(--color-status-error)]">{spawnError}</p>

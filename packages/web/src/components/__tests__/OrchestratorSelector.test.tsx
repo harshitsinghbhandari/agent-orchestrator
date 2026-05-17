@@ -191,6 +191,101 @@ describe("OrchestratorSelector", () => {
     expect(screen.getByText(/ci failed/i)).toBeInTheDocument();
   });
 
+  describe("Launch Orchestrator (clean context)", () => {
+    it("renders the clean-context relaunch button", () => {
+      render(<OrchestratorSelector {...defaultProps} />);
+
+      expect(
+        screen.getByRole("button", { name: /launch orchestrator \(clean context\)/i }),
+      ).toBeInTheDocument();
+    });
+
+    it("prompts for confirmation when an orchestrator exists, then POSTs with clean:true", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ orchestrator: { id: "app-orchestrator" } }),
+      });
+      global.fetch = mockFetch;
+
+      render(<OrchestratorSelector {...defaultProps} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: /launch orchestrator \(clean context\)/i }),
+      );
+
+      expect(confirmSpy).toHaveBeenCalledWith(
+        expect.stringContaining("discard the current orchestrator"),
+      );
+      await waitFor(() => {
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(init.body as string)).toEqual({
+          projectId: "my-project",
+          clean: true,
+        });
+      });
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith("/projects/my-project/sessions/app-orchestrator");
+      });
+      confirmSpy.mockRestore();
+    });
+
+    it("does not POST when the user cancels the confirmation", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+      const mockFetch = vi.fn();
+      global.fetch = mockFetch;
+
+      render(<OrchestratorSelector {...defaultProps} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: /launch orchestrator \(clean context\)/i }),
+      );
+
+      expect(confirmSpy).toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it("skips confirmation when no orchestrator exists", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm");
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ orchestrator: { id: "app-orchestrator" } }),
+      });
+      global.fetch = mockFetch;
+
+      render(<OrchestratorSelector {...defaultProps} orchestrators={[]} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: /launch orchestrator \(clean context\)/i }),
+      );
+
+      expect(confirmSpy).not.toHaveBeenCalled();
+      await waitFor(() => {
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(init.body as string)).toEqual({
+          projectId: "my-project",
+          clean: true,
+        });
+      });
+      confirmSpy.mockRestore();
+    });
+
+    it("surfaces server errors", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        json: () => Promise.resolve({ error: "relaunch failed" }),
+      });
+
+      render(<OrchestratorSelector {...defaultProps} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: /launch orchestrator \(clean context\)/i }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("relaunch failed")).toBeInTheDocument();
+      });
+    });
+  });
+
   describe("formatRelativeTime edge cases", () => {
     it("shows Unknown for invalid date strings", () => {
       const orchestratorsWithInvalidDate = [

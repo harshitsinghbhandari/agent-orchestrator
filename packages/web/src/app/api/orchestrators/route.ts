@@ -86,6 +86,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: projectErr }, { status: 400 });
   }
 
+  const clean = body.clean === true;
+
   try {
     const { config, sessionManager } = await getServices();
     const projectId = body.projectId as string;
@@ -96,7 +98,9 @@ export async function POST(request: NextRequest) {
     const project = config.projects[projectId];
 
     const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
-    const session = await sessionManager.spawnOrchestrator({ projectId, systemPrompt });
+    const session = clean
+      ? await sessionManager.relaunchOrchestrator({ projectId, systemPrompt })
+      : await sessionManager.spawnOrchestrator({ projectId, systemPrompt });
 
     return NextResponse.json(
       {

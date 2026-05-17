@@ -538,6 +538,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     expiresAt: number;
   } | null = null;
   const ensureOrchestratorPromises = new Map<string, Promise<Session>>();
+  const relaunchOrchestratorPromises = new Map<string, Promise<Session>>();
 
   function invalidateCache(): void {
     sessionCache = null;
@@ -1876,6 +1877,47 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return promise;
   }
 
+  async function relaunchOrchestratorInternal(
+    orchestratorConfig: OrchestratorSpawnConfig,
+  ): Promise<Session> {
+    const project = config.projects[orchestratorConfig.projectId];
+    if (!project) {
+      throw new Error(`Unknown project: ${orchestratorConfig.projectId}`);
+    }
+    const sessionId = getOrchestratorSessionId(project);
+    const sessionsDir = getProjectSessionsDir(orchestratorConfig.projectId);
+
+    const existing = await get(sessionId);
+    if (existing) {
+      const existingAgent = resolveSelectionForSession(
+        project,
+        sessionId,
+        readMetadataRaw(sessionsDir, sessionId) ?? {},
+      ).agentName;
+      await kill(sessionId, { purgeOpenCode: existingAgent === "opencode" });
+      deleteMetadata(sessionsDir, sessionId);
+    }
+    return spawnOrchestrator(orchestratorConfig);
+  }
+
+  async function relaunchOrchestrator(
+    orchestratorConfig: OrchestratorSpawnConfig,
+  ): Promise<Session> {
+    const project = config.projects[orchestratorConfig.projectId];
+    if (!project) {
+      throw new Error(`Unknown project: ${orchestratorConfig.projectId}`);
+    }
+    const sessionId = getOrchestratorSessionId(project);
+    const existingPromise = relaunchOrchestratorPromises.get(sessionId);
+    if (existingPromise) return existingPromise;
+
+    const promise = relaunchOrchestratorInternal(orchestratorConfig).finally(() => {
+      relaunchOrchestratorPromises.delete(sessionId);
+    });
+    relaunchOrchestratorPromises.set(sessionId, promise);
+    return promise;
+  }
+
   async function list(projectId?: string): Promise<Session[]> {
     const allSessions = Object.entries(config.projects).flatMap(([entryProjectId, project]) => {
       if (projectId && entryProjectId !== projectId) return [];
@@ -3054,6 +3096,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     spawn,
     spawnOrchestrator,
     ensureOrchestrator,
+    relaunchOrchestrator,
     restore,
     list,
     listCached,
