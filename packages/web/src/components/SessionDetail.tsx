@@ -17,6 +17,9 @@ import { projectDashboardPath, projectSessionPath } from "@/lib/routes";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SessionDetailHeader, type OrchestratorZones } from "./SessionDetailHeader";
 import { SessionEndedSummary } from "./SessionEndedSummary";
+import { ArtifactRail } from "./ArtifactRail";
+import { ArtifactRailSplitter, useArtifactRailWidth } from "./ArtifactRailSplitter";
+import { useArtifactRailCollapsed } from "@/hooks/useArtifactUiState";
 import { sessionActivityMeta } from "./session-detail-utils";
 
 export type { OrchestratorZones } from "./SessionDetailHeader";
@@ -52,6 +55,9 @@ export function SessionDetail({
   const searchParams = useSearchParams();
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const sidebarCtx = useSidebarContext();
+  const [artifactRailWidth, setArtifactRailWidth] = useArtifactRailWidth();
+  const { collapsed: artifactRailCollapsed, setCollapsed: setArtifactRailCollapsed } =
+    useArtifactRailCollapsed();
   const startFullscreen = searchParams.get("fullscreen") === "true";
   const [showTerminal, setShowTerminal] = useState(false);
   const [relaunchError, setRelaunchError] = useState<string | null>(null);
@@ -181,60 +187,99 @@ export function SessionDetail({
         onKill={handleKill}
         onRelaunchClean={isOrchestrator ? handleRelaunchClean : undefined}
       />
-      <main className="session-detail-page flex-1 min-h-0 flex flex-col bg-[var(--color-bg-base)]">
-        {relaunchError ? (
-          <div
-            className="border-b border-[color-mix(in_srgb,var(--color-status-error)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-status-error)_10%,transparent)] px-4 py-2 text-[12px] text-[var(--color-status-error)]"
-            role="alert"
-            aria-live="assertive"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <span className="font-semibold">Relaunch failed:</span> {relaunchError}
-                <div className="mt-1 text-[var(--color-text-secondary)]">
-                  The previous orchestrator may already be terminated. Try again from the
-                  project dashboard.
+      {/* Inner row wrapper. Holds terminal lockup + splitter + artifact rail
+          side-by-side. Sits between header and bottom nav, which are flex
+          children of dashboard-main--desktop (flex-direction: column). */}
+      <div className="flex min-h-0 flex-1 flex-row">
+        <main className="session-detail-page flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--color-bg-base)]">
+          {relaunchError ? (
+            <div
+              className="border-b border-[color-mix(in_srgb,var(--color-status-error)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-status-error)_10%,transparent)] px-4 py-2 text-[12px] text-[var(--color-status-error)]"
+              role="alert"
+              aria-live="assertive"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <span className="font-semibold">Relaunch failed:</span> {relaunchError}
+                  <div className="mt-1 text-[var(--color-text-secondary)]">
+                    The previous orchestrator may already be terminated. Try again from the
+                    project dashboard.
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setRelaunchError(null)}
+                  className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                  aria-label="Dismiss"
+                >
+                  ×
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setRelaunchError(null)}
-                className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                aria-label="Dismiss"
-              >
-                ×
-              </button>
             </div>
+          ) : null}
+          <div className="flex min-h-0 flex-1 flex-col">
+            {!showTerminal ? (
+              <div className="session-detail-terminal-placeholder h-full" />
+            ) : terminalEnded ? (
+              <SessionEndedSummary
+                session={session}
+                headline={headline}
+                pr={pr}
+                dashboardHref={dashboardHref}
+                isRestorable={isRestorable}
+                onRestore={handleRestore}
+              />
+            ) : (
+              <DirectTerminal
+                sessionId={session.id}
+                projectId={session.projectId}
+                tmuxName={session.metadata?.tmuxName}
+                startFullscreen={startFullscreen}
+                variant={terminalVariant}
+                appearance="dark"
+                height="100%"
+                isOpenCodeSession={isOpenCodeSession}
+                reloadCommand={isOpenCodeSession ? reloadCommand : undefined}
+                autoFocus
+              />
+            )}
           </div>
-        ) : null}
-        <div className="flex-1 min-h-0 flex flex-col">
-          {!showTerminal ? (
-            <div className="session-detail-terminal-placeholder h-full" />
-          ) : terminalEnded ? (
-            <SessionEndedSummary
-              session={session}
-              headline={headline}
-              pr={pr}
-              dashboardHref={dashboardHref}
-              isRestorable={isRestorable}
-              onRestore={handleRestore}
-            />
+        </main>
+        {!isMobile ? (
+          artifactRailCollapsed ? (
+            // Collapsed: show a small "expand" handle at the right edge.
+            // No splitter — there's nothing to resize.
+            <button
+              type="button"
+              onClick={() => setArtifactRailCollapsed(false)}
+              aria-label="Expand artifacts rail"
+              title="Show artifacts"
+              className="flex h-full w-6 shrink-0 items-center justify-center border-l border-[var(--color-border-subtle)] bg-[var(--color-bg-sidebar)] text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+            >
+              ‹
+            </button>
           ) : (
-            <DirectTerminal
-              sessionId={session.id}
-              projectId={session.projectId}
-              tmuxName={session.metadata?.tmuxName}
-              startFullscreen={startFullscreen}
-              variant={terminalVariant}
-              appearance="dark"
-              height="100%"
-              isOpenCodeSession={isOpenCodeSession}
-              reloadCommand={isOpenCodeSession ? reloadCommand : undefined}
-              autoFocus
-            />
-          )}
-        </div>
-      </main>
+            <>
+              <ArtifactRailSplitter
+                width={artifactRailWidth}
+                onWidthChange={setArtifactRailWidth}
+              />
+              {/* Width is dynamic (user-resizable), so an inline style is
+                  required — flexBasis pins the rail at the desired width.
+                  This is the same exception pattern as ArtifactHtml's iframe height. */}
+              <div
+                className="flex min-h-0 shrink-0"
+                style={{ flexBasis: `${artifactRailWidth}px`, width: `${artifactRailWidth}px` }}
+              >
+                <ArtifactRail
+                  sessionId={session.id}
+                  onCollapseRail={() => setArtifactRailCollapsed(true)}
+                />
+              </div>
+            </>
+          )
+        ) : null}
+      </div>
       <MobileBottomNav
         ariaLabel="Session navigation"
         activeTab={isOrchestrator ? "orchestrator" : undefined}
