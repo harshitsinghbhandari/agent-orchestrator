@@ -157,9 +157,15 @@ export async function findClaudeProcess(
       if (psOut === PROCESS_PROBE_INDETERMINATE) return PROCESS_PROBE_INDETERMINATE;
 
       const ttySet = new Set(ttys.map((t) => t.replace(/^\/dev\//, "")));
-      // Match "claude" as a word boundary — prevents false positives on
-      // names like "claude-code" or paths that merely contain the substring.
-      const processRe = /(?:^|\/)claude(?:\s|$)/;
+      // Match "claude" plus common variants:
+      //   - bare `claude` / `/usr/local/bin/claude`
+      //   - dot-prefix shim `.claude`
+      //   - file extensions like `claude.exe`, `claude.js`, `claude.cjs`
+      //   - hyphenated names like `claude-code`
+      //   - node-shim cases like `node /path/@anthropic-ai/claude-code/cli.js`
+      //     (matches the path component containing "claude")
+      // Still anchored at `/` or start-of-line so `claudia` etc. don't match.
+      const processRe = /(?:^|\/)(?:\.)?claude(?:[-.][\w-]+)*(?:[\s/]|$)/;
       for (const line of psOut.split("\n")) {
         const cols = line.trimStart().split(/\s+/);
         if (cols.length < 3 || !ttySet.has(cols[1] ?? "")) continue;

@@ -375,6 +375,45 @@ describe("isProcessRunning", () => {
     expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(false);
   });
 
+  // Coverage for the broadened process regex — these are real install shapes
+  // the previous narrow regex `/(?:^|\/)claude(?:\s|$)/` would have missed,
+  // causing AO to declare sessions `exited` while Claude was still running.
+  it.each([
+    ["bare binary", "claude"],
+    ["absolute path", "/opt/homebrew/bin/claude"],
+    ["dot-prefix shim", "/usr/local/lib/.claude"],
+    ["windows exe", "claude.exe"],
+    ["js shim", "claude.js"],
+    ["hyphenated name", "claude-code"],
+    ["node-shim npm install", "node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"],
+  ])("returns true for %s (%s)", async (_label, args) => {
+    mockExecFileAsync.mockImplementation((cmd: string) => {
+      if (cmd === "tmux") return Promise.resolve({ stdout: "/dev/ttys001\n", stderr: "" });
+      if (cmd === "ps")
+        return Promise.resolve({
+          stdout: `  PID TT       ARGS\n  123 ttys001  ${args}\n`,
+          stderr: "",
+        });
+      return Promise.reject(new Error("unexpected"));
+    });
+    resetPsCache();
+    expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(true);
+  });
+
+  it("still rejects look-alike names (claudia, claudine)", async () => {
+    mockExecFileAsync.mockImplementation((cmd: string) => {
+      if (cmd === "tmux") return Promise.resolve({ stdout: "/dev/ttys001\n", stderr: "" });
+      if (cmd === "ps")
+        return Promise.resolve({
+          stdout: "  PID TT       ARGS\n  123 ttys001  claudia\n  124 ttys001  /bin/claudine\n",
+          stderr: "",
+        });
+      return Promise.reject(new Error("unexpected"));
+    });
+    resetPsCache();
+    expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(false);
+  });
+
   it("returns false when tmux list-panes returns empty", async () => {
     mockExecFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
     expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(false);
@@ -439,22 +478,6 @@ describe("isProcessRunning", () => {
       return Promise.reject(new Error("unexpected"));
     });
     expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(true);
-  });
-
-  it("does not match similar process names like claude-code", async () => {
-    mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
-      if (cmd === "tmux" && args[0] === "list-panes") {
-        return Promise.resolve({ stdout: "/dev/ttys001\n", stderr: "" });
-      }
-      if (cmd === "ps") {
-        return Promise.resolve({
-          stdout: "  PID TT ARGS\n  100 ttys001  /usr/bin/claude-code\n",
-          stderr: "",
-        });
-      }
-      return Promise.reject(new Error("unexpected"));
-    });
-    expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(false);
   });
 
   it("returns false for tmux handle on Windows without spawning ps", async () => {
