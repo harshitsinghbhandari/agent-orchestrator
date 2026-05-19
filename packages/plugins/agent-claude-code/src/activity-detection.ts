@@ -286,39 +286,66 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
   const lines = terminalOutput.trim().split("\n");
   const lastLine = lines[lines.length - 1]?.trim() ?? "";
 
-  // Check the last line FIRST — if the prompt is visible, the agent is idle
-  // regardless of historical output (e.g. "Reading file..." from earlier).
-  // The ❯ is Claude Code's prompt character.
+  // Empty prompt on the last line is unambiguously idle.
   if (/^[❯>$#]\s*$/.test(lastLine)) return "idle";
 
-  // Check for blocked BEFORE waiting_input. Claude's static UI footer always
-  // contains "bypass permissions on (shift+tab to cycle)" which the
-  // waiting_input regex would match; we want a real blocked state to win.
+  // Check for blocked. Claude's persistent UI footer contains
+  // "bypass permissions on (shift+tab to cycle)" on every session — the
+  // tightened waiting_input regex no longer matches it, and the blocked
+  // patterns below are specific to api-error retry text.
   //
   // Patterns observed empirically by capturing tmux output during a real
   // api-blocked retry loop (see PR #1932 description):
   //   ⎿  Unable to connect to API (ConnectionRefused)
   //      Retrying in 19s · attempt 7/10
-  // Either line is a sufficient signal — Claude is mid-retry-loop or has
-  // given up. Searches the full input window (caller passes last ~10 lines).
   if (/Unable to connect to API/i.test(terminalOutput)) return "blocked";
   if (/Retrying in \d+s.*attempt \d+\/\d+/i.test(terminalOutput)) return "blocked";
 
-  // Check the bottom of the buffer for permission prompts BEFORE checking
-  // full-buffer active indicators. Historical "Thinking"/"Reading" text in
-  // the buffer must not override a current permission prompt at the bottom.
+  // Check the bottom of the buffer for permission prompts. Historical
+  // "Thinking"/"Reading" text earlier in the buffer must not override a
+  // current permission prompt at the bottom.
   const tail = lines.slice(-5).join("\n");
   if (/Do you want to proceed\?/i.test(tail)) return "waiting_input";
   if (/\(Y\)es.*\(N\)o/i.test(tail)) return "waiting_input";
-  // Match the ACTUAL permission-bypass prompt — "bypass all future permissions
-  // for this session" — not the persistent UI footer "bypass permissions on
-  // (shift+tab to cycle)" which is visible on EVERY Claude session. The
-  // earlier `/bypass.*permissions/i` was too broad and false-fired on every
-  // session that fell through to the AO JSONL pipeline (real-world repro:
-  // ao-143/144/151 all flipped to waiting_input on dormant sessions).
+  // Match the ACTUAL permission-bypass prompt, NOT the static footer toggle.
   if (/bypass\s+all\s+future\s+permissions/i.test(tail)) return "waiting_input";
 
-  return "active";
+  // Active: only when an explicit active-work indicator is present. Default
+  // is IDLE — Claude's tmux pane has a persistent input area + footer that
+  // looks identical between "just finished" and "working". Treating
+  // unrecognized output as active caused dormant sessions (ao-160 etc.) to
+  // get an "active" written to AO activity-JSONL every poll cycle, which the
+  // age-decayed fallback then surfaced as ready forever.
+  //
+  // Use a wider window (last 12 lines) than the prompt/permission checks
+  // because Claude's spinner+status line and ⎿ tool-result lines often sit
+  // 6-8 lines above the bottom (above the input area + footer).
+  const wideTail = lines.slice(-12).join("\n");
+
+  // Strongest active signal: gerund (present-participle) status verb
+  // followed by the trailing ellipsis "…". Claude cycles through many
+  // status words (Germinating, Fluttering, Pondering, Mulling, Crafting,
+  // Thinking, Reasoning, ...) and many spinner glyphs (✻ ✽ · ⠁ ⠈ etc.)
+  // depending on animation frame. The gerund+ellipsis combo is the
+  // consistent signal that survives glyph rotation. Past-tense lines like
+  // "✻ Worked for 11s" or "✻ Crunched for 11s" lack the ellipsis and are
+  // turn-complete summaries — they must NOT match (ao-143 repro).
+  if (/\b\w+ing…/.test(wideTail)) return "active";
+  // (No ⎿ check — that glyph also prefixes past tool-results in the visible
+  // buffer of just-finished sessions. Only the gerund+ellipsis above and
+  // the explicit verb patterns below are reliable active signals.)
+  // Word-based fallbacks for synthetic test inputs and rare cases where
+  // the spinner isn't captured. Tight patterns to avoid false-firing on
+  // benign text like "working on issue #143" in recap content.
+  if (/\bGerminating/i.test(wideTail)) return "active";
+  if (/\bCrunched\s+for\s+\d+\s*s/i.test(wideTail)) return "active";
+  if (/\b(?:Thinking|Working)\s*(?:…|\.\.\.)/i.test(wideTail)) return "active";
+  if (/\bReading\s+file/i.test(wideTail)) return "active";
+  if (/\bWriting\s+to\b/i.test(wideTail)) return "active";
+  if (/\bSearching\s+codebase/i.test(wideTail)) return "active";
+  if (/Press\s+up\s+to\s+edit\s+queued/i.test(wideTail)) return "active";
+
+  return "idle";
 }
 
 // =============================================================================

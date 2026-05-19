@@ -583,8 +583,66 @@ describe("detectActivity", () => {
     ).toBe("waiting_input");
   });
 
-  it("returns active for non-empty output with no special patterns", () => {
-    expect(agent.detectActivity("some random terminal output\n")).toBe("active");
+  it("returns idle for non-empty output with no active-work indicators", () => {
+    // Default-to-idle (changed from default-to-active in this PR). Claude's
+    // tmux pane has a persistent input area + footer that looks identical
+    // between "just finished" and "currently working". Treating
+    // unrecognized output as active caused dormant sessions to get an
+    // "active" written to AO activity-JSONL every poll cycle, which the
+    // age-decayed fallback then surfaced as ready forever (ao-160 repro).
+    expect(agent.detectActivity("some random terminal output\n")).toBe("idle");
+  });
+
+  it("returns idle for dormant session showing only Claude's input area + footer", () => {
+    // Real captured output from a dormant session (ao-143 style): assistant
+    // output above, separator, empty prompt line, separator, footer toggle.
+    // The empty prompt ❯ is NOT the LAST line (footer is) so the existing
+    // lastLine check misses it, and previously the default-to-active sent
+    // every dormant session into the AO-JSONL active-loop.
+    const dormant = [
+      "※ recap: working on issue #143; next: wait for review",
+      "",
+      "──────────────────────────────────────────────────────────",
+      "❯ ",
+      "──────────────────────────────────────────────────────────",
+      "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+    ].join("\n");
+    expect(agent.detectActivity(dormant)).toBe("idle");
+  });
+
+  it("returns active when spinner+ellipsis is in the tail (✻ Fluttering…)", () => {
+    // Real captured output from ao-161 mid-active-turn. The ✻ spinner
+    // followed by a verb and trailing ellipsis is the canonical Claude
+    // active indicator across all turn-status words (Germinating,
+    // Fluttering, Thinking, Pondering, etc).
+    const active = [
+      "✻ Fluttering… (6m 49s · ↓ 26.9k tokens)",
+      "  ⎿  Tip: Use /feedback to help us improve!",
+      "",
+      "──────",
+      "❯ ",
+      "──────",
+      "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+    ].join("\n");
+    expect(agent.detectActivity(active)).toBe("active");
+  });
+
+  it("returns idle for past-tense spinner status like '✻ Worked for 11s' (no ellipsis)", () => {
+    // Real captured output from ao-143 dormant. The ✻ glyph appears in
+    // past-tense turn summaries too — without the trailing ellipsis,
+    // Claude is done, not active.
+    const dormant = [
+      "⏺ Posted: https://github.com/owner/repo/pull/1#comment-1",
+      "",
+      "✻ Worked for 11s",
+      "",
+      "※ recap: working on issue #143; next: wait for review",
+      "──────",
+      "❯ ",
+      "──────",
+      "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    ].join("\n");
+    expect(agent.detectActivity(dormant)).toBe("idle");
   });
 
   // Blocked detection from terminal regex — empirically captured from real
