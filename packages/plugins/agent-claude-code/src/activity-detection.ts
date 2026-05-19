@@ -49,12 +49,22 @@ export function toClaudeProjectPath(workspacePath: string): string {
 // Session file discovery
 // =============================================================================
 
-/** Find the most recently modified .jsonl session file in a directory */
+/** Find the most recently modified .jsonl session file in a directory.
+ *  ENOENT (dir doesn't exist yet) is normal and silent. Other errors
+ *  (EACCES, EPERM, EMFILE, ...) are logged once via console.warn so a
+ *  permission-denied or fd-exhausted misconfig doesn't silently mask the
+ *  session as `idle` forever. */
 export async function findLatestSessionFile(projectDir: string): Promise<string | null> {
   let entries: string[];
   try {
     entries = await readdir(projectDir);
-  } catch {
+  } catch (err: unknown) {
+    if (err instanceof Error && "code" in err && err.code !== "ENOENT") {
+      const code = (err as NodeJS.ErrnoException).code;
+      console.warn(
+        `[claude-code] failed to read ${projectDir} (${code}): ${err.message}. Session activity will fall back to AO JSONL only.`,
+      );
+    }
     return null;
   }
 

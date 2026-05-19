@@ -166,6 +166,35 @@ describe("Claude Code Activity Detection", () => {
       expect(await agent.getActivityState(makeSession({ workspacePath: null }))).toBeNull();
     });
 
+    it("logs a warning when ~/.claude/projects/<dir> is unreadable (EACCES)", async () => {
+      // Make the existing project dir unreadable by stripping owner-read.
+      // ENOENT (dir missing) is normal and stays silent; EACCES/EPERM must
+      // surface so users can debug a silent-idle session.
+      const { chmodSync } = await import("node:fs");
+      chmodSync(projectDir, 0o000);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = await agent.getActivityState(makeSession());
+        expect(result).toBeNull();
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn.mock.calls[0]?.[0]).toMatch(/failed to read.*EACCES|EPERM/);
+      } finally {
+        chmodSync(projectDir, 0o755);
+        warn.mockRestore();
+      }
+    });
+
+    it("does NOT log when project dir simply doesn't exist (ENOENT is normal)", async () => {
+      const badPath = join(fakeHome, "this-workspace-never-existed");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await agent.getActivityState(makeSession({ workspacePath: badPath }));
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("returns null when project directory does not exist and AO activity is unavailable", async () => {
       const badPath = join(fakeHome, "nonexistent-workspace");
       expect(await agent.getActivityState(makeSession({ workspacePath: badPath }))).toBeNull();
