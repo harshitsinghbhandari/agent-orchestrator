@@ -289,6 +289,15 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
   // Empty prompt on the last line is unambiguously idle.
   if (/^[❯>$#]\s*$/.test(lastLine)) return "idle";
 
+  // Use a wider window (last 12 lines) than the bottom-of-buffer prompt
+  // check above because Claude's spinner+status line, ⎿ tool-result lines,
+  // and api-error text often sit 6-8 lines above the input area + footer.
+  // All multi-line state checks (blocked, active) use this window — full
+  // `terminalOutput` would let scrolled-off error text falsely return
+  // "blocked" forever after a successful retry pushes the error out of
+  // view but not out of scrollback.
+  const wideTail = lines.slice(-12).join("\n");
+
   // Check for blocked. Claude's persistent UI footer contains
   // "bypass permissions on (shift+tab to cycle)" on every session — the
   // tightened waiting_input regex no longer matches it, and the blocked
@@ -298,8 +307,8 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
   // api-blocked retry loop (see PR #1932 description):
   //   ⎿  Unable to connect to API (ConnectionRefused)
   //      Retrying in 19s · attempt 7/10
-  if (/Unable to connect to API/i.test(terminalOutput)) return "blocked";
-  if (/Retrying in \d+s.*attempt \d+\/\d+/i.test(terminalOutput)) return "blocked";
+  if (/Unable to connect to API/i.test(wideTail)) return "blocked";
+  if (/Retrying in \d+s.*attempt \d+\/\d+/i.test(wideTail)) return "blocked";
 
   // Check the bottom of the buffer for permission prompts. Historical
   // "Thinking"/"Reading" text earlier in the buffer must not override a
@@ -316,11 +325,6 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
   // unrecognized output as active caused dormant sessions (ao-160 etc.) to
   // get an "active" written to AO activity-JSONL every poll cycle, which the
   // age-decayed fallback then surfaced as ready forever.
-  //
-  // Use a wider window (last 12 lines) than the prompt/permission checks
-  // because Claude's spinner+status line and ⎿ tool-result lines often sit
-  // 6-8 lines above the bottom (above the input area + footer).
-  const wideTail = lines.slice(-12).join("\n");
 
   // Strongest active signal: gerund (present-participle) status verb
   // followed by the trailing ellipsis "…". Claude cycles through many

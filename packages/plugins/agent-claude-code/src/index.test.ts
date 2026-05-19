@@ -671,6 +671,31 @@ describe("detectActivity", () => {
     expect(agent.detectActivity("     Retrying in 30s · attempt 9/10\n")).toBe("blocked");
   });
 
+  it("does NOT return blocked when API error has scrolled out of the visible window after a successful retry", () => {
+    // Regression test: blocked detection must be bounded to the last 12
+    // lines (wideTail), NOT the full terminalOutput buffer. Otherwise an
+    // api_error that scrolled off the visible area after a successful
+    // retry but stayed in scrollback would falsely return "blocked"
+    // forever (Greptile review on PR #1932).
+    const recoveredAndContinued = [
+      "  ⎿  Unable to connect to API (ConnectionRefused)",
+      "     Retrying in 1s · attempt 1/10",
+      "  ⎿  ✓ Connected, retry succeeded",
+      "",
+      "(many lines of work output below pushing the error off the visible area)",
+      ...Array.from({ length: 15 }, (_, i) => `  line ${i + 1} of subsequent work`),
+      "",
+      "✻ Fluttering… (2m 14s)",
+      "  ⎿  Tip: Use /feedback to help us improve!",
+      "",
+      "──────",
+      "❯ ",
+      "──────",
+      "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+    ].join("\n");
+    expect(agent.detectActivity(recoveredAndContinued)).toBe("active");
+  });
+
   it("blocked takes precedence over waiting_input when both 'bypass permissions' footer and api-error are present", () => {
     // Claude's static UI footer always contains "bypass permissions on …",
     // which the existing waiting_input regex matches. A real blocked state
