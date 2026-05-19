@@ -1,5 +1,32 @@
 # @aoagents/ao-core
 
+## 0.9.0
+
+### Minor Changes
+
+- 73bed33: Wire activity events into webhook ingress and the mux WebSocket terminal server (sub-issue of #1511, follows #1620).
+  - `api.webhook_unverified` (warn) — signature verification failed; data includes `slug`, `remoteAddr`, `candidateCount` (never the failed signature)
+  - `api.webhook_rejected` (warn) — payload exceeded `maxBodyBytes`; data includes counts and `maxBodyBytes` (never the body)
+  - `api.webhook_received` (info|warn) — accepted webhook; data includes `projectIds`, `matchedSessions`, `parseErrorCount`, `lifecycleErrorCount` (never the body)
+  - `api.webhook_failed` (error) — outer pipeline crash with `errorMessage`
+  - `ui.terminal_connected` / `ui.terminal_disconnected` — one event per mux WS connection lifecycle
+  - `ui.terminal_heartbeat_lost` (warn) — fires once on 3 missed pongs (was console-only)
+  - `ui.terminal_pty_lost` (warn) — fires when PTY exits with subscribers attached (distinguishes "PTY died" from "user closed browser")
+  - `ui.terminal_protocol_error` (warn) — invalid mux client message
+  - `ui.session_broadcast_failed` (warn) — emitted on the healthy→failing transition only (re-arms after a successful poll), so a long outage produces one event, not 20/min
+
+  `api.webhook_unverified` is the security-audit event; treat 401s on webhooks as a signal worth retaining for the full 7-day window.
+
+- 6d48022: Wire CLI activity events into `ao start`, `ao stop`, `ao spawn`, `ao update`, `ao setup`, `ao migrate-storage`, and shared CLI helpers. `ao events list --source cli` now answers RCA questions like "did AO start cleanly?", "was AO killed or did it crash?", and "did `ao spawn`/`ao stop` fail and why?". Adds `"cli"` to the `ActivityEventSource` union and 30+ event-emit sites covering startup, graceful and forced shutdown, restore, project resolution, config recovery, and migration paths.
+- fcedb25: Wire activity events for the recovery subsystem, metadata-corruption detection, and agent-report apply path. New event kinds: `recovery.session_failed`, `recovery.action_failed`, `metadata.corrupt_detected`, `api.agent_report.session_not_found`, `api.agent_report.transition_rejected`. Adds `"recovery"` to the `ActivityEventSource` union. Lets RCA reconstruct `ao recover` invocations, find every silent metadata overwrite, and audit rejected agent transitions. Adds `ao events list --source` and `--kind` so these forensic event queries are available from the CLI.
+- 94981dc: feat: "Launch Orchestrator (clean context)" action on the orchestrator session page
+
+  Adds a `Relaunch (clean)` action on the orchestrator session page that replaces the project's canonical orchestrator with a fresh one — killing the existing orchestrator, deleting its metadata, and spawning a new session with no carryover state. Backed by a new `SessionManager.relaunchOrchestrator(config)` method that ignores `orchestratorSessionStrategy`. Removes the now-redundant Orchestrator Selector page (`/orchestrators?project=X`) — there is only ever one orchestrator per project, so a selector page is no longer meaningful. Closes #1900 and #1080.
+
+### Patch Changes
+
+- d5d0f07: Rebuild missing better-sqlite3 native bindings during ao postinstall and replace noisy activity-events native-binding failures with a one-line diagnostic.
+
 ## 0.8.0
 
 ### Minor Changes
