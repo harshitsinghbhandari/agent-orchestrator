@@ -320,6 +320,35 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
 // =============================================================================
 
 /**
+ * Claude writes these types as UI-state snapshots at random times: on session
+ * attach, on permission-mode change, on title regeneration, etc. They are
+ * NOT correlated with whether Claude is actively working — a 6-day-dormant
+ * session will still accumulate dozens of `permission-mode` and `ai-title`
+ * entries just from being inspected.
+ *
+ * When one of these is the literal last JSONL entry, treat it as a "no
+ * signal" — fall through to the AO activity-JSONL pipeline (terminal-
+ * derived signal) rather than letting noise mtime decide the activity.
+ *
+ * Concrete bug this prevents: ao-144 had 73 trailing `permission-mode` +
+ * 73 trailing `ai-title` entries written over 6 dormant days. Without
+ * this skip, dashboard oscillated between `ready` (recent noise mtime)
+ * and `idle` (old noise mtime) instead of staying `idle`.
+ *
+ * Conservative list — only the types that empirically run away. The other
+ * bookkeeping types (file-history-snapshot, attachment, pr-link,
+ * queue-operation, last-prompt) plausibly correlate with real activity
+ * and stay in the explicit ready/idle case.
+ */
+const NOISE_JSONL_TYPES: ReadonlySet<string> = new Set([
+  "permission-mode",
+  "ai-title",
+  "agent-color",
+  "agent-name",
+  "custom-title",
+]);
+
+/**
  * Determine current activity state for a Claude Code session.
  *
  * Cascade:
@@ -370,6 +399,12 @@ export async function getClaudeActivityState(
       // Claude writes this session's first native JSONL entry.
       if (session.createdAt && entry.modifiedAt < session.createdAt) {
         staleNativeState = { state: "idle", timestamp: session.createdAt };
+      } else if (entry.lastType && NOISE_JSONL_TYPES.has(entry.lastType)) {
+        // Last entry is UI-state noise (permission-mode / ai-title / etc.)
+        // that doesn't reflect actual activity. Fall through to the AO
+        // activity-JSONL pipeline for a terminal-derived answer; if that's
+        // also empty, the staleNativeState below returns idle.
+        staleNativeState = { state: "idle", timestamp: session.createdAt };
       } else {
         const ageMs = Date.now() - entry.modifiedAt.getTime();
         const timestamp = entry.modifiedAt;
@@ -402,23 +437,16 @@ export async function getClaudeActivityState(
           case "summary":
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };
 
-          // Bookkeeping types Claude writes AFTER finishing a turn (UI metadata,
-          // file snapshots, queue housekeeping). When one of these is the LAST
-          // entry, Claude is done — not active. Without these explicit cases
-          // they'd fall through to `default` and look `active` for 30s, which
-          // is the root cause of "Claude looks busy when it's done" reports.
-          // Survey of types observed in real ~/.claude/projects/ JSONL: see
-          // PR #1927 description.
+          // Bookkeeping types Claude writes AFTER finishing a turn (file
+          // edits, PR creation, attachment context). Map to ready/idle by
+          // age, same as assistant/summary. Pure UI-noise types
+          // (permission-mode, ai-title, agent-*, custom-title) are handled
+          // separately by the NOISE_JSONL_TYPES check above the switch.
           case "file-history-snapshot":
           case "attachment":
           case "pr-link":
           case "queue-operation":
-          case "permission-mode":
           case "last-prompt":
-          case "ai-title":
-          case "agent-color":
-          case "agent-name":
-          case "custom-title":
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };
 
           default:

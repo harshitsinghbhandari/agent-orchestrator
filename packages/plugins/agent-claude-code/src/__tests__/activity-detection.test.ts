@@ -417,14 +417,41 @@ describe("Claude Code Activity Detection", () => {
         expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
       });
 
-      it("returns 'ready' for recent 'permission-mode' (bookkeeping)", async () => {
+      // Pure UI-noise types (permission-mode, ai-title, agent-*, custom-title)
+      // are written by Claude at random times (session attach, mode change,
+      // title gen) and don't reflect actual activity. Real-world repro:
+      // ao-144 had 73 trailing permission-mode + 73 trailing ai-title entries
+      // over 6 dormant days, causing the dashboard to oscillate between
+      // ready and idle. They now fall through to the AO JSONL pipeline; if
+      // that has nothing, the stale-native fallback returns idle from
+      // session.createdAt.
+      it("returns 'idle' (not 'ready') for recent permission-mode noise — dormant session", async () => {
         writeJsonl([{ type: "permission-mode", permissionMode: "bypassPermissions" }]);
-        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("idle");
       });
 
-      it("returns 'ready' for recent UI-metadata bookkeeping (ai-title)", async () => {
+      it("returns 'idle' (not 'ready') for recent ai-title noise — dormant session", async () => {
         writeJsonl([{ type: "ai-title", title: "Fix login bug" }]);
-        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("idle");
+      });
+
+      it("returns 'idle' for agent-color / agent-name / custom-title noise", async () => {
+        writeJsonl([{ type: "agent-color", color: "#fff" }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("idle");
+        writeJsonl([{ type: "agent-name", name: "ao-161" }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("idle");
+        writeJsonl([{ type: "custom-title", title: "x" }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("idle");
+      });
+
+      it("noise last entry yields to AO JSONL when AO has actionable state", async () => {
+        // Repro of the scenario where Claude IS active but the latest native
+        // JSONL line happens to be noise. Native JSONL gets skipped, AO
+        // activity JSONL has waiting_input from a recent terminal scrape,
+        // cascade returns waiting_input.
+        writeJsonl([{ type: "permission-mode" }]);
+        writeActivityLog("waiting_input");
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("waiting_input");
       });
     });
 
