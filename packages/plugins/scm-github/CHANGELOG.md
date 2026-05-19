@@ -1,5 +1,16 @@
 # @aoagents/ao-plugin-scm-github
 
+## 0.9.0
+
+### Patch Changes
+
+- Updated dependencies [73bed33]
+- Updated dependencies [6d48022]
+- Updated dependencies [fcedb25]
+- Updated dependencies [94981dc]
+- Updated dependencies [d5d0f07]
+  - @aoagents/ao-core@0.9.0
+
 ## 0.8.0
 
 ### Patch Changes
