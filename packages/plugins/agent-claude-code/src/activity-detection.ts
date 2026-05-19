@@ -331,14 +331,21 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
   // "✻ Worked for 11s" or "✻ Crunched for 11s" lack the ellipsis and are
   // turn-complete summaries — they must NOT match (ao-143 repro).
   if (/\b\w+ing…/.test(wideTail)) return "active";
-  // (No ⎿ check — that glyph also prefixes past tool-results in the visible
-  // buffer of just-finished sessions. Only the gerund+ellipsis above and
-  // the explicit verb patterns below are reliable active signals.)
+  // NOTE — these patterns look "active-ish" but are NOT, and should never
+  // go back as active indicators:
+  //   - /\bCrunched\s+for\s+\d+s/  — past-tense turn summary (ao-154 repro:
+  //     "✻ Crunched for 22s" was making sessions perpetually "active")
+  //   - /\bWorked\s+for\s+\d+s/    — past-tense turn summary (ao-143 repro)
+  //   - /^\s*⎿\s+/                  — prefixes past tool-results too
+  //   - /esc to interrupt/          — in the persistent UI footer
+  //   - bare /\bWorking\b/          — matches "working on issue #N" in recap
+  // The gerund+ellipsis above catches present-tense forms across all
+  // status words regardless of spinner glyph rotation.
+
   // Word-based fallbacks for synthetic test inputs and rare cases where
-  // the spinner isn't captured. Tight patterns to avoid false-firing on
-  // benign text like "working on issue #143" in recap content.
+  // the ellipsis isn't captured. Tight patterns to avoid false-firing on
+  // benign text.
   if (/\bGerminating/i.test(wideTail)) return "active";
-  if (/\bCrunched\s+for\s+\d+\s*s/i.test(wideTail)) return "active";
   if (/\b(?:Thinking|Working)\s*(?:…|\.\.\.)/i.test(wideTail)) return "active";
   if (/\bReading\s+file/i.test(wideTail)) return "active";
   if (/\bWriting\s+to\b/i.test(wideTail)) return "active";
