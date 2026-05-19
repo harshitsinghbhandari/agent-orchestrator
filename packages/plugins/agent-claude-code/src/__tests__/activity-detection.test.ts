@@ -252,6 +252,23 @@ describe("Claude Code Activity Detection", () => {
         expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
       });
 
+      it("returns 'blocked' for 'system' api_error (level: error)", async () => {
+        writeJsonl([
+          {
+            type: "system",
+            subtype: "api_error",
+            level: "error",
+            cause: { code: "ConnectionRefused" },
+          },
+        ]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("blocked");
+      });
+
+      it("returns 'ready' for non-error 'system' subtypes (compact_boundary)", async () => {
+        writeJsonl([{ type: "system", subtype: "compact_boundary", level: "info" }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
+      });
+
       it("returns 'active' for recent 'file-history-snapshot' (bookkeeping)", async () => {
         writeJsonl([{ type: "file-history-snapshot" }]);
         expect((await agent.getActivityState(makeSession()))?.state).toBe("active");
@@ -312,6 +329,14 @@ describe("Claude Code Activity Detection", () => {
       it("returns 'idle' for stale bookkeeping entry (> threshold)", async () => {
         writeJsonl([{ type: "file-history-snapshot" }], 400_000);
         expect((await agent.getActivityState(makeSession()))?.state).toBe("idle");
+      });
+
+      it("'system' api_error ignores staleness (always blocked)", async () => {
+        writeJsonl(
+          [{ type: "system", subtype: "api_error", level: "error" }],
+          400_000,
+        );
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("blocked");
       });
 
       it("respects custom readyThresholdMs", async () => {

@@ -241,9 +241,10 @@ export function classifyTerminalOutput(terminalOutput: string): ActivityState {
  *  4. AO activity JSONL: `getActivityFallbackState` for age-decayed fallback
  *  5. Stale native (entry predates session) returned only if nothing else
  *
- * Note: Claude does NOT emit `permission_request` or `error` as top-level
- * JSONL types. `waiting_input` and `blocked` come exclusively from the
- * terminal regex → AO activity JSONL path.
+ * Note: Claude does NOT emit `permission_request` or top-level `error`
+ * as JSONL types. `waiting_input` flows through the terminal regex →
+ * AO activity JSONL path. `blocked` is detected from native JSONL via
+ * `{type:"system", level:"error"}` (Claude's api_error shape).
  */
 export async function getClaudeActivityState(
   session: Session,
@@ -286,8 +287,16 @@ export async function getClaudeActivityState(
             if (ageMs <= activeWindowMs) return { state: "active", timestamp };
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };
 
-          case "assistant":
           case "system":
+            // Claude writes API errors as `{type:"system", subtype:"api_error",
+            // level:"error", cause:{...}}`. When the LAST entry is an error,
+            // Claude is mid-retry-loop or has given up — surface as blocked so
+            // stuck-detection can fire. Other system subtypes (compact_boundary,
+            // local_command, turn_duration, etc.) are normal turn-end markers.
+            if (entry.lastLevel === "error") return { state: "blocked", timestamp };
+            return { state: ageMs > threshold ? "idle" : "ready", timestamp };
+
+          case "assistant":
           case "summary":
           case "result":
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };
