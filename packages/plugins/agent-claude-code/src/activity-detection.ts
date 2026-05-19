@@ -304,6 +304,25 @@ export async function getClaudeActivityState(
           case "result":
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };
 
+          // Bookkeeping types Claude writes AFTER finishing a turn (UI metadata,
+          // file snapshots, queue housekeeping). When one of these is the LAST
+          // entry, Claude is done — not active. Without these explicit cases
+          // they'd fall through to `default` and look `active` for 30s, which
+          // is the root cause of "Claude looks busy when it's done" reports.
+          // Survey of types observed in real ~/.claude/projects/ JSONL: see
+          // PR #1927 description.
+          case "file-history-snapshot":
+          case "attachment":
+          case "pr-link":
+          case "queue-operation":
+          case "permission-mode":
+          case "last-prompt":
+          case "ai-title":
+          case "agent-color":
+          case "agent-name":
+          case "custom-title":
+            return { state: ageMs > threshold ? "idle" : "ready", timestamp };
+
           default:
             if (ageMs <= activeWindowMs) return { state: "active", timestamp };
             return { state: ageMs > threshold ? "idle" : "ready", timestamp };

@@ -276,19 +276,38 @@ describe("Claude Code Activity Detection", () => {
         expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
       });
 
-      it("returns 'active' for recent 'file-history-snapshot' (bookkeeping)", async () => {
+      // Bookkeeping types Claude writes AFTER finishing a turn — these are
+      // turn-end markers, not "Claude is working" signals. They must map to
+      // ready/idle by age, NOT active. Previously they fell through to the
+      // default branch and looked "active" for 30s; fixed in this PR.
+      it("returns 'ready' for recent 'file-history-snapshot' (bookkeeping)", async () => {
         writeJsonl([{ type: "file-history-snapshot" }]);
-        expect((await agent.getActivityState(makeSession()))?.state).toBe("active");
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
       });
 
-      it("returns 'active' for recent 'queue-operation' (bookkeeping)", async () => {
+      it("returns 'ready' for recent 'queue-operation' (bookkeeping)", async () => {
         writeJsonl([{ type: "queue-operation" }]);
-        expect((await agent.getActivityState(makeSession()))?.state).toBe("active");
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
       });
 
-      it("returns 'active' for recent 'pr-link' (bookkeeping)", async () => {
+      it("returns 'ready' for recent 'pr-link' (bookkeeping)", async () => {
         writeJsonl([{ type: "pr-link" }]);
-        expect((await agent.getActivityState(makeSession()))?.state).toBe("active");
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
+      });
+
+      it("returns 'ready' for recent 'attachment' (bookkeeping)", async () => {
+        writeJsonl([{ type: "attachment", attachment: { type: "skill_listing" } }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
+      });
+
+      it("returns 'ready' for recent 'permission-mode' (bookkeeping)", async () => {
+        writeJsonl([{ type: "permission-mode", permissionMode: "bypassPermissions" }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
+      });
+
+      it("returns 'ready' for recent UI-metadata bookkeeping (ai-title)", async () => {
+        writeJsonl([{ type: "ai-title", title: "Fix login bug" }]);
+        expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
       });
     });
 
