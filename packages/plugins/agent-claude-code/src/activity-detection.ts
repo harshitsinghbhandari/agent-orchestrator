@@ -69,12 +69,37 @@ export function resolveWorkspaceForClaude(workspacePath: string): string {
 // Session file discovery
 // =============================================================================
 
-/** Find the most recently modified .jsonl session file in a directory.
- *  ENOENT (dir doesn't exist yet) is normal and silent. Other errors
+/** Find Claude's JSONL session file for a project directory.
+ *
+ *  When `preferredUuid` is provided (e.g. from `session.metadata.claudeSessionUuid`
+ *  captured by getSessionInfo), prefer `<projectDir>/<preferredUuid>.jsonl`
+ *  if it exists. This disambiguates the common case of multiple Claude
+ *  sessions running in the same workspace, where newest-mtime would pick
+ *  the WRONG session's JSONL whenever its sibling has just written.
+ *
+ *  Falls back to newest-mtime when no UUID is given or the named file
+ *  doesn't exist yet (e.g. fresh session that hasn't been introspected).
+ *
+ *  ENOENT on the project dir is normal and silent. Other errors
  *  (EACCES, EPERM, EMFILE, ...) are logged once via console.warn so a
  *  permission-denied or fd-exhausted misconfig doesn't silently mask the
  *  session as `idle` forever. */
-export async function findLatestSessionFile(projectDir: string): Promise<string | null> {
+export async function findLatestSessionFile(
+  projectDir: string,
+  preferredUuid?: string,
+): Promise<string | null> {
+  // Prefer the UUID-named file when we know it — disambiguates multi-session.
+  if (preferredUuid) {
+    const preferred = join(projectDir, `${preferredUuid}.jsonl`);
+    try {
+      await stat(preferred);
+      return preferred;
+    } catch {
+      // Fall through to newest-mtime — the UUID-named file may not exist
+      // yet (session just spawned, hasn't been introspected).
+    }
+  }
+
   let entries: string[];
   try {
     entries = await readdir(projectDir);
@@ -300,7 +325,13 @@ export async function getClaudeActivityState(
   const projectPath = toClaudeProjectPath(resolveWorkspaceForClaude(session.workspacePath));
   const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
-  const sessionFile = await findLatestSessionFile(projectDir);
+  // Prefer the UUID-named file when getSessionInfo has captured one — this
+  // disambiguates multi-session-per-worktree, where newest-mtime would pick
+  // the wrong session's JSONL whenever its sibling has just written.
+  const rawUuid = session.metadata?.["claudeSessionUuid"];
+  const preferredUuid =
+    typeof rawUuid === "string" && rawUuid.trim() ? rawUuid.trim() : undefined;
+  const sessionFile = await findLatestSessionFile(projectDir, preferredUuid);
   let staleNativeState: ActivityDetection | null = null;
   if (sessionFile) {
     const entry = await readLastJsonlEntry(sessionFile);

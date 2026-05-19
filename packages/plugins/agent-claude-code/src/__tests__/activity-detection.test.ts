@@ -201,6 +201,37 @@ describe("Claude Code Activity Detection", () => {
       }
     });
 
+    it("prefers UUID-named JSONL when session.metadata.claudeSessionUuid is set", async () => {
+      // Multi-session-in-one-worktree case: two .jsonl files exist, the
+      // newest-mtime one is from a DIFFERENT session, and we don't want
+      // to misread that. Use the metadata UUID to pick the right one.
+      const myUuid = "aaa-111";
+      // Newest-mtime file is the OTHER session's JSONL (would be wrong).
+      writeJsonl([{ type: "progress", status: "doing other work" }], 0, "bbb-222.jsonl");
+      // My session's JSONL is older, but it's the one we want.
+      writeJsonl(
+        [{ type: "assistant", message: { content: "my session" } }],
+        10_000,
+        `${myUuid}.jsonl`,
+      );
+
+      const session = makeSession({ metadata: { claudeSessionUuid: myUuid } });
+      const result = await agent.getActivityState(session);
+      // 10s old + `assistant` → ready (NOT `active` from the other session's progress)
+      expect(result?.state).toBe("ready");
+    });
+
+    it("falls back to newest-mtime when UUID-named file doesn't exist yet", async () => {
+      // Session just spawned, getSessionInfo hasn't captured the UUID yet,
+      // OR the UUID was captured but the file was rotated/removed.
+      // Should still find activity via newest-mtime fallback.
+      writeJsonl([{ type: "user", message: { content: "hi" } }], 0, "actual-session.jsonl");
+
+      const session = makeSession({ metadata: { claudeSessionUuid: "uuid-that-doesnt-exist" } });
+      const result = await agent.getActivityState(session);
+      expect(result?.state).toBe("active");
+    });
+
     it("resolves symlinked workspace paths so slugs match what Claude wrote", async () => {
       // Claude resolves the symlink target before slugifying. If AO records
       // the symlink path and slugifies without realpath, the two slugs
