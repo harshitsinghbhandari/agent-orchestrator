@@ -14,8 +14,7 @@ import {
   type Session,
 } from "@aoagents/ao-core";
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -57,9 +56,9 @@ export function toClaudeProjectPath(workspacePath: string): string {
  * forever and the session looks permanently `idle`. Falls back to the
  * literal path on error (dangling symlink, race, etc.).
  */
-export function resolveWorkspaceForClaude(workspacePath: string): string {
+export async function resolveWorkspaceForClaude(workspacePath: string): Promise<string> {
   try {
-    return realpathSync(workspacePath);
+    return await realpath(workspacePath);
   } catch {
     return workspacePath;
   }
@@ -68,6 +67,18 @@ export function resolveWorkspaceForClaude(workspacePath: string): string {
 // =============================================================================
 // Session file discovery
 // =============================================================================
+
+/** Module-level dedupe so EACCES/EPERM on a project dir warns ONCE per path
+ *  for the process lifetime, not on every poll cycle. getClaudeActivityState
+ *  is called every few seconds per session — without this, a single denied
+ *  path would flood logs at 60+ lines/minute indefinitely. Bounded by the
+ *  number of unique workspace slugs, which is small. */
+const warnedReaddirPaths = new Set<string>();
+
+/** Reset the warned-paths dedupe set. Exported for testing only. */
+export function resetWarnedReaddirPaths(): void {
+  warnedReaddirPaths.clear();
+}
 
 /** Find Claude's JSONL session file for a project directory.
  *
@@ -81,9 +92,10 @@ export function resolveWorkspaceForClaude(workspacePath: string): string {
  *  doesn't exist yet (e.g. fresh session that hasn't been introspected).
  *
  *  ENOENT on the project dir is normal and silent. Other errors
- *  (EACCES, EPERM, EMFILE, ...) are logged once via console.warn so a
- *  permission-denied or fd-exhausted misconfig doesn't silently mask the
- *  session as `idle` forever. */
+ *  (EACCES, EPERM, EMFILE, ...) are logged via console.warn — once per
+ *  path for the process lifetime — so a permission-denied or fd-exhausted
+ *  misconfig doesn't silently mask the session as `idle` forever and
+ *  doesn't flood logs on every poll. */
 export async function findLatestSessionFile(
   projectDir: string,
   preferredUuid?: string,
@@ -105,10 +117,13 @@ export async function findLatestSessionFile(
     entries = await readdir(projectDir);
   } catch (err: unknown) {
     if (err instanceof Error && "code" in err && err.code !== "ENOENT") {
-      const code = (err as NodeJS.ErrnoException).code;
-      console.warn(
-        `[claude-code] failed to read ${projectDir} (${code}): ${err.message}. Session activity will fall back to AO JSONL only.`,
-      );
+      if (!warnedReaddirPaths.has(projectDir)) {
+        warnedReaddirPaths.add(projectDir);
+        const code = (err as NodeJS.ErrnoException).code;
+        console.warn(
+          `[claude-code] failed to read ${projectDir} (${code}): ${err.message}. Session activity will fall back to AO JSONL only. (This warning is shown once per path for the process lifetime.)`,
+        );
+      }
     }
     return null;
   }
@@ -335,7 +350,7 @@ export async function getClaudeActivityState(
 
   if (!session.workspacePath) return null;
 
-  const projectPath = toClaudeProjectPath(resolveWorkspaceForClaude(session.workspacePath));
+  const projectPath = toClaudeProjectPath(await resolveWorkspaceForClaude(session.workspacePath));
   const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
   // Prefer the UUID-named file when getSessionInfo has captured one — this

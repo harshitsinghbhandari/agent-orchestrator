@@ -768,7 +768,7 @@ function createClaudeCodeAgent(): Agent {
       if (!session.workspacePath) return null;
 
       // Build the Claude project directory path
-      const projectPath = toClaudeProjectPath(resolveWorkspaceForClaude(session.workspacePath));
+      const projectPath = toClaudeProjectPath(await resolveWorkspaceForClaude(session.workspacePath));
       const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
       // Find the latest session JSONL file
@@ -798,7 +798,7 @@ function createClaudeCodeAgent(): Agent {
         if (!session.workspacePath) return null;
 
         // Find Claude's project directory for this workspace
-        const projectPath = toClaudeProjectPath(resolveWorkspaceForClaude(session.workspacePath));
+        const projectPath = toClaudeProjectPath(await resolveWorkspaceForClaude(session.workspacePath));
         const projectDir = join(homedir(), ".claude", "projects", projectPath);
 
         // Find the latest session JSONL file

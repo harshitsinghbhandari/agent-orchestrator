@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { toClaudeProjectPath, create } from "../index.js";
+import { resetWarnedReaddirPaths } from "../activity-detection.js";
 import {
   createActivitySignal,
   readLastActivityEntry,
@@ -139,6 +140,9 @@ describe("Claude Code Activity Detection", () => {
 
       // Mock isProcessRunning to always return true (we test exited separately)
       vi.spyOn(agent, "isProcessRunning").mockResolvedValue(true);
+
+      // Reset module-level warn dedupe so each test starts fresh.
+      resetWarnedReaddirPaths();
     });
 
     afterEach(() => {
@@ -190,7 +194,28 @@ describe("Claude Code Activity Detection", () => {
         const result = await agent.getActivityState(makeSession());
         expect(result).toBeNull();
         expect(warn).toHaveBeenCalledOnce();
-        expect(warn.mock.calls[0]?.[0]).toMatch(/failed to read.*EACCES|EPERM/);
+        // Non-capturing group: alternation MUST stay inside `(?:...)` or it
+        // would parse as `(failed to read.*EACCES) | (EPERM)` and any string
+        // containing the literal `EPERM` would pass the assertion.
+        expect(warn.mock.calls[0]?.[0]).toMatch(/failed to read.*(?:EACCES|EPERM)/);
+      } finally {
+        chmodSync(projectDir, 0o755);
+        warn.mockRestore();
+      }
+    });
+
+    it("only warns ONCE per path across multiple polls (no log flood)", async () => {
+      // Real bug this guards against: getActivityState runs on a polling
+      // interval; without the dedupe set, a single EACCES path would log
+      // 60+ lines/minute indefinitely.
+      const { chmodSync } = await import("node:fs");
+      chmodSync(projectDir, 0o000);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await agent.getActivityState(makeSession());
+        await agent.getActivityState(makeSession());
+        await agent.getActivityState(makeSession());
+        expect(warn).toHaveBeenCalledOnce();
       } finally {
         chmodSync(projectDir, 0o755);
         warn.mockRestore();
