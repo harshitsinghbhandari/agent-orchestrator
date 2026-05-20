@@ -386,6 +386,229 @@ process.exit(0);
 `;
 
 // =============================================================================
+// Activity Updater Hook Script
+// =============================================================================
+
+/**
+ * Bash hook script that translates Claude Code lifecycle hooks into AO activity
+ * JSONL entries. Registered on every event whose firing carries activity
+ * information (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
+ * PermissionRequest, Notification, Stop, SubagentStop, StopFailure, PreCompact,
+ * PostCompact, SubagentStart, PostToolBatch).
+ *
+ * Reads the JSON payload from stdin, parses `hook_event_name`, maps it to an
+ * activity state, and appends a single JSONL entry to
+ * `$CLAUDE_PROJECT_DIR/.ao/activity.jsonl` with `source: "hook"`.
+ *
+ * Notification is filtered by `notification_type` — only `permission_prompt`
+ * and `idle_prompt` map to `waiting_input`; `auth_success`/`elicitation_*` etc.
+ * are skipped because they don't represent a stuck-on-the-user transition.
+ *
+ * The script always exits 0 (never blocks Claude). Unknown events exit
+ * silently. Exported for integration testing.
+ */
+export const ACTIVITY_UPDATER_SCRIPT = `#!/usr/bin/env bash
+# Activity Updater Hook for Agent Orchestrator
+#
+# Records Claude Code lifecycle events to {workspace}/.ao/activity.jsonl so
+# the dashboard / lifecycle reducer derives activity state from authoritative
+# platform events instead of regex over rendered terminal output. (#1941)
+
+set -uo pipefail
+
+input=$(cat)
+
+if command -v jq &>/dev/null; then
+  event=$(printf '%s' "$input" | jq -r '.hook_event_name // empty')
+  notif_type=$(printf '%s' "$input" | jq -r '.notification_type // empty')
+  tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty')
+  error_type=$(printf '%s' "$input" | jq -r '.error_type // empty')
+else
+  event=$(printf '%s' "$input" | grep -o '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+  notif_type=$(printf '%s' "$input" | grep -o '"notification_type"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+  tool_name=$(printf '%s' "$input" | grep -o '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+  error_type=$(printf '%s' "$input" | grep -o '"error_type"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+fi
+
+state=""
+trigger=""
+case "$event" in
+  SessionStart|Stop|SubagentStop)
+    state="ready"
+    trigger="$event"
+    ;;
+  UserPromptSubmit|PreToolUse|PostToolUse|PostToolUseFailure|PreCompact|PostCompact|SubagentStart|PostToolBatch)
+    state="active"
+    trigger="$event"
+    ;;
+  PermissionRequest)
+    state="waiting_input"
+    if [[ -n "$tool_name" ]]; then
+      trigger="PermissionRequest ($tool_name)"
+    else
+      trigger="PermissionRequest"
+    fi
+    ;;
+  Notification)
+    if [[ "$notif_type" == "permission_prompt" || "$notif_type" == "idle_prompt" ]]; then
+      state="waiting_input"
+      trigger="Notification ($notif_type)"
+    else
+      # auth_success / elicitation_* / unrecognized — not an activity transition
+      echo '{}'
+      exit 0
+    fi
+    ;;
+  StopFailure)
+    state="blocked"
+    if [[ -n "$error_type" ]]; then
+      trigger="StopFailure ($error_type)"
+    else
+      trigger="StopFailure"
+    fi
+    ;;
+  *)
+    echo '{}'
+    exit 0
+    ;;
+esac
+
+workspace="\${CLAUDE_PROJECT_DIR:-$(pwd)}"
+log_dir="$workspace/.ao"
+log_file="$log_dir/activity.jsonl"
+
+mkdir -p "$log_dir" 2>/dev/null || { echo '{}'; exit 0; }
+
+# Node is a hard runtime dep of Claude Code, so node -p is always available
+# and gives millisecond-precision ISO timestamps matching the rest of the
+# activity-JSONL log. Fall back to seconds-precision date for the unlikely
+# case where node is unavailable (still valid ISO 8601).
+ts=$(node -p 'new Date().toISOString()' 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Escape JSON-special characters in the trigger value. Triggers are bounded to
+# event/tool/error names (no user-controlled content) but escape defensively
+# so the JSONL line stays parseable for any future trigger source.
+escape_json() {
+  local s="$1"
+  s="\${s//\\\\/\\\\\\\\}"
+  s="\${s//\\"/\\\\\\"}"
+  printf '%s' "$s"
+}
+
+if [[ "$state" == "waiting_input" || "$state" == "blocked" ]]; then
+  esc_trigger=$(escape_json "$trigger")
+  printf '{"ts":"%s","state":"%s","source":"hook","trigger":"%s"}\\n' "$ts" "$state" "$esc_trigger" >> "$log_file"
+else
+  printf '{"ts":"%s","state":"%s","source":"hook"}\\n' "$ts" "$state" >> "$log_file"
+fi
+
+echo '{}'
+exit 0
+`;
+
+/**
+ * Node.js equivalent of ACTIVITY_UPDATER_SCRIPT for Windows. No bash, no jq,
+ * no shebang interpretation; relies only on Node built-ins. Exported for
+ * testing.
+ */
+export const ACTIVITY_UPDATER_SCRIPT_NODE = `#!/usr/bin/env node
+// Activity Updater Hook for Agent Orchestrator (Node.js — Windows). See
+// ACTIVITY_UPDATER_SCRIPT for the canonical bash version. (#1941)
+
+const { appendFileSync, mkdirSync, readFileSync } = require("node:fs");
+const { join } = require("node:path");
+
+let inputRaw = "";
+try {
+  inputRaw = readFileSync(0, "utf-8");
+} catch {
+  process.stdout.write("{}\\n");
+  process.exit(0);
+}
+
+let payload;
+try {
+  payload = JSON.parse(inputRaw || "{}");
+} catch {
+  process.stdout.write("{}\\n");
+  process.exit(0);
+}
+
+const event = typeof payload.hook_event_name === "string" ? payload.hook_event_name : "";
+const notifType = typeof payload.notification_type === "string" ? payload.notification_type : "";
+const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
+const errorType = typeof payload.error_type === "string" ? payload.error_type : "";
+
+let state = "";
+let trigger = "";
+switch (event) {
+  case "SessionStart":
+  case "Stop":
+  case "SubagentStop":
+    state = "ready";
+    trigger = event;
+    break;
+  case "UserPromptSubmit":
+  case "PreToolUse":
+  case "PostToolUse":
+  case "PostToolUseFailure":
+  case "PreCompact":
+  case "PostCompact":
+  case "SubagentStart":
+  case "PostToolBatch":
+    state = "active";
+    trigger = event;
+    break;
+  case "PermissionRequest":
+    state = "waiting_input";
+    trigger = toolName ? \`PermissionRequest (\${toolName})\` : "PermissionRequest";
+    break;
+  case "Notification":
+    if (notifType === "permission_prompt" || notifType === "idle_prompt") {
+      state = "waiting_input";
+      trigger = \`Notification (\${notifType})\`;
+    } else {
+      process.stdout.write("{}\\n");
+      process.exit(0);
+    }
+    break;
+  case "StopFailure":
+    state = "blocked";
+    trigger = errorType ? \`StopFailure (\${errorType})\` : "StopFailure";
+    break;
+  default:
+    process.stdout.write("{}\\n");
+    process.exit(0);
+}
+
+const workspace = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const logDir = join(workspace, ".ao");
+const logFile = join(logDir, "activity.jsonl");
+
+try {
+  mkdirSync(logDir, { recursive: true });
+} catch {
+  process.stdout.write("{}\\n");
+  process.exit(0);
+}
+
+const ts = new Date().toISOString();
+const entry =
+  state === "waiting_input" || state === "blocked"
+    ? { ts, state, source: "hook", trigger }
+    : { ts, state, source: "hook" };
+
+try {
+  appendFileSync(logFile, JSON.stringify(entry) + "\\n", "utf-8");
+} catch {
+  // Best-effort — never block Claude on log append failure
+}
+
+process.stdout.write("{}\\n");
+process.exit(0);
+`;
+
+// =============================================================================
 // Plugin Manifest
 // =============================================================================
 
