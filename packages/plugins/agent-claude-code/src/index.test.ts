@@ -1159,6 +1159,74 @@ describe("setupWorkspaceHooks — activity-updater (#1941)", () => {
     expect(commands).toContain(ACTIVITY_CMD_UNIX); // our hook added
   });
 
+  it("tolerates malformed hooks.<event> (object instead of array)", async () => {
+    // A user could hand-edit settings.json or an older plugin could have
+    // written a non-array shape there. We must not crash — start fresh.
+    const malformed = {
+      hooks: {
+        // Object where an array is expected
+        Stop: { matcher: "", command: "broken" },
+      },
+    };
+    mockExistsSync.mockReturnValueOnce(true);
+    mockReadFile.mockResolvedValueOnce(JSON.stringify(malformed));
+    mockWriteFile.mockClear();
+
+    await expect(
+      agent.setupWorkspaceHooks!("/workspace/test", {} as WorkspaceHooksConfig),
+    ).resolves.not.toThrow();
+
+    const settings = getParsedSettings();
+    const stopGroup = (settings.hooks as Record<string, unknown>)["Stop"] as Array<{
+      hooks: Array<{ command: string }>;
+    }>;
+    expect(Array.isArray(stopGroup)).toBe(true);
+    const commands = stopGroup.flatMap((g) => g.hooks).map((h) => h.command);
+    expect(commands).toContain(ACTIVITY_CMD_UNIX);
+  });
+
+  it("preserves matcher of an entry where user co-located their own def alongside ours", async () => {
+    // User has added their own hook def into the SAME { matcher, hooks: [...] }
+    // object that contains our activity-updater. If we naively reset
+    // entry.matcher to ours (""), the user's def starts firing on every
+    // PreToolUse event instead of only "Edit|Write".
+    const existingSettings = {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "Edit|Write",
+            hooks: [
+              { type: "command", command: ".claude/activity-updater.sh", timeout: 2000 },
+              { type: "command", command: "echo user-edits-only", timeout: 1000 },
+            ],
+          },
+        ],
+      },
+    };
+    mockExistsSync.mockReturnValueOnce(true);
+    mockReadFile.mockResolvedValueOnce(JSON.stringify(existingSettings));
+    mockWriteFile.mockClear();
+
+    await agent.setupWorkspaceHooks!("/workspace/test", {} as WorkspaceHooksConfig);
+
+    const settings = getParsedSettings();
+    const pre = (settings.hooks as Record<string, unknown>)["PreToolUse"] as Array<{
+      matcher: string;
+      hooks: Array<{ command: string }>;
+    }>;
+    const sharedEntry = pre.find((g) =>
+      g.hooks.some((h) => h.command === "echo user-edits-only"),
+    );
+    expect(sharedEntry).toBeDefined();
+    // Matcher must NOT be overwritten — user's hook keeps firing on "Edit|Write"
+    expect(sharedEntry!.matcher).toBe("Edit|Write");
+    // Both defs still present
+    expect(sharedEntry!.hooks.map((h) => h.command)).toEqual([
+      ACTIVITY_CMD_UNIX,
+      "echo user-edits-only",
+    ]);
+  });
+
   it("on Windows writes activity-updater.cjs (not .sh) and uses node invocation", async () => {
     mockIsWindows.mockReturnValue(true);
     mockWriteFile.mockClear();

@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  classifyTerminalOutput,
   findLatestSessionFile,
   getClaudeActivityState,
   isClaudeProcessAlive,
@@ -804,12 +805,23 @@ interface HookRegistration {
 /**
  * Set the registration's hook in the `event`'s hook array, updating any
  * existing entry whose command contains one of `identifiers` (idempotent).
+ *
+ * Tolerates malformed pre-existing settings: if `hooks[event]` is not an
+ * array (object, string, missing) we start a fresh array rather than
+ * throwing on `.push`.
+ *
+ * Only refreshes the entry-level `matcher` when the entry contains a single
+ * hook def (ours). When a user has co-located their own hook def in the
+ * same `{ matcher, hooks: [...] }` object, we leave their matcher alone and
+ * only update our def's `command`/`timeout` so their hook keeps firing on
+ * the matchers they chose.
  */
 function upsertHookEntry(
   hooks: Record<string, unknown>,
   reg: HookRegistration,
 ): void {
-  const entries = (hooks[reg.event] as Array<unknown>) ?? [];
+  const existing = hooks[reg.event];
+  const entries: Array<unknown> = Array.isArray(existing) ? existing : [];
 
   let foundEntryIdx = -1;
   let foundDefIdx = -1;
@@ -841,10 +853,13 @@ function upsertHookEntry(
     const hooksList = entry["hooks"] as Array<Record<string, unknown>>;
     hooksList[foundDefIdx]!["command"] = reg.command;
     hooksList[foundDefIdx]!["timeout"] = reg.timeout;
-    // Refresh the matcher too — for example, an older PostToolUse entry
-    // registered with matcher "Bash" stays at "Bash"; a new activity-updater
-    // PostToolUse with matcher "" gets its own array entry.
-    entry["matcher"] = reg.matcher;
+    // Only refresh the matcher when the entry is clearly owned by AO
+    // (single hook def == ours). With multiple defs the entry is shared
+    // with a user hook; changing the matcher would change when their hook
+    // fires.
+    if (hooksList.length === 1) {
+      entry["matcher"] = reg.matcher;
+    }
   }
 
   hooks[reg.event] = entries;
@@ -1045,7 +1060,7 @@ function createClaudeCodeAgent(): Agent {
       return env;
     },
 
-    detectActivity(_terminalOutput: string): ActivityState {
+    detectActivity(terminalOutput: string): ActivityState {
       // #1941: Claude activity is derived from platform-event hooks
       // (PermissionRequest / StopFailure / Notification / Stop / ...) which
       // write directly to {workspace}/.ao/activity.jsonl. The terminal-regex
@@ -1055,10 +1070,13 @@ function createClaudeCodeAgent(): Agent {
       //
       // detectActivity is kept on the Agent interface for other plugins
       // (Aider, OpenCode, Codex fallback) that still rely on terminal output.
-      // For Claude, returning "idle" is the neutral no-signal answer; the
-      // lifecycle manager's terminal-output path will record an "idle"
-      // signal which is then overridden by the JSONL-backed cascade.
-      return "idle";
+      // For Claude, classifyTerminalOutput is a stable "idle" stub — the
+      // lifecycle manager only consults this method when getActivityState
+      // returned null (no Claude process / no JSONL / no hook entry yet),
+      // and in that no-signal case "idle" is the correct conservative
+      // answer (we don't write it back to JSONL — recordActivity is also
+      // intentionally omitted for Claude).
+      return classifyTerminalOutput(terminalOutput);
     },
 
     // recordActivity is intentionally NOT implemented for the Claude agent
