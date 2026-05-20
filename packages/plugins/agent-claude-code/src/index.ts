@@ -484,13 +484,21 @@ mkdir -p "$log_dir" 2>/dev/null || { echo '{}'; exit 0; }
 # case where node is unavailable (still valid ISO 8601).
 ts=$(node -p 'new Date().toISOString()' 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Escape JSON-special characters in the trigger value. Triggers are bounded to
-# event/tool/error names (no user-controlled content) but escape defensively
-# so the JSONL line stays parseable for any future trigger source.
+# Escape JSON-special characters in the trigger value. Triggers are bounded
+# today to event/tool/error names (no control chars in practice) but escape
+# defensively — \\ and " for content, plus the five common control chars
+# (\\n \\r \\t \\b \\f) so the JSONL line stays parseable for any future
+# trigger source. Matches what Node's JSON.stringify produces in the .cjs
+# variant so both implementations stay in lockstep.
 escape_json() {
   local s="$1"
   s="\${s//\\\\/\\\\\\\\}"
   s="\${s//\\"/\\\\\\"}"
+  s="\${s//\$'\\n'/\\\\n}"
+  s="\${s//\$'\\r'/\\\\r}"
+  s="\${s//\$'\\t'/\\\\t}"
+  s="\${s//\$'\\b'/\\\\b}"
+  s="\${s//\$'\\f'/\\\\f}"
   printf '%s' "$s"
 }
 

@@ -232,5 +232,25 @@ for (const variant of variants) {
       // ISO 8601 with millisecond precision and Z suffix
       expect(ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/);
     });
+
+    it("escapes control chars in trigger so the JSONL line stays parseable", () => {
+      // Bounded by Claude's enums today (`error_type`, `tool_name` never contain
+      // \n/\r/\t), but if a future hook payload field flows into `trigger`
+      // unescaped, a literal newline would split one entry into two and break
+      // the JSONL parser. This locks in JSON-style escaping across both
+      // bash and Node variants.
+      const { lastEntry, rawJsonl } = runHook(variant, {
+        hook_event_name: "StopFailure",
+        // Smuggle a multi-line value through error_type — covers \n/\t/\r/\\/".
+        error_type: 'multi\nline\twith\rmixed\\\\and"quotes',
+      });
+      // Exactly one JSONL line (control chars escaped, not literal)
+      expect(rawJsonl.split("\n").filter((l) => l.trim())).toHaveLength(1);
+      // Parsed entry round-trips the original string
+      expect(lastEntry!.state).toBe("blocked");
+      expect(lastEntry!.trigger).toBe(
+        'StopFailure (multi\nline\twith\rmixed\\\\and"quotes)',
+      );
+    });
   });
 }
