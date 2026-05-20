@@ -25,9 +25,20 @@ import {
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { readdir, stat, lstat, open } from "node:fs/promises";
+import {
+  readdir,
+  stat,
+  lstat,
+  open,
+  mkdir,
+  readFile,
+  writeFile,
+  rename,
+  rm,
+} from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
@@ -49,6 +60,380 @@ export const manifest = {
 // =============================================================================
 // Workspace Setup (delegates to shared PATH-wrapper hooks from @aoagents/ao-core)
 // =============================================================================
+
+// =============================================================================
+// Codex Hook Logging (experimental verification layer)
+// =============================================================================
+
+const CODEX_HOOK_LOGGER_FILENAME = "ao-codex-hook-logger.cjs";
+const DEFAULT_CODEX_HOOK_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const CODEX_HOOK_LOGGER_TIMEOUT_SECONDS = 5;
+
+function getCodexHookLoggerCommand(): string {
+  return `node ${shellEscape(join(".codex", CODEX_HOOK_LOGGER_FILENAME))}`;
+}
+
+const CODEX_HOOK_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PermissionRequest",
+  "PostToolUse",
+  "Stop",
+  "PreCompact",
+  "PostCompact",
+  "SubagentStart",
+] as const;
+
+export const CODEX_HOOK_LOGGER_SCRIPT = String.raw`#!/usr/bin/env node
+// AO Codex hook logger — verification-only signal collector.
+// Writes Codex hook inputs to .ao/codex-hooks.jsonl when AO_CODEX_HOOK_LOGGING=1.
+
+const fs = require("node:fs");
+const path = require("node:path");
+
+const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+
+function maxLogBytes() {
+  const configured = Number(process.env.AO_CODEX_HOOK_LOG_MAX_BYTES || "");
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return DEFAULT_MAX_BYTES;
+}
+
+if (process.env.AO_CODEX_HOOK_LOGGING !== "1") {
+  process.stdout.write("{}\n");
+  process.exit(0);
+}
+
+let raw = "";
+try {
+  raw = fs.readFileSync(0, "utf8");
+} catch {
+  raw = "";
+}
+
+let input = {};
+try {
+  input = raw.trim() ? JSON.parse(raw) : {};
+} catch (error) {
+  input = { parse_error: error instanceof Error ? error.message : String(error), raw };
+}
+
+const cwd = typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : process.cwd();
+const workspacePath = process.env.AO_WORKSPACE_PATH || cwd;
+const hookEventName =
+  typeof input.hook_event_name === "string"
+    ? input.hook_event_name
+    : typeof input.hookEventName === "string"
+      ? input.hookEventName
+      : "unknown";
+
+const entry = {
+  ts: new Date().toISOString(),
+  source: "codex-hook",
+  hookEventName,
+  sessionId: typeof input.session_id === "string" ? input.session_id : null,
+  turnId: typeof input.turn_id === "string" ? input.turn_id : null,
+  cwd,
+  toolName: typeof input.tool_name === "string" ? input.tool_name : null,
+  permissionMode: typeof input.permission_mode === "string" ? input.permission_mode : null,
+  payload: input,
+};
+
+try {
+  const logDir = path.join(workspacePath, ".ao");
+  const logPath = path.join(logDir, "codex-hooks.jsonl");
+  fs.mkdirSync(logDir, { recursive: true });
+  try {
+    const currentSize = fs.statSync(logPath).size;
+    if (currentSize >= maxLogBytes()) {
+      fs.rmSync(logPath + ".1", { force: true });
+      fs.renameSync(logPath, logPath + ".1");
+    }
+  } catch {}
+  fs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf8");
+} catch {
+  // Hook logging must never block Codex.
+}
+
+process.stdout.write("{}\n");
+`;
+
+type CodexHookEventName = (typeof CODEX_HOOK_EVENTS)[number];
+
+const CODEX_HOOK_EVENT_KEYS: Record<CodexHookEventName, string> = {
+  SessionStart: "session_start",
+  UserPromptSubmit: "user_prompt_submit",
+  PreToolUse: "pre_tool_use",
+  PermissionRequest: "permission_request",
+  PostToolUse: "post_tool_use",
+  Stop: "stop",
+  PreCompact: "pre_compact",
+  PostCompact: "post_compact",
+  SubagentStart: "subagent_start",
+};
+
+interface AoCodexHookTrustEntry {
+  key: string;
+  trustedHash: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAoCodexHookLogger(hook: unknown): hook is Record<string, unknown> {
+  return (
+    isRecord(hook) &&
+    typeof hook["command"] === "string" &&
+    hook["command"].includes(CODEX_HOOK_LOGGER_FILENAME)
+  );
+}
+
+function createAoCodexHookLogger(): Record<string, unknown> {
+  return {
+    type: "command",
+    command: getCodexHookLoggerCommand(),
+    timeout: CODEX_HOOK_LOGGER_TIMEOUT_SECONDS,
+  };
+}
+
+function ensureCodexHookLoggerGroup(
+  hooks: Record<string, unknown>,
+  eventName: CodexHookEventName,
+): void {
+  const existingGroups = hooks[eventName];
+  const groups = Array.isArray(existingGroups) ? existingGroups : [];
+  let hasAoLogger = false;
+  const normalizedGroups = groups
+    .map((group): unknown => {
+      if (!isRecord(group) || !Array.isArray(group["hooks"])) return group;
+
+      let removedDuplicate = false;
+      const normalizedHookEntries = group["hooks"].flatMap((hook): unknown[] => {
+        if (!isAoCodexHookLogger(hook)) return [hook];
+        if (hasAoLogger) {
+          removedDuplicate = true;
+          return [];
+        }
+        hasAoLogger = true;
+        return [{ ...hook, ...createAoCodexHookLogger() }];
+      });
+
+      if (removedDuplicate && normalizedHookEntries.length === 0) return null;
+      return { ...group, hooks: normalizedHookEntries };
+    })
+    .filter((group): group is unknown => group !== null);
+
+  if (!hasAoLogger) {
+    normalizedGroups.push({
+      hooks: [createAoCodexHookLogger()],
+    });
+  }
+  hooks[eventName] = normalizedGroups;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+
+  const record = value as Record<string, unknown>;
+  const entries = Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+function calculateCodexHookTrustedHash(
+  eventName: CodexHookEventName,
+  group: Record<string, unknown>,
+  hook: Record<string, unknown>,
+): string {
+  const matcher = typeof group["matcher"] === "string" ? group["matcher"] : undefined;
+  const command = typeof hook["command"] === "string" ? hook["command"] : "";
+  const timeout =
+    typeof hook["timeout"] === "number" ? hook["timeout"] : CODEX_HOOK_LOGGER_TIMEOUT_SECONDS;
+  const identity = {
+    event_name: CODEX_HOOK_EVENT_KEYS[eventName],
+    matcher,
+    hooks: [
+      {
+        type: "command",
+        command,
+        timeout,
+        async: hook["async"] === true,
+      },
+    ],
+  };
+  return `sha256:${createHash("sha256").update(canonicalJson(identity)).digest("hex")}`;
+}
+
+function collectAoCodexHookTrustEntries(
+  hooksPath: string,
+  hooks: Record<string, unknown>,
+): AoCodexHookTrustEntry[] {
+  const entries: AoCodexHookTrustEntry[] = [];
+  for (const eventName of CODEX_HOOK_EVENTS) {
+    const eventGroups = hooks[eventName];
+    if (!Array.isArray(eventGroups)) continue;
+
+    eventGroups.forEach((group, groupIndex) => {
+      if (!isRecord(group) || !Array.isArray(group["hooks"])) return;
+      group["hooks"].forEach((hook, hookIndex) => {
+        if (!isAoCodexHookLogger(hook)) return;
+        entries.push({
+          key: `${hooksPath}:${CODEX_HOOK_EVENT_KEYS[eventName]}:${groupIndex}:${hookIndex}`,
+          trustedHash: calculateCodexHookTrustedHash(eventName, group, hook),
+        });
+      });
+    });
+  }
+  return entries;
+}
+
+function escapeTomlBasicString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function upsertTrustedHookStates(toml: string, entries: AoCodexHookTrustEntry[]): string {
+  let lines = toml.length > 0 ? toml.split(/\r?\n/) : [];
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines = lines.slice(0, -1);
+  }
+
+  for (const entry of entries) {
+    const header = `[hooks.state."${escapeTomlBasicString(entry.key)}"]`;
+    const trustedHashLine = `trusted_hash = "${entry.trustedHash}"`;
+    const existingStart = lines.findIndex((line) => line.trim() === header);
+
+    if (existingStart === -1) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
+      lines.push(header, trustedHashLine);
+      continue;
+    }
+
+    let existingEnd = lines.length;
+    for (let index = existingStart + 1; index < lines.length; index += 1) {
+      if (lines[index]?.trim().startsWith("[")) {
+        existingEnd = index;
+        break;
+      }
+    }
+
+    const hashLineIndex = lines
+      .slice(existingStart + 1, existingEnd)
+      .findIndex((line) => line.trim().startsWith("trusted_hash"));
+    if (hashLineIndex === -1) {
+      lines.splice(existingStart + 1, 0, trustedHashLine);
+    } else {
+      lines[existingStart + 1 + hashLineIndex] = trustedHashLine;
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function upsertTrustedProject(toml: string, workspacePath: string): string {
+  const header = `[projects."${escapeTomlBasicString(workspacePath)}"]`;
+  const trustLine = 'trust_level = "trusted"';
+  let lines = toml.length > 0 ? toml.split(/\r?\n/) : [];
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines = lines.slice(0, -1);
+  }
+
+  const existingStart = lines.findIndex((line) => line.trim() === header);
+  if (existingStart === -1) {
+    if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
+    lines.push(header, trustLine);
+    return `${lines.join("\n")}\n`;
+  }
+
+  let existingEnd = lines.length;
+  for (let index = existingStart + 1; index < lines.length; index += 1) {
+    if (lines[index]?.trim().startsWith("[")) {
+      existingEnd = index;
+      break;
+    }
+  }
+
+  const trustLineIndex = lines
+    .slice(existingStart + 1, existingEnd)
+    .findIndex((line) => line.trim().startsWith("trust_level"));
+  if (trustLineIndex === -1) {
+    lines.splice(existingStart + 1, 0, trustLine);
+  } else {
+    lines[existingStart + 1 + trustLineIndex] = trustLine;
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+async function trustAoCodexHooks(
+  workspacePath: string,
+  entries: AoCodexHookTrustEntry[],
+): Promise<void> {
+  if (entries.length === 0) return;
+
+  const codexConfigDir = join(homedir(), ".codex");
+  const codexConfigPath = join(codexConfigDir, "config.toml");
+  await mkdir(codexConfigDir, { recursive: true });
+
+  const existingConfig = await readFile(codexConfigPath, "utf-8").catch(() => "");
+
+  const withTrustedProject = upsertTrustedProject(existingConfig, workspacePath);
+  await writeFileAtomic(codexConfigPath, upsertTrustedHookStates(withTrustedProject, entries));
+}
+
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  const tempPath = join(
+    dirname(filePath),
+    `.${basename(filePath)}.tmp.${process.pid}.${Date.now()}`,
+  );
+  try {
+    await writeFile(tempPath, content, "utf-8");
+    await rename(tempPath, filePath);
+  } catch (err: unknown) {
+    try {
+      await rm(tempPath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    throw err;
+  }
+}
+
+async function setupCodexHookLogging(workspacePath: string): Promise<void> {
+  const codexDir = join(workspacePath, ".codex");
+  const aoDir = join(workspacePath, ".ao");
+  const hooksPath = join(codexDir, "hooks.json");
+  const loggerPath = join(codexDir, CODEX_HOOK_LOGGER_FILENAME);
+
+  await mkdir(codexDir, { recursive: true });
+  await mkdir(aoDir, { recursive: true });
+  await writeFileAtomic(loggerPath, CODEX_HOOK_LOGGER_SCRIPT);
+
+  let config: Record<string, unknown> = {};
+  try {
+    const raw = await readFile(hooksPath, "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed)) config = parsed;
+  } catch {
+    config = {};
+  }
+
+  const hooksValue = config["hooks"];
+  const hooks: Record<string, unknown> = isRecord(hooksValue) ? hooksValue : {};
+  for (const eventName of CODEX_HOOK_EVENTS) {
+    ensureCodexHookLoggerGroup(hooks, eventName);
+  }
+  config["hooks"] = hooks;
+
+  await writeFileAtomic(hooksPath, JSON.stringify(config, null, 2) + "\n");
+  if (process.env["AO_CODEX_HOOK_LOGGING"] === "1") {
+    await trustAoCodexHooks(workspacePath, collectAoCodexHookTrustEntries(hooksPath, hooks));
+  }
+}
 
 // =============================================================================
 // Codex Session JSONL Parsing (for getSessionInfo)
@@ -494,6 +879,11 @@ function appendNoUpdateCheckFlag(parts: string[]): void {
   parts.push("-c", "check_for_update_on_startup=false");
 }
 
+function appendHookLoggingFlags(parts: string[]): void {
+  if (process.env["AO_CODEX_HOOK_LOGGING"] !== "1") return;
+  parts.push("--enable", "hooks");
+}
+
 /** TTL for session file path cache (ms). Prevents redundant filesystem scans
  *  when getActivityState and getSessionInfo are called in the same refresh cycle. */
 const SESSION_FILE_CACHE_TTL_MS = 30_000;
@@ -543,6 +933,7 @@ function createCodexAgent(): Agent {
       const binary = resolvedBinary ?? "codex";
       const parts: string[] = [shellEscape(binary)];
       appendNoUpdateCheckFlag(parts);
+      appendHookLoggingFlags(parts);
 
       appendApprovalFlags(parts, config.permissions);
       appendModelFlags(parts, config.model);
@@ -575,6 +966,13 @@ function createCodexAgent(): Agent {
       // PATH and GH_PATH are injected by session-manager for all agents.
       // Disable Codex's version check/update prompt for non-interactive AO sessions.
       env["CODEX_DISABLE_UPDATE_CHECK"] = "1";
+      if (process.env["AO_CODEX_HOOK_LOGGING"] === "1") {
+        env["AO_CODEX_HOOK_LOGGING"] = "1";
+        env["AO_CODEX_HOOK_LOG_MAX_BYTES"] = String(DEFAULT_CODEX_HOOK_LOG_MAX_BYTES);
+        env["AO_WORKSPACE_PATH"] = config.workspacePath ?? config.projectConfig.path;
+      } else {
+        env["AO_CODEX_HOOK_LOGGING"] = "0";
+      }
 
       return env;
     },
@@ -829,6 +1227,7 @@ function createCodexAgent(): Agent {
       const binary = resolvedBinary ?? "codex";
       const parts: string[] = [shellEscape(binary), "resume"];
       appendNoUpdateCheckFlag(parts);
+      appendHookLoggingFlags(parts);
 
       appendApprovalFlags(parts, project.agentConfig?.permissions);
       const effectiveModel = (project.agentConfig?.model ?? model) as string | undefined;
@@ -840,11 +1239,10 @@ function createCodexAgent(): Agent {
       return formatLaunchCommand(parts);
     },
 
-    async setupWorkspaceHooks(
-      _workspacePath: string,
-      _config: WorkspaceHooksConfig,
-    ): Promise<void> {
-      // PATH wrappers are installed by session-manager for all agents.
+    async setupWorkspaceHooks(workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
+      // PATH wrappers are installed by session-manager for all agents. This
+      // installs Codex-native hooks as an experimental verification signal only.
+      await setupCodexHookLogging(workspacePath);
     },
 
     async postLaunchSetup(_session: Session): Promise<void> {

@@ -18,6 +18,7 @@ const {
   mockReadFile,
   mockReaddir,
   mockRename,
+  mockRm,
   mockStat,
   mockLstat,
   mockOpen,
@@ -33,6 +34,7 @@ const {
   mockReadFile: vi.fn(),
   mockReaddir: vi.fn(),
   mockRename: vi.fn().mockResolvedValue(undefined),
+  mockRm: vi.fn().mockResolvedValue(undefined),
   mockStat: vi.fn(),
   mockLstat: vi.fn(),
   mockOpen: vi.fn(),
@@ -56,14 +58,19 @@ vi.mock("node:fs/promises", () => ({
   readFile: mockReadFile,
   readdir: mockReaddir,
   rename: mockRename,
+  rm: mockRm,
   stat: mockStat,
   lstat: mockLstat,
   open: mockOpen,
 }));
 
-vi.mock("node:crypto", () => ({
-  randomBytes: () => ({ toString: () => "abc123" }),
-}));
+vi.mock("node:crypto", async () => {
+  const actual = (await vi.importActual("node:crypto")) as Record<string, unknown>;
+  return {
+    ...actual,
+    randomBytes: () => Buffer.from("abc123"),
+  };
+});
 
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(() => false),
@@ -101,6 +108,7 @@ import {
   manifest,
   default as defaultExport,
   resolveCodexBinary,
+  CODEX_HOOK_LOGGER_SCRIPT,
   _resetSessionFileCache,
 } from "./index.js";
 
@@ -222,6 +230,7 @@ function setupMockStream(content: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   _resetSessionFileCache();
+  delete process.env["AO_CODEX_HOOK_LOGGING"];
   mockHomedir.mockReturnValue("/mock/home");
   // Default: open() returns a handle with empty content (no session_meta match).
   // Session tests call setupMockOpen(content) to override.
@@ -269,6 +278,13 @@ describe("getLaunchCommand", () => {
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe(
       "'codex' -c check_for_update_on_startup=false",
     );
+  });
+
+  it("enables Codex hooks when hook logging is explicitly requested", () => {
+    process.env["AO_CODEX_HOOK_LOGGING"] = "1";
+    const cmd = agent.getLaunchCommand(makeLaunchConfig());
+    expect(cmd).toContain("--enable hooks");
+    expect(cmd).not.toContain("--dangerously-bypass-hook-trust");
   });
 
   it("includes bypass flag when permissions=permissionless", () => {
@@ -442,6 +458,35 @@ describe("getEnvironment", () => {
   it("sets CODEX_DISABLE_UPDATE_CHECK=1 to suppress interactive update prompts", () => {
     const env = agent.getEnvironment(makeLaunchConfig());
     expect(env["CODEX_DISABLE_UPDATE_CHECK"]).toBe("1");
+  });
+
+  it("does not enable experimental Codex hook logging by default", () => {
+    delete process.env["AO_CODEX_HOOK_LOGGING"];
+    const env = agent.getEnvironment(makeLaunchConfig({ workspacePath: "/workspace/session" }));
+    expect(env["AO_CODEX_HOOK_LOGGING"]).toBe("0");
+    expect(env["AO_WORKSPACE_PATH"]).toBeUndefined();
+  });
+
+  it("enables experimental Codex hook logging only when explicitly requested", () => {
+    process.env["AO_CODEX_HOOK_LOGGING"] = "1";
+    try {
+      const env = agent.getEnvironment(makeLaunchConfig({ workspacePath: "/workspace/session" }));
+      expect(env["AO_CODEX_HOOK_LOGGING"]).toBe("1");
+      expect(env["AO_CODEX_HOOK_LOG_MAX_BYTES"]).toBe(String(5 * 1024 * 1024));
+      expect(env["AO_WORKSPACE_PATH"]).toBe("/workspace/session");
+    } finally {
+      delete process.env["AO_CODEX_HOOK_LOGGING"];
+    }
+  });
+
+  it("falls back to project path for opt-in Codex hook logging workspace", () => {
+    process.env["AO_CODEX_HOOK_LOGGING"] = "1";
+    try {
+      const env = agent.getEnvironment(makeLaunchConfig());
+      expect(env["AO_WORKSPACE_PATH"]).toBe("/workspace/repo");
+    } finally {
+      delete process.env["AO_CODEX_HOOK_LOGGING"];
+    }
   });
 
   it("does not set GH_PATH (injected by session-manager)", () => {
@@ -1610,6 +1655,29 @@ describe("getRestoreCommand", () => {
     expect(modelIdx).toBeLessThan(threadIdIdx);
   });
 
+  it("places hook logging flags before positional threadId in resume command", async () => {
+    process.env["AO_CODEX_HOOK_LOGGING"] = "1";
+    const content = jsonl(
+      { type: "session_meta", cwd: "/workspace/test", model: "gpt-4o" },
+      { threadId: "thread-hooks-test" },
+    );
+    mockReaddir.mockResolvedValue(["sess.jsonl"]);
+    setupMockOpen(content);
+    setupMockStream(content);
+    mockReadFile.mockResolvedValue(content);
+    mockStat.mockResolvedValue({ mtimeMs: 1000 });
+
+    const session = makeSession({ workspacePath: "/workspace/test" });
+    const cmd = await agent.getRestoreCommand!(session, makeProjectConfig());
+
+    expect(cmd).not.toBeNull();
+    const threadIdIdx = cmd!.indexOf("thread-hooks-test");
+    const enableIdx = cmd!.indexOf("--enable hooks");
+    expect(enableIdx).toBeGreaterThan(-1);
+    expect(enableIdx).toBeLessThan(threadIdIdx);
+    expect(cmd).not.toContain("--dangerously-bypass-hook-trust");
+  });
+
   it("includes model from project config (overrides session model)", async () => {
     const content = jsonl(
       { type: "session_meta", cwd: "/workspace/test", model: "gpt-4o" },
@@ -1808,17 +1876,145 @@ describe("setupWorkspaceHooks", () => {
     expect(typeof agent.setupWorkspaceHooks).toBe("function");
   });
 
-  it("is a no-op (PATH wrappers are installed by session-manager)", async () => {
+  it("installs Codex hook logging for every known hook event", async () => {
     mockReadFile.mockRejectedValue(new Error("ENOENT"));
+
     await agent.setupWorkspaceHooks!("/workspace/test", {
       dataDir: "/data",
       sessionId: "sess-1",
     });
-    // Plugin no longer writes wrappers — session-manager handles it.
-    // mkdir/writeFile/rename should not be called by the plugin.
-    expect(mockMkdir).not.toHaveBeenCalled();
-    expect(mockWriteFile).not.toHaveBeenCalled();
-    expect(mockRename).not.toHaveBeenCalled();
+
+    expect(mockMkdir).toHaveBeenCalledWith("/workspace/test/.codex", { recursive: true });
+    expect(mockMkdir).toHaveBeenCalledWith("/workspace/test/.ao", { recursive: true });
+    const loggerTempWrite = mockWriteFile.mock.calls.find(
+      (call: unknown[]) =>
+        typeof call[0] === "string" &&
+        (call[0] as string).startsWith("/workspace/test/.codex/.ao-codex-hook-logger.cjs.tmp."),
+    );
+    expect(loggerTempWrite?.[1]).toBe(CODEX_HOOK_LOGGER_SCRIPT);
+    expect(mockRename).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/workspace\/test\/.codex\/.ao-codex-hook-logger\.cjs\.tmp\./),
+      "/workspace/test/.codex/ao-codex-hook-logger.cjs",
+    );
+    expect(CODEX_HOOK_LOGGER_SCRIPT).toContain("AO_CODEX_HOOK_LOG_MAX_BYTES");
+    expect(CODEX_HOOK_LOGGER_SCRIPT).toContain('renameSync(logPath, logPath + ".1")');
+
+    const hooksWrite = mockWriteFile.mock.calls.find(
+      (call: unknown[]) =>
+        typeof call[0] === "string" &&
+        (call[0] as string).startsWith("/workspace/test/.codex/.hooks.json.tmp."),
+    );
+    expect(hooksWrite).toBeDefined();
+    if (!hooksWrite) throw new Error("hooks.json write not found");
+    const parsed = JSON.parse(hooksWrite[1] as string) as { hooks: Record<string, unknown> };
+    for (const eventName of [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PermissionRequest",
+      "PostToolUse",
+      "Stop",
+      "PreCompact",
+      "PostCompact",
+      "SubagentStart",
+    ]) {
+      const groups = parsed.hooks[eventName];
+      expect(Array.isArray(groups)).toBe(true);
+      expect(JSON.stringify(groups)).toContain("ao-codex-hook-logger.cjs");
+    }
+  });
+
+  it("preserves existing Codex hooks and avoids duplicating AO logger groups", async () => {
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { hooks: [{ type: "command", command: "echo existing" }] },
+            { hooks: [{ type: "command", command: "node .codex/ao-codex-hook-logger.cjs" }] },
+            { hooks: [{ type: "command", command: "node stale/ao-codex-hook-logger.cjs" }] },
+          ],
+          PreToolUse: [{ matcher: "^Bash$", hooks: [{ type: "command", command: "echo bash" }] }],
+        },
+      }),
+    );
+
+    await agent.setupWorkspaceHooks!("/workspace/test", {
+      dataDir: "/data",
+      sessionId: "sess-1",
+    });
+
+    const hooksWrite = mockWriteFile.mock.calls.find(
+      (call: unknown[]) =>
+        typeof call[0] === "string" &&
+        (call[0] as string).startsWith("/workspace/test/.codex/.hooks.json.tmp."),
+    );
+    expect(hooksWrite).toBeDefined();
+    if (!hooksWrite) throw new Error("hooks.json write not found");
+    const parsed = JSON.parse(hooksWrite[1] as string) as {
+      hooks: { SessionStart: unknown[]; PreToolUse: unknown[] };
+    };
+    expect(JSON.stringify(parsed.hooks.SessionStart)).toContain("echo existing");
+    expect(JSON.stringify(parsed.hooks.PreToolUse)).toContain("echo bash");
+    expect(
+      JSON.stringify(parsed.hooks.SessionStart).match(/ao-codex-hook-logger\.cjs/g)?.length,
+    ).toBe(1);
+    expect(JSON.stringify(parsed.hooks.SessionStart)).not.toContain(
+      "node .codex/ao-codex-hook-logger.cjs",
+    );
+    expect(JSON.stringify(parsed.hooks.SessionStart)).toContain(
+      "node '.codex/ao-codex-hook-logger.cjs'",
+    );
+    expect(
+      JSON.stringify(parsed.hooks.PreToolUse).match(/ao-codex-hook-logger\.cjs/g)?.length,
+    ).toBe(1);
+  });
+
+  it("pre-trusts only AO Codex hook commands when logging is enabled", async () => {
+    process.env["AO_CODEX_HOOK_LOGGING"] = "1";
+    mockReadFile.mockImplementation((path: string) => {
+      if (path === "/workspace/test/.codex/hooks.json") {
+        return Promise.resolve(
+          JSON.stringify({
+            hooks: {
+              SessionStart: [{ hooks: [{ type: "command", command: "echo user hook" }] }],
+            },
+          }),
+        );
+      }
+      if (path === "/mock/home/.codex/config.toml") {
+        return Promise.resolve('model = "gpt-5.5"\n');
+      }
+      return Promise.reject(new Error("ENOENT"));
+    });
+
+    await agent.setupWorkspaceHooks!("/workspace/test", {
+      dataDir: "/data",
+      sessionId: "sess-1",
+    });
+
+    const configWrite = mockWriteFile.mock.calls.find(
+      (call: unknown[]) =>
+        typeof call[0] === "string" &&
+        (call[0] as string).startsWith("/mock/home/.codex/.config.toml.tmp."),
+    );
+    expect(configWrite).toBeDefined();
+    if (!configWrite) throw new Error("Codex config write not found");
+    const writtenConfig = configWrite[1] as string;
+    expect(writtenConfig).toContain('model = "gpt-5.5"');
+    expect(writtenConfig).toContain('[projects."/workspace/test"]');
+    expect(writtenConfig).toContain('trust_level = "trusted"');
+    expect(writtenConfig).toContain(
+      '[hooks.state."/workspace/test/.codex/hooks.json:session_start:1:0"]',
+    );
+    expect(writtenConfig).toContain(
+      '[hooks.state."/workspace/test/.codex/hooks.json:user_prompt_submit:0:0"]',
+    );
+    expect(writtenConfig).toContain('trusted_hash = "sha256:');
+    expect(writtenConfig).not.toContain("echo user hook");
+    expect(mockRename).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock\/home\/.codex\/.config\.toml\.tmp\./),
+      "/mock/home/.codex/config.toml",
+    );
   });
 });
 
