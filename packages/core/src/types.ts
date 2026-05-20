@@ -194,6 +194,8 @@ export interface ActivityLogEntry {
   source: "terminal" | "native" | "hook";
   /** Raw terminal snippet, hook event name, or other context that caused waiting_input/blocked (for debugging) */
   trigger?: string;
+  /** AO session id for hook-derived entries, used to avoid cross-session activity bleed. */
+  sessionId?: string;
 }
 
 /** Default threshold (ms) before a "ready" session becomes "idle". */

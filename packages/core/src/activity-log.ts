@@ -114,6 +114,7 @@ export async function readLastActivityEntry(
         state: record.state as ActivityLogEntry["state"],
         source: record.source as ActivityLogEntry["source"],
         ...(typeof record.trigger === "string" && { trigger: record.trigger }),
+        ...(typeof record.sessionId === "string" && { sessionId: record.sessionId }),
       };
       return { entry, modifiedAt: fileStat.mtime };
     } finally {

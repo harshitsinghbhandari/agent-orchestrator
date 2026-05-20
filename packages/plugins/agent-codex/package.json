@@ -28,7 +28,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node --input-type=module -e \"import { copyFileSync } from 'node:fs'; copyFileSync('src/ao-codex-activity-updater.cjs', 'dist/ao-codex-activity-updater.cjs')\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist"

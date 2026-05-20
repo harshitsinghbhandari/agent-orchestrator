@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type * as Fs from "node:fs";
 import type * as Readline from "node:readline";
 import {
   createActivitySignal,
@@ -25,6 +26,7 @@ const {
   mockCreateInterface,
   mockHomedir,
   mockReadLastJsonlEntry,
+  mockReadLastActivityEntry,
   mockIsWindows,
 } = vi.hoisted(() => ({
   mockExecFileAsync: vi.fn(),
@@ -40,6 +42,7 @@ const {
   mockCreateInterface: vi.fn(),
   mockHomedir: vi.fn(() => "/mock/home"),
   mockReadLastJsonlEntry: vi.fn(),
+  mockReadLastActivityEntry: vi.fn(),
   mockIsWindows: vi.fn(() => false),
 }));
 
@@ -63,12 +66,19 @@ vi.mock("node:fs/promises", () => ({
 
 vi.mock("node:crypto", () => ({
   randomBytes: () => ({ toString: () => "abc123" }),
+  createHash: () => ({
+    update: () => ({ digest: () => "trustedhash" }),
+  }),
 }));
 
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-  createReadStream: mockCreateReadStream,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof Fs>();
+  return {
+    ...actual,
+    existsSync: vi.fn(() => false),
+    createReadStream: mockCreateReadStream,
+  };
+});
 
 vi.mock("node:readline", async (importOriginal) => {
   const actual = await importOriginal<typeof Readline>();
@@ -90,6 +100,7 @@ vi.mock("@aoagents/ao-core", async (importOriginal) => {
   return {
     ...actual,
     readLastJsonlEntry: mockReadLastJsonlEntry,
+    readLastActivityEntry: mockReadLastActivityEntry,
     isWindows: mockIsWindows,
   };
 });
@@ -176,31 +187,45 @@ function mockTmuxWithProcess(processName: string, found = true) {
  * Without position tracking, readJsonlPrefixLines would loop forever on
  * lines larger than its chunk size.
  */
+let mockSessionOpenContent = "";
+let mockActivityOpenContent: string | null = null;
+
 function makeFakeFileHandle(content: string) {
   const buf = Buffer.from(content, "utf-8");
   let cursor = 0;
   return {
+    stat: vi.fn().mockResolvedValue({ size: buf.length, mtime: new Date(), mtimeMs: Date.now() }),
     read: vi
       .fn()
-      .mockImplementation((buffer: Buffer, offset: number, length: number, _position: number) => {
-        if (cursor >= buf.length) {
+      .mockImplementation((buffer: Buffer, offset: number, length: number, position: number) => {
+        const start = typeof position === "number" ? position : cursor;
+        if (start >= buf.length) {
           return Promise.resolve({ bytesRead: 0, buffer });
         }
-        const bytesToCopy = Math.min(length, buf.length - cursor);
-        buf.copy(buffer, offset, cursor, cursor + bytesToCopy);
-        cursor += bytesToCopy;
+        const bytesToCopy = Math.min(length, buf.length - start);
+        buf.copy(buffer, offset, start, start + bytesToCopy);
+        if (typeof position !== "number") cursor += bytesToCopy;
         return Promise.resolve({ bytesRead: bytesToCopy, buffer });
       }),
     close: vi.fn().mockResolvedValue(undefined),
   };
 }
 
+function configureMockOpen(): void {
+  mockOpen.mockImplementation((filePath: string) => {
+    if (filePath.endsWith(pathJoin(".ao", "activity.jsonl")) && mockActivityOpenContent !== null) {
+      return Promise.resolve(makeFakeFileHandle(mockActivityOpenContent));
+    }
+    return Promise.resolve(makeFakeFileHandle(mockSessionOpenContent));
+  });
+}
+
 /**
- * Set up mockOpen so that any `open(path, "r")` call returns a fake handle
- * reading `content`. This is used by sessionFileMatchesCwd.
+ * Set up mockOpen so session-file reads return `content`.
  */
 function setupMockOpen(content: string) {
-  mockOpen.mockResolvedValue(makeFakeFileHandle(content));
+  mockSessionOpenContent = content;
+  configureMockOpen();
 }
 
 /**
@@ -219,18 +244,40 @@ function setupMockStream(content: string) {
   mockCreateReadStream.mockReturnValue(makeContentStream(content));
 }
 
+function setupMockActivityLog(lines: string[]): void {
+  mockActivityOpenContent = lines.join("\n") + "\n";
+  configureMockOpen();
+}
+
+function activityLine(
+  state: "active" | "ready" | "idle" | "waiting_input" | "blocked" | "exited",
+  timestamp: Date,
+  options: { source?: "terminal" | "native" | "hook"; sessionId?: string; trigger?: string } = {},
+): string {
+  return JSON.stringify({
+    ts: timestamp.toISOString(),
+    state,
+    source: options.source ?? "hook",
+    ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+    ...(options.trigger !== undefined ? { trigger: options.trigger } : {}),
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   _resetSessionFileCache();
+  delete process.env["AO_CODEX_HOOK_ACTIVITY"];
   mockHomedir.mockReturnValue("/mock/home");
-  // Default: open() returns a handle with empty content (no session_meta match).
-  // Session tests call setupMockOpen(content) to override.
-  mockOpen.mockResolvedValue(makeFakeFileHandle(""));
+  // Default: open() returns a handle with empty content (no session_meta/activity match).
+  mockSessionOpenContent = "";
+  mockActivityOpenContent = null;
+  configureMockOpen();
   // Default: lstat rejects (no subdirectories). Session tests override as needed.
   mockLstat.mockRejectedValue(new Error("ENOENT"));
   // Default: createReadStream returns an empty stream. Session tests call
   // setupMockStream(content) to override.
   mockCreateReadStream.mockReturnValue(makeContentStream(""));
+  mockReadLastActivityEntry.mockResolvedValue(null);
 });
 
 // =========================================================================
@@ -266,6 +313,13 @@ describe("getLaunchCommand", () => {
   const agent = create();
 
   it("generates base command", () => {
+    expect(agent.getLaunchCommand(makeLaunchConfig())).toBe(
+      "'codex' -c check_for_update_on_startup=false --enable hooks",
+    );
+  });
+
+  it("omits hook enablement when Codex hook activity is disabled", () => {
+    process.env["AO_CODEX_HOOK_ACTIVITY"] = "0";
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe(
       "'codex' -c check_for_update_on_startup=false",
     );
@@ -317,7 +371,7 @@ describe("getLaunchCommand", () => {
       makeLaunchConfig({ permissions: "permissionless", model: "o3", prompt: "Go" }),
     );
     expect(cmd).toBe(
-      "'codex' -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox --model 'o3' -c model_reasoning_effort=high -- 'Go'",
+      "'codex' -c check_for_update_on_startup=false --enable hooks --dangerously-bypass-approvals-and-sandbox --model 'o3' -c model_reasoning_effort=high -- 'Go'",
     );
   });
 
@@ -442,6 +496,22 @@ describe("getEnvironment", () => {
   it("sets CODEX_DISABLE_UPDATE_CHECK=1 to suppress interactive update prompts", () => {
     const env = agent.getEnvironment(makeLaunchConfig());
     expect(env["CODEX_DISABLE_UPDATE_CHECK"]).toBe("1");
+  });
+
+  it("sets AO_WORKSPACE_PATH for hook activity updater", () => {
+    const env = agent.getEnvironment(makeLaunchConfig());
+    expect(env["AO_WORKSPACE_PATH"]).toBe("/workspace/repo");
+  });
+
+  it("propagates hook activity opt-out to already-installed hook updaters", () => {
+    process.env["AO_CODEX_HOOK_ACTIVITY"] = "0";
+    const env = agent.getEnvironment(makeLaunchConfig());
+    expect(env["AO_CODEX_HOOK_ACTIVITY"]).toBe("0");
+  });
+
+  it("does not set hook activity opt-out by default", () => {
+    const env = agent.getEnvironment(makeLaunchConfig());
+    expect(env["AO_CODEX_HOOK_ACTIVITY"]).toBeUndefined();
   });
 
   it("does not set GH_PATH (injected by session-manager)", () => {
@@ -716,7 +786,11 @@ describe("getActivityState", () => {
         "rollout-2026-05-22T00-00-00-thread-fast-activity.jsonl",
       ),
     );
-    expect(mockOpen).not.toHaveBeenCalled();
+    expect(
+      mockOpen.mock.calls.filter(
+        ([filePath]) => !String(filePath).endsWith(pathJoin(".ao", "activity.jsonl")),
+      ),
+    ).toEqual([]);
   });
 
   it("falls back to cwd-prefix scanning when codexThreadId lookup misses", async () => {
@@ -1002,6 +1076,302 @@ describe("getActivityState", () => {
     // If UTF-8 boundary handling is broken, JSON.parse fails, cwd never
     // matches, no session file is selected, and state falls through to null.
     expect(result?.state).toBe("ready");
+  });
+
+  it.each([
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "SubagentStart",
+    "PreCompact",
+    "PostCompact",
+  ])("returns active from recent %s hook activity when native JSONL is unavailable", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    setupMockActivityLog([activityLine("active", new Date(), { sessionId: "test-1" })]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    await expect(agent.getActivityState(session)).resolves.toMatchObject({ state: "active" });
+  });
+
+  it("decays hook liveness and Stop evidence instead of keeping sessions active forever", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 300_000),
+    });
+
+    setupMockActivityLog([
+      activityLine("active", new Date(Date.now() - 90_000), { sessionId: "test-1" }),
+    ]);
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "ready",
+    });
+
+    setupMockActivityLog([
+      activityLine("active", new Date(Date.now() - 180_000), { sessionId: "test-1" }),
+    ]);
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "idle",
+    });
+
+    setupMockActivityLog([activityLine("ready", new Date(), { sessionId: "test-1" })]);
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "ready",
+    });
+  });
+
+  it("returns waiting_input from PermissionRequest hook activity scoped to this AO session", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    const permissionTime = new Date(Date.now() - 60_000);
+    setupMockActivityLog([
+      activityLine("waiting_input", permissionTime, {
+        sessionId: "test-1",
+        trigger: "PermissionRequest",
+      }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 120_000),
+    });
+    const result = await agent.getActivityState(session, 120_000);
+    expect(result?.state).toBe("waiting_input");
+    expect(result?.timestamp?.toISOString()).toBe(permissionTime.toISOString());
+  });
+
+  it("does not let hook activity mask native waiting_input or blocked evidence", async () => {
+    mockTmuxWithProcess("codex");
+    const content = '{"type":"session_meta","cwd":"/workspace/test"}\n';
+    mockReaddir.mockResolvedValue(["sess.jsonl"]);
+    setupMockOpen(content);
+    mockStat.mockResolvedValue({ mtimeMs: Date.now(), mtime: new Date() });
+    setupMockActivityLog([activityLine("ready", new Date(), { sessionId: "test-1" })]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+    });
+
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "approval_request",
+      payloadType: null,
+      modifiedAt: new Date(Date.now() - 60_000),
+    });
+    await expect(agent.getActivityState(session)).resolves.toMatchObject({
+      state: "waiting_input",
+    });
+
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "error",
+      payloadType: null,
+      modifiedAt: new Date(Date.now() - 60_000),
+    });
+    await expect(agent.getActivityState(session)).resolves.toMatchObject({ state: "blocked" });
+  });
+
+  it("keeps terminal-derived AO actionable activity as a safety net", async () => {
+    mockTmuxWithProcess("codex");
+    const nativeTime = new Date(Date.now() - 10_000);
+    const terminalTime = new Date(Date.now() - 60_000);
+    const content = '{"type":"session_meta","cwd":"/workspace/test"}\n';
+    mockReaddir.mockResolvedValue(["sess.jsonl"]);
+    setupMockOpen(content);
+    mockStat.mockResolvedValue({ mtimeMs: nativeTime.getTime(), mtime: nativeTime });
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "tool_call",
+      payloadType: null,
+      modifiedAt: nativeTime,
+    });
+    setupMockActivityLog([
+      activityLine("waiting_input", terminalTime, { source: "terminal", trigger: "approval" }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 120_000),
+    });
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "waiting_input",
+    });
+  });
+
+  it("does not let newer terminal liveness hide hook PermissionRequest", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    const hookTime = new Date(Date.now() - 10_000);
+    setupMockActivityLog([
+      activityLine("waiting_input", hookTime, {
+        source: "hook",
+        sessionId: "test-1",
+        trigger: "PermissionRequest",
+      }),
+      activityLine("active", new Date(), { source: "terminal" }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 120_000),
+    });
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "waiting_input",
+    });
+  });
+
+  it("does not let older hook waiting_input override newer native non-actionable activity", async () => {
+    mockTmuxWithProcess("codex");
+    const nativeTime = new Date();
+    const hookTime = new Date(Date.now() - 60_000);
+    const content = '{"type":"session_meta","cwd":"/workspace/test"}\n';
+    mockReaddir.mockResolvedValue(["sess.jsonl"]);
+    setupMockOpen(content);
+    mockStat.mockResolvedValue({ mtimeMs: nativeTime.getTime(), mtime: nativeTime });
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "tool_call",
+      payloadType: null,
+      modifiedAt: nativeTime,
+    });
+    setupMockActivityLog([
+      activityLine("waiting_input", hookTime, { source: "hook", sessionId: "test-1" }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 120_000),
+    });
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "active",
+    });
+  });
+
+  it("lets fresh hook activity refine older native non-actionable activity", async () => {
+    mockTmuxWithProcess("codex");
+    const nativeTime = new Date(Date.now() - 90_000);
+    const hookTime = new Date();
+    const content = '{"type":"session_meta","cwd":"/workspace/test"}\n';
+    mockReaddir.mockResolvedValue(["sess.jsonl"]);
+    setupMockOpen(content);
+    mockStat.mockResolvedValue({ mtimeMs: nativeTime.getTime(), mtime: nativeTime });
+    mockReadLastJsonlEntry.mockResolvedValue({
+      lastType: "assistant_message",
+      payloadType: null,
+      modifiedAt: nativeTime,
+    });
+    setupMockActivityLog([
+      activityLine("active", hookTime, { source: "hook", sessionId: "test-1" }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 120_000),
+    });
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "active",
+    });
+  });
+
+  it("prefers fresher AO activity fallback over stale hook activity", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    const freshActivityTime = new Date();
+    setupMockActivityLog([
+      activityLine("ready", new Date(Date.now() - 180_000), { sessionId: "test-1" }),
+      activityLine("active", freshActivityTime, { source: "terminal" }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 600_000),
+    });
+    await expect(agent.getActivityState(session, 120_000)).resolves.toMatchObject({
+      state: "active",
+    });
+  });
+
+  it("ignores prior-session or different-session hook activity records", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    const sessionCreatedAt = new Date(Date.now() - 60_000);
+
+    setupMockActivityLog([
+      activityLine("waiting_input", new Date(sessionCreatedAt.getTime() - 1_000), {
+        sessionId: "test-1",
+      }),
+    ]);
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: sessionCreatedAt,
+    });
+    await expect(agent.getActivityState(session)).resolves.toBeNull();
+
+    setupMockActivityLog([
+      activityLine("waiting_input", new Date(), { sessionId: "other-session" }),
+    ]);
+    await expect(agent.getActivityState(session)).resolves.toBeNull();
+
+    setupMockActivityLog([activityLine("waiting_input", new Date())]);
+    await expect(agent.getActivityState(session)).resolves.toBeNull();
+  });
+
+  it("maps newer SubagentStart/compact hook activity instead of letting older permission win", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    setupMockActivityLog([
+      activityLine("waiting_input", new Date(Date.now() - 120_000), { sessionId: "test-1" }),
+      activityLine("active", new Date(), { sessionId: "test-1", trigger: "SubagentStart" }),
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 300_000),
+    });
+    await expect(agent.getActivityState(session)).resolves.toMatchObject({ state: "active" });
+  });
+
+  it("skips malformed and partial activity JSONL lines without breaking detection", async () => {
+    mockTmuxWithProcess("codex");
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    setupMockActivityLog([
+      "not json",
+      JSON.stringify({ ts: "not-a-date", state: "ready", source: "hook" }),
+      activityLine("ready", new Date(), { sessionId: "test-1", trigger: "Stop" }),
+      '{"ts":',
+    ]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    await expect(agent.getActivityState(session)).resolves.toMatchObject({ state: "ready" });
+  });
+
+  it("does not let hook activity override exited process detection", async () => {
+    mockTmuxWithProcess("codex", false);
+    mockReaddir.mockRejectedValue(new Error("ENOENT"));
+    setupMockActivityLog([activityLine("active", new Date(), { sessionId: "test-1" })]);
+
+    const session = makeSession({
+      runtimeHandle: makeTmuxHandle(),
+      workspacePath: "/workspace/test",
+    });
+    await expect(agent.getActivityState(session)).resolves.toMatchObject({ state: "exited" });
   });
 
   it("returns exited when process handle has dead PID", async () => {
@@ -1598,6 +1968,18 @@ describe("getRestoreCommand", () => {
     expect(mockOpen).not.toHaveBeenCalled();
   });
 
+  it("omits hook enablement on restore when Codex hook activity is disabled", async () => {
+    process.env["AO_CODEX_HOOK_ACTIVITY"] = "0";
+    const session = makeSession({
+      workspacePath: "/workspace/test",
+      metadata: { codexThreadId: "persisted-thread" },
+    });
+
+    const cmd = await agent.getRestoreCommand!(session, makeProjectConfig());
+
+    expect(cmd).toBe("'codex' resume -c check_for_update_on_startup=false 'persisted-thread'");
+  });
+
   it("builds native resume command from payload-wrapped Codex session id", async () => {
     const content = jsonl(
       {
@@ -1971,7 +2353,7 @@ describe("postLaunchSetup", () => {
 
     // Before postLaunchSetup, binary is "codex"
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe(
-      "'codex' -c check_for_update_on_startup=false",
+      "'codex' -c check_for_update_on_startup=false --enable hooks",
     );
 
     // After postLaunchSetup resolves the binary
@@ -1979,7 +2361,7 @@ describe("postLaunchSetup", () => {
 
     // Now getLaunchCommand should use the resolved binary
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe(
-      "'/opt/bin/codex' -c check_for_update_on_startup=false",
+      "'/opt/bin/codex' -c check_for_update_on_startup=false --enable hooks",
     );
   });
 });
@@ -1994,17 +2376,98 @@ describe("setupWorkspaceHooks", () => {
     expect(typeof agent.setupWorkspaceHooks).toBe("function");
   });
 
-  it("is a no-op (PATH wrappers are installed by session-manager)", async () => {
+  it("installs trusted Codex hook activity updater without raw hook logging", async () => {
     mockReadFile.mockRejectedValue(new Error("ENOENT"));
+
     await agent.setupWorkspaceHooks!("/workspace/test", {
       dataDir: "/data",
       sessionId: "sess-1",
     });
-    // Plugin no longer writes wrappers — session-manager handles it.
-    // mkdir/writeFile/rename should not be called by the plugin.
+
+    expect(mockMkdir).toHaveBeenCalledWith(pathJoin("/workspace/test", ".codex"), {
+      recursive: true,
+    });
+    expect(mockMkdir).toHaveBeenCalledWith(pathJoin("/mock/home", ".codex"), {
+      recursive: true,
+    });
+
+    const writtenPayloads = mockWriteFile.mock.calls.map((call) => String(call[1]));
+    expect(writtenPayloads.some((content) => content.includes("activity.jsonl"))).toBe(true);
+    expect(writtenPayloads.every((content) => !content.includes("codex-hooks.jsonl"))).toBe(true);
+
+    const updaterScript = writtenPayloads.find((content) =>
+      content.startsWith("#!/usr/bin/env node"),
+    );
+    expect(updaterScript).toBeDefined();
+    expect(updaterScript).toContain('process.env.AO_CODEX_HOOK_ACTIVITY === "0"');
+    expect(updaterScript).toContain("hookActivityDisabled || aoSessionId.length === 0");
+    expect(updaterScript).toContain("aoSessionId.length === 0");
+    expect(updaterScript).toContain("process.exit(0)");
+    expect(updaterScript).toContain("sessionId: aoSessionId");
+
+    const hooksJson = writtenPayloads.find(
+      (content) => content.trimStart().startsWith("{") && content.includes('"SessionStart"'),
+    );
+    expect(hooksJson).toBeDefined();
+    expect(hooksJson).toContain("ao-codex-activity-updater.cjs");
+    expect(hooksJson).toContain('"PermissionRequest"');
+    expect(hooksJson).toContain('"timeout": 5');
+
+    const codexConfig = writtenPayloads.find((content) => content.includes("[projects."));
+    expect(codexConfig).toBeDefined();
+    expect(codexConfig).toContain('trust_level = "trusted"');
+    expect(codexConfig).toContain("[hooks.state.");
+    expect(codexConfig).toContain('trusted_hash = "sha256:trustedhash"');
+  });
+
+  it("does not install Codex hooks when hook activity is disabled", async () => {
+    process.env["AO_CODEX_HOOK_ACTIVITY"] = "0";
+
+    await agent.setupWorkspaceHooks!("/workspace/test", {
+      dataDir: "/data",
+      sessionId: "sess-1",
+    });
+
     expect(mockMkdir).not.toHaveBeenCalled();
     expect(mockWriteFile).not.toHaveBeenCalled();
-    expect(mockRename).not.toHaveBeenCalled();
+    expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it("installs hooks where Codex discovers them for linked git worktrees", async () => {
+    mockReadFile.mockRejectedValue(new Error("ENOENT"));
+    mockExecFileAsync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args.join(" ") === "rev-parse --show-toplevel") {
+        return Promise.resolve({ stdout: "/workspace/test\n", stderr: "" });
+      }
+      if (cmd === "git" && args.join(" ") === "rev-parse --path-format=absolute --git-common-dir") {
+        return Promise.resolve({ stdout: "/repo/main/.git\n", stderr: "" });
+      }
+      return Promise.reject(new Error(`Unexpected: ${cmd} ${args.join(" ")}`));
+    });
+
+    await agent.setupWorkspaceHooks!("/workspace/test", {
+      dataDir: "/data",
+      sessionId: "sess-1",
+    });
+
+    expect(mockMkdir).toHaveBeenCalledWith(pathJoin("/workspace/test", ".codex"), {
+      recursive: true,
+    });
+    expect(mockMkdir).toHaveBeenCalledWith(pathJoin("/repo/main", ".codex"), {
+      recursive: true,
+    });
+    expect(mockRename).toHaveBeenCalledWith(
+      expect.stringContaining(pathJoin("/repo/main", ".codex", ".hooks.json.tmp.")),
+      pathJoin("/repo/main", ".codex", "hooks.json"),
+    );
+
+    const codexConfig = mockWriteFile.mock.calls
+      .map((call) => String(call[1]))
+      .find((content) => content.includes("[projects."));
+    expect(codexConfig).toBeDefined();
+    expect(codexConfig).toContain(
+      `[hooks.state."${pathJoin("/repo/main", ".codex", "hooks.json")}:session_start:0:0"]`,
+    );
   });
 });
 

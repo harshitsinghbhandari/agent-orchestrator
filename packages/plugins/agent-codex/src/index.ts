@@ -1,15 +1,8 @@
 import {
-  DEFAULT_READY_THRESHOLD_MS,
-  DEFAULT_ACTIVE_WINDOW_MS,
   shellEscape,
-  readLastJsonlEntry,
   normalizeAgentPermissionMode,
-  readLastActivityEntry,
-  checkActivityLogState,
-  getActivityFallbackState,
   recordTerminalActivity,
   isWindows,
-  PROCESS_PROBE_INDETERMINATE,
   type Agent,
   type AgentSessionInfo,
   type AgentLaunchConfig,
@@ -24,16 +17,21 @@ import {
   type WorkspaceHooksConfig,
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
-import { createReadStream } from "node:fs";
-import { readdir, stat, lstat, open } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { StringDecoder } from "node:string_decoder";
-import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+import {
+  findCodexSessionFileCached,
+  getCodexActivityState,
+  isCodexProcessAlive,
+  setupCodexHookActivityUpdater,
+  streamCodexSessionData,
+  resetSessionFileCache,
+} from "./activity-detection.js";
 
+const execFileAsync = promisify(execFile);
 // =============================================================================
 // Plugin Manifest
 // =============================================================================
@@ -49,354 +47,6 @@ export const manifest = {
 // =============================================================================
 // Workspace Setup (delegates to shared PATH-wrapper hooks from @aoagents/ao-core)
 // =============================================================================
-
-// =============================================================================
-// Codex Session JSONL Parsing (for getSessionInfo)
-// =============================================================================
-
-/** Codex session directory: ~/.codex/sessions/ */
-const CODEX_SESSIONS_DIR = join(homedir(), ".codex", "sessions");
-const SESSION_MATCH_SCAN_CHUNK_BYTES = 8192;
-const SESSION_MATCH_SCAN_LINE_LIMIT = 10;
-
-interface CodexTokenUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cached_input_tokens?: number;
-  cached_tokens?: number;
-  reasoning_output_tokens?: number;
-  reasoning_tokens?: number;
-}
-
-interface CodexJsonlPayload extends CodexTokenUsage {
-  id?: string;
-  cwd?: string;
-  model_provider?: string;
-  model?: string;
-  turn_id?: string;
-  threadId?: string;
-  content?: string;
-  role?: string;
-  type?: string;
-  info?: {
-    total_token_usage?: CodexTokenUsage;
-    last_token_usage?: CodexTokenUsage;
-  };
-}
-
-/**
- * Recent Codex versions wrap event fields in `payload`, while older fixtures
- * used a flat shape. Accept both so session discovery works against real
- * Codex JSONL and existing tests remain valid.
- */
-interface CodexJsonlLine extends CodexJsonlPayload {
-  type?: string;
-  payload?: CodexJsonlPayload;
-  msg?: CodexTokenUsage & { type?: string };
-}
-
-function getCodexPayload(entry: CodexJsonlLine): CodexJsonlPayload {
-  return entry.payload ?? entry;
-}
-
-/**
- * Collect all JSONL files under a directory, recursively.
- * Codex stores sessions in date-sharded directories:
- *   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
- *
- * Uses lstat (not stat) so symlinks to directories are never followed,
- * preventing infinite loops from symlink cycles. Max depth is capped at 4
- * (YYYY/MM/DD + 1 buffer) as an additional safety guard.
- */
-const MAX_SESSION_SCAN_DEPTH = 4;
-
-async function collectJsonlFiles(dir: string, depth = 0): Promise<string[]> {
-  if (depth > MAX_SESSION_SCAN_DEPTH) return [];
-
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return [];
-  }
-
-  const results: string[] = [];
-  for (const entry of entries) {
-    const fullPath = join(dir, entry);
-    if (entry.endsWith(".jsonl")) {
-      results.push(fullPath);
-    } else {
-      // Recurse into subdirectories (YYYY/MM/DD structure).
-      // Use lstat to avoid following symlinks that could create cycles.
-      try {
-        const s = await lstat(fullPath);
-        if (s.isDirectory()) {
-          const nested = await collectJsonlFiles(fullPath, depth + 1);
-          results.push(...nested);
-        }
-      } catch {
-        // Skip inaccessible entries
-      }
-    }
-  }
-  return results;
-}
-
-async function readJsonlPrefixLines(filePath: string, maxLines: number): Promise<string[]> {
-  const handle = await open(filePath, "r");
-  const lines: string[] = [];
-  let partialLine = "";
-  // Reuse a single decoder across reads so multi-byte UTF-8 sequences that
-  // straddle a chunk boundary (e.g. CJK characters in base_instructions) get
-  // buffered correctly instead of producing U+FFFD replacement characters.
-  const decoder = new StringDecoder("utf8");
-
-  try {
-    while (lines.length < maxLines) {
-      const buffer = Buffer.allocUnsafe(SESSION_MATCH_SCAN_CHUNK_BYTES);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
-
-      if (bytesRead === 0) {
-        partialLine += decoder.end();
-        const finalLine = partialLine.trim();
-        if (finalLine) lines.push(finalLine);
-        break;
-      }
-
-      partialLine += decoder.write(buffer.subarray(0, bytesRead));
-
-      let newlineIndex = partialLine.indexOf("\n");
-      while (newlineIndex !== -1 && lines.length < maxLines) {
-        const line = partialLine.slice(0, newlineIndex).trim();
-        if (line) lines.push(line);
-        partialLine = partialLine.slice(newlineIndex + 1);
-        newlineIndex = partialLine.indexOf("\n");
-      }
-    }
-  } finally {
-    await handle.close();
-  }
-
-  return lines;
-}
-
-/**
- * Normalize a path for cross-platform comparison. Codex's JSONL may emit
- * forward-slash paths or vary drive-letter case on Windows; AO constructs
- * workspace paths via path.join which yields backslashes on Windows. Compare
- * via a canonical form: forward slashes throughout, lowercased drive letter.
- */
-function toComparablePath(p: string): string {
-  const slash = p.replace(/\\/g, "/");
-  return slash.replace(/^([a-zA-Z]):/, (_, d: string) => d.toLowerCase() + ":");
-}
-
-/**
- * Check if the first few complete JSONL records of a session file contain a
- * session_meta entry matching the given workspace path. This avoids parsing a
- * truncated session_meta line when Codex embeds large base_instructions.
- */
-async function sessionFileMatchesCwd(filePath: string, workspacePath: string): Promise<boolean> {
-  const wantedCwd = toComparablePath(workspacePath);
-  try {
-    const lines = await readJsonlPrefixLines(filePath, SESSION_MATCH_SCAN_LINE_LIMIT);
-    for (const line of lines) {
-      try {
-        const parsed: unknown = JSON.parse(line);
-        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-          const entry = parsed as CodexJsonlLine;
-          const payload = getCodexPayload(entry);
-          if (
-            entry.type === "session_meta" &&
-            typeof payload.cwd === "string" &&
-            toComparablePath(payload.cwd) === wantedCwd
-          ) {
-            return true;
-          }
-        }
-      } catch {
-        // Skip malformed lines
-      }
-    }
-  } catch {
-    // Unreadable file
-  }
-  return false;
-}
-
-/**
- * Find Codex session files whose `session_meta` cwd matches the given workspace path.
- * Recursively scans ~/.codex/sessions/ (date-sharded: YYYY/MM/DD/rollout-*.jsonl).
- * Returns the path to the most recently modified matching file, or null.
- */
-async function findCodexSessionFile(
-  workspacePath: string,
-  jsonlFiles?: string[],
-): Promise<string | null> {
-  jsonlFiles ??= await collectJsonlFiles(CODEX_SESSIONS_DIR);
-  if (jsonlFiles.length === 0) return null;
-
-  let bestMatch: { path: string; mtime: number } | null = null;
-
-  for (const filePath of jsonlFiles) {
-    const matches = await sessionFileMatchesCwd(filePath, workspacePath);
-    if (matches) {
-      try {
-        const s = await stat(filePath);
-        if (!bestMatch || s.mtimeMs > bestMatch.mtime) {
-          bestMatch = { path: filePath, mtime: s.mtimeMs };
-        }
-      } catch {
-        // Skip if stat fails
-      }
-    }
-  }
-
-  return bestMatch?.path ?? null;
-}
-
-/**
- * Find a Codex session file by persisted native thread id. Codex rollout
- * filenames include the thread id, so this path only inspects filenames and
- * avoids opening historical JSONL files to match session_meta.cwd.
- */
-async function findCodexSessionFileByThreadId(
-  threadId: string,
-  jsonlFiles?: string[],
-): Promise<string | null> {
-  jsonlFiles ??= await collectJsonlFiles(CODEX_SESSIONS_DIR);
-  const matches = jsonlFiles.filter((filePath) =>
-    basename(filePath).endsWith(`-${threadId}.jsonl`),
-  );
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return matches[0] ?? null;
-
-  let bestMatch: { path: string; mtime: number } | null = null;
-  let fallback: string | null = null;
-  for (const filePath of matches) {
-    fallback ??= filePath;
-    try {
-      const s = await stat(filePath);
-      if (!bestMatch || s.mtimeMs > bestMatch.mtime) {
-        bestMatch = { path: filePath, mtime: s.mtimeMs };
-      }
-    } catch {
-      // Keep a filename match as fallback; thread id in the filename is enough.
-    }
-  }
-
-  return bestMatch?.path ?? fallback;
-}
-
-/** Aggregated data extracted from a Codex session file via streaming */
-interface CodexSessionData {
-  model: string | null;
-  threadId: string | null;
-  inputTokens: number;
-  outputTokens: number;
-  cachedTokens: number;
-  reasoningTokens: number;
-}
-
-/**
- * Stream a Codex JSONL session file line-by-line and aggregate the data
- * we need (model, threadId, token counts) without loading the entire file
- * into memory. This is critical because Codex rollout files can be 100 MB+.
- */
-async function streamCodexSessionData(filePath: string): Promise<CodexSessionData | null> {
-  let stream: ReturnType<typeof createReadStream> | null = null;
-  let rl: ReturnType<typeof createInterface> | null = null;
-
-  try {
-    const data: CodexSessionData = {
-      model: null,
-      threadId: null,
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedTokens: 0,
-      reasoningTokens: 0,
-    };
-    stream = createReadStream(filePath, { encoding: "utf-8" });
-    rl = createInterface({
-      input: stream,
-      crlfDelay: Infinity,
-    });
-
-    for await (const line of rl) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const parsed: unknown = JSON.parse(trimmed);
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
-        const entry = parsed as CodexJsonlLine;
-
-        const payload = getCodexPayload(entry);
-
-        if (entry.type === "session_meta") {
-          if (typeof payload.id === "string" && payload.id) {
-            data.threadId = payload.id;
-          } else if (typeof payload.threadId === "string" && payload.threadId) {
-            data.threadId = payload.threadId;
-          }
-        }
-
-        if (!data.threadId) {
-          if (typeof payload.threadId === "string" && payload.threadId) {
-            data.threadId = payload.threadId;
-          } else if (typeof entry.threadId === "string" && entry.threadId) {
-            data.threadId = entry.threadId;
-          }
-        }
-
-        if (entry.type === "turn_context" && typeof payload.model === "string" && payload.model) {
-          data.model = payload.model;
-        } else if (!data.model && typeof payload.model === "string" && payload.model) {
-          data.model = payload.model;
-        }
-
-        // Token sources are precedence-ordered: total → last → flat → legacy.
-        // `continue` ensures only one source is counted per entry.
-        // `total_token_usage` is a cumulative snapshot (last-write-wins, so `=`);
-        // the rest are per-turn deltas (accumulate with `+=`). Do not "fix" this.
-        const totalUsage = payload.info?.total_token_usage;
-        if (typeof totalUsage?.input_tokens === "number") {
-          data.inputTokens = totalUsage.input_tokens;
-          data.outputTokens = totalUsage.output_tokens ?? 0;
-          continue;
-        }
-
-        const lastUsage = payload.info?.last_token_usage;
-        if (typeof lastUsage?.input_tokens === "number") {
-          data.inputTokens += lastUsage.input_tokens;
-          data.outputTokens += lastUsage.output_tokens ?? 0;
-          continue;
-        }
-
-        if (typeof payload.input_tokens === "number") {
-          data.inputTokens += payload.input_tokens;
-          data.outputTokens += payload.output_tokens ?? 0;
-          continue;
-        }
-
-        if (entry.type === "event_msg" && entry.msg?.type === "token_count") {
-          data.inputTokens += entry.msg.input_tokens ?? 0;
-          data.outputTokens += entry.msg.output_tokens ?? 0;
-          data.cachedTokens += entry.msg.cached_tokens ?? 0;
-          data.reasoningTokens += entry.msg.reasoning_tokens ?? 0;
-        }
-      } catch {
-        // Skip malformed lines
-      }
-    }
-
-    return data;
-  } catch {
-    return null;
-  } finally {
-    rl?.close();
-    stream?.destroy();
-  }
-}
 
 // =============================================================================
 // Binary Resolution
@@ -530,55 +180,18 @@ function appendNoUpdateCheckFlag(parts: string[]): void {
   parts.push("-c", "check_for_update_on_startup=false");
 }
 
-/** TTL for session file path cache (ms). Prevents redundant filesystem scans
- *  when getActivityState and getSessionInfo are called in the same refresh cycle. */
-const SESSION_FILE_CACHE_TTL_MS = 30_000;
+function isHookActivityEnabled(): boolean {
+  return process.env["AO_CODEX_HOOK_ACTIVITY"] !== "0";
+}
 
-/** Module-level session file cache shared across the agent instance lifetime.
- *  Keyed by Codex thread id when available, otherwise workspace path. */
-const sessionFileCache = new Map<string, { path: string | null; expiry: number }>();
+function appendHookActivityFlag(parts: string[]): void {
+  if (!isHookActivityEnabled()) return;
+  parts.push("--enable", "hooks");
+}
 
 function getSessionMetadataString(session: Session, key: string): string | null {
   const value = session.metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-async function getCachedSessionFile(
-  cacheKey: string,
-  resolve: () => Promise<string | null>,
-): Promise<string | null> {
-  const cached = sessionFileCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiry) {
-    return cached.path;
-  }
-  const result = await resolve();
-  sessionFileCache.set(cacheKey, {
-    path: result,
-    expiry: Date.now() + SESSION_FILE_CACHE_TTL_MS,
-  });
-  return result;
-}
-
-/** Find session file with caching to avoid double scans per refresh cycle */
-async function findCodexSessionFileCached(session: Session): Promise<string | null> {
-  let jsonlFiles: string[] | null = null;
-  const getJsonlFiles = async (): Promise<string[]> => {
-    jsonlFiles ??= await collectJsonlFiles(CODEX_SESSIONS_DIR);
-    return jsonlFiles;
-  };
-
-  const threadId = getSessionMetadataString(session, "codexThreadId");
-  if (threadId) {
-    const byThreadId = await getCachedSessionFile(`thread:${threadId}`, async () =>
-      findCodexSessionFileByThreadId(threadId, await getJsonlFiles()),
-    );
-    if (byThreadId) return byThreadId;
-  }
-
-  if (!session.workspacePath) return null;
-  return getCachedSessionFile(`cwd:${toComparablePath(session.workspacePath)}`, async () =>
-    findCodexSessionFile(session.workspacePath!, await getJsonlFiles()),
-  );
 }
 
 /**
@@ -608,6 +221,7 @@ function createCodexAgent(): Agent {
       const binary = resolvedBinary ?? "codex";
       const parts: string[] = [shellEscape(binary)];
       appendNoUpdateCheckFlag(parts);
+      appendHookActivityFlag(parts);
 
       appendApprovalFlags(parts, config.permissions);
       appendModelFlags(parts, config.model);
@@ -640,6 +254,10 @@ function createCodexAgent(): Agent {
       // PATH and GH_PATH are injected by session-manager for all agents.
       // Disable Codex's version check/update prompt for non-interactive AO sessions.
       env["CODEX_DISABLE_UPDATE_CHECK"] = "1";
+      env["AO_WORKSPACE_PATH"] = config.workspacePath ?? config.projectConfig.path;
+      if (!isHookActivityEnabled()) {
+        env["AO_CODEX_HOOK_ACTIVITY"] = "0";
+      }
 
       return env;
     },
@@ -667,109 +285,7 @@ function createCodexAgent(): Agent {
       session: Session,
       readyThresholdMs?: number,
     ): Promise<ActivityDetection | null> {
-      const threshold = readyThresholdMs ?? DEFAULT_READY_THRESHOLD_MS;
-
-      // Check if process is running first
-      const exitedAt = new Date();
-      if (!session.runtimeHandle) return { state: "exited", timestamp: exitedAt };
-      const running = await this.isProcessRunning(session.runtimeHandle);
-      if (running === PROCESS_PROBE_INDETERMINATE) return null;
-      if (!running) return { state: "exited", timestamp: exitedAt };
-
-      if (!session.workspacePath && !getSessionMetadataString(session, "codexThreadId")) {
-        return null;
-      }
-
-      // 1. Try Codex's native JSONL first — it has richer 6-state detection
-      //    (approval_request, error, tool_call, etc.) that terminal parsing can't match.
-      const sessionFile = await findCodexSessionFileCached(session);
-      if (sessionFile) {
-        const entry = await readLastJsonlEntry(sessionFile);
-        if (entry) {
-          const ageMs = Date.now() - entry.modifiedAt.getTime();
-          const timestamp = entry.modifiedAt;
-
-          // Real Codex wraps the semantic type in `payload.type` on event_msg
-          // records (e.g. `{"type":"event_msg","payload":{"type":"error",...}}`).
-          // Prefer payloadType when present so approval_request/error surface
-          // correctly instead of decaying to ready/idle via the event_msg case.
-          const effectiveType = entry.payloadType ?? entry.lastType;
-
-          // Map Codex JSONL entry types to activity states.
-          // Confirmed types: session_meta, event_msg. Others are best-effort.
-          const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
-          switch (effectiveType) {
-            case "approval_request":
-            case "exec_approval_request":
-            case "apply_patch_approval_request":
-              return { state: "waiting_input", timestamp };
-
-            case "error":
-            case "stream_error":
-              return { state: "blocked", timestamp };
-
-            case "task_started":
-            case "agent_reasoning":
-            case "response_item":
-            case "turn_context":
-            case "user_input":
-            case "tool_call":
-            case "exec_command":
-            case "exec_command_begin":
-            case "exec_command_end":
-              if (ageMs <= activeWindowMs) return { state: "active", timestamp };
-              return { state: ageMs > threshold ? "idle" : "ready", timestamp };
-
-            case "task_complete":
-            case "turn_aborted":
-            case "agent_message":
-            case "assistant_message":
-            case "session_meta":
-            case "event_msg":
-            case "compacted":
-            case "token_count":
-              return { state: ageMs > threshold ? "idle" : "ready", timestamp };
-
-            default:
-              if (ageMs <= activeWindowMs) return { state: "active", timestamp };
-              return { state: ageMs > threshold ? "idle" : "ready", timestamp };
-          }
-        }
-
-        // Session file exists but no parseable entry — fall through to AO JSONL
-        // checks below instead of returning early, so waiting_input/blocked
-        // from terminal parsing can still be detected.
-      }
-
-      // 2. Fallback: check AO activity JSONL (terminal-derived) for waiting_input/blocked
-      //    that the native JSONL may not have captured.
-      const activityResult = session.workspacePath
-        ? await readLastActivityEntry(session.workspacePath)
-        : null;
-      const activityState = checkActivityLogState(activityResult);
-      if (activityState) return activityState;
-
-      // 3. Fallback: use JSONL entry with age-based decay when native session file
-      //    is missing or unparseable.
-      const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
-      const fallback = getActivityFallbackState(activityResult, activeWindowMs, threshold);
-      if (fallback) return fallback;
-
-      // 4. Last resort: native session file exists but nothing else — use its mtime
-      if (sessionFile) {
-        try {
-          const s = await stat(sessionFile);
-          const ageMs = Date.now() - s.mtimeMs;
-          const activeWindowMs = Math.min(DEFAULT_ACTIVE_WINDOW_MS, threshold);
-          if (ageMs <= activeWindowMs) return { state: "active", timestamp: s.mtime };
-          if (ageMs <= threshold) return { state: "ready", timestamp: s.mtime };
-          return { state: "idle", timestamp: s.mtime };
-        } catch {
-          // stat failed — no signal available
-        }
-      }
-
-      return null;
+      return getCodexActivityState(session, readyThresholdMs);
     },
 
     async recordActivity(session: Session, terminalOutput: string): Promise<void> {
@@ -780,57 +296,7 @@ function createCodexAgent(): Agent {
     },
 
     async isProcessRunning(handle: RuntimeHandle): Promise<ProcessProbeResult> {
-      try {
-        if (handle.runtimeName === "tmux" && handle.id) {
-          // ps -eo is Unix-only; guard against stale tmux handles on Windows
-          if (isWindows()) return false;
-          const { stdout: ttyOut } = await execFileAsync(
-            "tmux",
-            ["list-panes", "-t", handle.id, "-F", "#{pane_tty}"],
-            { timeout: 30_000 },
-          );
-          const ttys = ttyOut
-            .trim()
-            .split("\n")
-            .map((t) => t.trim())
-            .filter(Boolean);
-          if (ttys.length === 0) return false;
-
-          const { stdout: psOut } = await execFileAsync("ps", ["-eo", "pid,tty,args"], {
-            timeout: 30_000,
-          });
-          if (!psOut) return PROCESS_PROBE_INDETERMINATE;
-          const ttySet = new Set(ttys.map((t) => t.replace(/^\/dev\//, "")));
-          const processRe = /(?:^|\/)codex(?:\s|$)/;
-          for (const line of psOut.split("\n")) {
-            const cols = line.trimStart().split(/\s+/);
-            if (cols.length < 3 || !ttySet.has(cols[1] ?? "")) continue;
-            const args = cols.slice(2).join(" ");
-            if (processRe.test(args)) {
-              return true;
-            }
-          }
-          return false;
-        }
-
-        const rawPid = handle.data["pid"];
-        const pid = typeof rawPid === "number" ? rawPid : Number(rawPid);
-        if (Number.isFinite(pid) && pid > 0) {
-          try {
-            process.kill(pid, 0);
-            return true;
-          } catch (err: unknown) {
-            if (err instanceof Error && "code" in err && err.code === "EPERM") {
-              return true;
-            }
-            return false;
-          }
-        }
-
-        return false;
-      } catch {
-        return PROCESS_PROBE_INDETERMINATE;
-      }
+      return isCodexProcessAlive(handle);
     },
 
     async getSessionInfo(session: Session): Promise<AgentSessionInfo | null> {
@@ -896,6 +362,7 @@ function createCodexAgent(): Agent {
       const binary = resolvedBinary ?? "codex";
       const parts: string[] = [shellEscape(binary), "resume"];
       appendNoUpdateCheckFlag(parts);
+      appendHookActivityFlag(parts);
 
       appendApprovalFlags(parts, project.agentConfig?.permissions);
       const effectiveModel = (project.agentConfig?.model ?? model) as string | undefined;
@@ -907,11 +374,11 @@ function createCodexAgent(): Agent {
       return formatLaunchCommand(parts);
     },
 
-    async setupWorkspaceHooks(
-      _workspacePath: string,
-      _config: WorkspaceHooksConfig,
-    ): Promise<void> {
+    async setupWorkspaceHooks(workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
       // PATH wrappers are installed by session-manager for all agents.
+      // Codex hooks are project-local, so install AO's activity updater here.
+      if (!isHookActivityEnabled()) return;
+      await setupCodexHookActivityUpdater(workspacePath);
     },
 
     async postLaunchSetup(_session: Session): Promise<void> {
@@ -942,7 +409,7 @@ export function create(): Agent {
 
 /** @internal Clear the session file cache. Exported for testing only. */
 export function _resetSessionFileCache(): void {
-  sessionFileCache.clear();
+  resetSessionFileCache();
 }
 
 export { CodexAppServerClient } from "./app-server-client.js";
