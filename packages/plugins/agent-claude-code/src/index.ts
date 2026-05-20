@@ -2,7 +2,6 @@ import {
   shellEscape,
   normalizeAgentPermissionMode,
   isWindows,
-  recordTerminalActivity,
   type Agent,
   type AgentSessionInfo,
   type AgentLaunchConfig,
@@ -22,7 +21,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  classifyTerminalOutput,
   findLatestSessionFile,
   getClaudeActivityState,
   isClaudeProcessAlive,
@@ -1047,16 +1045,26 @@ function createClaudeCodeAgent(): Agent {
       return env;
     },
 
-    detectActivity(terminalOutput: string): ActivityState {
-      return classifyTerminalOutput(terminalOutput);
+    detectActivity(_terminalOutput: string): ActivityState {
+      // #1941: Claude activity is derived from platform-event hooks
+      // (PermissionRequest / StopFailure / Notification / Stop / ...) which
+      // write directly to {workspace}/.ao/activity.jsonl. The terminal-regex
+      // layer was structurally fragile (every UI tweak in Claude regressed
+      // it; see the 15-commit churn in #1932) so it has been retired in
+      // favour of those authoritative events.
+      //
+      // detectActivity is kept on the Agent interface for other plugins
+      // (Aider, OpenCode, Codex fallback) that still rely on terminal output.
+      // For Claude, returning "idle" is the neutral no-signal answer; the
+      // lifecycle manager's terminal-output path will record an "idle"
+      // signal which is then overridden by the JSONL-backed cascade.
+      return "idle";
     },
 
-    async recordActivity(session: Session, terminalOutput: string): Promise<void> {
-      if (!session.workspacePath) return;
-      await recordTerminalActivity(session.workspacePath, terminalOutput, (output) =>
-        this.detectActivity(output),
-      );
-    },
+    // recordActivity is intentionally NOT implemented for the Claude agent
+    // (#1941). Hooks write activity entries directly via the activity-updater
+    // script, so polling-driven terminal-output classification would only add
+    // stale duplicates to .ao/activity.jsonl.
 
     async isProcessRunning(handle: RuntimeHandle): Promise<ProcessProbeResult> {
       return isClaudeProcessAlive(handle);

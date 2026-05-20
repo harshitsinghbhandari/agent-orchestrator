@@ -52,7 +52,7 @@ type Variant = "bash" | "node";
 function runHook(variant: Variant, payload: HookInput): HookResult {
   const workspace = mkdtempSync(join(scratchDir, "ws-"));
   const input = JSON.stringify(payload);
-  let stdout = "";
+  let stdout: string;
   try {
     const cmd = variant === "bash" ? `bash "${bashScript}"` : `node "${nodeScript}"`;
     stdout = execSync(cmd, {

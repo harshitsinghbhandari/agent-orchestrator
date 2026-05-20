@@ -14,7 +14,6 @@ import { toClaudeProjectPath, create } from "../index.js";
 import { resetWarnedReaddirPaths } from "../activity-detection.js";
 import {
   createActivitySignal,
-  readLastActivityEntry,
   type ActivityState,
   type Session,
   type RuntimeHandle,
@@ -72,13 +71,20 @@ function writeJsonl(
   }
 }
 
-function writeActivityLog(state: ActivityState, ageMs = 0): void {
+function writeActivityLog(
+  state: ActivityState,
+  ageMs = 0,
+  source: "terminal" | "native" | "hook" = "terminal",
+  trigger?: string,
+): void {
   const ts = new Date(Date.now() - ageMs).toISOString();
   const aoDir = join(workspacePath, ".ao");
   mkdirSync(aoDir, { recursive: true });
+  const entry: Record<string, unknown> = { ts, state, source };
+  if (trigger !== undefined) entry.trigger = trigger;
   writeFileSync(
     join(aoDir, "activity.jsonl"),
-    JSON.stringify({ ts, state, source: "terminal" }) + "\n",
+    JSON.stringify(entry) + "\n",
   );
 }
 
@@ -288,21 +294,16 @@ describe("Claude Code Activity Detection", () => {
       expect(await agent.getActivityState(makeSession({ workspacePath: badPath }))).toBeNull();
     });
 
-    it("recordActivity writes to .ao/activity.jsonl when workspacePath is set", async () => {
-      await agent.recordActivity?.(makeSession(), "Do you want to proceed?\n(Y)es / (N)o");
-
-      const result = await readLastActivityEntry(workspacePath);
-      expect(result?.entry.state).toBe("waiting_input");
-      expect(result?.entry.source).toBe("terminal");
-      expect(result?.entry.trigger).toContain("Do you want to proceed?");
+    it("recordActivity is intentionally not implemented (#1941 — hooks write activity-JSONL directly)", () => {
+      // Lifecycle manager calls agent.recordActivity? only if defined.
+      // For Claude, hooks are the source of truth so this method is
+      // omitted — guarding here surfaces accidental re-introduction.
+      expect(agent.recordActivity).toBeUndefined();
     });
 
-    it("recordActivity is a no-op when workspacePath is null", async () => {
-      await agent.recordActivity?.(
-        makeSession({ workspacePath: null }),
-        "Do you want to proceed?\n(Y)es / (N)o",
-      );
-
+    it("does NOT write to .ao/activity.jsonl on its own (hook-only producer)", () => {
+      // Without recordActivity, the plugin no longer derives anything from
+      // terminal output. .ao/activity.jsonl stays empty until a hook fires.
       expect(existsSync(join(workspacePath, ".ao", "activity.jsonl"))).toBe(false);
     });
 
@@ -313,8 +314,11 @@ describe("Claude Code Activity Detection", () => {
       expect((await agent.getActivityState(makeSession()))?.state).toBe("ready");
     });
 
-    it("falls back to AO JSONL waiting_input when native session lookup is unavailable", async () => {
-      await agent.recordActivity?.(makeSession(), "Do you want to proceed?\n(Y)es / (N)o");
+    it("falls back to AO JSONL waiting_input when native session lookup is unavailable (#1941 hook entry)", async () => {
+      // PermissionRequest hook fires → activity-updater appends a JSONL entry
+      // with source: "hook". The cascade picks it up exactly like the old
+      // terminal-derived entry.
+      writeActivityLog("waiting_input", 0, "hook", "PermissionRequest (Bash)");
 
       expect((await agent.getActivityState(makeSession()))?.state).toBe("waiting_input");
     });
@@ -323,9 +327,19 @@ describe("Claude Code Activity Detection", () => {
       writeJsonl([{ type: "assistant", message: { content: "Previous session done" } }], 120_000);
       const session = makeSession({ createdAt: new Date() });
 
-      await agent.recordActivity?.(session, "Do you want to proceed?\n(Y)es / (N)o");
+      writeActivityLog("waiting_input", 0, "hook", "PermissionRequest");
 
       expect((await agent.getActivityState(session))?.state).toBe("waiting_input");
+    });
+
+    it("surfaces blocked from a StopFailure hook entry in AO JSONL", async () => {
+      // StopFailure → activity-updater appends `{state: blocked, source: hook,
+      // trigger: "StopFailure (rate_limit)"}`. With no Claude native JSONL
+      // present, the cascade must surface it through checkActivityLogState.
+      writeActivityLog("blocked", 0, "hook", "StopFailure (rate_limit)");
+
+      const result = await agent.getActivityState(makeSession());
+      expect(result?.state).toBe("blocked");
     });
 
     it("returns idle for stale native session entry when AO JSONL is unavailable", async () => {

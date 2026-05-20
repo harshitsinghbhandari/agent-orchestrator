@@ -276,86 +276,27 @@ export async function isClaudeProcessAlive(handle: RuntimeHandle): Promise<Proce
 }
 
 // =============================================================================
-// Terminal output classification
+// Terminal output classification — retired (#1941)
 // =============================================================================
 
-/** Classify Claude Code's activity state from terminal output (pure, sync). */
-export function classifyTerminalOutput(terminalOutput: string): ActivityState {
-  if (!terminalOutput.trim()) return "idle";
-
-  const lines = terminalOutput.trim().split("\n");
-  const lastLine = lines[lines.length - 1]?.trim() ?? "";
-
-  // Empty prompt on the last line is unambiguously idle.
-  if (/^[❯>$#]\s*$/.test(lastLine)) return "idle";
-
-  // Use a wider window (last 12 lines) than the bottom-of-buffer prompt
-  // check above because Claude's spinner+status line, ⎿ tool-result lines,
-  // and api-error text often sit 6-8 lines above the input area + footer.
-  // All multi-line state checks (blocked, active) use this window — full
-  // `terminalOutput` would let scrolled-off error text falsely return
-  // "blocked" forever after a successful retry pushes the error out of
-  // view but not out of scrollback.
-  const wideTail = lines.slice(-12).join("\n");
-
-  // Check for blocked. Claude's persistent UI footer contains
-  // "bypass permissions on (shift+tab to cycle)" on every session — the
-  // tightened waiting_input regex no longer matches it, and the blocked
-  // patterns below are specific to api-error retry text.
-  //
-  // Patterns observed empirically by capturing tmux output during a real
-  // api-blocked retry loop (see PR #1932 description):
-  //   ⎿  Unable to connect to API (ConnectionRefused)
-  //      Retrying in 19s · attempt 7/10
-  if (/Unable to connect to API/i.test(wideTail)) return "blocked";
-  if (/Retrying in \d+s.*attempt \d+\/\d+/i.test(wideTail)) return "blocked";
-
-  // Check the bottom of the buffer for permission prompts. Historical
-  // "Thinking"/"Reading" text earlier in the buffer must not override a
-  // current permission prompt at the bottom.
-  const tail = lines.slice(-5).join("\n");
-  if (/Do you want to proceed\?/i.test(tail)) return "waiting_input";
-  if (/\(Y\)es.*\(N\)o/i.test(tail)) return "waiting_input";
-  // Match the ACTUAL permission-bypass prompt, NOT the static footer toggle.
-  if (/bypass\s+all\s+future\s+permissions/i.test(tail)) return "waiting_input";
-
-  // Active: only when an explicit active-work indicator is present. Default
-  // is IDLE — Claude's tmux pane has a persistent input area + footer that
-  // looks identical between "just finished" and "working". Treating
-  // unrecognized output as active caused dormant sessions (ao-160 etc.) to
-  // get an "active" written to AO activity-JSONL every poll cycle, which the
-  // age-decayed fallback then surfaced as ready forever.
-
-  // Strongest active signal: gerund (present-participle) status verb
-  // followed by the trailing ellipsis "…". Claude cycles through many
-  // status words (Germinating, Fluttering, Pondering, Mulling, Crafting,
-  // Thinking, Reasoning, ...) and many spinner glyphs (✻ ✽ · ⠁ ⠈ etc.)
-  // depending on animation frame. The gerund+ellipsis combo is the
-  // consistent signal that survives glyph rotation. Past-tense lines like
-  // "✻ Worked for 11s" or "✻ Crunched for 11s" lack the ellipsis and are
-  // turn-complete summaries — they must NOT match (ao-143 repro).
-  if (/\b\w+ing…/.test(wideTail)) return "active";
-  // NOTE — these patterns look "active-ish" but are NOT, and should never
-  // go back as active indicators:
-  //   - /\bCrunched\s+for\s+\d+s/  — past-tense turn summary (ao-154 repro:
-  //     "✻ Crunched for 22s" was making sessions perpetually "active")
-  //   - /\bWorked\s+for\s+\d+s/    — past-tense turn summary (ao-143 repro)
-  //   - /^\s*⎿\s+/                  — prefixes past tool-results too
-  //   - /esc to interrupt/          — in the persistent UI footer
-  //   - bare /\bWorking\b/          — matches "working on issue #N" in recap
-  // The gerund+ellipsis above catches present-tense forms across all
-  // status words regardless of spinner glyph rotation.
-
-  // Word-based fallbacks for synthetic test inputs and rare cases where
-  // the ellipsis isn't captured. Tight patterns to avoid false-firing on
-  // benign text.
-  if (/\bGerminating/i.test(wideTail)) return "active";
-  if (/\b(?:Thinking|Working)\s*(?:…|\.\.\.)/i.test(wideTail)) return "active";
-  if (/\bReading\s+file/i.test(wideTail)) return "active";
-  if (/\bWriting\s+to\b/i.test(wideTail)) return "active";
-  if (/\bSearching\s+codebase/i.test(wideTail)) return "active";
-  if (/Press\s+up\s+to\s+edit\s+queued/i.test(wideTail)) return "active";
-
+/**
+ * Retained as a stable no-signal stub for the deprecated
+ * `Agent.detectActivity` method on the Claude plugin.
+ *
+ * Claude activity is now derived from platform-event hooks
+ * (PermissionRequest / StopFailure / Notification / Stop / PreToolUse / ...)
+ * which write directly to `{workspace}/.ao/activity.jsonl`. The previous
+ * implementation regex-matched Claude's rendered terminal output, which
+ * regressed every time Claude's UI footer or status-line wording changed
+ * (15-commit churn in #1932 motivated the rewrite).
+ *
+ * The function is preserved so the Claude agent's `detectActivity` can
+ * delegate to a stable export rather than inlining `() => "idle"`, and
+ * because the hard-deprecated `detectActivity` method on the `Agent`
+ * interface still has callers outside this plugin (lifecycle-manager's
+ * terminal-output fallback, used by agents that haven't moved to hooks).
+ */
+export function classifyTerminalOutput(_terminalOutput: string): ActivityState {
   return "idle";
 }
 
