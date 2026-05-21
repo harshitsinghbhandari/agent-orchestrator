@@ -600,7 +600,10 @@ describe("update command", () => {
       expect(mockSpawn.mock.calls[0]).toEqual([
         "ao",
         ["stop", "--yes"],
-        expect.objectContaining({ stdio: "inherit" }),
+        expect.objectContaining({
+          stdio: "inherit",
+          env: expect.objectContaining({ AO_CONFIG_PATH: "/tmp/test-global-config.yaml" }),
+        }),
       ]);
       expect(mockSpawn.mock.calls[1][0]).toBe("pnpm");
       expect(mockSpawn.mock.calls[1][1]).toEqual(["add", "-g", "@aoagents/ao@latest"]);
@@ -609,7 +612,10 @@ describe("update command", () => {
       expect(mockSpawn.mock.calls[3]).toEqual([
         "ao",
         ["start", "my-app", "--restore"],
-        expect.objectContaining({ stdio: "inherit" }),
+        expect.objectContaining({
+          stdio: "inherit",
+          env: expect.objectContaining({ AO_CONFIG_PATH: "/tmp/test-global-config.yaml" }),
+        }),
       ]);
 
       const stopOrder = mockSpawn.mock.invocationCallOrder[0];
@@ -662,6 +668,11 @@ describe("update command", () => {
 
       expect(mockSpawn.mock.calls[0][0]).toBe("ao");
       expect(mockSpawn.mock.calls[0][1]).toEqual(["stop", "--yes"]);
+      expect(mockSpawn.mock.calls[0][2]).toEqual(
+        expect.objectContaining({
+          env: expect.objectContaining({ AO_CONFIG_PATH: "/tmp/test-global-config.yaml" }),
+        }),
+      );
       expect(mockSpawn.mock.calls[1][0]).toBe("pnpm");
       expect(mockSpawn.mock.calls[2][0]).toBe("ao");
       expect(mockSpawn.mock.calls[2][1]).toEqual(["--version"]);
@@ -683,7 +694,10 @@ describe("update command", () => {
       expect(mockSpawn.mock.calls.at(-1)).toEqual([
         "ao",
         ["start", "my-app", "--no-restore"],
-        expect.objectContaining({ stdio: "inherit" }),
+        expect.objectContaining({
+          stdio: "inherit",
+          env: expect.objectContaining({ AO_CONFIG_PATH: "/tmp/test-global-config.yaml" }),
+        }),
       ]);
     });
 
@@ -705,7 +719,10 @@ describe("update command", () => {
       expect(mockSpawn.mock.calls[0][0]).toBe("ao");
       expect(mockSpawn.mock.calls[0][1]).toEqual(["stop", "--yes"]);
       expect(mockSpawn.mock.calls.some((call) => call[0] === "pnpm")).toBe(false);
-      const stderr = vi.mocked(console.error).mock.calls.map((c) => String(c[0])).join("\n");
+      const stderr = vi
+        .mocked(console.error)
+        .mock.calls.map((c) => String(c[0]))
+        .join("\n");
       expect(stderr).toContain("AO still appears to be running after `ao stop --yes`");
     });
 

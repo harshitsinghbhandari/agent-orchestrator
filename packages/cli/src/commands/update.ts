@@ -147,12 +147,14 @@ async function handleCheck(): Promise<void> {
  */
 interface UpdateLifecyclePlan {
   runningBeforeUpdate: boolean;
+  configPath?: string;
   primaryProjectId?: string;
   activeSessions: Session[];
 }
 
 async function getUpdateLifecyclePlan(): Promise<UpdateLifecyclePlan> {
   let sessions: Session[];
+  let configPath: string | undefined;
   let primaryProjectId: string | undefined;
   let runningBeforeUpdate = false;
   try {
@@ -168,6 +170,7 @@ async function getUpdateLifecyclePlan(): Promise<UpdateLifecyclePlan> {
     const running = await getRunning();
     if (running && running.projects.length > 0) {
       runningBeforeUpdate = true;
+      configPath = running.configPath;
       primaryProjectId = running.projects[0];
       // running.configPath could be local-wrapped (a project's
       // agent-orchestrator.yaml) OR the canonical global path. loadConfig
@@ -184,15 +187,16 @@ async function getUpdateLifecyclePlan(): Promise<UpdateLifecyclePlan> {
       // sessions to `killed`, so terminal statuses don't block the update.
       const globalPath = getGlobalConfigPath();
       if (!existsSync(globalPath)) {
-        return { runningBeforeUpdate, primaryProjectId, activeSessions: [] };
+        return { runningBeforeUpdate, configPath, primaryProjectId, activeSessions: [] };
       }
       const globalConfig = loadGlobalConfig(globalPath);
       if (!globalConfig || Object.keys(globalConfig.projects).length === 0) {
-        return { runningBeforeUpdate, primaryProjectId, activeSessions: [] };
+        return { runningBeforeUpdate, configPath, primaryProjectId, activeSessions: [] };
       }
       if (!isCanonicalGlobalConfigPath(globalPath)) {
-        return { runningBeforeUpdate, primaryProjectId, activeSessions: [] };
+        return { runningBeforeUpdate, configPath, primaryProjectId, activeSessions: [] };
       }
+      configPath = globalPath;
       const config = loadConfig(globalPath);
       primaryProjectId = Object.keys(config.projects)[0];
       const sm = await getSessionManager(config);
@@ -204,11 +208,11 @@ async function getUpdateLifecyclePlan(): Promise<UpdateLifecyclePlan> {
     console.error(
       chalk.yellow("⚠ Could not check for active sessions before updating. Proceeding anyway."),
     );
-    return { runningBeforeUpdate, primaryProjectId, activeSessions: [] };
+    return { runningBeforeUpdate, configPath, primaryProjectId, activeSessions: [] };
   }
 
   const active = sessions.filter((s) => ACTIVE_SESSION_STATUSES.has(s.status));
-  return { runningBeforeUpdate, primaryProjectId, activeSessions: active };
+  return { runningBeforeUpdate, configPath, primaryProjectId, activeSessions: active };
 }
 
 async function pauseAoForUpdate(plan: UpdateLifecyclePlan): Promise<boolean> {
@@ -232,7 +236,9 @@ async function pauseAoForUpdate(plan: UpdateLifecyclePlan): Promise<boolean> {
     console.log(chalk.dim("\nAO is running; it will be restarted after the update."));
   }
 
-  const stopExit = await runAoLifecycleCommand(["stop", "--yes"]);
+  const stopExit = await runAoLifecycleCommand(["stop", "--yes"], {
+    configPath: plan.configPath,
+  });
   if (stopExit !== 0) {
     recordActivityEvent({
       source: "cli",
@@ -288,7 +294,7 @@ async function restartAoAfterUpdate(
   args.push(opts.restore ? "--restore" : "--no-restore");
 
   console.log(chalk.dim(`\nRestarting AO: ao ${args.join(" ")}`));
-  const exitCode = await runAoLifecycleCommand(args);
+  const exitCode = await runAoLifecycleCommand(args, { configPath: plan.configPath });
   if (exitCode !== 0) {
     recordActivityEvent({
       source: "cli",
@@ -307,12 +313,16 @@ async function restartAoAfterUpdate(
   }
 }
 
-function runAoLifecycleCommand(args: string[]): Promise<number> {
+function runAoLifecycleCommand(
+  args: string[],
+  opts: { configPath?: string } = {},
+): Promise<number> {
   return new Promise<number>((resolveExit) => {
     const child = spawn("ao", args, {
       stdio: "inherit",
       shell: isWindows(),
       windowsHide: true,
+      env: opts.configPath ? { ...process.env, AO_CONFIG_PATH: opts.configPath } : process.env,
     });
     child.on("error", (error) => {
       console.error(chalk.yellow(`Could not run ao ${args.join(" ")}: ${error.message}`));

@@ -8,11 +8,15 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import { type Socket, connect as netConnect } from "node:net";
+import { dirname, join } from "node:path";
 import {
   DEFAULT_DASHBOARD_NOTIFICATION_LIMIT,
   getEnvDefaults,
   getDashboardNotificationStorePath,
+  getNodePtyPrebuildsSubdir,
   isWindows,
   loadConfig,
   normalizeDashboardNotificationLimit,
@@ -380,8 +384,38 @@ export class NotificationBroadcaster {
 // node-pty is an optionalDependency — load dynamically
 /* eslint-disable @typescript-eslint/consistent-type-imports -- node-pty is optional; static import would crash if missing */
 type IPty = import("node-pty").IPty;
-let ptySpawn: typeof import("node-pty").spawn | undefined;
+type PtySpawn = typeof import("node-pty").spawn;
+type PtySpawnOptions = Parameters<PtySpawn>[2];
+let ptySpawn: PtySpawn | undefined;
 /* eslint-enable @typescript-eslint/consistent-type-imports */
+const nodePtyRequire = createRequire(import.meta.url);
+
+export function resolveNodePtySpawnHelperPath(): string | null {
+  const override = process.env.AO_NODE_PTY_SPAWN_HELPER_PATH;
+  if (override) return override;
+
+  try {
+    const packageJsonPath = nodePtyRequire.resolve("node-pty/package.json");
+    return join(dirname(packageJsonPath), "prebuilds", getNodePtyPrebuildsSubdir(), "spawn-helper");
+  } catch {
+    return null;
+  }
+}
+
+function isPosixSpawnpFailure(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("posix_spawnp");
+}
+
+function repairNodePtySpawnHelper(): string | null {
+  if (isWindows()) return null;
+
+  const spawnHelperPath = resolveNodePtySpawnHelperPath();
+  if (!spawnHelperPath || !fs.existsSync(spawnHelperPath)) return null;
+
+  fs.chmodSync(spawnHelperPath, 0o755);
+  return spawnHelperPath;
+}
+
 try {
   const nodePty = await import("node-pty");
   ptySpawn = nodePty.spawn;
@@ -432,6 +466,7 @@ const REATTACH_RESET_GRACE_MS = 5_000;
 export class TerminalManager {
   private terminals = new Map<string, ManagedTerminal>();
   private TMUX: string;
+  private spawnHelperRepairAttempted = false;
 
   constructor(tmuxPath?: string) {
     const resolved = tmuxPath ?? findTmux();
@@ -443,6 +478,41 @@ export class TerminalManager {
 
   private terminalKey(id: string, projectId?: string): string {
     return projectId ? `${projectId}:${id}` : id;
+  }
+
+  private spawnTmuxPty(args: string[], options: PtySpawnOptions): IPty {
+    if (!ptySpawn) {
+      throw new Error("node-pty not available");
+    }
+
+    try {
+      return ptySpawn(this.TMUX, args, options);
+    } catch (err) {
+      if (this.spawnHelperRepairAttempted || !isPosixSpawnpFailure(err)) {
+        throw err;
+      }
+
+      this.spawnHelperRepairAttempted = true;
+      try {
+        const repairedPath = repairNodePtySpawnHelper();
+        if (repairedPath) {
+          console.warn(
+            `[MuxServer] node-pty posix_spawnp failed; set executable bit on ${repairedPath} and retrying once.`,
+          );
+        } else {
+          console.warn(
+            "[MuxServer] node-pty posix_spawnp failed; spawn-helper was not found, retrying once.",
+          );
+        }
+      } catch (repairErr) {
+        const message = repairErr instanceof Error ? repairErr.message : String(repairErr);
+        console.warn(
+          `[MuxServer] node-pty posix_spawnp failed; chmod spawn-helper failed (${message}), retrying once.`,
+        );
+      }
+
+      return ptySpawn(this.TMUX, args, options);
+    }
   }
 
   /**
@@ -515,14 +585,10 @@ export class TerminalManager {
       TMPDIR: platformDefaults.TMPDIR,
     };
 
-    if (!ptySpawn) {
-      throw new Error("node-pty not available");
-    }
-
     // Spawn PTY — use `=`-prefixed exact-match target so we never attach to
     // a session whose name happens to be a prefix of the requested id.
     const exactTmuxTarget = `=${tmuxSessionId}`;
-    const pty = ptySpawn(this.TMUX, ["attach-session", "-t", exactTmuxTarget], {
+    const pty = this.spawnTmuxPty(["attach-session", "-t", exactTmuxTarget], {
       name: "xterm-256color",
       cols: 80,
       rows: 24,

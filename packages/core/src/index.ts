@@ -366,6 +366,7 @@ export {
   isMac,
   isLinux,
   getDefaultRuntime,
+  getNodePtyPrebuildsSubdir,
   getShell,
   killProcessTree,
   findPidByPort,
