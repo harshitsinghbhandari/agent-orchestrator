@@ -1,6 +1,6 @@
 {
   "name": "@aoagents/ao-plugin-runtime-process",
-  "version": "0.9.1",
+  "version": "0.9.2-nightly-5d0b624fbef5668d82672179c48309ea74403933",
   "description": "Runtime plugin: child processes",
   "license": "MIT",
   "type": "module",
