@@ -1,7 +1,34 @@
+import { readFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import type { Plugin, RollupOptions } from "rollup";
 import typescript from "@rollup/plugin-typescript";
+
+/**
+ * Build one rollup entry point per published subpath export.
+ *
+ * `package.json` `exports` is the source of truth for the public API: each
+ * `"./x": { import: "./dist/x.js" }` must have a real `dist/x.js` on disk.
+ * With `preserveModules`, rollup tree-shakes any module that is a *pure
+ * re-export barrel* (no runtime side effects) — index's `export *` gets
+ * flattened straight to the underlying modules, so the barrel's own chunk is
+ * never emitted. `tsc` still emits the `.d.ts`, so typecheck passes while the
+ * runtime/bundler resolution of the subpath fails. Making every exported
+ * entrypoint an explicit input prevents that: entry points are never
+ * tree-shaken away. This keeps barrel entrypoints (e.g. `types.ts`) emitted.
+ */
+function exportEntryPoints(): Record<string, string> {
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+    exports: Record<string, { import?: string }>;
+  };
+  const input: Record<string, string> = {};
+  for (const entry of Object.values(pkg.exports)) {
+    if (!entry.import) continue;
+    const key = entry.import.replace(/^\.\/dist\//, "").replace(/\.js$/, "");
+    input[key] = `src/${key}.ts`;
+  }
+  return input;
+}
 
 const externalPackages = new Set(["yaml", "zod"]);
 const nodeBuiltins = new Set([
@@ -41,10 +68,7 @@ function cleanDist(): Plugin {
 }
 
 const config: RollupOptions = {
-  input: {
-    index: "src/index.ts",
-    "migration/storage-v2": "src/migration/storage-v2.ts",
-  },
+  input: exportEntryPoints(),
   output: {
     dir: "dist",
     format: "es",
