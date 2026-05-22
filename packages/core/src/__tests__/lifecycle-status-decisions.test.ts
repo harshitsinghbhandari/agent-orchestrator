@@ -3,9 +3,11 @@ import {
   createDetectingDecision,
   hashEvidence,
   isDetectingTimedOut,
+  resolveProbeDecision,
   DETECTING_MAX_ATTEMPTS,
   DETECTING_MAX_DURATION_MS,
 } from "../lifecycle-status-decisions.js";
+import { createActivitySignal } from "../activity-signal.js";
 
 describe("hashEvidence", () => {
   it("returns a 12-character hex string", () => {
@@ -214,5 +216,80 @@ describe("createDetectingDecision", () => {
 
       expect(result.detecting.startedAt).toBe(previousStartedAt);
     });
+  });
+});
+
+describe("resolveProbeDecision", () => {
+  const noLivenessSignal = createActivitySignal("null", { source: "native" });
+  const recentLivenessSignal = createActivitySignal("valid", {
+    activity: "active",
+    timestamp: new Date(),
+    source: "native",
+  });
+
+  const baseProbeInput = {
+    currentAttempts: 0,
+    canProbeRuntimeIdentity: true,
+    activitySignal: noLivenessSignal,
+    activityEvidence: "activity_signal=null via_native",
+    idleWasBlocked: false,
+  };
+
+  it("terminates when both runtime and agent probes report dead", () => {
+    const decision = resolveProbeDecision({
+      ...baseProbeInput,
+      runtimeProbe: { state: "dead", failed: false },
+      processProbe: { state: "dead", failed: false },
+    });
+
+    expect(decision?.sessionState).toBe("terminated");
+    expect(decision?.sessionReason).toBe("runtime_lost");
+  });
+
+  it("keeps a dead runtime with a genuinely unknown process in detecting (no-agent grace)", () => {
+    // When the process state is truly unknown (e.g. no agent plugin to probe),
+    // resolveProbeDecision gives detecting grace rather than terminating. The
+    // #2025 path differs: the manager reclassifies an indeterminate agent probe
+    // to dead before this point, so it lands in the dead+dead terminal branch.
+    const decision = resolveProbeDecision({
+      ...baseProbeInput,
+      runtimeProbe: { state: "dead", failed: false },
+      processProbe: { state: "unknown", failed: false },
+    });
+
+    expect(decision?.sessionState).toBe("detecting");
+    expect(decision?.evidence).toContain("runtime_dead process_unknown");
+  });
+
+  it("stays in detecting when runtime is dead but recent activity supports liveness (preserves #1838 protection)", () => {
+    const decision = resolveProbeDecision({
+      ...baseProbeInput,
+      activitySignal: recentLivenessSignal,
+      runtimeProbe: { state: "dead", failed: false },
+      processProbe: { state: "unknown", failed: false },
+    });
+
+    expect(decision?.sessionState).toBe("detecting");
+  });
+
+  it("stays in detecting on a transient probe failure (preserves #1838 protection)", () => {
+    const decision = resolveProbeDecision({
+      ...baseProbeInput,
+      runtimeProbe: { state: "unknown", failed: true },
+      processProbe: { state: "unknown", failed: false },
+    });
+
+    expect(decision?.sessionState).toBe("detecting");
+  });
+
+  it("does not terminate a live runtime when the agent probe is indeterminate", () => {
+    const decision = resolveProbeDecision({
+      ...baseProbeInput,
+      runtimeProbe: { state: "alive", failed: false },
+      processProbe: { state: "unknown", failed: false },
+    });
+
+    // runtime alive + agent unknown is not a terminal signal; no decision here.
+    expect(decision).toBeNull();
   });
 });

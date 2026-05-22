@@ -1176,7 +1176,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
-    if (processProbe.indeterminate) {
+    // An indeterminate agent process probe normally means "we couldn't tell" —
+    // hold the current state rather than risk a false termination (#1838).
+    //
+    // The exception: when the runtime probe authoritatively reports dead (e.g. a
+    // clean `tmux has-session` false), the agent process living inside that
+    // runtime cannot be alive. The agent's own probe is indeterminate precisely
+    // because it is tmux-based and threw when the session vanished. Reclassify
+    // it as dead so the poll can resolve terminal instead of freezing forever in
+    // `detecting` (#2025). #1838 protection is intact: we only do this on an
+    // authoritative dead runtime, never on a flaky/alive one. The
+    // recent-liveness guard inside resolveProbeDecision still keeps a
+    // genuinely-working agent in `detecting`.
+    const runtimeAuthoritativelyDead = runtimeProbe.state === "dead" && !runtimeProbe.failed;
+    if (processProbe.indeterminate && runtimeAuthoritativelyDead) {
+      processProbe = { state: "dead", failed: false };
+    } else if (processProbe.indeterminate) {
       recordActivityEvent({
         projectId: session.projectId,
         sessionId: session.id,

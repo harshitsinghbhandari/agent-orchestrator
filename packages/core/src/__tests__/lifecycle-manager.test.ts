@@ -729,6 +729,38 @@ describe("check (single session)", () => {
     expect(lm.getStates().get("app-1")).toBe("working");
   });
 
+  it("terminates a runtime-lost session even when the agent process probe is indeterminate (#2025)", async () => {
+    // tmux gone: runtime.isAlive returns a clean dead, but the agent's
+    // tmux-based isProcessRunning throws -> indeterminate. The authoritative
+    // dead runtime must win so the session reaches a terminal state instead of
+    // freezing in detecting forever.
+    vi.mocked(plugins.runtime.isAlive).mockResolvedValue(false);
+    vi.mocked(plugins.agent.getActivityState).mockResolvedValue(null);
+    vi.mocked(plugins.agent.detectActivity).mockReturnValue("idle");
+    vi.mocked(plugins.agent.isProcessRunning).mockResolvedValue("indeterminate");
+
+    const lm = setupCheck("app-1", {
+      session: makeSession({
+        status: "detecting",
+        workspacePath: null,
+        metadata: {
+          lifecycleEvidence: "idle_beyond_threshold activity_signal=valid via_native activity=idle",
+          detectingAttempts: "1",
+        },
+      }),
+      metaOverrides: {
+        lifecycleEvidence: "idle_beyond_threshold activity_signal=valid via_native activity=idle",
+        detectingAttempts: "1",
+      },
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("killed");
+    const meta = readMetadataRaw(env.sessionsDir, "app-1");
+    expect(meta?.["lifecycleEvidence"]).toContain("runtime_dead process_dead");
+  });
+
   it("does not mark a session stuck from terminal-only idle evidence without a timestamp", async () => {
     config.reactions = {
       "agent-stuck": { auto: true, action: "notify", threshold: "1m" },
