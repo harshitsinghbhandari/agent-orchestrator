@@ -761,6 +761,28 @@ describe("check (single session)", () => {
     expect(meta?.["lifecycleEvidence"]).toContain("runtime_dead process_dead");
   });
 
+  it("keeps a session in detecting when the runtime is dead but the agent probe is indeterminate AND activity is fresh (#1838 guard at the reclassification site)", async () => {
+    // Even after reclassifying the indeterminate probe to dead, a fresh liveness
+    // signal must route through the signal_disagreement branch to detecting —
+    // never a false termination of a genuinely-working agent.
+    vi.mocked(plugins.runtime.isAlive).mockResolvedValue(false);
+    vi.mocked(plugins.agent.getActivityState).mockResolvedValue({
+      state: "active",
+      timestamp: new Date(Date.now() - 5_000),
+    });
+    vi.mocked(plugins.agent.isProcessRunning).mockResolvedValue("indeterminate");
+
+    const lm = setupCheck("app-1", {
+      session: makeSession({ status: "working" }),
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("detecting");
+    const meta = readMetadataRaw(env.sessionsDir, "app-1");
+    expect(meta?.["lifecycleEvidence"]).toContain("signal_disagreement");
+  });
+
   it("does not mark a session stuck from terminal-only idle evidence without a timestamp", async () => {
     config.reactions = {
       "agent-stuck": { auto: true, action: "notify", threshold: "1m" },

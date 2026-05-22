@@ -1190,6 +1190,20 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     // genuinely-working agent in `detecting`.
     const runtimeAuthoritativelyDead = runtimeProbe.state === "dead" && !runtimeProbe.failed;
     if (processProbe.indeterminate && runtimeAuthoritativelyDead) {
+      // Leave a trace: the audit trail otherwise shows the session jumping
+      // straight to terminal with no record of the intermediate reclassification.
+      recordActivityEvent({
+        projectId: session.projectId,
+        sessionId: session.id,
+        source: "agent",
+        kind: "agent.process_probe_failed",
+        level: "warn",
+        summary: `agent.isProcessRunning indeterminate for ${session.id} — reclassified dead (runtime authoritatively dead)`,
+        data: {
+          agentName,
+          reason: "probe_indeterminate_runtime_dead",
+        },
+      });
       processProbe = { state: "dead", failed: false };
     } else if (processProbe.indeterminate) {
       recordActivityEvent({
