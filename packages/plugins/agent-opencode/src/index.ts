@@ -304,8 +304,9 @@ function createOpenCodeAgent(): Agent {
       if (running === PROCESS_PROBE_INDETERMINATE) return null;
       if (!running) return { state: "exited", timestamp: exitedAt };
 
-      // 1. Check AO activity JSONL first (written by recordActivity from terminal output).
-      //    This is the only source of waiting_input/blocked states for OpenCode.
+      // 1. Check AO activity JSONL first (written by the hook plugin that
+      //    setupWorkspaceHooks installs). Hook entries are the authoritative
+      //    source of waiting_input/blocked — terminal-regex inference is gone.
       let activityResult: Awaited<ReturnType<typeof readLastActivityEntry>> = null;
       if (session.workspacePath) {
         activityResult = await readLastActivityEntry(session.workspacePath);

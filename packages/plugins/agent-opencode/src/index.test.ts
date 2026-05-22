@@ -846,7 +846,7 @@ describe("setupWorkspaceHooks", () => {
         return Promise.reject(new Error("unexpected"));
       });
 
-      await agent.setupWorkspaceHooks!(ws, {});
+      await agent.setupWorkspaceHooks!(ws, { dataDir: ws });
 
       const pluginPath = join(ws, ".opencode", "plugins", "ao-activity.js");
       const content = await readFile(pluginPath, "utf8");
@@ -869,7 +869,7 @@ describe("setupWorkspaceHooks", () => {
         return Promise.reject(new Error("unexpected"));
       });
 
-      await agent.setupWorkspaceHooks!(ws, {});
+      await agent.setupWorkspaceHooks!(ws, { dataDir: ws });
 
       const exclude = await readFile(join(ws, ".git", "info", "exclude"), "utf8");
       expect(exclude).toContain(".opencode/plugins/ao-activity.js");
@@ -887,8 +887,8 @@ describe("setupWorkspaceHooks", () => {
         return Promise.reject(new Error("unexpected"));
       });
 
-      await agent.setupWorkspaceHooks!(ws, {});
-      await agent.setupWorkspaceHooks!(ws, {});
+      await agent.setupWorkspaceHooks!(ws, { dataDir: ws });
+      await agent.setupWorkspaceHooks!(ws, { dataDir: ws });
 
       const exclude = await readFile(join(ws, ".git", "info", "exclude"), "utf8");
       const occurrences = exclude
@@ -905,13 +905,39 @@ describe("setupWorkspaceHooks", () => {
     try {
       mockExecFileAsync.mockRejectedValue(new Error("not a git repo"));
 
-      await agent.setupWorkspaceHooks!(ws, {});
+      await agent.setupWorkspaceHooks!(ws, { dataDir: ws });
 
       const pluginPath = join(ws, ".opencode", "plugins", "ao-activity.js");
       const content = await readFile(pluginPath, "utf8");
       expect(content).toContain('source: "hook"');
     } finally {
       await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  // On Windows, git resolves `--git-path info/exclude` to an absolute path
+  // (e.g. C:/repo/.git/worktrees/branch/info/exclude). addToGitExclude must
+  // use it verbatim rather than re-joining it onto the workspace path. We use a
+  // real absolute path on the test OS so path.isAbsolute() agrees regardless of
+  // platform, and force the Windows code path via the isWindows() mock.
+  it("uses git's absolute exclude path verbatim on the Windows code path", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "ao-oc-hooks-"));
+    const excludeDir = await mkdtemp(join(tmpdir(), "ao-oc-gitcommon-"));
+    const absExclude = join(excludeDir, "info-exclude");
+    try {
+      mockIsWindows.mockReturnValueOnce(true);
+      mockExecFileAsync.mockImplementation((cmd: string) => {
+        if (cmd === "git") return Promise.resolve({ stdout: `${absExclude}\n`, stderr: "" });
+        return Promise.reject(new Error("unexpected"));
+      });
+
+      await agent.setupWorkspaceHooks!(ws, { dataDir: ws });
+
+      const exclude = await readFile(absExclude, "utf8");
+      expect(exclude).toContain(".opencode/plugins/ao-activity.js");
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+      await rm(excludeDir, { recursive: true, force: true });
     }
   });
 });

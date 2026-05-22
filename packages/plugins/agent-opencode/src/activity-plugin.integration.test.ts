@@ -26,7 +26,11 @@ type PluginFactory = (ctx: {
 
 let workDir: string;
 let pluginUrl: string;
-const savedEnv = { ...process.env };
+// Snapshot only the env keys these tests mutate, so we can restore them
+// individually rather than reassigning process.env wholesale (which loses
+// Node's special env getter/setter behavior).
+const MUTATED_ENV_KEYS = ["AO_SESSION_ID", "AO_OPENCODE_HOOK_ACTIVITY"] as const;
+const savedEnv = new Map(MUTATED_ENV_KEYS.map((k) => [k, process.env[k]] as const));
 
 async function loadPlugin(): Promise<PluginFactory> {
   // Write the generated plugin to a temp .mjs file and import it so we exercise
@@ -63,7 +67,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  process.env = { ...savedEnv };
+  for (const [key, value] of savedEnv) {
+    if (value === undefined) Reflect.deleteProperty(process.env, key);
+    else process.env[key] = value;
+  }
   await rm(workDir, { recursive: true, force: true });
 });
 
