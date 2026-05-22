@@ -54,7 +54,7 @@ class ComposioSdkMissingError extends Error {
 function emitDepMissingOnce(): void {
   if (depMissingEmitted) return;
   depMissingEmitted = true;
-  recordActivityEvent({
+  recordTransportActivityEvent({
     source: "tracker",
     kind: "tracker.dep_missing",
     level: "error",
@@ -842,13 +842,15 @@ export const manifest = {
  */
 function withComposioFallback(composio: GraphQLTransport): GraphQLTransport {
   let active = composio;
+  let direct: GraphQLTransport | undefined;
   return async <T>(query: string, variables?: Record<string, unknown>): Promise<T> => {
     try {
       return await active<T>(query, variables);
     } catch (err) {
       if (err instanceof ComposioSdkMissingError) {
         if (process.env["LINEAR_API_KEY"]) {
-          active = createDirectTransport();
+          direct ??= createDirectTransport();
+          active = direct;
           return await active<T>(query, variables);
         }
         emitDepMissingOnce();

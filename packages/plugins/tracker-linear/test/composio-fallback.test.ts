@@ -143,4 +143,17 @@ describe("Composio→direct transport fallback", () => {
       /Composio SDK.*not installed/,
     );
   });
+
+  it("surfaces the SDK-missing error even when activity logging throws", async () => {
+    process.env["COMPOSIO_API_KEY"] = "composio-key";
+    delete process.env["LINEAR_API_KEY"];
+    recordActivityEventMock.mockImplementation(() => {
+      throw new Error("activity sink failed");
+    });
+
+    const tracker = create();
+    await expect(tracker.getIssue("INT-123", project)).rejects.toThrow(
+      /Composio SDK.*not installed/,
+    );
+  });
 });
