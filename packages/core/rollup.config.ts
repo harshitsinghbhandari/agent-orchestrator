@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { builtinModules } from "node:module";
+import { fileURLToPath } from "node:url";
 import type { Plugin, RollupOptions } from "rollup";
 import typescript from "@rollup/plugin-typescript";
 
@@ -18,7 +19,11 @@ import typescript from "@rollup/plugin-typescript";
  * tree-shaken away. This keeps barrel entrypoints (e.g. `types.ts`) emitted.
  */
 function exportEntryPoints(): Record<string, string> {
-  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+  // Resolve package.json relative to this config file (not the CWD) so the
+  // build works regardless of where rollup is invoked from. fileURLToPath
+  // (not URL.pathname) keeps this correct on Windows.
+  const pkgPath = fileURLToPath(new URL("./package.json", import.meta.url));
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
     exports: Record<string, { import?: string }>;
   };
   const input: Record<string, string> = {};
