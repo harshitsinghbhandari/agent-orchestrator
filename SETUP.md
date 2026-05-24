@@ -61,6 +61,15 @@ Comprehensive guide to installing, configuring, and troubleshooting Agent Orches
   - Create incoming webhook: https://api.slack.com/messaging/webhooks
   - Set environment variable: `export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."`
 
+- **Composio API Key** - If using Composio tools or notifications
+  - Set environment variable: `export COMPOSIO_API_KEY="your-api-key"`
+
+- **OpenClaw Hooks Token** - If using OpenClaw notifications
+  - Set environment variable: `export OPENCLAW_HOOKS_TOKEN="your-hooks-token"`
+
+- **Config Path** - To specify a custom location for the orchestrator config
+  - Set environment variable: `export AO_CONFIG_PATH="/path/to/agent-orchestrator.yaml"`
+
 ## Installation
 
 ### Install via npm (recommended)
