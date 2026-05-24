@@ -50,6 +50,17 @@ npx node-gyp rebuild
 
 ## Other Issues
 
+### "WebSocket connection failed. Ensure server is running on port 3002"
+
+**Cause**: Voice server is not running or missing required configuration.
+
+**Solutions**:
+1. Check that `AO_VOICE_ENABLED` or `NEXT_PUBLIC_AO_VOICE_ENABLED` is set to `"true"`
+2. Check that `GEMINI_API_KEY` is correctly configured in your environment
+3. Verify environment variables are loaded (restart your terminal if needed)
+4. Rebuild the project: `pnpm build`
+5. Restart the server
+
 ### Config file not found
 
 **Symptom**: API returns 500 with "No agent-orchestrator.yaml found"
