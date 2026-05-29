@@ -19,6 +19,7 @@ import {
   asRunId,
   asStageRunId,
   configuredPipelineToRuntime,
+  hydrateEngineState,
   isTerminalLoopState,
   loopKey,
   reduce,
@@ -37,10 +38,13 @@ import {
   type PluginRegistry,
   type RunId,
   type RunState,
-  type RunSummary,
   type StageRunId,
   type StageState,
 } from "@aoagents/ao-core";
+
+// Re-export so existing CLI tests (and the `pipeline-service.ts:hydrateEngineState`
+// callsite documented in #1346) keep working.
+export { hydrateEngineState };
 
 /**
  * Thrown by `triggerRun` when a non-terminal run already exists for the same
@@ -212,48 +216,6 @@ export function readStageArtifacts(
   const stage = store.loadStage(stageRunId);
   if (!stage) throw new Error(`Stage not found: ${stageRunId}`);
   return store.listArtifacts(stage.runId, stageRunId);
-}
-
-/**
- * Rebuild engine state from the flat-file store. Used so reducer dispatches
- * see existing runs / loop pointers / history rather than starting from
- * `emptyEngineState()` (which would defeat the reducer's collision guards).
- *
- * Terminal runs go into `historySummaries`; the latest non-terminal run on
- * each loop key wins `currentRunByLoop`.
- */
-export function hydrateEngineState(store: PipelineStore): EngineState {
-  const runs: Record<string, RunState> = {};
-  const currentRunByLoop: Record<string, RunId> = {};
-  const historySummaries: Record<string, RunSummary[]> = {};
-
-  // Sort oldest-first so historySummaries preserves chronological order.
-  const sorted = [...store.listRuns()].sort((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
-
-  for (const run of sorted) {
-    runs[run.runId] = run;
-    const key = loopKey(run.sessionId, run.pipelineName);
-
-    if (isTerminalLoopState(run.loopState)) {
-      const list = historySummaries[key] ?? [];
-      list.push({
-        runId: run.runId,
-        loopState: run.loopState,
-        ...(run.terminationReason ? { terminationReason: run.terminationReason } : {}),
-        headSha: run.headSha,
-        loopRounds: run.loopRounds,
-        fingerprints: [],
-        createdAt: run.createdAt,
-      });
-      historySummaries[key] = list;
-    } else {
-      currentRunByLoop[key] = run.runId;
-    }
-  }
-
-  return { runs, currentRunByLoop, historySummaries };
 }
 
 /** Sentinel recorded in RunState.headSha when a run is triggered via CLI with no git context. */

@@ -43,6 +43,7 @@ export {
 
 export {
   createPipelineEngine,
+  hydrateEngineState,
   type PipelineEngine,
   type PipelineEngineDeps,
   type StartRunInput,
