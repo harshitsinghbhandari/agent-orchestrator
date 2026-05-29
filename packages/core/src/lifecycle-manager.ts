@@ -51,6 +51,7 @@ import {
   cloneLifecycle,
   deriveLegacyStatus,
 } from "./lifecycle-state.js";
+import type { PipelineEngine } from "./pipeline/engine.js";
 import { updateMetadata } from "./metadata.js";
 import { getProjectSessionsDir } from "./paths.js";
 import { applyDecisionToLifecycle as commitLifecycleDecisionInPlace } from "./lifecycle-transition.js";
@@ -489,7 +490,7 @@ export interface LifecycleManagerDeps {
    * Errors from `tick()` are captured and recorded but never bubble out —
    * pipeline failures must not crash session polling for unrelated sessions.
    */
-  pipelineEngine?: import("./pipeline/engine.js").PipelineEngine;
+  pipelineEngine?: PipelineEngine;
 }
 
 /** Track attempt counts for reactions per session. */
