@@ -131,6 +131,7 @@ describe("plugin manifest & exports", () => {
       description: "Agent plugin: OpenCode",
       version: "0.1.0",
       displayName: "OpenCode",
+      supportedTaskModes: ["review", "code", "answer"],
     });
   });
 
