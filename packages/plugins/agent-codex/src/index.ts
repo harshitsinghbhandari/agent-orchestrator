@@ -21,6 +21,7 @@ import {
   type ProjectConfig,
   type RuntimeHandle,
   type Session,
+  type TaskMode,
   type WorkspaceHooksConfig,
 } from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
@@ -44,6 +45,7 @@ export const manifest = {
   description: "Agent plugin: OpenAI Codex CLI",
   version: "0.1.1",
   displayName: "OpenAI Codex",
+  supportedTaskModes: ["review", "code", "answer"] as TaskMode[],
 };
 
 // =============================================================================

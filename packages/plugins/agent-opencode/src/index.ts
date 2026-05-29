@@ -23,6 +23,7 @@ import {
   type ProjectConfig,
   type RuntimeHandle,
   type Session,
+  type TaskMode,
   type WorkspaceHooksConfig,
   type OpenCodeAgentConfig,
   type OpenCodeSessionListEntry,
@@ -181,6 +182,7 @@ export const manifest = {
   description: "Agent plugin: OpenCode",
   version: "0.1.0",
   displayName: "OpenCode",
+  supportedTaskModes: ["review", "code", "answer"] as TaskMode[],
 };
 
 // =============================================================================

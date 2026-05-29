@@ -124,6 +124,16 @@ describe("validatePipelineAgentModes", () => {
     expect(() => validatePipelineAgentModes(pipeline, r)).not.toThrow();
   });
 
+  it("accepts a mode='review' stage routed to plugin 'claude-code' (regression: #190)", () => {
+    // The claude-code plugin manifest must advertise supportedTaskModes
+    // for review/code/answer stages to clear pipeline validation.
+    const r = withRegistry([makeAgentPlugin("claude-code", ["review", "code", "answer"])]);
+    const pipeline = makePipeline([
+      makeStage({ executor: { kind: "agent", plugin: "claude-code", mode: "review" } }),
+    ]);
+    expect(() => validatePipelineAgentModes(pipeline, r)).not.toThrow();
+  });
+
   it("validates every stage in a multi-stage pipeline and fails on the first mismatch", () => {
     const r = withRegistry([
       makeAgentPlugin("codex", ["review"]),
