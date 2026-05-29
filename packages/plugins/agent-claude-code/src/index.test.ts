@@ -211,6 +211,7 @@ describe("plugin manifest & exports", () => {
       description: "Agent plugin: Claude Code CLI",
       version: "0.1.0",
       displayName: "Claude Code",
+      supportedTaskModes: ["review", "code", "answer"],
     });
   });
 
