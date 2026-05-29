@@ -479,6 +479,17 @@ export interface LifecycleManagerDeps {
   sessionManager: OpenCodeSessionManager;
   /** When set, only poll sessions belonging to this project. */
   projectId?: string;
+  /**
+   * Optional pipeline engine. When provided, the lifecycle manager invokes
+   * `engine.tick()` at the end of every poll cycle so the engine drives
+   * in-flight pipeline stages forward on the same 5s cadence as the rest of
+   * the polling loop (per C-14). The engine was designed to piggyback on this
+   * loop rather than introduce its own timer (see pipeline/engine.ts:19-21).
+   *
+   * Errors from `tick()` are captured and recorded but never bubble out —
+   * pipeline failures must not crash session polling for unrelated sessions.
+   */
+  pipelineEngine?: import("./pipeline/engine.js").PipelineEngine;
 }
 
 /** Track attempt counts for reactions per session. */
@@ -492,7 +503,7 @@ interface ReactionTracker {
 
 /** Create a LifecycleManager instance. */
 export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleManager {
-  const { config, registry, sessionManager, projectId: scopedProjectId } = deps;
+  const { config, registry, sessionManager, projectId: scopedProjectId, pipelineEngine } = deps;
   const observer = createProjectObserver(config, "lifecycle-manager");
 
   const states = new Map<SessionId, SessionStatus>();
@@ -2911,6 +2922,35 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             activeSessionCount: activeSessions.length,
           },
         });
+      }
+
+      // Drive the pipeline engine forward on the same 5s cadence as session
+      // polling (per C-14, no new timers). Errors are swallowed so a pipeline
+      // poll failure cannot crash the session loop for unrelated sessions.
+      if (pipelineEngine) {
+        try {
+          await pipelineEngine.tick();
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          observer.recordOperation({
+            metric: "lifecycle_poll",
+            operation: "pipeline.tick",
+            outcome: "failure",
+            correlationId,
+            projectId: scopedProjectId,
+            durationMs: Date.now() - startedAt,
+            reason: errorMsg,
+            level: "warn",
+          });
+          recordActivityEvent({
+            projectId: scopedProjectId,
+            source: "lifecycle",
+            kind: "pipeline.tick_failed",
+            level: "warn",
+            summary: "pipeline engine tick failed",
+            data: { errorMessage: errorMsg },
+          });
+        }
       }
     } catch (err) {
       const errorReason = err instanceof Error ? err.message : String(err);
