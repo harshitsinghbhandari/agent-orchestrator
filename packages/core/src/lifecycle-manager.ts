@@ -52,6 +52,8 @@ import {
   deriveLegacyStatus,
 } from "./lifecycle-state.js";
 import type { PipelineEngine } from "./pipeline/engine.js";
+import { configuredPipelineToRuntime } from "./pipeline/config-schema.js";
+import type { StageTriggerEvent } from "./pipeline/types.js";
 import { updateMetadata } from "./metadata.js";
 import { getProjectSessionsDir } from "./paths.js";
 import { applyDecisionToLifecycle as commitLifecycleDecisionInPlace } from "./lifecycle-transition.js";
@@ -534,6 +536,15 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   /** Throttle interval for review backlog API calls (2 minutes). */
   const REVIEW_BACKLOG_THROTTLE_MS = 2 * 60 * 1000;
+
+  /**
+   * Last PR head SHA observed per session. Used by the pipeline-trigger bridge
+   * to detect `pr.updated` (new commit) transitions and dispatch
+   * NEW_SHA_DETECTED into the pipeline engine. In-memory only — on restart the
+   * engine's persisted run.headSha plus the reducer's idempotency guard
+   * (`run.headSha === sha` no-op) prevents duplicate dispatches.
+   */
+  const lastPipelineSha = new Map<SessionId, string>();
 
   /**
    * Populate the PR enrichment cache using batch GraphQL queries.
@@ -2145,6 +2156,135 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   }
 
   /**
+   * Bridge PR-state transitions and HEAD-SHA changes into the pipeline engine.
+   *
+   * Three transitions fire dispatches:
+   *  - PR transitioned to `open` (from any other state): TRIGGER_FIRED(pr.opened)
+   *  - PR transitioned `open → merged`: TRIGGER_FIRED(pr.merged)
+   *  - PR stayed `open` but its HEAD SHA changed: NEW_SHA_DETECTED followed by
+   *    TRIGGER_FIRED(pr.updated). NEW_SHA_DETECTED terminates the prior run as
+   *    `outdated` and frees the loop key so the new TRIGGER_FIRED can start
+   *    a fresh run for the new SHA.
+   *
+   * For each transition, every configured pipeline whose stages subscribe
+   * (`stage.trigger.on` includes the event) is dispatched. Pipelines that
+   * don't subscribe are skipped.
+   *
+   * Idempotency: pr.opened / pr.merged fire on the previousPRState !==
+   * newPRState edge only — repeated polls without a state change emit no
+   * dispatch. pr.updated guards on `lastPipelineSha` and the reducer's
+   * `run.headSha === sha` no-op in NEW_SHA_DETECTED gives a second layer of
+   * idempotency across restarts.
+   */
+  async function bridgePipelineTriggers(
+    session: Session,
+    previousPRState: Session["lifecycle"]["pr"]["state"],
+  ): Promise<void> {
+    if (!pipelineEngine) return;
+
+    const project = config.projects[session.projectId];
+    const configuredPipelines = project?.pipelines;
+    if (!configuredPipelines || Object.keys(configuredPipelines).length === 0) return;
+
+    const newPRState = session.lifecycle.pr.state;
+    let currentHeadSha: string | null = null;
+    if (session.pr) {
+      const prKey = `${session.pr.owner}/${session.pr.repo}#${session.pr.number}`;
+      const cached = prEnrichmentCache.get(prKey);
+      currentHeadSha = cached?.headSha ?? null;
+    }
+
+    const trigger = decidePipelineTrigger(previousPRState, newPRState);
+
+    // SHA-change detection only applies to PRs still in `open` state — a PR
+    // that just transitioned to `open` rides the pr.opened branch instead.
+    const isContinuingOpen =
+      previousPRState === "open" && newPRState === "open" && currentHeadSha !== null;
+    const lastSha = lastPipelineSha.get(session.id);
+    const shaChanged = isContinuingOpen && lastSha !== undefined && lastSha !== currentHeadSha;
+
+    if (currentHeadSha) {
+      lastPipelineSha.set(session.id, currentHeadSha);
+    }
+
+    if (!trigger && !shaChanged) return;
+
+    // On SHA change, dispatch NEW_SHA_DETECTED FIRST so the reducer frees the
+    // loop key before the pr.updated TRIGGER_FIRED arrives — otherwise the
+    // new trigger no-ops against the still-active prior run.
+    if (shaChanged && currentHeadSha) {
+      for (const pipelineName of Object.keys(configuredPipelines)) {
+        try {
+          await pipelineEngine.dispatch({
+            type: "NEW_SHA_DETECTED",
+            now: Date.now(),
+            sessionId: session.id,
+            pipelineName: configuredPipelines[pipelineName].name ?? pipelineName,
+            sha: currentHeadSha,
+          });
+        } catch (err) {
+          recordActivityEvent({
+            projectId: session.projectId,
+            sessionId: session.id,
+            source: "lifecycle",
+            kind: "pipeline.new_sha_dispatch_failed",
+            level: "warn",
+            summary: `NEW_SHA_DETECTED dispatch failed for ${pipelineName}`,
+            data: { errorMessage: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+    }
+
+    const effectiveTrigger: StageTriggerEvent | null = trigger ?? (shaChanged ? "pr.updated" : null);
+    if (!effectiveTrigger) return;
+
+    const dispatchSha = currentHeadSha ?? "unknown";
+    for (const [key, configured] of Object.entries(configuredPipelines)) {
+      const subscribes = configured.stages.some((stage) =>
+        stage.trigger.on.includes(effectiveTrigger),
+      );
+      if (!subscribes) continue;
+      try {
+        const pipeline = configuredPipelineToRuntime(key, configured);
+        await pipelineEngine.startRun({
+          pipeline,
+          projectId: session.projectId,
+          sessionId: session.id,
+          trigger: effectiveTrigger,
+          headSha: dispatchSha,
+          ...(session.issueId ? { issueId: session.issueId } : {}),
+        });
+      } catch (err) {
+        recordActivityEvent({
+          projectId: session.projectId,
+          sessionId: session.id,
+          source: "lifecycle",
+          kind: "pipeline.trigger_fired_dispatch_failed",
+          level: "warn",
+          summary: `TRIGGER_FIRED(${effectiveTrigger}) dispatch failed for ${key}`,
+          data: { errorMessage: err instanceof Error ? err.message : String(err) },
+        });
+      }
+    }
+  }
+
+  /**
+   * Map a PR state transition to the corresponding pipeline trigger event.
+   * Returns null when the transition doesn't correspond to a pipeline trigger
+   * (e.g. `open → closed`, or no state change at all).
+   */
+  function decidePipelineTrigger(
+    previousPRState: Session["lifecycle"]["pr"]["state"],
+    newPRState: Session["lifecycle"]["pr"]["state"],
+  ): StageTriggerEvent | null {
+    if (previousPRState === newPRState) return null;
+    if (newPRState === "open") return "pr.opened";
+    if (newPRState === "merged" && previousPRState === "open") return "pr.merged";
+    return null;
+  }
+
+  /**
    * Dispatch merge conflict notifications to the agent session.
    * Conflicts are detected from the PR enrichment cache or getMergeability()
    * and dispatched independently of the session status (conflicts can coexist
@@ -2685,6 +2825,26 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         });
         await notifyHuman(prEvent, inferPriority(prEventType));
       }
+    }
+
+    // Bridge PR-state transitions into the pipeline engine: when a PR
+    // transitions none→open, open→merged, or a new HEAD SHA lands on an open
+    // PR, fire TRIGGER_FIRED (and NEW_SHA_DETECTED on SHA change) so any
+    // configured pipeline subscribed to the corresponding event auto-runs.
+    // Errors are swallowed: a misconfigured pipeline must not block session
+    // lifecycle progression for unrelated sessions.
+    try {
+      await bridgePipelineTriggers(session, previousPRState);
+    } catch (err) {
+      recordActivityEvent({
+        projectId: session.projectId,
+        sessionId: session.id,
+        source: "lifecycle",
+        kind: "pipeline.trigger_bridge_failed",
+        level: "warn",
+        summary: "pipeline trigger bridge failed",
+        data: { errorMessage: err instanceof Error ? err.message : String(err) },
+      });
     }
 
     // Pin first quality summary for title stability

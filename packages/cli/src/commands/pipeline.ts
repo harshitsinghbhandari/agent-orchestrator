@@ -21,7 +21,7 @@ import {
 } from "@aoagents/ao-core";
 
 import { fail } from "../lib/cli-utils.js";
-import { getPluginRegistry } from "../lib/create-session-manager.js";
+import { getOneShotPipelineEngine } from "../lib/create-session-manager.js";
 import { resolveScopedProjectId } from "../lib/project-resolution.js";
 import { getRunning } from "../lib/running-state.js";
 import {
@@ -50,28 +50,34 @@ function openScope(projectOpt?: string): ProjectScope {
 }
 
 /**
- * Inverse of `warnIfAONotRunning` in spawn.ts. The running orchestrator
- * holds engine state in memory and (until v0.4 lifecycle wiring lands) does
- * not re-read pipeline runs from disk. CLI mutations therefore won't be seen
- * by the in-process engine until the user restarts it. Make that explicit.
+ * Inverse of `warnIfAONotRunning` in spawn.ts. The running orchestrator owns
+ * its own engine instance in memory; the CLI builds a transient engine that
+ * shares the same flat-file store but cannot reach into the running process.
+ * A CLI dispatch therefore spawns the stage (now that #192 routes through the
+ * live engine) but the running orchestrator's in-memory engine will not see
+ * the new run until it is restarted. Make that gap explicit so the operator
+ * isn't surprised when the dashboard lags behind the CLI output.
  */
 async function warnIfAORunning(projectId: string): Promise<void> {
   const running = await getRunning();
   if (!running || !running.projects.includes(projectId)) return;
   console.log(
     chalk.yellow(
-      `⚠ AO is running (pid ${running.pid}) and holds in-memory pipeline state.`,
+      `⚠ AO is running (pid ${running.pid}) on this project with its own engine.`,
     ),
   );
   console.log(
     chalk.dim(
-      `  This change is persisted to disk but the running engine won't pick it up until v0.4 lifecycle wiring lands.`,
+      `  This CLI dispatch will spawn the stage and persist the run, but the running`,
     ),
   );
   console.log(
     chalk.dim(
-      `  Restart \`ao start\` to re-hydrate engine state from the store.`,
+      `  AO process won't observe the new run until it is restarted. Restart`,
     ),
+  );
+  console.log(
+    chalk.dim(`  \`ao start\` to re-hydrate engine state from the store.`),
   );
 }
 
@@ -248,12 +254,26 @@ export function registerPipeline(program: Command): void {
         opts: { project?: string; session?: string; headSha?: string; json?: boolean },
       ) => {
         try {
-          const { config, projectId, store } = openScope(opts.project);
+          const { config, projectId } = openScope(opts.project);
           const pipeline = resolveConfiguredPipeline(config, projectId, pipelineRef);
-          const registry = await getPluginRegistry(config);
+
+          // Live engine path (issue #192): construct a transient engine the
+          // same way `ao start` does so the START_STAGE effect actually spawns
+          // the stage's agent session — the prior store-only path persisted
+          // the run but the stage sat at `pending` forever (#1346 / #192).
+          // `getOneShotPipelineEngine` deliberately skips
+          // `reconcileInflightStages` so a CLI invocation can't STAGE_FAILED
+          // stages that a separately-running `ao start` is still driving.
+          //
+          // Warn BEFORE dispatching so the user can Ctrl+C if they didn't mean
+          // to take this path while AO is also running on the same project.
+          await warnIfAORunning(projectId);
+
+          const pipelineEngine = await getOneShotPipelineEngine(config, projectId);
           let runId;
           try {
-            runId = triggerRun(store, registry, pipeline, {
+            runId = await triggerRun(pipelineEngine, pipeline, {
+              projectId,
               ...(opts.session ? { sessionId: opts.session } : {}),
               ...(opts.headSha ? { headSha: opts.headSha } : {}),
             });
@@ -276,12 +296,6 @@ export function registerPipeline(program: Command): void {
               `✓ Triggered ${chalk.bold(pipeline.name)} for ${chalk.bold(projectId)} → ${runId}`,
             ),
           );
-          console.log(
-            chalk.dim(
-              `  Run state persisted. v0.4 lifecycle integration will pick it up.`,
-            ),
-          );
-          await warnIfAORunning(projectId);
         } catch (err) {
           fail(err);
         }

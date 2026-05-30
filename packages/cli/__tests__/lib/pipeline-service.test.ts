@@ -3,13 +3,17 @@ import {
   asPipelineId,
   asRunId,
   asStageRunId,
+  emptyEngineState,
+  loopKey,
   type Artifact,
   type ConfiguredPipeline,
+  type EngineState,
   type LoopState,
   type PersistedStageRun,
   type Pipeline,
+  type PipelineEngine,
   type PipelineStore,
-  type PluginRegistry,
+  type RunId,
   type RunState,
 } from "@aoagents/ao-core";
 
@@ -84,22 +88,6 @@ function makeConfiguredPipeline(
     ],
     ...overrides,
   };
-}
-
-function makeMockRegistry(modes: string[] = ["review", "code", "answer"]): PluginRegistry {
-  return {
-    list: vi.fn((_slot: string) => [
-      {
-        name: "claude-code",
-        slot: "agent",
-        description: "mock",
-        version: "0.0.0",
-        supportedTaskModes: modes,
-      },
-    ]),
-    get: vi.fn(),
-    create: vi.fn(),
-  } as unknown as PluginRegistry;
 }
 
 const mockConfig = {
@@ -186,50 +174,124 @@ describe("resolveConfiguredPipeline", () => {
   });
 });
 
+function createMockEngine(initial?: EngineState): {
+  engine: PipelineEngine;
+  startRun: ReturnType<typeof vi.fn>;
+} {
+  let current: EngineState = initial ?? emptyEngineState();
+  const startRun = vi.fn(async ({ pipeline, sessionId }) => {
+    const runId = asRunId(`run-${pipeline.name}-${Object.keys(current.runs).length}`);
+    const key = loopKey(sessionId ?? `pipeline.${pipeline.name}`, pipeline.name);
+    // Synthesize a minimal RunState — the mock doesn't need the real
+    // reducer's full output, these tests only assert on what triggerRun
+    // returned and which engine method was called.
+    const stub: RunState = {
+      runId,
+      pipelineId: pipeline.id,
+      pipelineName: pipeline.name,
+      sessionId: sessionId ?? `pipeline.${pipeline.name}`,
+      pipelineConfigSnapshot: pipeline,
+      headSha: "test-sha",
+      loopState: "running",
+      loopRounds: 1,
+      stages: {},
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    };
+    current = {
+      ...current,
+      runs: { ...current.runs, [runId]: stub },
+      currentRunByLoop: { ...current.currentRunByLoop, [key]: runId },
+    };
+    return runId;
+  });
+  const engine: PipelineEngine = {
+    state: () => current,
+    startRun,
+    tick: vi.fn(),
+    dispatch: vi.fn(),
+    cancelRun: vi.fn(),
+    reconcileInflightStages: vi.fn(),
+    shutdown: vi.fn(),
+  };
+  return { engine, startRun };
+}
+
 describe("triggerRun", () => {
-  it("validates the pipeline against the registry and persists initial run state", () => {
-    const { store, state } = createMockStore();
-    const registry = makeMockRegistry();
+  it("delegates to engine.startRun with manual trigger and returns the engine's run id", async () => {
+    const { engine, startRun } = createMockEngine();
     const pipeline = resolveConfiguredPipeline(mockConfig, "proj", "review");
 
-    const runId = triggerRun(store, registry, pipeline, {}, () => 1_700_000_000_000);
+    const runId = await triggerRun(engine, pipeline, { projectId: "proj" });
 
     expect(runId).toMatch(/^run-/);
-    expect(state.runs.size).toBe(1);
-    const run = state.runs.get(runId)!;
-    expect(run.pipelineName).toBe("review");
-    expect(run.loopState).toBe("running");
-    expect(Object.keys(run.stages)).toEqual(["review-stage"]);
-    expect(state.loops.size).toBe(1);
-    expect(state.stages.size).toBe(1);
+    expect(startRun).toHaveBeenCalledTimes(1);
+    expect(startRun).toHaveBeenCalledWith({
+      pipeline,
+      projectId: "proj",
+      sessionId: "pipeline.review",
+      trigger: "manual",
+      headSha: "manual",
+    });
   });
 
-  it("throws PipelineConfigError when an agent doesn't support the requested mode", () => {
-    const { store } = createMockStore();
-    const registry = makeMockRegistry(["code"]); // no "review"
+  it("forwards sessionId, headSha, and issueId overrides into engine.startRun", async () => {
+    const { engine, startRun } = createMockEngine();
     const pipeline = resolveConfiguredPipeline(mockConfig, "proj", "review");
-    expect(() => triggerRun(store, registry, pipeline)).toThrow(
-      /supportedTaskModes/i,
-    );
+
+    await triggerRun(engine, pipeline, {
+      projectId: "proj",
+      sessionId: "worker-7",
+      headSha: "deadbeef",
+      issueId: "AO-42",
+    });
+
+    expect(startRun).toHaveBeenCalledWith({
+      pipeline,
+      projectId: "proj",
+      sessionId: "worker-7",
+      trigger: "manual",
+      headSha: "deadbeef",
+      issueId: "AO-42",
+    });
   });
 
-  it("rejects with LoopAlreadyActiveError when an active run already owns the loop key", async () => {
+  it("rejects with LoopAlreadyActiveError when engine state already has an active run for the loop", async () => {
     const { LoopAlreadyActiveError } = await import("../../src/lib/pipeline-service.js");
-    const { store, state } = createMockStore();
-    const registry = makeMockRegistry();
     const pipeline = resolveConfiguredPipeline(mockConfig, "proj", "review");
-
-    triggerRun(store, registry, pipeline);
-    expect(state.runs.size).toBe(1);
+    const activeRunId = asRunId("run-existing");
+    const sessionId = "pipeline.review";
+    const initial: EngineState = {
+      runs: {
+        [activeRunId]: {
+          runId: activeRunId,
+          pipelineId: pipeline.id,
+          pipelineName: pipeline.name,
+          sessionId,
+          pipelineConfigSnapshot: pipeline,
+          headSha: "x",
+          loopState: "running",
+          loopRounds: 1,
+          stages: {},
+          createdAt: "x",
+          updatedAt: "x",
+        },
+      },
+      currentRunByLoop: { [loopKey(sessionId, pipeline.name)]: activeRunId },
+      historySummaries: {},
+    };
+    const { engine, startRun } = createMockEngine(initial);
 
     let captured: unknown;
     try {
-      triggerRun(store, registry, pipeline);
+      await triggerRun(engine, pipeline, { projectId: "proj" });
     } catch (err) {
       captured = err;
     }
     expect(captured).toBeInstanceOf(LoopAlreadyActiveError);
-    expect(state.runs.size).toBe(1); // still only one run
+    expect((captured as InstanceType<typeof LoopAlreadyActiveError>).activeRunId).toBe(activeRunId);
+    // Live engine was never asked to start a run when the loop is busy.
+    expect(startRun).not.toHaveBeenCalled();
   });
 });
 
