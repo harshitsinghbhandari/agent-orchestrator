@@ -908,6 +908,13 @@ export interface PREnrichmentData {
   isBehind?: boolean;
   /** List of blockers preventing merge */
   blockers?: string[];
+  /**
+   * Head commit SHA of the PR. Surfaced so the lifecycle manager can detect
+   * `pr.updated` (new commit) transitions and dispatch NEW_SHA_DETECTED /
+   * TRIGGER_FIRED into the pipeline engine. Null when the SCM plugin could
+   * not extract it; consumers must treat absence as "unknown", not "unchanged".
+   */
+  headSha?: string | null;
 }
 
 /**
@@ -1114,6 +1121,13 @@ export interface PREnrichmentData {
   blockers?: string[];
   /** Individual CI check results (populated from batch enrichment when available) */
   ciChecks?: CICheck[];
+  /**
+   * Head commit SHA of the PR. Surfaced so the lifecycle manager can detect
+   * `pr.updated` (new commit) transitions and dispatch NEW_SHA_DETECTED /
+   * TRIGGER_FIRED into the pipeline engine. Null when the SCM plugin could
+   * not extract it; consumers must treat absence as "unknown", not "unchanged".
+   */
+  headSha?: string | null;
 }
 
 /**

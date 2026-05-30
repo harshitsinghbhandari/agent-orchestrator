@@ -119,3 +119,32 @@ export async function getLifecycleManager(
   });
   return { lifecycle, pipelineEngine };
 }
+
+/**
+ * Build a transient pipeline engine for one-shot CLI dispatches (e.g.
+ * `ao pipeline run`). Hydrates state from the persisted store and wires up
+ * a real agent executor so the engine can spawn stages — but does NOT call
+ * `reconcileInflightStages`, because reconcile assumes the caller owns the
+ * lifecycle for those stages. Calling it from a transient CLI process would
+ * STAGE_FAILED stages that a separately-running `ao start` is still driving,
+ * corrupting that other process's view of the world.
+ *
+ * After dispatch, the CLI should exit without ticking the engine. The agent
+ * session it spawned lives on in the runtime plugin; a future `ao start`
+ * will surface the resulting run in the dashboard.
+ */
+export async function getOneShotPipelineEngine(
+  config: OrchestratorConfig,
+  projectId: string,
+): Promise<PipelineEngine> {
+  const registry = await getPluginRegistry(config);
+  const sessionManager = createSessionManager({ config, registry });
+  const store = createPipelineStore(getProjectPipelinesDir(projectId));
+  const agentExecutor = createAgentExecutor({ sessionManager });
+  return createPipelineEngine({
+    store,
+    registry,
+    agentExecutor,
+    initialState: hydrateEngineState(store),
+  });
+}

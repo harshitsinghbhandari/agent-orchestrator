@@ -16,15 +16,12 @@
 import { randomUUID } from "node:crypto";
 import {
   asPipelineId,
-  asRunId,
   asStageRunId,
   configuredPipelineToRuntime,
   hydrateEngineState,
   isTerminalLoopState,
   loopKey,
   reduce,
-  validatePipelineAgentModes,
-  validatePipelineDag,
   type Artifact,
   type ConfiguredPipeline,
   type EngineState,
@@ -33,9 +30,9 @@ import {
   type PersistedStageRun,
   type Pipeline,
   type PipelineEffect,
+  type PipelineEngine,
   type PipelineEvent,
   type PipelineStore,
-  type PluginRegistry,
   type RunId,
   type RunState,
   type StageRunId,
@@ -224,33 +221,38 @@ const MANUAL_TRIGGER_SHA = "manual";
 export interface TriggerOptions {
   sessionId?: string;
   headSha?: string;
+  projectId?: string;
+  issueId?: string;
 }
 
 /**
- * Trigger a manual run for a pipeline. Hydrates engine state from the store
- * so the reducer's "active run already in flight for this loop" guard fires
- * when a non-terminal run already exists. Returns the allocated run id; the
- * running orchestrator drives stage execution.
+ * Trigger a manual pipeline run via the live engine. The engine validates the
+ * pipeline against the registry, persists the initial run state, AND fires the
+ * START_STAGE effect through the agent executor — so the stage actually spawns
+ * a session instead of sitting at `pending` like the previous store-only path
+ * did (issue #192).
+ *
+ * The pre-flight `LoopAlreadyActiveError` mirrors the reducer's TRIGGER_FIRED
+ * guard but surfaces it to the CLI as an explicit error with the active runId
+ * (the reducer alone would just no-op silently). The check reads engine state
+ * directly so it reflects the engine's in-memory view, not what the store
+ * happens to contain at the moment.
  *
  * `sessionId` defaults to `pipeline.<name>` so a CLI-triggered run can be
  * looked up by name without a worker session attached. Callers that already
- * have a session (e.g. lifecycle integration in v0.4) should override it.
+ * have a session (e.g. the lifecycle PR-event bridge in lifecycle-manager)
+ * should override it.
  */
-export function triggerRun(
-  store: PipelineStore,
-  registry: PluginRegistry,
+export async function triggerRun(
+  engine: PipelineEngine,
   pipeline: Pipeline,
   options: TriggerOptions = {},
-  now: () => number = Date.now,
-): RunId {
-  validatePipelineAgentModes(pipeline, registry);
-  validatePipelineDag(pipeline);
-
+): Promise<RunId> {
   const sessionId = options.sessionId ?? `pipeline.${pipeline.name}`;
-  const initialState = hydrateEngineState(store);
+  const state = engine.state();
   const key = loopKey(sessionId, pipeline.name);
-  const activeRunId = initialState.currentRunByLoop[key];
-  if (activeRunId && initialState.runs[activeRunId]) {
+  const activeRunId = state.currentRunByLoop[key];
+  if (activeRunId && state.runs[activeRunId]) {
     throw new LoopAlreadyActiveError(
       `Pipeline "${pipeline.name}" already has an active run (${activeRunId}). ` +
         `Cancel it with \`ao pipeline cancel ${activeRunId}\` before triggering a new one.`,
@@ -260,24 +262,14 @@ export function triggerRun(
     );
   }
 
-  const runId = asRunId(`run-${randomUUID()}`);
-  const stageRunIds: Record<string, StageRunId> = {};
-  for (const stage of pipeline.stages) {
-    stageRunIds[stage.name] = asStageRunId(`sr-${randomUUID()}`);
-  }
-
-  applyEvent(store, initialState, {
-    type: "TRIGGER_FIRED",
-    now: now(),
-    trigger: "manual",
-    sessionId,
+  return engine.startRun({
     pipeline,
+    projectId: options.projectId ?? "",
+    sessionId,
+    trigger: "manual",
     headSha: options.headSha ?? MANUAL_TRIGGER_SHA,
-    runId,
-    stageRunIds,
+    ...(options.issueId ? { issueId: options.issueId } : {}),
   });
-
-  return runId;
 }
 
 /**
