@@ -27,6 +27,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -63,6 +64,12 @@ export interface PipelineStore {
 
   appendArtifacts(runId: RunId, stageRunId: StageRunId, artifacts: Artifact[]): void;
   listArtifacts(runId: RunId, stageRunId: StageRunId): Artifact[];
+  /**
+   * Atomically replace the artifact file for a stage run. Used by
+   * `migrateStore` to rewrite a JSONL with backfilled fingerprints — the
+   * normal append path can't update existing lines in place.
+   */
+  replaceArtifacts(runId: RunId, stageRunId: StageRunId, artifacts: Artifact[]): void;
 
   saveLoopState(runId: RunId, loopState: LoopState): void;
   loadLoopState(runId: RunId): LoopState | null;
@@ -133,6 +140,17 @@ export function createPipelineStore(root: string): PipelineStore {
         out.push(JSON.parse(trimmed) as Artifact);
       }
       return out;
+    },
+
+    replaceArtifacts(runId, stageRunId, artifacts) {
+      const path = artifactsFilePath(root, runId, stageRunId);
+      if (artifacts.length === 0) {
+        if (existsSync(path)) unlinkSync(path);
+        return;
+      }
+      ensureDir(artifactsDirForRun(root, runId));
+      const body = artifacts.map((a) => JSON.stringify(a)).join("\n") + "\n";
+      atomicWriteFileSync(path, body);
     },
 
     saveLoopState(runId, loopState) {

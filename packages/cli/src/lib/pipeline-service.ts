@@ -21,11 +21,13 @@ import {
   hydrateEngineState,
   isTerminalLoopState,
   loopKey,
+  migrateStore as coreMigrateStore,
   reduce,
   type Artifact,
   type ConfiguredPipeline,
   type EngineState,
   type LoopState,
+  type MigrateResult as CoreMigrateResult,
   type OrchestratorConfig,
   type PersistedStageRun,
   type Pipeline,
@@ -374,20 +376,15 @@ export function resumeRun(
 }
 
 /**
- * Pipeline store-schema migration helper. v0.3 ships no schema changes yet —
- * the helper exists so the verb is wired and stable; future schema bumps
- * (the v0.4+ run-versioning epic) plug in here without churning the CLI.
+ * Pipeline store migration. Backfills missing finding fingerprints (scoped
+ * by stage name) so dismissals recorded against the legacy `codeReview:`
+ * flow keep matching post-migration artifacts (issue #193). Idempotent —
+ * see `pipeline/migrate.ts` for the scheme.
  */
-export interface MigrateResult {
-  migrated: number;
-  message: string;
-}
+export type MigrateResult = CoreMigrateResult;
 
-export function migrateStore(_store: PipelineStore): MigrateResult {
-  return {
-    migrated: 0,
-    message: "Pipeline store is already on the v0.3 schema — nothing to migrate.",
-  };
+export function migrateStore(store: PipelineStore): MigrateResult {
+  return coreMigrateStore(store);
 }
 
 /**
