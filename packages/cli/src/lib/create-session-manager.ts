@@ -8,13 +8,19 @@
  */
 
 import {
+  createAgentExecutor,
+  createLifecycleManager,
+  createPipelineEngine,
+  createPipelineStore,
   createPluginRegistry,
   createSessionManager,
-  createLifecycleManager,
-  type OrchestratorConfig,
-  type OpenCodeSessionManager,
-  type PluginRegistry,
+  getProjectPipelinesDir,
+  hydrateEngineState,
   type LifecycleManager,
+  type OpenCodeSessionManager,
+  type OrchestratorConfig,
+  type PipelineEngine,
+  type PluginRegistry,
 } from "@aoagents/ao-core";
 import { importPluginModuleFromSource } from "./plugin-store.js";
 
@@ -64,12 +70,52 @@ export async function getSessionManager(
 /**
  * Create a LifecycleManager backed by core's implementation.
  * Shares the same plugin registry initialization path as SessionManager.
+ *
+ * When a `projectId` is supplied, we also construct the per-project pipeline
+ * engine (hydrated from the flat-file store, with any leftover in-flight
+ * stages reconciled) and pass it into the lifecycle manager so `engine.tick()`
+ * runs on the existing 5s poll cadence (per C-14, no new timers).
+ *
+ * The engine is intentionally NOT constructed in the multi-project mode
+ * (`projectId === undefined`, used by the web dashboard's webhook-driven
+ * lifecycle manager): the engine is per-project and the web path currently
+ * doesn't own pipeline execution.
  */
+export interface LifecycleManagerHandle {
+  lifecycle: LifecycleManager;
+  /** Per-project pipeline engine. Null when no projectId was supplied. */
+  pipelineEngine: PipelineEngine | null;
+}
+
 export async function getLifecycleManager(
   config: OrchestratorConfig,
   projectId?: string,
-): Promise<LifecycleManager> {
+): Promise<LifecycleManagerHandle> {
   const registry = await getPluginRegistry(config);
   const sessionManager = createSessionManager({ config, registry });
-  return createLifecycleManager({ config, registry, sessionManager, projectId });
+
+  let pipelineEngine: PipelineEngine | null = null;
+  if (projectId) {
+    const store = createPipelineStore(getProjectPipelinesDir(projectId));
+    const agentExecutor = createAgentExecutor({ sessionManager });
+    pipelineEngine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor,
+      initialState: hydrateEngineState(store),
+    });
+    // Reconcile stages left in `running` from a previous process: their
+    // in-flight executor handles are gone, so dispatch STAGE_FAILED to let
+    // the reducer either advance the run or terminate it as `stalled`.
+    await pipelineEngine.reconcileInflightStages();
+  }
+
+  const lifecycle = createLifecycleManager({
+    config,
+    registry,
+    sessionManager,
+    projectId,
+    ...(pipelineEngine ? { pipelineEngine } : {}),
+  });
+  return { lifecycle, pipelineEngine };
 }

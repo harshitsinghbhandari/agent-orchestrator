@@ -39,9 +39,12 @@ import {
   asStageRunId,
   emptyEngineState,
   isTerminalLoopState,
+  loopKey,
   type EngineState,
   type Pipeline,
   type RunId,
+  type RunState,
+  type RunSummary,
   type StageRunId,
   type StageTriggerEvent,
 } from "./types.js";
@@ -100,6 +103,63 @@ export interface PipelineEngine {
 
   /** Cancel an in-flight run via RUN_CANCELLED. Idempotent. */
   cancelRun(runId: RunId, reason?: "manual_cancel" | "config_change"): Promise<void>;
+
+  /**
+   * Reconcile after a process restart: every persisted stage left in `running`
+   * status has no inflight handle in this process, so dispatch STAGE_FAILED for
+   * each so the run can either advance or terminate as `stalled`. Safe to call
+   * multiple times — re-dispatches are no-ops once the stage is terminal.
+   */
+  reconcileInflightStages(): Promise<void>;
+
+  /**
+   * Clean shutdown: cancel every non-terminal run via RUN_CANCELLED (which
+   * routes CANCEL_STAGE effects through the agent executor) so in-flight
+   * stages are torn down and final state is persisted. After shutdown, the
+   * engine should not be ticked or dispatched into.
+   */
+  shutdown(): Promise<void>;
+}
+
+/**
+ * Rebuild engine state from the flat-file store. Used so a freshly constructed
+ * engine sees existing runs / loop pointers / history rather than starting from
+ * `emptyEngineState()` (which would defeat the reducer's collision guards).
+ *
+ * Terminal runs go into `historySummaries`; the latest non-terminal run on each
+ * loop key wins `currentRunByLoop`. The returned state is structurally equal to
+ * what the reducer would have produced via replay, modulo finding fingerprints
+ * — those are recomputed on demand by stalled-detection in v0.x.
+ */
+export function hydrateEngineState(store: PipelineStore): EngineState {
+  const runs: Record<string, RunState> = {};
+  const currentRunByLoop: Record<string, RunId> = {};
+  const historySummaries: Record<string, RunSummary[]> = {};
+
+  const sorted = [...store.listRuns()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  for (const run of sorted) {
+    runs[run.runId] = run;
+    const key = loopKey(run.sessionId, run.pipelineName);
+
+    if (isTerminalLoopState(run.loopState)) {
+      const list = historySummaries[key] ?? [];
+      list.push({
+        runId: run.runId,
+        loopState: run.loopState,
+        ...(run.terminationReason ? { terminationReason: run.terminationReason } : {}),
+        headSha: run.headSha,
+        loopRounds: run.loopRounds,
+        fingerprints: [],
+        createdAt: run.createdAt,
+      });
+      historySummaries[key] = list;
+    } else {
+      currentRunByLoop[key] = run.runId;
+    }
+  }
+
+  return { runs, currentRunByLoop, historySummaries };
 }
 
 export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
@@ -339,11 +399,50 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
     await dispatch({ type: "RUN_CANCELLED", now: now(), runId, reason });
   }
 
+  async function reconcileInflightStages(): Promise<void> {
+    // Snapshot the candidates outside the lock — dispatch reacquires it.
+    const candidates: Array<{ runId: RunId; stageName: string }> = [];
+    for (const run of Object.values(state.runs)) {
+      if (isTerminalLoopState(run.loopState)) continue;
+      for (const [stageName, stage] of Object.entries(run.stages)) {
+        if (stage.status === "running") {
+          candidates.push({ runId: run.runId, stageName });
+        }
+      }
+    }
+    for (const { runId, stageName } of candidates) {
+      await dispatch({
+        type: "STAGE_FAILED",
+        now: now(),
+        runId,
+        stageName,
+        errorMessage:
+          "Pipeline engine restarted while stage was running; in-flight executor handle is lost.",
+      });
+    }
+  }
+
+  async function shutdown(): Promise<void> {
+    const nonTerminalRunIds: RunId[] = [];
+    for (const run of Object.values(state.runs)) {
+      if (!isTerminalLoopState(run.loopState)) {
+        nonTerminalRunIds.push(run.runId);
+      }
+    }
+    for (const runId of nonTerminalRunIds) {
+      // cancelRun is a no-op on already-terminal runs and idempotent per the
+      // reducer's RUN_CANCELLED guard, so we never double-cancel.
+      await cancelRun(runId, "manual_cancel");
+    }
+  }
+
   return {
     state: () => state,
     startRun,
     tick,
     dispatch,
     cancelRun,
+    reconcileInflightStages,
+    shutdown,
   };
 }

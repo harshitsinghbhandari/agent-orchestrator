@@ -438,6 +438,7 @@ export {
   AgentExecutorSpawnError,
   STAGE_FINDINGS_RELATIVE_PATH,
   createPipelineEngine,
+  hydrateEngineState,
   // v1.1: DAG scheduler + runtime validation defense-in-depth
   findFirstStageCycle,
   scheduleAfterChange,
