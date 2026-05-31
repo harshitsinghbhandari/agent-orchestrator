@@ -53,6 +53,11 @@ Comprehensive guide to installing, configuring, and troubleshooting Agent Orches
 
 ### Optional
 
+- **Voice Copilot** - If using the Voice Copilot feature
+  - Requires Gemini API access for live interactions
+  - Set environment variable: `export AO_VOICE_ENABLED="true"` (or `NEXT_PUBLIC_AO_VOICE_ENABLED="true"`)
+  - Set environment variable: `export GEMINI_API_KEY="your-gemini-key"`
+
 - **Linear API Key** - If using Linear for issue tracking
   - Get it from: https://linear.app/settings/api
   - Set environment variable: `export LINEAR_API_KEY="lin_api_..."`
@@ -299,7 +304,7 @@ projects:
     workspace: worktree
 
   backend:
-    runtime: docker # Use Docker for backend
+    runtime: process # Use process for backend
     agent: codex # Use Codex instead of Claude
 ```
 
@@ -678,7 +683,7 @@ See [examples/multi-project.yaml](./examples/multi-project.yaml) for full exampl
 
 Create custom plugins for:
 
-- Different runtimes (Docker, Kubernetes, SSH, cloud VMs)
+- Different runtimes (SSH, cloud VMs, custom containers)
 - Different agents (custom AI assistants)
 - Different trackers (Jira, Asana, custom systems)
 - Different notifiers (email, webhooks, custom integrations)

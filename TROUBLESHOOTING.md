@@ -50,6 +50,19 @@ npx node-gyp rebuild
 
 ## Other Issues
 
+### Voice Copilot WebSocket connection failed
+
+**Symptom**: The Voice Copilot feature fails to connect, showing a WebSocket connection error.
+
+**Root Cause**: The Voice Copilot requires specific environment variables to be set up to enable the feature and authenticate with the Gemini API. If they are missing, the server fails to handle the connection or starts up properly.
+
+**Fix**: Ensure that the following environment variables are exported before starting Agent Orchestrator:
+
+```bash
+export AO_VOICE_ENABLED="true" # or NEXT_PUBLIC_AO_VOICE_ENABLED="true"
+export GEMINI_API_KEY="your-gemini-key"
+```
+
 ### Config file not found
 
 **Symptom**: API returns 500 with "No agent-orchestrator.yaml found"
