@@ -9,3 +9,15 @@
 - [x] Commands tested
 - [x] Cross-referenced with code
 - [x] No broken links
+
+## 2026-05-31
+
+### Files Updated
+- `README.md` - Removed 'Docker' from the runtime alternatives in the Plugin Architecture table.
+- `SETUP.md` - Replaced 'docker' with 'process' in the per-project overrides example, updated custom plugin examples to remove Docker/Kubernetes, and added `AO_VOICE_ENABLED` and `GEMINI_API_KEY` to the Optional environment variables.
+- `TROUBLESHOOTING.md` - Added a section for resolving the Voice Copilot 'WebSocket connection failed' error by setting the `AO_VOICE_ENABLED` and `GEMINI_API_KEY` environment variables.
+
+### Verification
+- [x] Commands tested
+- [x] Cross-referenced with code
+- [x] No broken links
