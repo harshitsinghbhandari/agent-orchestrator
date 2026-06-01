@@ -447,7 +447,19 @@ export {
   ConfiguredPipelineSchema,
   PipelinesConfigSchema,
   configuredPipelineToRuntime,
+  // Store migration — fingerprint-preserving backfill (issue #193)
+  computeFindingFingerprint,
+  migrateStore,
 } from "./pipeline/index.js";
+
+// Legacy `codeReview:` shim — synthesizes a single-stage pipeline (issue #193)
+export {
+  LEGACY_CODE_REVIEW_PIPELINE_NAME,
+  LEGACY_CODE_REVIEW_STAGE_NAME,
+  LegacyCodeReviewSchema,
+  synthesizeLegacyCodeReviewPipeline,
+} from "./config-schema.js";
+export type { LegacyCodeReview } from "./config-schema.js";
 
 export type {
   // IDs
@@ -507,6 +519,7 @@ export type {
   StartRunInput,
   ConfiguredPipeline,
   PipelinesConfig,
+  MigrateResult,
 } from "./pipeline/index.js";
 
 export {

@@ -388,7 +388,9 @@ export function registerPipeline(program: Command): void {
 
   pipeline
     .command("migrate")
-    .description("Run the pipeline store schema migration helper")
+    .description(
+      "Backfill missing finding fingerprints in the pipeline store (idempotent)",
+    )
     .option("-p, --project <id>", "Project to scope to")
     .option("--json", "Output as JSON")
     .action((opts: { project?: string; json?: boolean }) => {
@@ -401,7 +403,8 @@ export function registerPipeline(program: Command): void {
           return;
         }
 
-        console.log(chalk.green(`✓ ${result.message}`));
+        const icon = result.migrated === 0 ? chalk.dim("·") : chalk.green("✓");
+        console.log(`${icon} ${result.message}`);
       } catch (err) {
         fail(err);
       }

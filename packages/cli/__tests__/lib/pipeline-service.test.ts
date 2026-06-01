@@ -63,6 +63,9 @@ function createMockStore(): {
     listArtifacts: vi.fn((runId, stageRunId) => {
       return state.artifacts.get(`${runId}:${stageRunId}`) ?? [];
     }),
+    replaceArtifacts: vi.fn((runId, stageRunId, artifacts) => {
+      state.artifacts.set(`${runId}:${stageRunId}`, [...artifacts]);
+    }),
     saveLoopState: vi.fn((runId, loop) => {
       state.loops.set(runId, loop);
     }),
@@ -663,10 +666,11 @@ describe("resumeRun", () => {
 });
 
 describe("migrateStore", () => {
-  it("returns a no-op result for the v0.3 schema", () => {
+  it("is a no-op on an empty store (idempotency baseline)", () => {
     const { store } = createMockStore();
     const result = migrateStore(store);
     expect(result.migrated).toBe(0);
-    expect(result.message).toMatch(/v0\.3/);
+    expect(result.filesRewritten).toBe(0);
+    expect(result.message).toMatch(/already migrated/);
   });
 });

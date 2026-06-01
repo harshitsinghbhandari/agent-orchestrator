@@ -56,3 +56,9 @@ export {
   type ConfiguredPipeline,
   type PipelinesConfig,
 } from "./config-schema.js";
+
+export {
+  computeFindingFingerprint,
+  migrateStore,
+  type MigrateResult,
+} from "./migrate.js";

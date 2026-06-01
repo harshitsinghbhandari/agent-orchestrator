@@ -10,6 +10,7 @@ const { mockConfigRef, mockStore, mockRegistry } = vi.hoisted(() => ({
     loadStage: vi.fn(),
     appendArtifacts: vi.fn(),
     listArtifacts: vi.fn(),
+    replaceArtifacts: vi.fn(),
     saveLoopState: vi.fn(),
     loadLoopState: vi.fn(),
   },
@@ -494,9 +495,9 @@ describe("ao pipeline resume", () => {
 });
 
 describe("ao pipeline migrate", () => {
-  it("prints a no-op message", async () => {
+  it("prints an idempotent no-op message when the store has no findings to backfill", async () => {
     await program.parseAsync(["node", "test", "pipeline", "migrate"]);
     const out = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
-    expect(out).toMatch(/v0\.3/);
+    expect(out).toMatch(/already migrated/);
   });
 });
