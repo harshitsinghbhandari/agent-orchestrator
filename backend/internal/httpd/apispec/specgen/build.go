@@ -59,6 +59,8 @@ func Build() ([]byte, error) {
 			"Project registry, configuration, and lifecycle administration"),
 		*(&openapi31.Tag{Name: "sessions"}).WithDescription(
 			"Agent session lifecycle and messaging"),
+		*(&openapi31.Tag{Name: "prs"}).WithDescription(
+			"Pull-request actions (SCM lane)"),
 	}
 
 	for _, op := range operations() {
@@ -119,8 +121,6 @@ var schemaNames = map[string]string{
 	"ControllersProjectResponse":            "ProjectResponse",
 	"ControllersGetProjectResponse":         "ProjectGetResponse",
 	"ControllersProjectOrDegraded":          "ProjectOrDegraded",
-	"ControllersProjectIDParam":             "ProjectIDParam",
-	"ControllersSessionIDParam":             "SessionIDParam",
 	"ControllersListSessionsQuery":          "ListSessionsQuery",
 	"ControllersListSessionsResponse":       "ListSessionsResponse",
 	"ControllersSpawnSessionRequest":        "SpawnSessionRequest",
@@ -133,6 +133,10 @@ var schemaNames = map[string]string{
 	"ControllersSpawnOrchestratorRequest":   "SpawnOrchestratorRequest",
 	"ControllersSpawnOrchestratorResponse":  "SpawnOrchestratorResponse",
 	"ControllersOrchestratorResponse":       "OrchestratorResponse",
+	// httpd/controllers — PR wire envelopes
+	"ControllersMergePRResponse":         "MergePRResponse",
+	"ControllersResolveCommentsRequest":  "ResolveCommentsRequest",
+	"ControllersResolveCommentsResponse": "ResolveCommentsResponse",
 	// service/project entities + DTOs
 	"ProjectProject":          "Project",
 	"ProjectSummary":          "ProjectSummary",
@@ -216,6 +220,7 @@ type operation struct {
 func operations() []operation {
 	ops := append([]operation{}, projectOperations()...)
 	ops = append(ops, sessionOperations()...)
+	ops = append(ops, prOperations()...)
 	return ops
 }
 
@@ -355,6 +360,38 @@ func sessionOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+// prOperations declares the PR action operations. These live in the SCM lane:
+// the handler delegates to a PRService backed by the SCM provider. A nil
+// PRService (SCM not configured) returns 501 for both routes.
+func prOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/prs/{id}/merge", id: "mergePR", tag: "prs",
+			summary:    "Squash-merge a pull request",
+			pathParams: []any{controllers.PRIDParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.MergePRResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/prs/{id}/resolve-comments", id: "resolveComments", tag: "prs",
+			summary:    "Resolve review threads on a pull request",
+			pathParams: []any{controllers.PRIDParam{}},
+			reqBody:    nil, // body is optional: omitting it resolves all unresolved threads
+			resps: []respUnit{
+				{http.StatusOK, controllers.ResolveCommentsResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},

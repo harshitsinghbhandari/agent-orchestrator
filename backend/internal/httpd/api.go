@@ -10,16 +10,15 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
 
-// APIDeps bundles every Manager the API layer's controllers depend on.
-// Controllers see only resource-level interfaces; they do not reach through to
-// lifecycle reducers, adapters, or storage. A nil dependency keeps its routes
-// registered but returns the OpenAPI-backed 501 response.
+// APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
 	Projects projectsvc.Manager
 	Sessions controllers.SessionService
+	PRs      prsvc.ActionManager
 }
 
 // API owns one controller per resource and is the single Register call the
@@ -28,6 +27,7 @@ type API struct {
 	cfg      config.Config
 	projects *controllers.ProjectsController
 	sessions *controllers.SessionsController
+	prs      *controllers.PRsController
 }
 
 // NewAPI constructs the API surface from its dependencies. cfg carries the
@@ -42,6 +42,7 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		sessions: &controllers.SessionsController{
 			Svc: deps.Sessions,
 		},
+		prs: &controllers.PRsController{Svc: deps.PRs},
 	}
 }
 
@@ -61,6 +62,7 @@ func (a *API) Register(root chi.Router) {
 			r.Use(middleware.Timeout(timeout))
 			a.projects.Register(r)
 			a.sessions.Register(r)
+			a.prs.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Surfaces that intentionally bypass the REST timeout register at this level.

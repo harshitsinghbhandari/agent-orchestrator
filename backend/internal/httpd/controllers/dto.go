@@ -174,3 +174,26 @@ type OrchestratorResponse struct {
 	ProjectID   domain.ProjectID `json:"projectId"`
 	ProjectName string           `json:"projectName,omitempty"`
 }
+
+// PRIDParam is the {id} path parameter shared by the /prs/{id} routes.
+type PRIDParam struct {
+	ID string `path:"id" description:"PR number."`
+}
+
+// MergePRResponse is the body of POST /api/v1/prs/{id}/merge (200).
+type MergePRResponse struct {
+	OK       bool   `json:"ok"`
+	PRNumber int    `json:"prNumber"`
+	Method   string `json:"method"`
+}
+
+// ResolveCommentsRequest is the optional body of POST /api/v1/prs/{id}/resolve-comments.
+type ResolveCommentsRequest struct {
+	CommentIDs []string `json:"commentIds,omitempty"`
+}
+
+// ResolveCommentsResponse is the body of POST /api/v1/prs/{id}/resolve-comments (200).
+type ResolveCommentsResponse struct {
+	OK       bool `json:"ok"`
+	Resolved int  `json:"resolved"`
+}
