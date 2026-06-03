@@ -112,6 +112,13 @@ function prInfoFromView(
     headRefName: string;
     baseRefName: string;
     isDraft: boolean;
+    /**
+     * gh's "isCrossRepository" flag — true when the PR's head branch lives on
+     * a fork of the base repo. Optional in the type so older callers that
+     * don't request the field don't have to populate it; when absent we
+     * default to `null` (fail-safe: command executor treats unknown as fork).
+     */
+    isCrossRepository?: boolean;
   },
   projectRepo: string,
 ): PRInfo {
@@ -126,6 +133,7 @@ function prInfoFromView(
     branch: data.headRefName,
     baseBranch: data.baseRefName,
     isDraft: data.isDraft,
+    isFromFork: typeof data.isCrossRepository === "boolean" ? data.isCrossRepository : null,
   };
 }
 
@@ -701,7 +709,7 @@ function createGitHubSCM(): SCM {
           "--head",
           session.branch,
           "--json",
-          "number,url,title,headRefName,baseRefName,isDraft",
+          "number,url,title,headRefName,baseRefName,isDraft,isCrossRepository",
           "--limit",
           "1",
         ]);
@@ -713,6 +721,7 @@ function createGitHubSCM(): SCM {
           headRefName: string;
           baseRefName: string;
           isDraft: boolean;
+          isCrossRepository: boolean;
         }> = JSON.parse(raw);
 
         if (prs.length === 0) return null;
@@ -742,7 +751,7 @@ function createGitHubSCM(): SCM {
           "--repo",
           repo,
           "--json",
-          "number,url,title,headRefName,baseRefName,isDraft",
+          "number,url,title,headRefName,baseRefName,isDraft,isCrossRepository",
         ]);
 
         const data: {
@@ -752,6 +761,7 @@ function createGitHubSCM(): SCM {
           headRefName: string;
           baseRefName: string;
           isDraft: boolean;
+          isCrossRepository: boolean;
         } = JSON.parse(raw);
 
         return prInfoFromView(data, repo);

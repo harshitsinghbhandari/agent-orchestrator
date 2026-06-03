@@ -61,11 +61,31 @@ import {
   dispatchBuiltin,
   type BuiltinDispatcherDeps,
 } from "./executors/builtin/dispatcher.js";
+import {
+  type CommandStageExecutor,
+  type RunningCommandStage,
+  type StartCommandStageInput,
+} from "./executors/command.js";
+
+/**
+ * Tagged inflight-handle union: stages launched by either the agent or
+ * command executor land here. The kind discriminator picks the right
+ * `pollStage` / `cancelStage` in `tick()` and CANCEL_STAGE.
+ */
+type InflightHandle =
+  | { kind: "agent"; handle: RunningAgentStage }
+  | { kind: "command"; handle: RunningCommandStage };
 
 export interface PipelineEngineDeps {
   store: PipelineStore;
   registry: PluginRegistry;
   agentExecutor: AgentStageExecutor;
+  /**
+   * Optional command executor. When omitted, command-executor stages fail
+   * with STAGE_FAILED — matches the pre-#194 behavior so tests that only
+   * exercise agent/builtin stages need not wire it up.
+   */
+  commandExecutor?: CommandStageExecutor;
   /**
    * Optional dependencies for builtin executors (router/compose). When omitted,
    * any builtin-executor stage fails with STAGE_FAILED — matches the existing
@@ -177,11 +197,15 @@ export function hydrateEngineState(store: PipelineStore): EngineState {
 }
 
 export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
-  const { store, registry, agentExecutor, builtin, now = Date.now } = deps;
+  const { store, registry, agentExecutor, commandExecutor, builtin, now = Date.now } = deps;
 
   let state: EngineState = deps.initialState ?? emptyEngineState();
-  /** stageRunId → executor handle for stages we own. */
-  const inflight = new Map<StageRunId, RunningAgentStage>();
+  /**
+   * stageRunId → executor handle for stages we own. Holds both agent and
+   * command handles since `tick()` polls them identically (each handle
+   * carries enough kind-discrimination via its `__kind` tag).
+   */
+  const inflight = new Map<StageRunId, InflightHandle>();
   /**
    * Side-table for projectId/issueId, keyed by RunId. The persisted RunState
    * shape was locked by v0.1 and doesn't carry these, so the engine threads
@@ -271,16 +295,19 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
           break;
         }
 
+        if (kind === "command") {
+          await startCommandStage(run, effect.stage, effect.stageRunId);
+          break;
+        }
+
         if (kind !== "agent") {
-          // command executor is out of scope for this slice — synthesize a
-          // STAGE_FAILED so the run terminates cleanly instead of hanging.
-          // Issue #194 lands the command branch.
+          // Exhaustiveness guard — a new StageExecutor kind would land here.
           await dispatchInline({
             type: "STAGE_FAILED",
             now: now(),
             runId: effect.runId,
             stageName: effect.stage.name,
-            errorMessage: `Executor kind "${kind}" is not yet supported by the engine.`,
+            errorMessage: `Executor kind "${kind}" is not supported by the engine.`,
           });
           break;
         }
@@ -307,7 +334,7 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
 
         try {
           const handle = await agentExecutor.startStage(startInput);
-          inflight.set(effect.stageRunId, handle);
+          inflight.set(effect.stageRunId, { kind: "agent", handle });
         } catch (err) {
           await dispatchInline({
             type: "STAGE_FAILED",
@@ -322,11 +349,15 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
       }
 
       case "CANCEL_STAGE": {
-        const handle = inflight.get(effect.stageRunId);
-        if (handle) {
+        const entry = inflight.get(effect.stageRunId);
+        if (entry) {
           inflight.delete(effect.stageRunId);
           try {
-            await agentExecutor.cancelStage(handle);
+            if (entry.kind === "agent") {
+              await agentExecutor.cancelStage(entry.handle);
+            } else if (commandExecutor) {
+              await commandExecutor.cancelStage(entry.handle);
+            }
           } catch {
             // Best-effort — handle may already be gone.
           }
@@ -433,32 +464,125 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
     }
   }
 
+  /**
+   * Start a command-executor stage. Mirrors the agent-stage flow: mark
+   * STAGE_STARTED before spawning so spawn failures can land as STAGE_FAILED,
+   * then register the handle for later polling. Fork-PR gating is enforced
+   * INSIDE the command executor (`startStage`), so a short-circuit lands
+   * as a finalized `finalOutcome` on the returned handle and is picked up
+   * on the next tick (or immediately if the engine's caller ticks after
+   * every dispatch).
+   */
+  async function startCommandStage(
+    run: RunState,
+    stage: Stage,
+    stageRunId: StageRunId,
+  ): Promise<void> {
+    if (stage.executor.kind !== "command") return; // type narrowing
+
+    if (!commandExecutor) {
+      await dispatchInline({
+        type: "STAGE_FAILED",
+        now: now(),
+        runId: run.runId,
+        stageName: stage.name,
+        errorMessage: `Command stage "${stage.name}" requires PipelineEngineDeps.commandExecutor to be configured.`,
+      });
+      return;
+    }
+
+    await dispatchInline({
+      type: "STAGE_STARTED",
+      now: now(),
+      runId: run.runId,
+      stageName: stage.name,
+    });
+
+    const allowForkPRs = run.pipelineConfigSnapshot.allowForkPRs === true;
+    const startInput: StartCommandStageInput = {
+      pipelineName: run.pipelineName,
+      runId: run.runId,
+      stageRunId,
+      stage,
+      sessionId: run.sessionId,
+      allowForkPRs,
+    };
+
+    try {
+      const handle = await commandExecutor.startStage(startInput);
+      inflight.set(stageRunId, { kind: "command", handle });
+    } catch (err) {
+      await dispatchInline({
+        type: "STAGE_FAILED",
+        now: now(),
+        runId: run.runId,
+        stageName: stage.name,
+        errorMessage:
+          err instanceof Error ? err.message : `command executor failed: ${String(err)}`,
+      });
+    }
+  }
+
   async function tick(): Promise<void> {
     return withLock(async () => {
       if (inflight.size === 0) return;
-      const handles = [...inflight.values()];
-      for (const handle of handles) {
-        const outcome = await agentExecutor.pollStage(handle);
-        if (outcome.status === "running") continue;
+      const entries = [...inflight.values()];
+      for (const entry of entries) {
+        if (entry.kind === "agent") {
+          const handle = entry.handle;
+          const outcome = await agentExecutor.pollStage(handle);
+          if (outcome.status === "running") continue;
 
-        inflight.delete(handle.stageRunId);
+          inflight.delete(handle.stageRunId);
 
-        if (outcome.status === "completed") {
-          await dispatchInline({
-            type: "STAGE_COMPLETED",
-            now: now(),
-            runId: handle.runId,
-            stageName: handle.stageName,
-            artifacts: outcome.artifacts,
-          });
+          if (outcome.status === "completed") {
+            await dispatchInline({
+              type: "STAGE_COMPLETED",
+              now: now(),
+              runId: handle.runId,
+              stageName: handle.stageName,
+              artifacts: outcome.artifacts,
+            });
+          } else {
+            await dispatchInline({
+              type: "STAGE_FAILED",
+              now: now(),
+              runId: handle.runId,
+              stageName: handle.stageName,
+              errorMessage: outcome.errorMessage,
+            });
+          }
         } else {
-          await dispatchInline({
-            type: "STAGE_FAILED",
-            now: now(),
-            runId: handle.runId,
-            stageName: handle.stageName,
-            errorMessage: outcome.errorMessage,
-          });
+          // Command-stage poll. commandExecutor is non-null here because the
+          // entry was only inserted by `startCommandStage` after verifying it.
+          if (!commandExecutor) continue;
+          const handle = entry.handle;
+          const outcome = await commandExecutor.pollStage(handle);
+          if (outcome.status === "running") continue;
+
+          inflight.delete(handle.stageRunId);
+
+          if (outcome.status === "completed") {
+            await dispatchInline({
+              type: "STAGE_COMPLETED",
+              now: now(),
+              runId: handle.runId,
+              stageName: handle.stageName,
+              verdict: outcome.verdict,
+              artifacts: outcome.artifacts,
+            });
+            if (outcome.observation) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: outcome.observation });
+            }
+          } else {
+            await dispatchInline({
+              type: "STAGE_FAILED",
+              now: now(),
+              runId: handle.runId,
+              stageName: handle.stageName,
+              errorMessage: outcome.errorMessage,
+            });
+          }
         }
       }
     });

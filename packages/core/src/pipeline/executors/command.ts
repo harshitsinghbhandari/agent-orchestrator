@@ -46,7 +46,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
 import { isWindows, killProcessTree } from "../../platform.js";
-import type { Session } from "../../types.js";
+import type { Session, SessionId, SessionManager } from "../../types.js";
 import type {
   ArtifactInput,
   RunId,
@@ -81,11 +81,12 @@ export interface StartCommandStageInput {
   stageRunId: StageRunId;
   stage: Stage;
   /**
-   * The linked worker session for this run. Provides workspacePath (cwd for
-   * the spawn) and PR info (for fork-PR gating). Engine resolves this before
-   * calling so the executor stays decoupled from SessionManager.
+   * The linked worker session this run was triggered for. The executor reads
+   * `session.workspacePath` (cwd for the spawn) and `session.pr.isFromFork`
+   * (for fork-PR gating). Engine resolves the session through SessionManager
+   * before calling so this module stays decoupled from session storage.
    */
-  session: Session;
+  sessionId: SessionId | string;
   /** From `Pipeline.allowForkPRs`. Defaults to `false` in the engine wiring. */
   allowForkPRs: boolean;
 }
@@ -121,13 +122,16 @@ export interface CommandStageExecutor {
 }
 
 export interface CommandExecutorDeps {
+  /** Looks up the linked worker session. Used for workspacePath + PR info. */
+  sessionManager: Pick<SessionManager, "get">;
   /** Override clock for tests. */
   now?: () => number;
   /** Override grace window for tests (defaults to COMMAND_KILL_GRACE_MS). */
   killGraceMs?: number;
 }
 
-export function createCommandExecutor(deps: CommandExecutorDeps = {}): CommandStageExecutor {
+export function createCommandExecutor(deps: CommandExecutorDeps): CommandStageExecutor {
+  const { sessionManager } = deps;
   const now = deps.now ?? Date.now;
   const killGraceMs = deps.killGraceMs ?? COMMAND_KILL_GRACE_MS;
 
@@ -141,10 +145,28 @@ export function createCommandExecutor(deps: CommandExecutorDeps = {}): CommandSt
     }
     const spec = input.stage.executor;
 
+    let session: Session | null;
+    try {
+      session = await sessionManager.get(input.sessionId as SessionId);
+    } catch (err) {
+      return shortCircuit(input, {
+        status: "failed",
+        errorMessage: `failed to resolve session ${input.sessionId} for command stage "${input.stage.name}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+    }
+    if (!session) {
+      return shortCircuit(input, {
+        status: "failed",
+        errorMessage: `command stage "${input.stage.name}" references unknown session ${input.sessionId}`,
+      });
+    }
+
     // --- Fork-PR gate (runs BEFORE spawn) ---
     // null is fail-safe: SCM plugins without fork awareness block by default
     // so we never execute untrusted code we cannot classify.
-    const pr = input.session.pr;
+    const pr = session.pr;
     const isFork = pr ? pr.isFromFork : false;
     if (isFork !== false && !input.allowForkPRs) {
       const reason =
@@ -169,14 +191,14 @@ export function createCommandExecutor(deps: CommandExecutorDeps = {}): CommandSt
     }
 
     // Worktree is mandatory — command stages run in the session's workspace.
-    if (!input.session.workspacePath) {
+    if (!session.workspacePath) {
       return shortCircuit(input, {
         status: "failed",
-        errorMessage: `command stage "${input.stage.name}" requires a workspace but session ${input.session.id} has none`,
+        errorMessage: `command stage "${input.stage.name}" requires a workspace but session ${session.id} has none`,
       });
     }
 
-    const baseCwd = input.session.workspacePath;
+    const baseCwd = session.workspacePath;
     const cwd = spec.cwd ? resolveCwd(baseCwd, spec.cwd) : baseCwd;
     const env = { ...process.env, ...(spec.env ?? {}) };
 

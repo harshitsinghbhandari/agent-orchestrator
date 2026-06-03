@@ -293,7 +293,12 @@ describe("pipeline engine — end-to-end", () => {
     expect(executor.startCalls).toHaveLength(0);
   });
 
-  it("synthesizes STAGE_FAILED for the command executor (not yet supported by engine)", async () => {
+  it("synthesizes STAGE_FAILED for a command stage when no commandExecutor is wired", async () => {
+    // With PipelineEngineDeps.commandExecutor omitted, the engine must fail
+    // command stages with a clear error instead of hanging. The dedicated
+    // executor lives in `pipeline/executors/command.ts` and is wired through
+    // `commandExecutor` — this test guards the fallback behavior when callers
+    // (older tests, ones not exercising commands) don't wire it.
     const registry = withRegistry([makeAgentPlugin("codex", ["review"])]);
     const store = createPipelineStore(storeRoot);
     const executor = makeMockExecutor();
@@ -317,7 +322,7 @@ describe("pipeline engine — end-to-end", () => {
 
     const run = store.loadRun(runId)!;
     expect(run.stages["lint"]?.status).toBe("failed");
-    expect(run.stages["lint"]?.errorMessage).toContain("not yet supported");
+    expect(run.stages["lint"]?.errorMessage).toContain("commandExecutor");
     expect(executor.startCalls).toHaveLength(0);
   });
 

@@ -83,6 +83,10 @@ export function sessionFromMetadata(
             branch: meta["branch"] ?? "",
             baseBranch: "",
             isDraft: prIsDraft,
+            // Fork status isn't carried in on-disk metadata; default to null
+            // (fail-safe). The SCM plugin's `enrichPR` path overwrites this
+            // with a real value once the session is fully hydrated.
+            isFromFork: null,
           };
         })()
       : null,
