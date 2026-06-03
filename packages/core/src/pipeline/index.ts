@@ -39,6 +39,17 @@ export {
   type RunningAgentStage,
   type StageOutcome,
   type StartStageInput,
+  dispatchBuiltin,
+  UnknownBuiltinExecutorError,
+  runRouter,
+  runCompose,
+  type BuiltinDispatcherDeps,
+  type BuiltinDispatchObservation,
+  type BuiltinDispatchOutcome,
+  type RouterDeps,
+  type RouterObservation,
+  type RouterOutcome,
+  type ComposeOutcome,
 } from "./executors/index.js";
 
 export {

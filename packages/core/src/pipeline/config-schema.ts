@@ -44,9 +44,16 @@ const CommandExecutorSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const BuiltinExecutorSchema = z.object({
+  kind: z.literal("builtin"),
+  name: z.enum(["router", "compose"]),
+  config: z.record(z.unknown()).optional(),
+});
+
 const StageExecutorSchema = z.discriminatedUnion("kind", [
   AgentExecutorSchema,
   CommandExecutorSchema,
+  BuiltinExecutorSchema,
 ]);
 
 const TaskSpecSchema = z.object({
@@ -191,21 +198,29 @@ export type PipelinesConfig = z.infer<typeof PipelinesConfigSchema>;
 /** Convert a parsed YAML pipeline entry into a runtime Pipeline (branded id). */
 export function configuredPipelineToRuntime(key: string, configured: ConfiguredPipeline): Pipeline {
   const stages = configured.stages.map((stage): Stage => {
-    const executor: StageExecutor =
-      stage.executor.kind === "agent"
-        ? {
-            kind: "agent",
-            plugin: stage.executor.plugin,
-            mode: stage.executor.mode as TaskMode,
-            ...(stage.executor.config !== undefined ? { config: stage.executor.config } : {}),
-          }
-        : {
-            kind: "command",
-            command: stage.executor.command,
-            ...(stage.executor.args !== undefined ? { args: stage.executor.args } : {}),
-            ...(stage.executor.env !== undefined ? { env: stage.executor.env } : {}),
-            ...(stage.executor.cwd !== undefined ? { cwd: stage.executor.cwd } : {}),
-          };
+    let executor: StageExecutor;
+    if (stage.executor.kind === "agent") {
+      executor = {
+        kind: "agent",
+        plugin: stage.executor.plugin,
+        mode: stage.executor.mode as TaskMode,
+        ...(stage.executor.config !== undefined ? { config: stage.executor.config } : {}),
+      };
+    } else if (stage.executor.kind === "command") {
+      executor = {
+        kind: "command",
+        command: stage.executor.command,
+        ...(stage.executor.args !== undefined ? { args: stage.executor.args } : {}),
+        ...(stage.executor.env !== undefined ? { env: stage.executor.env } : {}),
+        ...(stage.executor.cwd !== undefined ? { cwd: stage.executor.cwd } : {}),
+      };
+    } else {
+      executor = {
+        kind: "builtin",
+        name: stage.executor.name,
+        ...(stage.executor.config !== undefined ? { config: stage.executor.config } : {}),
+      };
+    }
 
     const routes: StageRoutes | undefined = stage.routes
       ? {
