@@ -437,6 +437,9 @@ export {
   createAgentExecutor,
   AgentExecutorSpawnError,
   STAGE_FINDINGS_RELATIVE_PATH,
+  createCommandExecutor,
+  COMMAND_KILL_GRACE_MS,
+  COMMAND_OUTPUT_CAP_BYTES,
   createPipelineEngine,
   hydrateEngineState,
   // v1.1: DAG scheduler + runtime validation defense-in-depth

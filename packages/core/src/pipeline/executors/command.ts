@@ -199,7 +199,17 @@ export function createCommandExecutor(deps: CommandExecutorDeps): CommandStageEx
     }
 
     const baseCwd = session.workspacePath;
-    const cwd = spec.cwd ? resolveCwd(baseCwd, spec.cwd) : baseCwd;
+    let cwd: string;
+    try {
+      cwd = spec.cwd ? resolveCwd(baseCwd, spec.cwd) : baseCwd;
+    } catch (err) {
+      return shortCircuit(input, {
+        status: "failed",
+        errorMessage: `command stage "${input.stage.name}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+    }
     const env = { ...process.env, ...(spec.env ?? {}) };
 
     let child: ChildProcess;

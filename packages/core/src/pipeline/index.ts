@@ -50,6 +50,17 @@ export {
   type RouterObservation,
   type RouterOutcome,
   type ComposeOutcome,
+  createCommandExecutor,
+  COMMAND_KILL_GRACE_MS,
+  COMMAND_OUTPUT_CAP_BYTES,
+  type CommandExecutorDeps,
+  type CommandStageExecutor,
+  type CommandStageOutcome,
+  type CommandTaskOutcome,
+  type CommandTaskResult,
+  type CommandObservation,
+  type RunningCommandStage,
+  type StartCommandStageInput,
 } from "./executors/index.js";
 
 export {

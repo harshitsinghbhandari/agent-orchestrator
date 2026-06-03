@@ -23,3 +23,17 @@ export {
   type RouterOutcome,
 } from "./builtin/router.js";
 export { runCompose, type ComposeOutcome } from "./builtin/compose.js";
+
+export {
+  createCommandExecutor,
+  COMMAND_KILL_GRACE_MS,
+  COMMAND_OUTPUT_CAP_BYTES,
+  type CommandExecutorDeps,
+  type CommandStageExecutor,
+  type CommandStageOutcome,
+  type CommandTaskOutcome,
+  type CommandTaskResult,
+  type CommandObservation,
+  type RunningCommandStage,
+  type StartCommandStageInput,
+} from "./command.js";
