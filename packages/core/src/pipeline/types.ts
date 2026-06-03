@@ -64,7 +64,23 @@ export interface CommandExecutor {
   cwd?: string;
 }
 
-export type StageExecutor = AgentExecutor | CommandExecutor;
+/**
+ * Engine-internal executor. Builtins run inside the engine process — they
+ * do not spawn a session or shell out. Today: `router` (delivers upstream
+ * findings to the linked worker session) and `compose` (merges upstream
+ * artifacts into a single JSON artifact).
+ *
+ * Builtins must never mutate the pipeline store directly. They return
+ * artifacts/observations through the dispatcher's outcome shape, and the
+ * engine's normal STAGE_COMPLETED path is the only writer.
+ */
+export interface BuiltinExecutor {
+  kind: "builtin";
+  name: "router" | "compose";
+  config?: Record<string, unknown>;
+}
+
+export type StageExecutor = AgentExecutor | CommandExecutor | BuiltinExecutor;
 
 export interface TaskSpec {
   /** Prompt text injected into the spawned agent session, or main script body for command. */
@@ -321,4 +337,39 @@ export function emptyEngineState(): EngineState {
     currentRunByLoop: {},
     historySummaries: {},
   };
+}
+
+// ============================================================================
+// Task contexts (passed to executors)
+// ============================================================================
+
+/**
+ * Base context handed to any in-process executor. The agent / command
+ * executors don't consume it today (they use their own input shapes), but
+ * builtin executors do — and `BuiltinTaskContext` extends this so the
+ * dispatcher can hand non-privileged data through to both router & compose.
+ *
+ * `inputs` is keyed by upstream stage name (from `stage.dependsOn`); the
+ * engine pre-fetches those stages' artifacts from the store before invoking
+ * the dispatcher so builtins never read storage directly.
+ */
+export interface TaskContext {
+  pipelineName: string;
+  runId: RunId;
+  stageRunId: StageRunId;
+  stage: Stage;
+  /** The "linked worker" session this pipeline was triggered for. */
+  linkedSessionId: string;
+  /** Upstream stage artifacts, keyed by stage name. Empty record if no deps. */
+  inputs: Record<string, Artifact[]>;
+}
+
+/**
+ * Privileged context handed only to builtin executors via the builtin
+ * dispatcher. The `sendToSession` capability is intentionally NOT exposed
+ * to agent/command executors — sending messages to the linked worker is a
+ * router-only operation that must route through the dispatcher.
+ */
+export interface BuiltinTaskContext extends TaskContext {
+  sendToSession: (sessionId: string, message: string) => Promise<void>;
 }

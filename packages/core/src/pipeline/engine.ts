@@ -40,13 +40,16 @@ import {
   emptyEngineState,
   isTerminalLoopState,
   loopKey,
+  type Artifact,
   type EngineState,
   type Pipeline,
   type RunId,
   type RunState,
   type RunSummary,
+  type Stage,
   type StageRunId,
   type StageTriggerEvent,
+  type TaskContext,
 } from "./types.js";
 import { validatePipelineAgentModes, validatePipelineDag } from "./validation.js";
 import {
@@ -54,11 +57,22 @@ import {
   type RunningAgentStage,
   type StartStageInput,
 } from "./executors/agent.js";
+import {
+  dispatchBuiltin,
+  type BuiltinDispatcherDeps,
+} from "./executors/builtin/dispatcher.js";
 
 export interface PipelineEngineDeps {
   store: PipelineStore;
   registry: PluginRegistry;
   agentExecutor: AgentStageExecutor;
+  /**
+   * Optional dependencies for builtin executors (router/compose). When omitted,
+   * any builtin-executor stage fails with STAGE_FAILED — matches the existing
+   * "unsupported executor kind" behavior so callers that don't use builtins
+   * (most v0.x tests) need not wire this up.
+   */
+  builtin?: BuiltinDispatcherDeps;
   /** Optional initial state (e.g. restored from disk on startup). Defaults to empty. */
   initialState?: EngineState;
   /** Override clock for tests. */
@@ -163,7 +177,7 @@ export function hydrateEngineState(store: PipelineStore): EngineState {
 }
 
 export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
-  const { store, registry, agentExecutor, now = Date.now } = deps;
+  const { store, registry, agentExecutor, builtin, now = Date.now } = deps;
 
   let state: EngineState = deps.initialState ?? emptyEngineState();
   /** stageRunId → executor handle for stages we own. */
@@ -250,15 +264,23 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
       case "START_STAGE": {
         const run = state.runs[effect.runId];
         if (!run) break;
-        if (effect.stage.executor.kind !== "agent") {
-          // command/builtin executors are out of scope for v0.2 — synthesize
-          // a STAGE_FAILED so the run terminates cleanly instead of hanging.
+        const kind = effect.stage.executor.kind;
+
+        if (kind === "builtin") {
+          await runBuiltinStage(run, effect.stage, effect.stageRunId);
+          break;
+        }
+
+        if (kind !== "agent") {
+          // command executor is out of scope for this slice — synthesize a
+          // STAGE_FAILED so the run terminates cleanly instead of hanging.
+          // Issue #194 lands the command branch.
           await dispatchInline({
             type: "STAGE_FAILED",
             now: now(),
             runId: effect.runId,
             stageName: effect.stage.name,
-            errorMessage: `Executor kind "${effect.stage.executor.kind}" is not supported in v0.2 (agent executor only).`,
+            errorMessage: `Executor kind "${kind}" is not yet supported by the engine.`,
           });
           break;
         }
@@ -316,6 +338,98 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
         // Engine doesn't own observation routing. v0.2 leaves this as a no-op;
         // a later sub-task (#1629/#1630) wires it into the activity-event log.
         break;
+    }
+  }
+
+  /**
+   * Execute a builtin (router / compose) stage end-to-end inside the engine:
+   * mark STARTED, build the TaskContext from upstream artifacts, dispatch
+   * through the builtin dispatcher, and synthesize STAGE_COMPLETED /
+   * STAGE_FAILED based on the outcome.
+   *
+   * Builtins do not produce inflight handles — they complete synchronously
+   * from `tick()`'s perspective. The dispatcher upcasts the TaskContext to a
+   * BuiltinTaskContext; this engine code never constructs one directly so
+   * `sendToSession` stays gated behind the dispatcher.
+   */
+  async function runBuiltinStage(
+    run: RunState,
+    stage: Stage,
+    stageRunId: StageRunId,
+  ): Promise<void> {
+    if (stage.executor.kind !== "builtin") return; // type narrowing for downstream code
+    const executor = stage.executor;
+
+    if (!builtin) {
+      await dispatchInline({
+        type: "STAGE_FAILED",
+        now: now(),
+        runId: run.runId,
+        stageName: stage.name,
+        errorMessage: `Builtin executor "${executor.name}" requires PipelineEngineDeps.builtin to be configured.`,
+      });
+      return;
+    }
+
+    await dispatchInline({
+      type: "STAGE_STARTED",
+      now: now(),
+      runId: run.runId,
+      stageName: stage.name,
+    });
+
+    // Gather upstream artifacts from the store, keyed by upstream stage
+    // name. `dependsOn` is the contract for what's visible to builtins —
+    // routes-only refs are deliberately excluded (those are scheduling
+    // predicates, not data bindings).
+    const inputs: Record<string, Artifact[]> = {};
+    for (const upstreamName of stage.dependsOn ?? []) {
+      const upstream = run.stages[upstreamName];
+      if (!upstream) continue;
+      inputs[upstreamName] = store.listArtifacts(run.runId, upstream.stageRunId);
+    }
+
+    const ctx: TaskContext = {
+      pipelineName: run.pipelineName,
+      runId: run.runId,
+      stageRunId,
+      stage,
+      linkedSessionId: run.sessionId,
+      inputs,
+    };
+
+    let outcome;
+    try {
+      outcome = await dispatchBuiltin(ctx, executor, builtin);
+    } catch (err) {
+      await dispatchInline({
+        type: "STAGE_FAILED",
+        now: now(),
+        runId: run.runId,
+        stageName: stage.name,
+        errorMessage:
+          err instanceof Error
+            ? err.message
+            : `Builtin executor "${executor.name}" failed: ${String(err)}`,
+      });
+      return;
+    }
+
+    await dispatchInline({
+      type: "STAGE_COMPLETED",
+      now: now(),
+      runId: run.runId,
+      stageName: stage.name,
+      verdict: outcome.verdict,
+      artifacts: outcome.artifacts,
+    });
+
+    // Forward dispatcher observations through the same effect channel the
+    // reducer uses for its own stage-lifecycle observations. The reducer
+    // doesn't surface these itself — they're builtin-specific operational
+    // signals (e.g. router skipped delivery because the worker is dead).
+    for (const obs of outcome.observations) {
+      await executeEffect({ type: "EMIT_OBSERVATION", event: obs });
     }
   }
 
