@@ -163,6 +163,16 @@ export interface Pipeline {
   stages: Stage[];
   /** Default 1 in v0; engine enforces serial execution when unset. */
   maxConcurrentStages?: number;
+  /**
+   * Opt-in to running `command`-executor stages for pull requests opened from
+   * forks. Defaults to `false`. When `false`, fork-PR command stages are
+   * skipped (outcome: `skipped`) before any subprocess is spawned. This is the
+   * gate that prevents malicious PRs from executing arbitrary code in CI.
+   *
+   * Only applies to the `command` executor; `agent` and `builtin` executors
+   * are unaffected (they don't shell out untrusted code from the PR).
+   */
+  allowForkPRs?: boolean;
 }
 
 // ============================================================================
