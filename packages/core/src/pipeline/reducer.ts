@@ -577,8 +577,21 @@ function finalizeStageCompletion(
   newArtifacts: Artifact[],
   now: number,
 ): ReducerResult {
+  // Accumulate finding fingerprints onto the run so `summarizeRun` can return
+  // them at termination (#197 / 8b). We append rather than recompute so the
+  // reducer never re-reads stored artifacts.
+  const newFingerprints: string[] = [];
+  for (const a of newArtifacts) {
+    if (a.kind === "finding" && a.fingerprint) newFingerprints.push(a.fingerprint);
+  }
+  const runWithFingerprints: RunState =
+    newFingerprints.length > 0
+      ? { ...run, fingerprints: [...(run.fingerprints ?? []), ...newFingerprints] }
+      : run;
+  // Mirror finding artifacts onto run.findings for the predicate evaluator
+  // (#196) — `patchRunWithFindings` is a no-op when there are no findings.
   const updatedRun = patchRunWithFindings(
-    patchRun(run, { [stageName]: updatedStage }, now),
+    patchRun(runWithFingerprints, { [stageName]: updatedStage }, now),
     newArtifacts,
   );
 
@@ -617,6 +630,23 @@ function finalizeStageCompletion(
   effects.push(...skipObservations(run.runId, sched.newlySkipped, sched.run));
 
   if (sched.allTerminal) {
+    // 8b — convergence detection runs BEFORE the regular exit decision. When
+    // the prior `stallWindow - 1` runs in history all expose the same
+    // finding-fingerprint set as the just-completed run, terminate as
+    // `converged` → `stalled` so an agent ping-ponging on the same issues
+    // doesn't loop forever. Convergence overrides both `exitPredicates` and
+    // the v0 default — by definition the loop has hit a fixpoint, regardless
+    // of whether stages individually succeeded.
+    if (isConverged(state, sched.run)) {
+      return terminateRunFromState(
+        replaceRun(state, sched.run),
+        sched.run,
+        "converged",
+        now,
+        "stalled",
+        effects,
+      );
+    }
     const decision = decideRunExit(sched.run, state);
     return terminateRunFromState(
       replaceRun(state, sched.run),
@@ -635,8 +665,8 @@ function finalizeStageCompletion(
 }
 
 /**
- * Append new finding artifacts to `run.findings`. JSON-kind artifacts are
- * not mirrored — the predicate DSL's findings-aware kinds reason about
+ * Append new finding artifacts to `run.findings` (#196). JSON-kind artifacts
+ * are not mirrored — the predicate DSL's findings-aware kinds reason about
  * the finding subtype only.
  */
 function patchRunWithFindings(run: RunState, artifacts: Artifact[]): RunState {
@@ -663,6 +693,10 @@ interface ExitDecision {
  * The reducer is pure — it consults `state.historySummaries` for the run's
  * loop key so `loop_rounds_at_least` and history-aware composites have a
  * real ledger rather than an empty snapshot.
+ *
+ * NOTE: convergence detection (#197 / 8b) fires BEFORE this in the caller.
+ * A `converged` decision short-circuits before we reach the exit-predicate
+ * pipeline, so this function only sees runs that haven't hit a fixpoint.
  */
 function decideRunExit(run: RunState, state: EngineState): ExitDecision {
   const exits = run.pipelineConfigSnapshot.exitPredicates;
@@ -704,4 +738,35 @@ function v0DefaultExitDecision(run: RunState): ExitDecision {
   return anyFailed
     ? { reason: "stage_failure", loopState: "stalled" }
     : { reason: "completed", loopState: "done" };
+}
+
+/**
+ * Convergence check (#197 / 8b): returns true when the prior `stallWindow - 1`
+ * history summaries on this loop plus the just-completed run all expose the
+ * same sorted-unique fingerprint set.
+ *
+ * `stallWindow` is per-stage. We take the max across stages with the policy
+ * set; any stage with `stallWindow >= 2` activates the check. A value of 0
+ * or 1 is meaningless (need at least two runs to detect repetition) so we
+ * treat those as "disabled".
+ */
+function isConverged(state: EngineState, run: RunState): boolean {
+  let window = 0;
+  for (const stage of run.pipelineConfigSnapshot.stages) {
+    const w = stage.policy?.stallWindow;
+    if (typeof w === "number" && w > window) window = w;
+  }
+  if (window < 2) return false;
+
+  const key = loopKey(run.sessionId, run.pipelineName);
+  const history = state.historySummaries[key] ?? [];
+  if (history.length < window - 1) return false;
+
+  const current = [...new Set(run.fingerprints ?? [])].sort().join("|");
+  const recent = history.slice(-(window - 1));
+  for (const prior of recent) {
+    const priorKey = [...new Set(prior.fingerprints)].sort().join("|");
+    if (priorKey !== current) return false;
+  }
+  return true;
 }

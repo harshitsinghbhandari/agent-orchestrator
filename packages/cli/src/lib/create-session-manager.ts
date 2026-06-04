@@ -16,13 +16,41 @@ import {
   createSessionManager,
   getProjectPipelinesDir,
   hydrateEngineState,
+  recordActivityEvent,
   type LifecycleManager,
+  type ObservationContext,
   type OpenCodeSessionManager,
   type OrchestratorConfig,
   type PipelineEngine,
   type PluginRegistry,
 } from "@aoagents/ao-core";
 import { importPluginModuleFromSource } from "./plugin-store.js";
+
+/**
+ * Route a pipeline EMIT_OBSERVATION effect into the activity-event log so
+ * observations surface in `ao session show` and the web dashboard (#197 / 8c).
+ *
+ * Best-effort: `recordActivityEvent` swallows its own write failures, so any
+ * unexpected throw here would have to come from the data shape. We catch
+ * defensively so a routing bug can never crash the engine tick.
+ */
+function routePipelineObservation(
+  event: { name: string; data: Record<string, unknown> },
+  ctx: ObservationContext,
+): void {
+  try {
+    recordActivityEvent({
+      source: "pipeline",
+      kind: event.name,
+      summary: event.name,
+      data: event.data,
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
+    });
+  } catch {
+    // Swallow — observation routing must never break the engine.
+  }
+}
 
 const registryPromises = new Map<string, Promise<PluginRegistry>>();
 
@@ -96,13 +124,16 @@ export async function getLifecycleManager(
 
   let pipelineEngine: PipelineEngine | null = null;
   if (projectId) {
-    const store = createPipelineStore(getProjectPipelinesDir(projectId));
+    const store = createPipelineStore(getProjectPipelinesDir(projectId), {
+      onObservation: (event) => routePipelineObservation(event, {}),
+    });
     const agentExecutor = createAgentExecutor({ sessionManager });
     pipelineEngine = createPipelineEngine({
       store,
       registry,
       agentExecutor,
       initialState: hydrateEngineState(store),
+      onObservation: routePipelineObservation,
     });
     // Reconcile stages left in `running` from a previous process: their
     // in-flight executor handles are gone, so dispatch STAGE_FAILED to let
@@ -139,12 +170,15 @@ export async function getOneShotPipelineEngine(
 ): Promise<PipelineEngine> {
   const registry = await getPluginRegistry(config);
   const sessionManager = createSessionManager({ config, registry });
-  const store = createPipelineStore(getProjectPipelinesDir(projectId));
+  const store = createPipelineStore(getProjectPipelinesDir(projectId), {
+    onObservation: (event) => routePipelineObservation(event, {}),
+  });
   const agentExecutor = createAgentExecutor({ sessionManager });
   return createPipelineEngine({
     store,
     registry,
     agentExecutor,
     initialState: hydrateEngineState(store),
+    onObservation: routePipelineObservation,
   });
 }

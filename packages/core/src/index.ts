@@ -514,15 +514,32 @@ export type {
   StagePromptInput,
   AgentStageExecutor,
   AgentExecutorDeps,
+  AgentExecutorObservation,
   RunningAgentStage,
   StageOutcome,
   StartStageInput,
   PipelineEngine,
   PipelineEngineDeps,
   StartRunInput,
+  ObservationContext,
+  PipelineStoreOptions,
   ConfiguredPipeline,
   PipelinesConfig,
   MigrateResult,
+  WorkspaceClass,
+  WorkspaceSnapshot,
+  GuardCheckResult,
+} from "./pipeline/index.js";
+
+export {
+  resolveWorkspaceClass,
+  snapshotWorkspace,
+  verifyWorkspaceUnchanged,
+  buildGuardWarning,
+  createIsolatedWorktree,
+  destroyIsolatedWorktree,
+  isolatedWorktreePath,
+  FINDINGS_FILE_SIZE_CAP_BYTES,
 } from "./pipeline/index.js";
 
 export {
