@@ -202,6 +202,21 @@ export interface Stage {
    * "all `dependsOn` stages must have succeeded".
    */
   routes?: StageRoutes;
+  /**
+   * Workspace class for this stage (#197 / 8a).
+   *
+   *  - `shared-ro` (default for `agent` / `builtin`): one detached worktree
+   *    per run, shared by every shared-ro stage. Not expected to be mutated —
+   *    `WorkspaceGuard` snapshots `git status --porcelain` before/after the
+   *    stage and emits `pipeline.workspace.guard_warning` on mismatch.
+   *  - `isolated-rw` (default for `command`): fresh detached worktree per
+   *    stage at the same SHA, destroyed on terminal status. Safe for stages
+   *    that write files.
+   *
+   * Explicit declaration overrides the default. See `pipeline/workspace.ts`
+   * for the resolution helper and guard implementation.
+   */
+  workspace?: "shared-ro" | "isolated-rw";
 }
 
 export interface Pipeline {

@@ -90,3 +90,16 @@ export {
   migrateStore,
   type MigrateResult,
 } from "./migrate.js";
+
+export {
+  resolveWorkspaceClass,
+  snapshotWorkspace,
+  verifyWorkspaceUnchanged,
+  buildGuardWarning,
+  createIsolatedWorktree,
+  destroyIsolatedWorktree,
+  isolatedWorktreePath,
+  type WorkspaceClass,
+  type WorkspaceSnapshot,
+  type GuardCheckResult,
+} from "./workspace.js";

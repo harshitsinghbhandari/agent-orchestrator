@@ -574,6 +574,9 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
             if (outcome.observation) {
               await executeEffect({ type: "EMIT_OBSERVATION", event: outcome.observation });
             }
+            for (const extra of outcome.extraObservations ?? []) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: extra });
+            }
           } else {
             await dispatchInline({
               type: "STAGE_FAILED",
@@ -582,6 +585,9 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
               stageName: handle.stageName,
               errorMessage: outcome.errorMessage,
             });
+            for (const extra of outcome.extraObservations ?? []) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: extra });
+            }
           }
         }
       }
