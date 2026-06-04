@@ -14,6 +14,7 @@
 
 import { scheduleAfterChange } from "./dag.js";
 import type { PipelineEffect, PipelineEvent, ReducerResult } from "./events.js";
+import { evaluate, isV0Default } from "./predicate-evaluator.js";
 import {
   deriveLoopStateFromRun,
   invalidTransition,
@@ -25,10 +26,13 @@ import {
   terminateRunFromState,
 } from "./reducer-helpers.js";
 import {
+  type Artifact,
   type ArtifactInput,
   type EngineState,
   type LoopStateName,
   type Pipeline,
+  type Predicate,
+  type PredicateCtx,
   type RunId,
   type RunState,
   type RunTerminationReason,
@@ -133,7 +137,15 @@ function reduceTriggerFired(state: EngineState, event: TriggerFiredEvent): Reduc
       },
       ...skipObservations(runState.runId, sched.newlySkipped, runState),
     ];
-    return terminateRunFromState(stateWithRun, runState, "completed", now, "done", preceding);
+    const decision = decideRunExit(runState, stateWithRun);
+    return terminateRunFromState(
+      stateWithRun,
+      runState,
+      decision.reason,
+      now,
+      decision.loopState,
+      preceding,
+    );
   }
 
   const nextState: EngineState = {
@@ -271,7 +283,7 @@ function reduceStageCompleted(state: EngineState, event: StageCompletedEvent): R
     artifacts: [...stage.artifacts, ...newArtifacts.map((a) => a.artifactId)],
   };
 
-  return finalizeStageCompletion(state, run, stageName, updatedStage, newArtifacts, "success", now);
+  return finalizeStageCompletion(state, run, stageName, updatedStage, newArtifacts, now);
 }
 
 interface StageFailedEvent {
@@ -302,7 +314,7 @@ function reduceStageFailed(state: EngineState, event: StageFailedEvent): Reducer
     errorMessage,
   };
 
-  return finalizeStageCompletion(state, run, stageName, updatedStage, [], "failure", now);
+  return finalizeStageCompletion(state, run, stageName, updatedStage, [], now);
 }
 
 interface NewShaEvent {
@@ -562,11 +574,13 @@ function finalizeStageCompletion(
   run: RunState,
   stageName: string,
   updatedStage: StageState,
-  newArtifacts: ReturnType<typeof materializeArtifact>[],
-  outcome: "success" | "failure",
+  newArtifacts: Artifact[],
   now: number,
 ): ReducerResult {
-  const updatedRun = patchRun(run, { [stageName]: updatedStage }, now);
+  const updatedRun = patchRunWithFindings(
+    patchRun(run, { [stageName]: updatedStage }, now),
+    newArtifacts,
+  );
 
   const effects: PipelineEffect[] = [];
 
@@ -593,35 +607,23 @@ function finalizeStageCompletion(
     },
   });
 
-  // Stage failure terminates the run as `stalled` (existing v0 behavior).
-  // Mid-flight or pending stages get cleaned up by terminateRunFromState
-  // (running → outdated, pending → skipped) so we don't leak inflight work
-  // onto the parallel branches that may still be running.
-  if (outcome === "failure") {
-    return terminateRunFromState(
-      replaceRun(state, updatedRun),
-      updatedRun,
-      "stage_failure",
-      now,
-      "stalled",
-      effects,
-    );
-  }
-
-  // Success path: the DAG scheduler may cascade-skip downstream stages whose
-  // routes are now unsatisfied, and may immediately schedule the next batch
-  // of parallel-eligible stages. Cascade-driven terminality is checked AFTER
-  // the cascade — only this can carry the run to `done` in one reducer step.
+  // Failure-tolerant scheduling: STAGE_FAILED no longer immediately
+  // terminates the run. `scheduleAfterChange` cascade-skips stages whose
+  // `dependsOn` is no longer satisfiable AND starts any recovery branch
+  // whose `routes` predicate now matches the failure. The run only
+  // terminates when every stage has reached a terminal status (then we
+  // evaluate `exitPredicates` / v0 fallback to choose `done` vs `stalled`).
   const sched = scheduleAfterChange(updatedRun, now);
   effects.push(...skipObservations(run.runId, sched.newlySkipped, sched.run));
 
   if (sched.allTerminal) {
+    const decision = decideRunExit(sched.run, state);
     return terminateRunFromState(
       replaceRun(state, sched.run),
       sched.run,
-      "completed",
+      decision.reason,
       now,
-      "done",
+      decision.loopState,
       effects,
     );
   }
@@ -630,4 +632,76 @@ function finalizeStageCompletion(
   effects.push(...sched.startEffects);
 
   return { state: replaceRun(state, sched.run), effects };
+}
+
+/**
+ * Append new finding artifacts to `run.findings`. JSON-kind artifacts are
+ * not mirrored — the predicate DSL's findings-aware kinds reason about
+ * the finding subtype only.
+ */
+function patchRunWithFindings(run: RunState, artifacts: Artifact[]): RunState {
+  const findings = artifacts.filter((a) => a.kind === "finding");
+  if (findings.length === 0) return run;
+  return { ...run, findings: [...(run.findings ?? []), ...findings] };
+}
+
+interface ExitDecision {
+  reason: RunTerminationReason;
+  loopState: LoopStateName;
+}
+
+/**
+ * Decide how the run terminates once every stage is in a terminal status.
+ *
+ * Order of consideration:
+ *  1. `pipeline.exitPredicates.done` (if set and not `v0_default`): when it
+ *     evaluates `true`, terminate as `done`/`completed`.
+ *  2. `pipeline.exitPredicates.stalled` (if set and not `v0_default`): when
+ *     it evaluates `true`, terminate as `stalled`/`stage_failure`.
+ *  3. v0 default: any `failed` stage → `stalled`/`stage_failure`, else `done`/`completed`.
+ *
+ * The reducer is pure — it consults `state.historySummaries` for the run's
+ * loop key so `loop_rounds_at_least` and history-aware composites have a
+ * real ledger rather than an empty snapshot.
+ */
+function decideRunExit(run: RunState, state: EngineState): ExitDecision {
+  const exits = run.pipelineConfigSnapshot.exitPredicates;
+  const ctx: PredicateCtx = {
+    run,
+    history: state.historySummaries[loopKey(run.sessionId, run.pipelineName)] ?? [],
+    findings: run.findings ?? [],
+  };
+
+  const doneMatched = matchesConfiguredPredicate(exits?.done, ctx);
+  if (doneMatched === true) {
+    return { reason: "completed", loopState: "done" };
+  }
+  const stalledMatched = matchesConfiguredPredicate(exits?.stalled, ctx);
+  if (stalledMatched === true) {
+    return { reason: "stage_failure", loopState: "stalled" };
+  }
+
+  // Either no exitPredicates configured, both configured branches said
+  // `false`, or one/both opted into `v0_default` explicitly. Fall through.
+  return v0DefaultExitDecision(run);
+}
+
+/**
+ * `undefined`/`v0_default` → `null` (caller falls through to v0 rules).
+ * Any other predicate is evaluated normally and returns `true`/`false`.
+ */
+function matchesConfiguredPredicate(
+  predicate: Predicate | undefined,
+  ctx: PredicateCtx,
+): boolean | null {
+  if (!predicate) return null;
+  if (isV0Default(predicate)) return null;
+  return evaluate(predicate, ctx);
+}
+
+function v0DefaultExitDecision(run: RunState): ExitDecision {
+  const anyFailed = Object.values(run.stages).some((s) => s.status === "failed");
+  return anyFailed
+    ? { reason: "stage_failure", loopState: "stalled" }
+    : { reason: "completed", loopState: "done" };
 }
