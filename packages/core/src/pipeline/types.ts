@@ -202,6 +202,21 @@ export interface Stage {
    * "all `dependsOn` stages must have succeeded".
    */
   routes?: StageRoutes;
+  /**
+   * Workspace class for this stage (#197 / 8a).
+   *
+   *  - `shared-ro` (default for `agent` / `builtin`): one detached worktree
+   *    per run, shared by every shared-ro stage. Not expected to be mutated —
+   *    `WorkspaceGuard` snapshots `git status --porcelain` before/after the
+   *    stage and emits `pipeline.workspace.guard_warning` on mismatch.
+   *  - `isolated-rw` (default for `command`): fresh detached worktree per
+   *    stage at the same SHA, destroyed on terminal status. Safe for stages
+   *    that write files.
+   *
+   * Explicit declaration overrides the default. See `pipeline/workspace.ts`
+   * for the resolution helper and guard implementation.
+   */
+  workspace?: "shared-ro" | "isolated-rw";
 }
 
 export interface Pipeline {
@@ -305,7 +320,14 @@ export type RunTerminationReason =
   | "manual_cancel"
   | "config_change"
   | "outdated"
-  | "worker_dead";
+  | "worker_dead"
+  /**
+   * Stall-window convergence (8b / #197): the last `stallWindow` consecutive
+   * runs in this loop produced the same set of finding fingerprints, so the
+   * loop has hit a fixpoint and we terminate as stalled rather than ping-pong
+   * indefinitely. The next NEW_SHA_DETECTED reopens the loop.
+   */
+  | "converged";
 
 export type LoopStateName = "running" | "awaiting_context" | "done" | "stalled" | "terminated";
 
@@ -352,14 +374,23 @@ export interface RunState {
   /** Keyed by stage name. v0 has at most one entry per stage. */
   stages: Record<string, StageState>;
   /**
-   * Denormalized materialized findings for predicate evaluation. The reducer
-   * appends new finding artifacts here as STAGE_COMPLETED events arrive so
-   * the predicate evaluator (used at routes evaluation and exit decision
-   * time) can answer `no_open_findings` / `finding_count_below` without
-   * reading the store. JSON artifacts are not mirrored here — they aren't
-   * findings. Capped only by what stages emit.
+   * Denormalized materialized findings for predicate evaluation (#196). The
+   * reducer appends new finding artifacts here as STAGE_COMPLETED events
+   * arrive so the predicate evaluator (used at routes evaluation and exit
+   * decision time) can answer `no_open_findings` / `finding_count_below`
+   * without reading the store. JSON artifacts are not mirrored here — they
+   * aren't findings. Capped only by what stages emit.
    */
   findings?: Artifact[];
+  /**
+   * Finding fingerprints accumulated as artifacts are materialized during the
+   * run (#197 / 8b). Persisted on RunState so `summarizeRun` can return them
+   * at termination and hydration can round-trip them. Order is insertion-
+   * order; `summarizeRun` sorts + dedupes before exposing in `RunSummary`.
+   *
+   * Optional for backward compatibility with RunStates persisted before #197.
+   */
+  fingerprints?: string[];
   createdAt: string;
   updatedAt: string;
 }

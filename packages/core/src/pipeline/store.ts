@@ -14,9 +14,10 @@
  *   concurrent writers never produce torn data.
  * - JSONL artifact appends use appendFileSync — atomic semantics aren't
  *   available for append, so a process crash mid-write can leave a partial
- *   line. listArtifacts is therefore NOT crash-safe: it JSON.parses each
- *   non-empty line and will throw on a torn final record. Callers that need
- *   to tolerate crashes should wrap the read or repair the file out-of-band.
+ *   line. `listArtifacts` tolerates a torn FINAL line (drops it and emits
+ *   a `pipeline.artifacts.torn_line` observation via `onObservation`) so a
+ *   crash mid-write doesn't break the reducer next time around. Earlier
+ *   lines that fail to parse are still treated as corruption and throw.
  *
  * Reads are best-effort: missing files return null; corrupt JSON raises.
  */
@@ -75,8 +76,21 @@ export interface PipelineStore {
   loadLoopState(runId: RunId): LoopState | null;
 }
 
-export function createPipelineStore(root: string): PipelineStore {
+/**
+ * Observation callback hook. The store calls this best-effort when it
+ * recovers from a torn JSONL line on read. Production callers wire it to
+ * `recordActivityEvent`; tests can omit it.
+ */
+export interface PipelineStoreOptions {
+  onObservation?: (event: { name: string; data: Record<string, unknown> }) => void;
+}
+
+export function createPipelineStore(
+  root: string,
+  options: PipelineStoreOptions = {},
+): PipelineStore {
   const layout = pipelineLayout(root);
+  const onObservation = options.onObservation;
 
   function ensureDir(path: string): void {
     if (!existsSync(path)) mkdirSync(path, { recursive: true });
@@ -134,10 +148,41 @@ export function createPipelineStore(root: string): PipelineStore {
       if (!existsSync(path)) return [];
       const body = readFileSync(path, "utf-8");
       const out: Artifact[] = [];
+      // Track non-empty lines so we know which one is the LAST: only the
+      // final partial line is tolerable (an interrupted append). A bad
+      // earlier line is real corruption and still throws.
+      const lines: string[] = [];
       for (const line of body.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        out.push(JSON.parse(trimmed) as Artifact);
+        lines.push(trimmed);
+      }
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i] as string;
+        try {
+          out.push(JSON.parse(trimmed) as Artifact);
+        } catch (err) {
+          // 8d — appendFileSync isn't atomic. A crash mid-write can leave
+          // a torn final line. Drop it with an observation rather than
+          // throwing, so the reducer can keep advancing the run. Earlier
+          // lines that fail are real corruption — re-raise.
+          if (i === lines.length - 1) {
+            if (onObservation) {
+              onObservation({
+                name: "pipeline.artifacts.torn_line",
+                data: {
+                  runId,
+                  stageRunId,
+                  path,
+                  errorMessage: err instanceof Error ? err.message : String(err),
+                  truncatedLength: trimmed.length,
+                },
+              });
+            }
+            break;
+          }
+          throw err;
+        }
       }
       return out;
     },

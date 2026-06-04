@@ -7,6 +7,7 @@
  */
 
 import type { PipelineEffect, ReducerResult } from "./events.js";
+import { computeFindingFingerprint } from "./migrate.js";
 import {
   type Artifact,
   type ArtifactInput,
@@ -57,13 +58,18 @@ export function deriveLoopStateFromRun(run: RunState, now: number): LoopState {
 }
 
 export function summarizeRun(run: RunState): RunSummary {
+  // Deduplicate + sort so summaries are comparable across runs regardless of
+  // discovery order. `run.fingerprints` is appended to as artifacts arrive in
+  // `finalizeStageCompletion`; it may be undefined on runs that pre-date the
+  // fingerprint wiring (8b / #197).
+  const unique = [...new Set(run.fingerprints ?? [])].sort();
   return {
     runId: run.runId,
     loopState: run.loopState,
     terminationReason: run.terminationReason,
     headSha: run.headSha,
     loopRounds: run.loopRounds,
-    fingerprints: [],
+    fingerprints: unique,
     createdAt: run.createdAt,
   };
 }
@@ -77,7 +83,7 @@ export function materializeArtifact(
   now: number,
 ): Artifact {
   const artifactId = `${stageRunId}-${index}` as Artifact["artifactId"];
-  return {
+  const base = {
     ...input,
     artifactId,
     pipelineRunId: runId,
@@ -86,6 +92,14 @@ export function materializeArtifact(
     status: "open",
     createdAt: iso(now),
   } as Artifact;
+  // Finding artifacts carry a stable fingerprint computed from the stage name
+  // + structural identity (filePath, anchor, category, title). This is what
+  // (a) lets dismissals match across runs (existing behavior via migrate.ts)
+  // and (b) drives stallWindow convergence detection (8b).
+  if (input.kind === "finding") {
+    return { ...base, fingerprint: computeFindingFingerprint(input, stageName) };
+  }
+  return base;
 }
 
 export function invalidTransition(state: EngineState, message: string): ReducerResult {

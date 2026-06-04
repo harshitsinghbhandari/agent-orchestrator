@@ -8,7 +8,12 @@
 export * from "./types.js";
 export type { PipelineEvent, PipelineEffect, ReducerResult } from "./events.js";
 export { reduce } from "./reducer.js";
-export { createPipelineStore, type PipelineStore, type PersistedStageRun } from "./store.js";
+export {
+  createPipelineStore,
+  type PipelineStore,
+  type PersistedStageRun,
+  type PipelineStoreOptions,
+} from "./store.js";
 export {
   pipelineLayout,
   runFilePath,
@@ -40,8 +45,10 @@ export {
   createAgentExecutor,
   AgentExecutorSpawnError,
   STAGE_FINDINGS_RELATIVE_PATH,
+  FINDINGS_FILE_SIZE_CAP_BYTES,
   type AgentStageExecutor,
   type AgentExecutorDeps,
+  type AgentExecutorObservation,
   type RunningAgentStage,
   type StageOutcome,
   type StartStageInput,
@@ -75,6 +82,7 @@ export {
   type PipelineEngine,
   type PipelineEngineDeps,
   type StartRunInput,
+  type ObservationContext,
 } from "./engine.js";
 
 export {
@@ -90,3 +98,16 @@ export {
   migrateStore,
   type MigrateResult,
 } from "./migrate.js";
+
+export {
+  resolveWorkspaceClass,
+  snapshotWorkspace,
+  verifyWorkspaceUnchanged,
+  buildGuardWarning,
+  createIsolatedWorktree,
+  destroyIsolatedWorktree,
+  isolatedWorktreePath,
+  type WorkspaceClass,
+  type WorkspaceSnapshot,
+  type GuardCheckResult,
+} from "./workspace.js";

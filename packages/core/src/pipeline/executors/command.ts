@@ -54,6 +54,13 @@ import type {
   StageRunId,
   Verdict,
 } from "../types.js";
+import {
+  buildGuardWarning,
+  resolveWorkspaceClass,
+  snapshotWorkspace,
+  verifyWorkspaceUnchanged,
+  type WorkspaceSnapshot,
+} from "../workspace.js";
 
 /** Outcome label a shim writes to stdout. */
 export type CommandTaskOutcome = "succeeded" | "failed" | "neutral" | "skipped";
@@ -110,8 +117,24 @@ export interface CommandObservation {
 }
 
 type CommandFinalOutcome =
-  | { status: "completed"; verdict: Verdict; artifacts: ArtifactInput[]; observation?: CommandObservation }
-  | { status: "failed"; errorMessage: string };
+  | {
+      status: "completed";
+      verdict: Verdict;
+      artifacts: ArtifactInput[];
+      observation?: CommandObservation;
+      /**
+       * Additional observations the engine should route through
+       * EMIT_OBSERVATION alongside `observation`. Currently used for the
+       * shared-ro WorkspaceGuard warning so it surfaces independent of the
+       * stage's primary self-skip context.
+       */
+      extraObservations?: CommandObservation[];
+    }
+  | {
+      status: "failed";
+      errorMessage: string;
+      extraObservations?: CommandObservation[];
+    };
 
 export type CommandStageOutcome = { status: "running" } | CommandFinalOutcome;
 
@@ -212,6 +235,16 @@ export function createCommandExecutor(deps: CommandExecutorDeps): CommandStageEx
     }
     const env = { ...process.env, ...(spec.env ?? {}) };
 
+    // Shared-ro guard: command stages that explicitly opt into shared-ro
+    // workspace should NOT mutate the worker's checkout. Snapshot
+    // `git status --porcelain` before spawn so the exit handler can compare
+    // and surface a `pipeline.workspace.guard_warning` observation. The
+    // default for command stages is `isolated-rw`, so this only fires on
+    // explicit opt-in (or future engine-driven shared-ro routing).
+    const workspaceClass = resolveWorkspaceClass(input.stage);
+    const guardBefore: WorkspaceSnapshot | null =
+      workspaceClass === "shared-ro" ? await snapshotWorkspace(baseCwd) : null;
+
     let child: ChildProcess;
     try {
       // `shell: isWindows()` so PATHEXT (.cmd/.bat shims) is honored on
@@ -280,19 +313,40 @@ export function createCommandExecutor(deps: CommandExecutorDeps): CommandStageEx
           });
         });
 
-        child.on("exit", (code, signal) => {
+        child.on("exit", async (code, signal) => {
           const stdoutText = Buffer.concat(stdoutChunks).toString("utf-8");
           const stderrText = Buffer.concat(stderrChunks).toString("utf-8");
-          settle(
-            interpretChildExit({
-              stageName: input.stage.name,
-              code,
-              signal,
-              stdoutText,
-              stderrText,
-              stdoutCapped,
-            }),
-          );
+          const outcome = interpretChildExit({
+            stageName: input.stage.name,
+            code,
+            signal,
+            stdoutText,
+            stderrText,
+            stdoutCapped,
+          });
+
+          // Shared-ro WorkspaceGuard: take the after-snapshot before settling
+          // so the warning rides along with the same final-outcome the engine
+          // picks up. `verifyWorkspaceUnchanged` no-ops when either snapshot
+          // is null, so non-git contexts never surface false positives.
+          if (workspaceClass === "shared-ro" && guardBefore) {
+            const guardAfter = await snapshotWorkspace(baseCwd);
+            const check = verifyWorkspaceUnchanged(guardBefore, guardAfter);
+            if (!check.ok) {
+              const warning = buildGuardWarning({
+                runId: input.runId,
+                stageRunId: input.stageRunId,
+                stageName: input.stage.name,
+                workspacePath: baseCwd,
+                check,
+              });
+              const extra = [warning];
+              settle({ ...outcome, extraObservations: extra });
+              return;
+            }
+          }
+
+          settle(outcome);
         });
       }),
     };

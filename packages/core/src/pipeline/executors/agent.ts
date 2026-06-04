@@ -21,8 +21,9 @@
  * executor leans on the standard SessionManager.spawn() path.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 
 import { type SessionId, type SessionManager } from "../../types.js";
 import { buildStagePrompt } from "../stage-prompt.js";
@@ -68,10 +69,24 @@ export interface RunningAgentStage {
   input: StartStageInput;
 }
 
+/**
+ * Side-channel observations the executor wants the engine to route through
+ * `EMIT_OBSERVATION`. Currently used for `finding-truncation` warnings when
+ * `parseFindingsFile` caps a runaway findings file.
+ */
+export interface AgentExecutorObservation {
+  name: string;
+  data: Record<string, unknown>;
+}
+
 export type StageOutcome =
   | { status: "running" }
-  | { status: "completed"; artifacts: ArtifactInput[] }
-  | { status: "failed"; errorMessage: string };
+  | {
+      status: "completed";
+      artifacts: ArtifactInput[];
+      observations?: AgentExecutorObservation[];
+    }
+  | { status: "failed"; errorMessage: string; observations?: AgentExecutorObservation[] };
 
 export interface AgentStageExecutor {
   startStage(input: StartStageInput): Promise<RunningAgentStage>;
@@ -103,6 +118,15 @@ export class AgentExecutorSpawnError extends Error {
 
 /** File name of the conventional findings drop, exposed for tests/UI. */
 export const STAGE_FINDINGS_RELATIVE_PATH = join(".ao", PIPELINE_FINDINGS_FILENAME);
+
+/**
+ * Maximum bytes the executor reads from a stage's findings file (#197 / 8d).
+ * Beyond this cap, additional lines are dropped and a
+ * `pipeline.findings.truncated` observation is emitted. The number is
+ * generous enough for legitimate review output (thousands of findings) but
+ * small enough to keep a misbehaving agent from OOMing the engine.
+ */
+export const FINDINGS_FILE_SIZE_CAP_BYTES = 5 * 1024 * 1024;
 
 export function createAgentExecutor(deps: AgentExecutorDeps): AgentStageExecutor {
   const { sessionManager } = deps;
@@ -189,9 +213,9 @@ export function createAgentExecutor(deps: AgentExecutorDeps): AgentStageExecutor
       return { status: "running" };
     }
 
-    let artifacts: ArtifactInput[];
+    let parseResult: ParseFindingsResult;
     try {
-      artifacts = parseFindingsFile(findingsPath);
+      parseResult = await parseFindingsFile(findingsPath);
     } catch (err) {
       // Don't kill: leave the session up so a human can inspect the bad
       // findings file. Engine will mark the stage failed.
@@ -204,7 +228,23 @@ export function createAgentExecutor(deps: AgentExecutorDeps): AgentStageExecutor
     }
 
     await safeKill(sessionManager, handle.sessionId);
-    return { status: "completed", artifacts };
+    const observations: AgentExecutorObservation[] = [];
+    if (parseResult.truncated) {
+      observations.push({
+        name: "pipeline.findings.truncated",
+        data: {
+          runId: handle.runId,
+          stageRunId: handle.stageRunId,
+          stageName: handle.stageName,
+          findingsPath,
+          capBytes: FINDINGS_FILE_SIZE_CAP_BYTES,
+          bytesRead: parseResult.bytesRead,
+        },
+      });
+    }
+    return observations.length > 0
+      ? { status: "completed", artifacts: parseResult.artifacts, observations }
+      : { status: "completed", artifacts: parseResult.artifacts };
   }
 
   async function cancelStage(handle: RunningAgentStage): Promise<void> {
@@ -230,27 +270,65 @@ function isFailedTerminalSession(session: {
   return false;
 }
 
-function parseFindingsFile(path: string): ArtifactInput[] {
-  // TODO(v1.x): readFileSync is unbounded — a misbehaving agent could OOM the
-  // engine by dumping its full reasoning trace into findings. Fine for v0.2
-  // since the engine and agent are co-located, but stream-and-cap once the
-  // engine moves out-of-process or runs untrusted plugins.
-  const body = readFileSync(path, "utf-8");
+interface ParseFindingsResult {
+  artifacts: ArtifactInput[];
+  /** True when the cap fired and trailing lines were dropped. */
+  truncated: boolean;
+  /** Bytes consumed before stopping. */
+  bytesRead: number;
+}
+
+/**
+ * Stream the findings JSONL line-by-line, capping at `FINDINGS_FILE_SIZE_CAP_BYTES`.
+ * When the cap fires we drop the in-progress line (it may be truncated mid-token)
+ * and stop reading; the caller surfaces a `pipeline.findings.truncated`
+ * observation. Earlier complete lines are still returned.
+ *
+ * Streaming + cap fixes the OOM risk flagged in the old `readFileSync` TODO:
+ * a misbehaving agent dumping its entire reasoning trace into findings would
+ * have grown the engine's RSS by the full file size.
+ */
+async function parseFindingsFile(path: string): Promise<ParseFindingsResult> {
+  const stream = createReadStream(path, { encoding: "utf-8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+
   const out: ArtifactInput[] = [];
-  for (const [lineNo, raw] of body.split("\n").entries()) {
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (err) {
-      throw new Error(`line ${lineNo + 1}: ${err instanceof Error ? err.message : String(err)}`, {
-        cause: err,
-      });
+  let lineNo = 0;
+  let bytesRead = 0;
+  let truncated = false;
+
+  try {
+    for await (const raw of rl) {
+      lineNo++;
+      // `raw` is the line without its trailing newline — account for the
+      // newline byte when measuring against the cap so file size matches.
+      // Approximation: +1 byte per line. Good enough; we're not billing.
+      bytesRead += Buffer.byteLength(raw, "utf-8") + 1;
+      if (bytesRead > FINDINGS_FILE_SIZE_CAP_BYTES) {
+        truncated = true;
+        break;
+      }
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (err) {
+        throw new Error(`line ${lineNo}: ${err instanceof Error ? err.message : String(err)}`, {
+          cause: err,
+        });
+      }
+      out.push(coerceArtifactInput(parsed, lineNo));
     }
-    out.push(coerceArtifactInput(parsed, lineNo + 1));
+  } finally {
+    // Closing the readline interface destroys the underlying stream; calling
+    // close() unblocks readers and releases the fd promptly when we broke
+    // out early due to truncation.
+    rl.close();
+    stream.destroy();
   }
-  return out;
+
+  return { artifacts: out, truncated, bytesRead };
 }
 
 const VALID_SEVERITIES = ["error", "warning", "info"] as const;

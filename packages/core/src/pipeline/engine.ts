@@ -76,6 +76,19 @@ type InflightHandle =
   | { kind: "agent"; handle: RunningAgentStage }
   | { kind: "command"; handle: RunningCommandStage };
 
+/**
+ * Routed-observation context the engine threads into `onObservation`. Pulled
+ * from the run identified by `event.data.runId` when present so the consumer
+ * (activity-event log, dashboard) can scope the observation to the right
+ * session without re-deriving it.
+ */
+export interface ObservationContext {
+  runId?: string;
+  sessionId?: string;
+  projectId?: string;
+  pipelineName?: string;
+}
+
 export interface PipelineEngineDeps {
   store: PipelineStore;
   registry: PluginRegistry;
@@ -97,6 +110,18 @@ export interface PipelineEngineDeps {
   initialState?: EngineState;
   /** Override clock for tests. */
   now?: () => number;
+  /**
+   * Routed every EMIT_OBSERVATION effect (#197 / 8c). Production callers
+   * wire this to `recordActivityEvent` so pipeline observations surface in
+   * `ao session show` and the dashboard. Tests can omit it for a no-op.
+   *
+   * Best-effort: thrown errors are swallowed so observation routing can
+   * never crash the engine tick.
+   */
+  onObservation?: (
+    event: { name: string; data: Record<string, unknown> },
+    context: ObservationContext,
+  ) => void;
 }
 
 export interface StartRunInput {
@@ -178,13 +203,18 @@ export function hydrateEngineState(store: PipelineStore): EngineState {
 
     if (isTerminalLoopState(run.loopState)) {
       const list = historySummaries[key] ?? [];
+      // Fingerprints are persisted on RunState since #197 (8b). Older
+      // RunStates without the field round-trip as an empty set — convergence
+      // detection will just see them as "different from the current run" and
+      // stay quiet, which is the right safety default.
+      const fingerprints = [...new Set(run.fingerprints ?? [])].sort();
       list.push({
         runId: run.runId,
         loopState: run.loopState,
         ...(run.terminationReason ? { terminationReason: run.terminationReason } : {}),
         headSha: run.headSha,
         loopRounds: run.loopRounds,
-        fingerprints: [],
+        fingerprints,
         createdAt: run.createdAt,
       });
       historySummaries[key] = list;
@@ -198,6 +228,7 @@ export function hydrateEngineState(store: PipelineStore): EngineState {
 
 export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
   const { store, registry, agentExecutor, commandExecutor, builtin, now = Date.now } = deps;
+  const onObservation = deps.onObservation;
 
   let state: EngineState = deps.initialState ?? emptyEngineState();
   /**
@@ -366,8 +397,30 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
       }
 
       case "EMIT_OBSERVATION":
-        // Engine doesn't own observation routing. v0.2 leaves this as a no-op;
-        // a later sub-task (#1629/#1630) wires it into the activity-event log.
+        if (onObservation) {
+          // Enrich with session/project context from the run identified in
+          // the observation payload (when present) so consumers don't have
+          // to re-derive it. Pure lookup — no state mutation.
+          const dataRunId = typeof effect.event.data["runId"] === "string"
+            ? (effect.event.data["runId"] as string)
+            : undefined;
+          const ctx: ObservationContext = {};
+          if (dataRunId) {
+            ctx.runId = dataRunId;
+            const run = state.runs[dataRunId as RunId];
+            if (run) {
+              ctx.sessionId = run.sessionId;
+              ctx.pipelineName = run.pipelineName;
+            }
+            const meta = runMetadata.get(dataRunId as RunId);
+            if (meta) ctx.projectId = meta.projectId;
+          }
+          try {
+            onObservation(effect.event, ctx);
+          } catch {
+            // Best-effort — never let a routing failure break the engine.
+          }
+        }
         break;
     }
   }
@@ -543,6 +596,9 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
               stageName: handle.stageName,
               artifacts: outcome.artifacts,
             });
+            for (const obs of outcome.observations ?? []) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: obs });
+            }
           } else {
             await dispatchInline({
               type: "STAGE_FAILED",
@@ -551,6 +607,9 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
               stageName: handle.stageName,
               errorMessage: outcome.errorMessage,
             });
+            for (const obs of outcome.observations ?? []) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: obs });
+            }
           }
         } else {
           // Command-stage poll. commandExecutor is non-null here because the
@@ -574,6 +633,9 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
             if (outcome.observation) {
               await executeEffect({ type: "EMIT_OBSERVATION", event: outcome.observation });
             }
+            for (const extra of outcome.extraObservations ?? []) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: extra });
+            }
           } else {
             await dispatchInline({
               type: "STAGE_FAILED",
@@ -582,6 +644,9 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
               stageName: handle.stageName,
               errorMessage: outcome.errorMessage,
             });
+            for (const extra of outcome.extraObservations ?? []) {
+              await executeEffect({ type: "EMIT_OBSERVATION", event: extra });
+            }
           }
         }
       }
