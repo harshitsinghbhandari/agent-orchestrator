@@ -27,7 +27,9 @@ import {
 } from "./reducer-helpers.js";
 import {
   type Artifact,
+  type ArtifactId,
   type ArtifactInput,
+  type ArtifactStatus,
   type EngineState,
   type LoopStateName,
   type Pipeline,
@@ -62,6 +64,12 @@ export function reduce(state: EngineState, event: PipelineEvent): ReducerResult 
       return reduceRunResumed(state, event);
     case "CONFIG_CHANGED":
       return reduceConfigChanged(state, event);
+    case "ARTIFACT_STATUS_CHANGED":
+      return reduceArtifactStatusChanged(state, event);
+    case "USER_FOLLOWUP":
+      return reduceUserFollowup(state, event);
+    case "FOLLOWUP_REPLY":
+      return reduceFollowupReply(state, event);
     case "TICK":
       return { state, effects: [] };
   }
@@ -769,4 +777,167 @@ function isConverged(state: EngineState, run: RunState): boolean {
     if (priorKey !== current) return false;
   }
   return true;
+}
+
+interface ArtifactStatusChangedEvent {
+  now: number;
+  runId: RunId;
+  stageRunId: StageRunId;
+  artifactId: ArtifactId;
+  status: ArtifactStatus;
+  actor?: string;
+}
+
+/**
+ * Update a single artifact's status (dismiss / reopen / mark resolved). The
+ * reducer mirrors the change into `run.findings` so the predicate evaluator
+ * sees the current status without re-reading the store, then emits
+ * `UPDATE_ARTIFACT_STATUS` so the engine rewrites the JSONL.
+ *
+ * `sent_to_agent` is set by the router builtin and the SEND_FOLLOWUP effect,
+ * not by user actions. The reducer accepts it here so the engine can stamp
+ * it through the same event channel.
+ */
+function reduceArtifactStatusChanged(
+  state: EngineState,
+  event: ArtifactStatusChangedEvent,
+): ReducerResult {
+  const { runId, stageRunId, artifactId, status, actor, now } = event;
+  const run = state.runs[runId];
+  if (!run) return invalidTransition(state, `ARTIFACT_STATUS_CHANGED for unknown runId=${runId}`);
+
+  const findings = run.findings ?? [];
+  const idx = findings.findIndex((a) => a.artifactId === artifactId);
+  let updatedRun: RunState;
+  if (idx >= 0) {
+    const next = findings.slice();
+    next[idx] = { ...findings[idx], status };
+    updatedRun = { ...run, findings: next, updatedAt: iso(now) };
+  } else {
+    updatedRun = { ...run, updatedAt: iso(now) };
+  }
+
+  const effects: PipelineEffect[] = [
+    {
+      type: "UPDATE_ARTIFACT_STATUS",
+      runId,
+      stageRunId,
+      artifactId,
+      status,
+    },
+    { type: "PERSIST_RUN", runState: updatedRun },
+    {
+      type: "EMIT_OBSERVATION",
+      event: {
+        name: "pipeline.artifact.status_changed",
+        data: { runId, stageRunId, artifactId, status, ...(actor ? { actor } : {}) },
+      },
+    },
+  ];
+
+  return { state: replaceRun(state, updatedRun), effects };
+}
+
+interface UserFollowupEvent {
+  now: number;
+  runId: RunId;
+  stageRunId: StageRunId;
+  stageName: string;
+  message: string;
+  reviewerId?: string;
+}
+
+/**
+ * Persist a user follow-up to the thread JSONL and emit a SEND_FOLLOWUP effect
+ * for the engine to deliver to the agent. The reply lands later as
+ * FOLLOWUP_REPLY (an event, not a synchronous return) so the engine doesn't
+ * block the reducer on subprocess I/O.
+ *
+ * Guard: follow-up is only meaningful while the run is non-terminal and the
+ * stage is in a state where the agent can still consume context (running
+ * stages or terminal stages whose `loopState` is `awaiting_context`). The
+ * reducer accepts both; the dashboard already filters by stage availability.
+ */
+function reduceUserFollowup(state: EngineState, event: UserFollowupEvent): ReducerResult {
+  const { runId, stageRunId, stageName, message, reviewerId, now: _now } = event;
+  const run = state.runs[runId];
+  if (!run) return invalidTransition(state, `USER_FOLLOWUP for unknown runId=${runId}`);
+  if (isTerminalLoopState(run.loopState)) {
+    return invalidTransition(
+      state,
+      `USER_FOLLOWUP requires non-terminal run; got ${run.loopState} for ${runId}`,
+    );
+  }
+  const stage = run.stages[stageName];
+  if (!stage) {
+    return invalidTransition(state, `USER_FOLLOWUP for unknown stage=${stageName}`);
+  }
+
+  const effects: PipelineEffect[] = [
+    {
+      type: "APPEND_THREAD_MESSAGE",
+      runId,
+      stageRunId,
+      role: "user",
+      content: message,
+      ...(reviewerId ? { reviewerId } : {}),
+    },
+    {
+      type: "SEND_FOLLOWUP",
+      runId,
+      stageRunId,
+      stageName,
+      sessionId: run.sessionId,
+      message,
+      ...(reviewerId ? { reviewerId } : {}),
+    },
+    {
+      type: "EMIT_OBSERVATION",
+      event: {
+        name: "pipeline.followup.sent",
+        data: {
+          runId,
+          stageRunId,
+          stageName,
+          sessionId: run.sessionId,
+          ...(reviewerId ? { reviewerId } : {}),
+        },
+      },
+    },
+  ];
+
+  return { state, effects };
+}
+
+interface FollowupReplyEvent {
+  now: number;
+  runId: RunId;
+  stageRunId: StageRunId;
+  stageName: string;
+  reply: string;
+}
+
+function reduceFollowupReply(state: EngineState, event: FollowupReplyEvent): ReducerResult {
+  const { runId, stageRunId, stageName, reply, now: _now } = event;
+  const run = state.runs[runId];
+  if (!run) return invalidTransition(state, `FOLLOWUP_REPLY for unknown runId=${runId}`);
+
+  const effects: PipelineEffect[] = [
+    {
+      type: "APPEND_THREAD_MESSAGE",
+      runId,
+      stageRunId,
+      role: "agent",
+      content: reply,
+    },
+    {
+      type: "EMIT_OBSERVATION",
+      event: {
+        name: "pipeline.followup.reply",
+        data: { runId, stageRunId, stageName, sessionId: run.sessionId },
+      },
+    },
+  ];
+
+  return { state, effects };
 }

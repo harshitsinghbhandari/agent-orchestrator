@@ -502,3 +502,43 @@ export interface TaskContext {
 export interface BuiltinTaskContext extends TaskContext {
   sendToSession: (sessionId: string, message: string) => Promise<void>;
 }
+
+// ============================================================================
+// Conversational follow-up (Agent.sendFollowUpToTask)
+// ============================================================================
+
+/**
+ * Context handed to `Agent.sendFollowUpToTask`. The workspace path is the
+ * worker session's workspace (not the pipeline run's project root). When the
+ * worktree has been removed, callers must surface `ReviewerWorkspaceGone`
+ * (HTTP 410 from the dashboard) — implementations must NOT fall back to the
+ * project root.
+ */
+export interface FollowUpContext {
+  sessionId: string;
+  workspacePath: string;
+  pipelineRunId: RunId;
+  stageRunId: StageRunId;
+  pipelineName: string;
+  stageName: string;
+}
+
+export interface FollowUpResult {
+  /** Optional agent reply captured synchronously. */
+  reply?: string;
+  /** Internal agent thread id, if the agent surfaces one. */
+  agentThreadId?: string;
+}
+
+/**
+ * One persisted message in a stage-run follow-up thread. Stored at
+ * `pipelines/threads/{runId}/{stageRunId}.jsonl`, one JSON record per line.
+ */
+export interface ThreadMessage {
+  role: "user" | "agent" | "system";
+  content: string;
+  /** ISO-8601 timestamp. */
+  ts: string;
+  /** Optional reviewer id surface label, e.g. `{sessionPrefix}-rev-N`. */
+  reviewerId?: string;
+}

@@ -1,5 +1,14 @@
 import type { ObservabilityLevel } from "./observability.js";
 import type { ConfiguredPipeline } from "./pipeline/config-schema.js";
+import type {
+  FollowUpContext as PipelineFollowUpContext,
+  FollowUpResult as PipelineFollowUpResult,
+  ThreadMessage as PipelineThreadMessage,
+} from "./pipeline/types.js";
+
+export type FollowUpContext = PipelineFollowUpContext;
+export type FollowUpResult = PipelineFollowUpResult;
+export type ThreadMessage = PipelineThreadMessage;
 
 /**
  * Agent Orchestrator — Core Type Definitions
@@ -555,7 +564,24 @@ export interface Agent {
    * it is exercised by `ao spawn`. Throw with an actionable error message.
    */
   preflight?(context: PreflightContext): Promise<void>;
+
+  /**
+   * Optional: deliver a user follow-up message into an existing agent task
+   * (the linked worker session for a pipeline stage in `awaiting_context`).
+   *
+   * Implementations should NOT spawn a new session. Codex implements this via
+   * `codex exec --continue` against the existing rollout file in the workspace;
+   * agents without an equivalent capability omit the method.
+   *
+   * The pipeline engine routes USER_FOLLOWUP events through this method; the
+   * dashboard shows "chat unavailable" gracefully when an agent doesn't
+   * implement it.
+   */
+  sendFollowUpToTask?(ctx: FollowUpContext, message: string): Promise<FollowUpResult>;
 }
+
+// FollowUpContext / FollowUpResult / ThreadMessage live in pipeline/types.ts
+// and are re-exported at the top of this file via `export type`.
 
 export interface AgentLaunchConfig {
   sessionId: SessionId;

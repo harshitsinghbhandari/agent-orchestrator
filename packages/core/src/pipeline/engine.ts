@@ -106,6 +106,13 @@ export interface PipelineEngineDeps {
    * (most v0.x tests) need not wire this up.
    */
   builtin?: BuiltinDispatcherDeps;
+  /**
+   * Optional follow-up delivery. When the reducer emits SEND_FOLLOWUP, the
+   * engine calls this so the appropriate agent plugin can drop the message
+   * into the existing task (Codex: `codex exec --continue`). When omitted,
+   * the effect is a no-op and the dashboard surfaces "chat unavailable".
+   */
+  followUp?: FollowUpDeliveryDeps;
   /** Optional initial state (e.g. restored from disk on startup). Defaults to empty. */
   initialState?: EngineState;
   /** Override clock for tests. */
@@ -122,6 +129,32 @@ export interface PipelineEngineDeps {
     event: { name: string; data: Record<string, unknown> },
     context: ObservationContext,
   ) => void;
+}
+
+/**
+ * Deliver a follow-up message to an existing worker session. The engine asks
+ * the session manager for the session, then forwards to the matching agent
+ * plugin's `sendFollowUpToTask`. Implementations live in `cli/lib` (CLI) and
+ * `web/lib` (web) so the engine itself stays free of plugin-registry I/O.
+ */
+export interface FollowUpDeliveryDeps {
+  /**
+   * Deliver the message. Implementation MUST:
+   *   - resolve the session by id;
+   *   - confirm the worker workspace still exists (worker-alive pre-send);
+   *   - call the agent plugin's `sendFollowUpToTask`;
+   *   - throw on missing workspace so the engine can surface
+   *     `pipeline.followup.workspace_gone` and the dashboard returns 410.
+   */
+  deliver(input: {
+    sessionId: string;
+    runId: RunId;
+    stageRunId: StageRunId;
+    stageName: string;
+    pipelineName: string;
+    message: string;
+    reviewerId?: string;
+  }): Promise<{ reply?: string }>;
 }
 
 export interface StartRunInput {
@@ -227,7 +260,8 @@ export function hydrateEngineState(store: PipelineStore): EngineState {
 }
 
 export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
-  const { store, registry, agentExecutor, commandExecutor, builtin, now = Date.now } = deps;
+  const { store, registry, agentExecutor, commandExecutor, builtin, followUp, now = Date.now } =
+    deps;
   const onObservation = deps.onObservation;
 
   let state: EngineState = deps.initialState ?? emptyEngineState();
@@ -314,6 +348,28 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
 
       case "APPEND_ARTIFACTS":
         store.appendArtifacts(effect.runId, effect.stageRunId, effect.artifacts);
+        break;
+
+      case "UPDATE_ARTIFACT_STATUS":
+        store.updateArtifactStatus(
+          effect.runId,
+          effect.stageRunId,
+          effect.artifactId,
+          effect.status,
+        );
+        break;
+
+      case "APPEND_THREAD_MESSAGE":
+        store.appendThreadMessage(effect.runId, effect.stageRunId, {
+          role: effect.role,
+          content: effect.content,
+          ts: new Date(now()).toISOString(),
+          ...(effect.reviewerId ? { reviewerId: effect.reviewerId } : {}),
+        });
+        break;
+
+      case "SEND_FOLLOWUP":
+        await deliverFollowUp(effect);
         break;
 
       case "START_STAGE": {
@@ -572,6 +628,70 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
         stageName: stage.name,
         errorMessage:
           err instanceof Error ? err.message : `command executor failed: ${String(err)}`,
+      });
+    }
+  }
+
+  async function deliverFollowUp(effect: {
+    runId: RunId;
+    stageRunId: StageRunId;
+    stageName: string;
+    sessionId: string;
+    message: string;
+    reviewerId?: string;
+  }): Promise<void> {
+    if (!followUp) {
+      await executeEffect({
+        type: "EMIT_OBSERVATION",
+        event: {
+          name: "pipeline.followup.unavailable",
+          data: {
+            runId: effect.runId,
+            stageRunId: effect.stageRunId,
+            stageName: effect.stageName,
+            sessionId: effect.sessionId,
+          },
+        },
+      });
+      return;
+    }
+
+    const run = state.runs[effect.runId];
+    const pipelineName = run?.pipelineName ?? "";
+    try {
+      const result = await followUp.deliver({
+        sessionId: effect.sessionId,
+        runId: effect.runId,
+        stageRunId: effect.stageRunId,
+        stageName: effect.stageName,
+        pipelineName,
+        message: effect.message,
+        ...(effect.reviewerId ? { reviewerId: effect.reviewerId } : {}),
+      });
+      if (result.reply !== undefined && result.reply.length > 0) {
+        await dispatchInline({
+          type: "FOLLOWUP_REPLY",
+          now: now(),
+          runId: effect.runId,
+          stageRunId: effect.stageRunId,
+          stageName: effect.stageName,
+          reply: result.reply,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await executeEffect({
+        type: "EMIT_OBSERVATION",
+        event: {
+          name: "pipeline.followup.delivery_failed",
+          data: {
+            runId: effect.runId,
+            stageRunId: effect.stageRunId,
+            stageName: effect.stageName,
+            sessionId: effect.sessionId,
+            error: message,
+          },
+        },
       });
     }
   }

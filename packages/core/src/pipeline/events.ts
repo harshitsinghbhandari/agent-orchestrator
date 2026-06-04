@@ -7,7 +7,9 @@
 
 import type {
   Artifact,
+  ArtifactId,
   ArtifactInput,
+  ArtifactStatus,
   EngineState,
   LoopState,
   Pipeline,
@@ -19,6 +21,12 @@ import type {
   StageTriggerEvent,
   Verdict,
 } from "./types.js";
+
+/** Stable identity for a stage-run follow-up thread. */
+export interface ThreadKey {
+  runId: RunId;
+  stageRunId: StageRunId;
+}
 
 interface EventBase {
   /** Driver-stamped timestamp (epoch ms). Reducer must not read the clock. */
@@ -80,6 +88,31 @@ export type PipelineEvent =
       sessionId: string;
       pipelineName: string;
     })
+  | (EventBase & {
+      type: "ARTIFACT_STATUS_CHANGED";
+      runId: RunId;
+      stageRunId: StageRunId;
+      artifactId: ArtifactId;
+      status: ArtifactStatus;
+      /** Optional human label, e.g. reviewer id, for audit observation. */
+      actor?: string;
+    })
+  | (EventBase & {
+      type: "USER_FOLLOWUP";
+      runId: RunId;
+      stageRunId: StageRunId;
+      stageName: string;
+      message: string;
+      /** Reviewer surface id for thread persistence + observation. */
+      reviewerId?: string;
+    })
+  | (EventBase & {
+      type: "FOLLOWUP_REPLY";
+      runId: RunId;
+      stageRunId: StageRunId;
+      stageName: string;
+      reply: string;
+    })
   | (EventBase & { type: "TICK" });
 
 export type PipelineEffect =
@@ -92,6 +125,30 @@ export type PipelineEffect =
       runId: RunId;
       stageRunId: StageRunId;
       artifacts: Artifact[];
+    }
+  | {
+      type: "UPDATE_ARTIFACT_STATUS";
+      runId: RunId;
+      stageRunId: StageRunId;
+      artifactId: ArtifactId;
+      status: ArtifactStatus;
+    }
+  | {
+      type: "APPEND_THREAD_MESSAGE";
+      runId: RunId;
+      stageRunId: StageRunId;
+      role: "user" | "agent" | "system";
+      content: string;
+      reviewerId?: string;
+    }
+  | {
+      type: "SEND_FOLLOWUP";
+      runId: RunId;
+      stageRunId: StageRunId;
+      stageName: string;
+      sessionId: string;
+      message: string;
+      reviewerId?: string;
     }
   | {
       type: "EMIT_OBSERVATION";

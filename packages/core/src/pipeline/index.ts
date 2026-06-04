@@ -21,6 +21,8 @@ export {
   artifactsDirForRun,
   artifactsFilePath,
   loopFilePath,
+  threadsDirForRun,
+  threadFilePath,
   type PipelineLayout,
 } from "./paths.js";
 
@@ -83,6 +85,7 @@ export {
   type PipelineEngineDeps,
   type StartRunInput,
   type ObservationContext,
+  type FollowUpDeliveryDeps,
 } from "./engine.js";
 
 export {

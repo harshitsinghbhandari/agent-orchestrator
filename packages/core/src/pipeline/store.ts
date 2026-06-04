@@ -40,14 +40,19 @@ import {
   pipelineLayout,
   runFilePath,
   stageFilePath,
+  threadFilePath,
+  threadsDirForRun,
 } from "./paths.js";
 import type {
   Artifact,
+  ArtifactId,
+  ArtifactStatus,
   LoopState,
   RunId,
   RunState,
   StageRunId,
   StageState,
+  ThreadMessage,
 } from "./types.js";
 
 export interface PersistedStageRun extends StageState {
@@ -74,6 +79,22 @@ export interface PipelineStore {
 
   saveLoopState(runId: RunId, loopState: LoopState): void;
   loadLoopState(runId: RunId): LoopState | null;
+
+  /**
+   * Update a single artifact's status. Reads the JSONL, mutates the matching
+   * record, and atomically rewrites the file. No-op when the artifact is
+   * missing — the engine surfaces that via the invalidTransition observation
+   * already.
+   */
+  updateArtifactStatus(
+    runId: RunId,
+    stageRunId: StageRunId,
+    artifactId: ArtifactId,
+    status: ArtifactStatus,
+  ): void;
+
+  appendThreadMessage(runId: RunId, stageRunId: StageRunId, msg: ThreadMessage): void;
+  listThreadMessages(runId: RunId, stageRunId: StageRunId): ThreadMessage[];
 }
 
 /**
@@ -205,6 +226,50 @@ export function createPipelineStore(
 
     loadLoopState(runId) {
       return readJsonOrNull<LoopState>(loopFilePath(root, runId));
+    },
+
+    updateArtifactStatus(runId, stageRunId, artifactId, status) {
+      const path = artifactsFilePath(root, runId, stageRunId);
+      if (!existsSync(path)) return;
+      const body = readFileSync(path, "utf-8");
+      let changed = false;
+      const out: Artifact[] = [];
+      for (const line of body.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const a = JSON.parse(trimmed) as Artifact;
+        if (a.artifactId === artifactId && a.status !== status) {
+          out.push({ ...a, status });
+          changed = true;
+        } else {
+          out.push(a);
+        }
+      }
+      if (!changed) return;
+      const rewritten = out.map((a) => JSON.stringify(a)).join("\n") + "\n";
+      atomicWriteFileSync(path, rewritten);
+    },
+
+    appendThreadMessage(runId, stageRunId, msg) {
+      ensureDir(threadsDirForRun(root, runId));
+      appendFileSync(
+        threadFilePath(root, runId, stageRunId),
+        JSON.stringify(msg) + "\n",
+        "utf-8",
+      );
+    },
+
+    listThreadMessages(runId, stageRunId) {
+      const path = threadFilePath(root, runId, stageRunId);
+      if (!existsSync(path)) return [];
+      const body = readFileSync(path, "utf-8");
+      const out: ThreadMessage[] = [];
+      for (const line of body.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        out.push(JSON.parse(trimmed) as ThreadMessage);
+      }
+      return out;
     },
   };
 }
