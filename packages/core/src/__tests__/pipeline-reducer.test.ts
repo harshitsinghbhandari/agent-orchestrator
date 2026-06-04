@@ -241,9 +241,13 @@ describe("pipeline reducer — STAGE_STARTED / STAGE_COMPLETED", () => {
 });
 
 describe("pipeline reducer — STAGE_FAILED", () => {
-  it("marks the run stalled and freezes remaining stages", () => {
+  it("cascade-skips downstream stages and terminates as stalled under v0 defaults", () => {
+    // Failure-tolerant scheduling keeps the run alive when an upstream fails;
+    // here `b` has `dependsOn: ["a"]` with no recovery routes, so the
+    // scheduler cascade-skips it. With every stage now terminal and no
+    // `exitPredicates`, the v0 fallback ("any failed → stalled") fires.
     const pipeline = makePipeline({
-      stages: [makeStage("a"), makeStage("b")],
+      stages: [makeStage("a"), makeStage("b", { dependsOn: ["a"] })],
       maxConcurrentStages: 1,
     });
     const triggered = fireTrigger(emptyEngineState(), { pipeline });
@@ -270,6 +274,54 @@ describe("pipeline reducer — STAGE_FAILED", () => {
       .filter((e) => e.type === "EMIT_OBSERVATION")
       .map((e) => (e.type === "EMIT_OBSERVATION" ? e.event.name : ""));
     expect(obs).toContain("pipeline.run.terminated");
+  });
+
+  it("lets independent siblings keep running after a parallel failure", () => {
+    // Failure-tolerance: a failing in one branch no longer cancels parallel
+    // siblings (the v0 "any STAGE_FAILED terminates the run as stalled"
+    // limitation that #196 fixes). The run stays `running` until every
+    // stage reaches a terminal status; only then does the exit decision fire.
+    const pipeline = makePipeline({
+      stages: [makeStage("a"), makeStage("b")],
+      maxConcurrentStages: 2,
+    });
+    const triggered = fireTrigger(emptyEngineState(), { pipeline });
+    const startedA = reduce(triggered.state, {
+      type: "STAGE_STARTED",
+      now: NOW + 1,
+      runId: asRunId("run-1"),
+      stageName: "a",
+    });
+    const startedB = reduce(startedA.state, {
+      type: "STAGE_STARTED",
+      now: NOW + 2,
+      runId: asRunId("run-1"),
+      stageName: "b",
+    });
+    const failedA = reduce(startedB.state, {
+      type: "STAGE_FAILED",
+      now: NOW + 3,
+      runId: asRunId("run-1"),
+      stageName: "a",
+      errorMessage: "boom",
+    });
+
+    expect(failedA.state.runs[asRunId("run-1")].loopState).toBe("running");
+    expect(failedA.state.runs[asRunId("run-1")].stages.a.status).toBe("failed");
+    expect(failedA.state.runs[asRunId("run-1")].stages.b.status).toBe("running");
+    // No CANCEL_STAGE for the running sibling — it gets to finish.
+    expect(failedA.effects.find((e) => e.type === "CANCEL_STAGE")).toBeUndefined();
+
+    // Once b succeeds, exit-decision fires: v0 default → any failed → stalled.
+    const completedB = reduce(failedA.state, {
+      type: "STAGE_COMPLETED",
+      now: NOW + 4,
+      runId: asRunId("run-1"),
+      stageName: "b",
+      artifacts: [],
+    });
+    expect(completedB.state.runs[asRunId("run-1")].loopState).toBe("stalled");
+    expect(completedB.state.runs[asRunId("run-1")].terminationReason).toBe("stage_failure");
   });
 });
 

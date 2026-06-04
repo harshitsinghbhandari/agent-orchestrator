@@ -28,6 +28,12 @@ export {
 
 export { findFirstStageCycle, scheduleAfterChange, type ScheduleResult } from "./dag.js";
 
+export {
+  evaluate as evaluatePredicate,
+  isV0Default,
+  predicateReferencedStages,
+} from "./predicate-evaluator.js";
+
 export { buildStagePrompt, type StagePromptInput } from "./stage-prompt.js";
 
 export {
