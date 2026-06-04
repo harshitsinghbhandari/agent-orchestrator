@@ -21,6 +21,8 @@ export {
   artifactsDirForRun,
   artifactsFilePath,
   loopFilePath,
+  threadsDirForRun,
+  threadFilePath,
   type PipelineLayout,
 } from "./paths.js";
 

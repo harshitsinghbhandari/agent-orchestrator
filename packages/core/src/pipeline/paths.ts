@@ -21,6 +21,7 @@ export interface PipelineLayout {
   stagesDir: string;
   artifactsDir: string;
   loopsDir: string;
+  threadsDir: string;
 }
 
 export function pipelineLayout(root: string): PipelineLayout {
@@ -30,6 +31,7 @@ export function pipelineLayout(root: string): PipelineLayout {
     stagesDir: join(root, "stages"),
     artifactsDir: join(root, "artifacts"),
     loopsDir: join(root, "loops"),
+    threadsDir: join(root, "threads"),
   };
 }
 
@@ -51,4 +53,12 @@ export function artifactsFilePath(root: string, runId: RunId, stageRunId: StageR
 
 export function loopFilePath(root: string, runId: RunId): string {
   return join(root, "loops", `${runId}.json`);
+}
+
+export function threadsDirForRun(root: string, runId: RunId): string {
+  return join(root, "threads", runId);
+}
+
+export function threadFilePath(root: string, runId: RunId, stageRunId: StageRunId): string {
+  return join(threadsDirForRun(root, runId), `${stageRunId}.jsonl`);
 }
