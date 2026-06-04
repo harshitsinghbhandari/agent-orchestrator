@@ -18,6 +18,7 @@ import { cn } from "@/lib/cn";
 import { getSessionTitle } from "@/lib/format";
 import { CICheckList } from "./CIBadge";
 import { getSizeLabel } from "./PRStatus";
+import { SessionPipelineStrip } from "./SessionPipelineStrip";
 import { projectSessionHashPath, projectSessionPath } from "@/lib/routes";
 
 /**
@@ -628,6 +629,8 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
             </p>
           </div>
         )}
+
+        <SessionPipelineStrip sessionId={session.id} projectId={session.projectId} />
 
         {rateLimited && pr?.state === "open" && (
           <div className="px-[10px] pb-[5px]">
