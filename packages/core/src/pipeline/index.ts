@@ -85,6 +85,7 @@ export {
   type PipelineEngineDeps,
   type StartRunInput,
   type ObservationContext,
+  type FollowUpDeliveryDeps,
 } from "./engine.js";
 
 export {

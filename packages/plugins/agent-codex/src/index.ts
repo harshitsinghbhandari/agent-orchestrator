@@ -16,6 +16,8 @@ import {
   type ActivityState,
   type ActivityDetection,
   type CostEstimate,
+  type FollowUpContext,
+  type FollowUpResult,
   type PluginModule,
   type ProcessProbeResult,
   type ProjectConfig,
@@ -837,6 +839,43 @@ function createCodexAgent(): Agent {
 
     async setupWorkspaceHooks(_workspacePath: string, _config: WorkspaceHooksConfig): Promise<void> {
       // PATH wrappers are installed by session-manager for all agents.
+    },
+
+    /**
+     * Deliver a pipeline follow-up message into the existing Codex task via
+     * `codex exec --continue`. Runs as a one-shot, headless invocation that
+     * reuses the latest thread for the workspace — no new session, no tmux.
+     *
+     * The engine surfaces failures (missing binary, dead worker, missing
+     * workspace) by throwing; the dashboard maps "workspace gone" to HTTP 410
+     * `ReviewerWorkspaceGone` and never falls back to the project root.
+     */
+    async sendFollowUpToTask(ctx: FollowUpContext, message: string): Promise<FollowUpResult> {
+      const cwd = ctx.workspacePath;
+      const binary = resolvedBinary ?? "codex";
+      try {
+        // `codex exec` runs a single turn against the latest thread when
+        // --continue is passed. `--skip-git-repo-check` lets the engine talk
+        // to checkouts that may be detached/worktree-style without aborting.
+        const { stdout } = await execFileAsync(
+          binary,
+          ["exec", "--continue", "--skip-git-repo-check", "--", message],
+          {
+            cwd,
+            env: { ...process.env, CODEX_DISABLE_UPDATE_CHECK: "1" },
+            // Codex follow-ups are short; long replies arrive via the JSONL.
+            timeout: 60_000,
+            maxBuffer: 10 * 1024 * 1024,
+            shell: false,
+            windowsHide: true,
+          },
+        );
+        const reply = (stdout ?? "").trim();
+        return reply.length > 0 ? { reply } : {};
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`codex exec --continue failed: ${message}`, { cause: err });
+      }
     },
 
     async postLaunchSetup(_session: Session): Promise<void> {

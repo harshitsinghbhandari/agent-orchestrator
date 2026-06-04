@@ -508,6 +508,10 @@ export type {
   PipelineStore,
   PersistedStageRun,
   PipelineLayout,
+  // Follow-up + chat thread (v2)
+  FollowUpContext,
+  FollowUpResult,
+  ThreadMessage,
 } from "./pipeline/index.js";
 
 export type {
@@ -529,6 +533,7 @@ export type {
   WorkspaceClass,
   WorkspaceSnapshot,
   GuardCheckResult,
+  FollowUpDeliveryDeps,
 } from "./pipeline/index.js";
 
 export {
