@@ -19,7 +19,7 @@ interface SessionPipelineStripProps {
  * Polls `/api/pipelines/runs` at the 5s dashboard cadence (C-14). Skips
  * setState after unmount via the `cancelled` flag.
  */
-export function SessionPipelineStrip(props: SessionPipelineStripProps): JSX.Element | null {
+export function SessionPipelineStrip(props: SessionPipelineStripProps) {
   const { sessionId, projectId } = props;
   const [runs, setRuns] = useState<PipelineRunSummary[]>([]);
 

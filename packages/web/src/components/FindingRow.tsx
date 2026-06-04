@@ -32,7 +32,7 @@ interface FindingRowProps {
  * Each action POSTs the corresponding artifact-status mutation; the
  * surrounding card refreshes via the SSE feed.
  */
-export function FindingRow(props: FindingRowProps): JSX.Element {
+export function FindingRow(props: FindingRowProps) {
   const { runId, projectId, finding, onStatusChanged } = props;
   const [busy, setBusy] = useState<"dismiss" | "reopen" | "send" | null>(null);
   const [error, setError] = useState<string | null>(null);

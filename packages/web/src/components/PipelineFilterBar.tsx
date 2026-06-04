@@ -15,7 +15,7 @@ interface PipelineFilterBarProps {
  * Filter bar — pipeline-name multi-select + "show dismissed" toggle.
  * No external UI libs (C-01), only Tailwind + CSS-variable colors (C-02/C-05).
  */
-export function PipelineFilterBar(props: PipelineFilterBarProps): JSX.Element {
+export function PipelineFilterBar(props: PipelineFilterBarProps) {
   const { filters, availablePipelines, onChange } = props;
 
   const togglePipeline = (name: string) => {

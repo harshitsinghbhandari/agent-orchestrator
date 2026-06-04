@@ -60,7 +60,7 @@ const COLUMNS: readonly KanbanColumn[] = [
  * so first paint shows real data, and the SSE snapshot replaces it once the
  * EventSource connects.
  */
-export function PipelineWorkbench(props: PipelineWorkbenchProps): JSX.Element {
+export function PipelineWorkbench(props: PipelineWorkbenchProps) {
   const { initialRuns, projectFilter } = props;
   const live = usePipelineEvents({ project: projectFilter ?? undefined });
   const runs = live.lastSnapshotAt !== null ? live.runs : initialRuns;

@@ -373,7 +373,7 @@ export async function listRunsAcrossProjects(filterProjectId?: string): Promise<
     : Object.keys(config.projects);
 
   for (const projectId of projectIds) {
-    let runs: RunState[] = [];
+    let runs: RunState[];
     try {
       runs = getPipelineStore(projectId).listRuns();
     } catch {

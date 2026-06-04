@@ -16,7 +16,7 @@ interface PipelineRunCardProps {
  * artifact actions, and the chat panel live in a separate detail view to keep
  * the column scannable.
  */
-export function PipelineRunCard({ run, onExpand }: PipelineRunCardProps): JSX.Element {
+export function PipelineRunCard({ run, onExpand }: PipelineRunCardProps) {
   const [expanded, setExpanded] = useState(false);
   const stageNames = Object.keys(run.stageStatuses);
 
@@ -80,7 +80,7 @@ interface StageDotProps {
   status: string;
 }
 
-function StageDot({ stageName, status }: StageDotProps): JSX.Element {
+function StageDot({ stageName, status }: StageDotProps) {
   const tone = stageStatusTone(status);
   return (
     <li

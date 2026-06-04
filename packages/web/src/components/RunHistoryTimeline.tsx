@@ -21,7 +21,7 @@ interface RunHistoryTimelineProps {
  * dot represents one run, colored by terminal `loopState`. Hovering reveals
  * runId + duration.
  */
-export function RunHistoryTimeline({ entries }: RunHistoryTimelineProps): JSX.Element {
+export function RunHistoryTimeline({ entries }: RunHistoryTimelineProps) {
   if (entries.length === 0) {
     return (
       <p className="text-[11px] text-[var(--color-text-tertiary)]">No prior runs.</p>

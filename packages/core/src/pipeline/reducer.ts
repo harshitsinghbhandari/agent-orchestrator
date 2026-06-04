@@ -808,7 +808,7 @@ function reduceArtifactStatusChanged(
 
   const findings = run.findings ?? [];
   const idx = findings.findIndex((a) => a.artifactId === artifactId);
-  let updatedRun: RunState = run;
+  let updatedRun: RunState;
   if (idx >= 0) {
     const next = findings.slice();
     next[idx] = { ...findings[idx], status };
@@ -859,7 +859,7 @@ interface UserFollowupEvent {
  * reducer accepts both; the dashboard already filters by stage availability.
  */
 function reduceUserFollowup(state: EngineState, event: UserFollowupEvent): ReducerResult {
-  const { runId, stageRunId, stageName, message, reviewerId, now } = event;
+  const { runId, stageRunId, stageName, message, reviewerId, now: _now } = event;
   const run = state.runs[runId];
   if (!run) return invalidTransition(state, `USER_FOLLOWUP for unknown runId=${runId}`);
   if (isTerminalLoopState(run.loopState)) {

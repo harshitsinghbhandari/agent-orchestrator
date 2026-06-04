@@ -28,7 +28,7 @@ interface ChatPanelProps {
  * Worktree-gone (HTTP 410 `ReviewerWorkspaceGone`) surfaces inline — no
  * project-root fallback.
  */
-export function ChatPanel(props: ChatPanelProps): JSX.Element {
+export function ChatPanel(props: ChatPanelProps) {
   const { runId, stageRunId, projectId, followUpAvailable, stageActive, reviewerId } = props;
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -52,7 +52,6 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
     void refresh();
     const timer = setInterval(() => void refresh(), 5_000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, stageRunId, projectId]);
 
   const send = async (): Promise<void> => {
