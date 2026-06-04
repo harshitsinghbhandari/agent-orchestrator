@@ -13,12 +13,14 @@
 import { z } from "zod";
 
 import { findFirstStageCycle } from "./dag.js";
+import { predicateReferencedStages } from "./predicate-evaluator.js";
 import {
   asPipelineId,
+  type ExitPredicates,
   type Pipeline,
+  type Predicate,
   type Stage,
   type StageExecutor,
-  type StageRoutePredicate,
   type StageRoutes,
   type TaskMode,
 } from "./types.js";
@@ -72,14 +74,82 @@ const StageBudgetSchema = z.object({
   maxDurationMs: z.number().int().nonnegative().optional(),
 });
 
-const StageRoutePredicateSchema = z.discriminatedUnion("kind", [
+const VerdictSchema = z.enum(["pass", "fail", "neutral"]);
+const SeveritySchema = z.enum(["error", "warning", "info"]);
+
+/**
+ * Recursive Zod schema for the typed `Predicate` DSL plus the legacy three
+ * `StageRoutePredicate` shapes. The legacy shapes are accepted at parse
+ * time and TRANSFORMED into their typed equivalents — runtime code only
+ * ever sees the canonical `Predicate` form coming out of config load.
+ *
+ * Transformation:
+ *  - `allSucceeded` → `all_pass`
+ *  - `anySucceeded` → `any_pass`
+ *  - `anyFailed`    → `or` of per-stage `stage_verdict: "fail"`
+ *
+ * `z.lazy` powers the recursion for `and` / `or` / `not`. The discriminator
+ * stays on `kind`, but we use `z.union` (not `discriminatedUnion`) because
+ * `z.lazy` cannot participate in discriminatedUnion's eager analysis.
+ */
+const PredicateSchema: z.ZodType<Predicate> = z.lazy(() =>
+  z.union([
+    z.object({ kind: z.literal("all_pass"), stages: z.array(z.string().min(1)).min(1) }),
+    z.object({ kind: z.literal("any_pass"), stages: z.array(z.string().min(1)).min(1) }),
+    z.object({ kind: z.literal("majority_pass"), stages: z.array(z.string().min(1)).min(1) }),
+    z.object({
+      kind: z.literal("no_open_findings"),
+      stage: z.string().min(1).optional(),
+    }),
+    z.object({
+      kind: z.literal("finding_count_below"),
+      max: z.number().int().nonnegative(),
+      stage: z.string().min(1).optional(),
+      severity: SeveritySchema.optional(),
+    }),
+    z.object({
+      kind: z.literal("loop_rounds_at_least"),
+      n: z.number().int().positive(),
+    }),
+    z.object({
+      kind: z.literal("stage_retried_at_least"),
+      stage: z.string().min(1),
+      n: z.number().int().positive(),
+    }),
+    z.object({
+      kind: z.literal("stage_verdict"),
+      stage: z.string().min(1),
+      verdict: VerdictSchema,
+    }),
+    z.object({ kind: z.literal("and"), predicates: z.array(PredicateSchema).min(1) }),
+    z.object({ kind: z.literal("or"), predicates: z.array(PredicateSchema).min(1) }),
+    z.object({ kind: z.literal("not"), predicate: PredicateSchema }),
+    z.object({ kind: z.literal("v0_default") }),
+  ]),
+);
+
+/**
+ * Accept either the typed Predicate DSL or one of the legacy three shapes
+ * (`allSucceeded` / `anySucceeded` / `anyFailed`). Both are accepted at
+ * parse time; the route normalizer below normalizes legacy → typed before
+ * the runtime Pipeline is constructed.
+ */
+const LegacyRoutePredicateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("allSucceeded"), stages: z.array(z.string().min(1)).min(1) }),
   z.object({ kind: z.literal("anySucceeded"), stages: z.array(z.string().min(1)).min(1) }),
   z.object({ kind: z.literal("anyFailed"), stages: z.array(z.string().min(1)).min(1) }),
 ]);
 
+const RoutePredicateSchema = z.union([PredicateSchema, LegacyRoutePredicateSchema]);
+
 const StageRoutesSchema = z.object({
-  when: StageRoutePredicateSchema,
+  when: RoutePredicateSchema,
+});
+
+const ExitPredicatesSchema = z.object({
+  done: PredicateSchema.optional(),
+  stalled: PredicateSchema.optional(),
+  blocksMerge: PredicateSchema.optional(),
 });
 
 const StageSchema = z.object({
@@ -115,6 +185,7 @@ export const ConfiguredPipelineSchema = z
     name: z.string().min(1).optional(),
     stages: z.array(StageSchema).min(1),
     maxConcurrentStages: z.number().int().positive().optional(),
+    exitPredicates: ExitPredicatesSchema.optional(),
   })
   .superRefine((pipeline, ctx) => {
     const stageNames = new Set(pipeline.stages.map((s) => s.name));
@@ -155,19 +226,40 @@ export const ConfiguredPipelineSchema = z
       }
       const routes = stage.routes;
       if (routes) {
-        for (const ref of routes.when.stages) {
+        for (const ref of predicateReferencedStages(routes.when)) {
           if (!stageNames.has(ref)) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              path: ["stages", i, "routes", "when", "stages"],
+              path: ["stages", i, "routes", "when"],
               message: `Stage "${stage.name}" routes references unknown stage "${ref}".`,
             });
           }
           if (ref === stage.name) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              path: ["stages", i, "routes", "when", "stages"],
+              path: ["stages", i, "routes", "when"],
               message: `Stage "${stage.name}" cannot route to itself.`,
+            });
+          }
+        }
+      }
+    }
+
+    // exitPredicates references must point to known stage names too.
+    if (pipeline.exitPredicates) {
+      const branches: Array<{ key: keyof ExitPredicates; predicate?: Predicate }> = [
+        { key: "done", predicate: pipeline.exitPredicates.done },
+        { key: "stalled", predicate: pipeline.exitPredicates.stalled },
+        { key: "blocksMerge", predicate: pipeline.exitPredicates.blocksMerge },
+      ];
+      for (const { key, predicate } of branches) {
+        if (!predicate) continue;
+        for (const ref of predicateReferencedStages(predicate)) {
+          if (!stageNames.has(ref)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["exitPredicates", key],
+              message: `exitPredicates.${key} references unknown stage "${ref}".`,
             });
           }
         }
@@ -223,12 +315,7 @@ export function configuredPipelineToRuntime(key: string, configured: ConfiguredP
     }
 
     const routes: StageRoutes | undefined = stage.routes
-      ? {
-          when: {
-            kind: stage.routes.when.kind,
-            stages: [...stage.routes.when.stages],
-          } as StageRoutePredicate,
-        }
+      ? { when: normalizeRoutePredicate(stage.routes.when) }
       : undefined;
 
     return {
@@ -253,5 +340,32 @@ export function configuredPipelineToRuntime(key: string, configured: ConfiguredP
     ...(configured.maxConcurrentStages !== undefined
       ? { maxConcurrentStages: configured.maxConcurrentStages }
       : {}),
+    ...(configured.exitPredicates ? { exitPredicates: { ...configured.exitPredicates } } : {}),
   };
+}
+
+/**
+ * Normalize a parsed route predicate into the canonical typed `Predicate`
+ * DSL. Legacy `StageRoutePredicate` shapes (`allSucceeded`/`anySucceeded`/
+ * `anyFailed`) are rewritten into their typed equivalents so the runtime
+ * Pipeline only ever holds typed predicates.
+ */
+function normalizeRoutePredicate(predicate: z.infer<typeof RoutePredicateSchema>): Predicate {
+  switch (predicate.kind) {
+    case "allSucceeded":
+      return { kind: "all_pass", stages: [...predicate.stages] };
+    case "anySucceeded":
+      return { kind: "any_pass", stages: [...predicate.stages] };
+    case "anyFailed":
+      return {
+        kind: "or",
+        predicates: predicate.stages.map((stage) => ({
+          kind: "stage_verdict",
+          stage,
+          verdict: "fail",
+        })),
+      };
+    default:
+      return predicate;
+  }
 }

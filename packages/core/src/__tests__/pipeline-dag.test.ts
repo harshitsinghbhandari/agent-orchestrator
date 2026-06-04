@@ -478,10 +478,12 @@ describe("pipeline DAG — multi-pipeline support", () => {
 });
 
 describe("pipeline DAG — failure path (parallel)", () => {
-  it("STAGE_FAILED on a parallel branch terminates the run and marks sibling stages outdated/skipped", () => {
-    // Two independent branches running concurrently; the running sibling
-    // should transition `running → outdated` and emit a CANCEL_STAGE effect,
-    // while a not-yet-started downstream stage transitions `pending → skipped`.
+  it("failure-tolerant: parallel sibling keeps running, downstream cascade-skips", () => {
+    // Failure-tolerance (issue #196): a stage failure no longer terminates
+    // the run or cancels independent parallel siblings. The running sibling
+    // gets to finish naturally, the downstream stage with `dependsOn: [a]`
+    // (and no recovery routes) still cascade-skips, and the run only
+    // resolves to `stalled` once every stage is terminal.
     const pipeline = makePipeline(
       [
         makeStage("a"),
@@ -502,16 +504,22 @@ describe("pipeline DAG — failure path (parallel)", () => {
     });
 
     const run = failed.state.runs[asRunId("run-1")];
-    expect(run.loopState).toBe("stalled");
-    expect(run.terminationReason).toBe("stage_failure");
+    expect(run.loopState).toBe("running");
     expect(run.stages.a.status).toBe("failed");
-    expect(run.stages.b.status).toBe("outdated");
+    expect(run.stages.b.status).toBe("running");
     expect(run.stages.c.status).toBe("skipped");
+    expect(failed.effects.find((e) => e.type === "CANCEL_STAGE")).toBeUndefined();
 
-    const cancelB = failed.effects.find(
-      (e) => e.type === "CANCEL_STAGE" && e.stageName === "b",
-    );
-    expect(cancelB).toBeDefined();
+    // b completes — run is now all-terminal, v0 default → stalled.
+    const finished = reduce(failed.state, {
+      type: "STAGE_COMPLETED",
+      now: NOW + 4,
+      runId: asRunId("run-1"),
+      stageName: "b",
+      artifacts: [],
+    });
+    expect(finished.state.runs[asRunId("run-1")].loopState).toBe("stalled");
+    expect(finished.state.runs[asRunId("run-1")].terminationReason).toBe("stage_failure");
   });
 });
 
@@ -561,8 +569,9 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
   });
 
   it("revives `outdated` stages (running-at-terminate) so parallel branches recover", () => {
-    // a and b run concurrently; a fails and `terminateRunFromState` marks b
-    // `outdated` (because b was running). Without reviving outdated, b would
+    // a and b run concurrently; `STAGE_FAILED(a)` no longer cancels b under
+    // failure-tolerant scheduling, so we follow up with `RUN_CANCELLED` to
+    // outdate b (running → outdated). Without reviving outdated, b would
     // never recover and any downstream stage on b (here d) would cascade-skip
     // after resume.
     const pipeline = makePipeline(
@@ -576,13 +585,20 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
     const triggered = fireTrigger(pipeline);
     let s = startStage(triggered.state, asRunId("run-1"), "a", NOW + 1).state;
     s = startStage(s, asRunId("run-1"), "b", NOW + 2).state;
-    const failed = reduce(s, {
+    s = reduce(s, {
       type: "STAGE_FAILED",
       now: NOW + 3,
       runId: asRunId("run-1"),
       stageName: "a",
       errorMessage: "boom",
+    }).state;
+    const failed = reduce(s, {
+      type: "RUN_CANCELLED",
+      now: NOW + 4,
+      runId: asRunId("run-1"),
+      reason: "manual_cancel",
     });
+    expect(failed.state.runs[asRunId("run-1")].stages.a.status).toBe("failed");
     expect(failed.state.runs[asRunId("run-1")].stages.b.status).toBe("outdated");
 
     // Resume: caller must allocate fresh stageRunIds for BOTH a (failed) and
@@ -625,14 +641,24 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
     const triggered = fireTrigger(pipeline);
     let s = startStage(triggered.state, asRunId("run-1"), "a", NOW + 1).state;
     s = startStage(s, asRunId("run-1"), "b", NOW + 2).state;
-    // a fails -> run terminates, b is marked outdated (it was running).
-    const failed = reduce(s, {
+    // a fails (failure-tolerant: b keeps running); cancel terminates the
+    // run, outdating b. The combined sequence reproduces the v0 "failure
+    // outdates parallel sibling" state that this test was originally written
+    // against.
+    s = reduce(s, {
       type: "STAGE_FAILED",
       now: NOW + 3,
       runId: asRunId("run-1"),
       stageName: "a",
       errorMessage: "boom",
+    }).state;
+    const failed = reduce(s, {
+      type: "RUN_CANCELLED",
+      now: NOW + 4,
+      runId: asRunId("run-1"),
+      reason: "manual_cancel",
     });
+    expect(failed.state.runs[asRunId("run-1")].stages.a.status).toBe("failed");
     expect(failed.state.runs[asRunId("run-1")].stages.b.status).toBe("outdated");
     expect(failed.state.runs[asRunId("run-1")].stages.b.attempt).toBe(1);
 
@@ -700,16 +726,22 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
     const triggered = fireTrigger(pipeline);
     let s = startStage(triggered.state, asRunId("run-1"), "a", NOW + 1).state;
     s = startStage(s, asRunId("run-1"), "b", NOW + 2).state;
-    const failed = reduce(s, {
+    s = reduce(s, {
       type: "STAGE_FAILED",
       now: NOW + 3,
       runId: asRunId("run-1"),
       stageName: "a",
       errorMessage: "boom",
+    }).state;
+    const failed = reduce(s, {
+      type: "RUN_CANCELLED",
+      now: NOW + 4,
+      runId: asRunId("run-1"),
+      reason: "manual_cancel",
     });
     const resumed = reduce(failed.state, {
       type: "RUN_RESUMED",
-      now: NOW + 4,
+      now: NOW + 5,
       runId: asRunId("run-1"),
       stageRunIds: { a: asStageRunId("sr-a-2") }, // missing b
     });
@@ -771,9 +803,12 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
   });
 
   it("revived stages still get re-skipped when their routes predicate is unsatisfied", () => {
-    // c had `routes: { anyFailed: [a] }` — it was skipped via routes (not
-    // cascade) before the failure, then double-skipped by terminate. After
-    // resume + a-succeeds, c must re-skip because a no longer matches anyFailed.
+    // c routes against `b` succeeding, not `a` failing — so when a fails and
+    // the run falls to stalled (b cascade-skips because its dep failed),
+    // c is also cascade-skipped (routes reference b which is now skipped,
+    // not succeeded). After resume + a-succeeds + b-succeeds, c's routes
+    // would re-evaluate true; we make the route reference a sibling that
+    // STAYS skipped after revival to verify re-evaluation still skips c.
     const pipeline = makePipeline(
       [
         makeStage("a"),
@@ -781,14 +816,16 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
         {
           ...makeStage("c"),
           dependsOn: ["a"],
-          routes: { when: { kind: "anyFailed", stages: ["a"] } },
+          routes: { when: { kind: "anyFailed", stages: ["b"] } },
         },
       ],
       1,
     );
     const triggered = fireTrigger(pipeline);
     const startedA = startStage(triggered.state, asRunId("run-1"), "a", NOW + 1);
-    // a fails → terminate marks b, c skipped.
+    // a fails → b cascade-skips (dep failed, no routes), c cascade-skips
+    // (routes reference b which is skipped — `anyFailed: [b]` is false). All
+    // terminal → v0 default → stalled.
     const failedA = reduce(startedA.state, {
       type: "STAGE_FAILED",
       now: NOW + 2,
@@ -796,6 +833,7 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
       stageName: "a",
       errorMessage: "boom",
     });
+    expect(failedA.state.runs[asRunId("run-1")].loopState).toBe("stalled");
 
     const resumed = reduce(failedA.state, {
       type: "RUN_RESUMED",
@@ -804,11 +842,14 @@ describe("pipeline DAG — RUN_RESUMED with cascade-skipped stages", () => {
       stageRunIds: { a: asStageRunId("sr-a-2") },
     });
     const startedRetry = startStage(resumed.state, asRunId("run-1"), "a", NOW + 4);
-    const completed = completeStage(startedRetry.state, asRunId("run-1"), "a", NOW + 5);
+    const completedA = completeStage(startedRetry.state, asRunId("run-1"), "a", NOW + 5);
+    const startedB = startStage(completedA.state, asRunId("run-1"), "b", NOW + 6);
+    const completed = completeStage(startedB.state, asRunId("run-1"), "b", NOW + 7);
 
     const run = completed.state.runs[asRunId("run-1")];
     expect(run.stages.a.status).toBe("succeeded");
-    // b ran (deps satisfied, no routes), c re-skipped (anyFailed false).
+    expect(run.stages.b.status).toBe("succeeded");
+    // b succeeded (not failed), c's `anyFailed: [b]` route is still false → re-skipped.
     expect(run.stages.c.status).toBe("skipped");
   });
 });

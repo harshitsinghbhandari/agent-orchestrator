@@ -17,11 +17,13 @@
  */
 
 import type { PipelineEffect } from "./events.js";
+import { evaluate, predicateReferencedStages } from "./predicate-evaluator.js";
 import { iso, patchRun } from "./reducer-helpers.js";
 import {
+  type AnyPredicate,
+  type PredicateCtx,
   type RunState,
   type Stage,
-  type StageRoutePredicate,
   type StageState,
   isTerminalStageStatus,
 } from "./types.js";
@@ -59,7 +61,7 @@ export function scheduleAfterChange(run: RunState, now: number): ScheduleResult 
       const state = current.stages[stageDef.name];
       if (state.status !== "pending") continue;
       if (!areDepsSatisfiedForStart(stageDef, current.stages)) continue;
-      if (!evaluateRoutes(stageDef, current.stages)) continue;
+      if (!evaluateRoutes(stageDef, current)) continue;
       startEffects.push({
         type: "START_STAGE",
         runId: current.runId,
@@ -98,7 +100,7 @@ function applyEligibleSkips(run: RunState, now: number): { run: RunState; newlyS
       if (!arePreconditionsTerminal(stageDef, current.stages)) continue;
 
       const shouldSkip = stageDef.routes
-        ? !evaluatePredicate(stageDef.routes.when, current.stages)
+        ? !evaluatePredicateForRun(stageDef.routes.when, current)
         : !areAllDepsSucceeded(stageDef, current.stages);
 
       if (shouldSkip) {
@@ -119,7 +121,7 @@ function applyEligibleSkips(run: RunState, now: number): { run: RunState; newlyS
 function arePreconditionsTerminal(stage: Stage, stages: Record<string, StageState>): boolean {
   if (!areDepsTerminal(stage, stages)) return false;
   if (stage.routes) {
-    for (const ref of stage.routes.when.stages) {
+    for (const ref of predicateReferencedStages(stage.routes.when)) {
       const refState = stages[ref];
       if (!refState || !isTerminalStageStatus(refState.status)) return false;
     }
@@ -146,37 +148,41 @@ function areAllDepsSucceeded(stage: Stage, stages: Record<string, StageState>): 
 }
 
 /**
- * Eligible-to-start: every `dependsOn` must be `succeeded` (default) so the
- * scheduler doesn't optimistically start a stage whose upstream skipped or
- * failed. Routes are evaluated separately by `evaluateRoutes`.
+ * Eligible-to-start: when a stage has no `routes`, every `dependsOn` must be
+ * `succeeded` so the scheduler doesn't optimistically start a stage whose
+ * upstream skipped or failed.
+ *
+ * When `routes` IS set, the user is opting into custom activation semantics
+ * — recovery branches with `routes.when` referencing `anyFailed` upstream
+ * are the canonical case. In that mode we only require deps to be terminal
+ * (already ensured by `arePreconditionsTerminal`) and let the routes
+ * predicate make the final call.
  */
 function areDepsSatisfiedForStart(stage: Stage, stages: Record<string, StageState>): boolean {
+  if (stage.routes) {
+    return areDepsTerminal(stage, stages);
+  }
   return areAllDepsSucceeded(stage, stages);
 }
 
-function evaluateRoutes(stage: Stage, stages: Record<string, StageState>): boolean {
+function evaluateRoutes(stage: Stage, run: RunState): boolean {
   if (!stage.routes) return true;
-  return evaluatePredicate(stage.routes.when, stages);
+  return evaluatePredicateForRun(stage.routes.when, run);
 }
 
 /**
- * Pure predicate evaluator over the runtime stage states. Stages referenced
- * here are guaranteed by config validation to exist in the pipeline; missing
- * entries are treated as non-terminal (i.e. `false` for everything except
- * `anyFailed` short-circuits) so an unevaluable predicate never green-lights.
+ * Routes-time evaluation. Wraps the global predicate evaluator with a
+ * minimal `PredicateCtx` — the scheduler doesn't have access to durable
+ * cross-run history, and findings are surfaced from `run.findings`. The
+ * scheduler is invoked from the reducer too, so this stays pure.
  */
-function evaluatePredicate(
-  predicate: StageRoutePredicate,
-  stages: Record<string, StageState>,
-): boolean {
-  switch (predicate.kind) {
-    case "allSucceeded":
-      return predicate.stages.every((name) => stages[name]?.status === "succeeded");
-    case "anySucceeded":
-      return predicate.stages.some((name) => stages[name]?.status === "succeeded");
-    case "anyFailed":
-      return predicate.stages.some((name) => stages[name]?.status === "failed");
-  }
+function evaluatePredicateForRun(predicate: AnyPredicate, run: RunState): boolean {
+  const ctx: PredicateCtx = {
+    run,
+    history: [],
+    findings: run.findings ?? [],
+  };
+  return evaluate(predicate, ctx);
 }
 
 /**
@@ -198,15 +204,13 @@ export function findFirstStageCycle(
   stages: ReadonlyArray<{
     name: string;
     dependsOn?: string[];
-    routes?: { when: { stages: string[] } };
+    routes?: { when: AnyPredicate };
   }>,
 ): string[] | null {
   const adjacency = new Map<string, string[]>();
   for (const stage of stages) {
-    const edges = new Set<string>([
-      ...(stage.dependsOn ?? []),
-      ...(stage.routes?.when.stages ?? []),
-    ]);
+    const routesRefs = stage.routes ? predicateReferencedStages(stage.routes.when) : [];
+    const edges = new Set<string>([...(stage.dependsOn ?? []), ...routesRefs]);
     adjacency.set(stage.name, [...edges]);
   }
   const WHITE = 0;
