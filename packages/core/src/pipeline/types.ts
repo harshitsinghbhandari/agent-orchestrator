@@ -103,31 +103,78 @@ export interface StageBudget {
 }
 
 /**
- * Hardcoded predicate forms for v1.1. The typed predicate DSL (and richer
- * `exitPredicates`) lands in v1.3 — this union is intentionally minimal so the
- * scheduler can ship without committing to a DSL surface yet.
+ * Legacy v1.1 hardcoded predicate forms. New configs should use the typed
+ * `Predicate` DSL; these three kinds remain accepted at the schema layer and
+ * are normalized into their typed equivalents at config load:
+ *  - `allSucceeded` → `all_pass`
+ *  - `anySucceeded` → `any_pass`
+ *  - `anyFailed`    → `or` of `stage_verdict: "fail"` per listed stage
  *
- * All forms reference stage names within the same pipeline. Validation at
- * config load rejects unknown names; the scheduler trusts the input here.
- *
- * **Known limitation in v1.1: `anyFailed` is reachable only via cascade-skip,
- * not for "run-on-failure" recovery branches.** The reducer terminates the
- * run as `stalled` immediately on any STAGE_FAILED, so a downstream stage
- * with `routes.when.kind === "anyFailed"` whose predicate would evaluate
- * `true` never gets a chance to run — `terminateRunFromState` marks it
- * `skipped` first. Operators can still use `anyFailed` to express "skip
- * this stage if any upstream failed" semantics in conjunction with other
- * predicates, but rollback/cleanup-on-failure stages aren't supported until
- * failure-tolerant scheduling lands in v1.2/v1.3.
+ * Runtime code (reducer, evaluator) handles both shapes so manually
+ * constructed `Pipeline` values that still use the legacy shapes keep
+ * working without a migration.
  */
 export type StageRoutePredicate =
   | { kind: "allSucceeded"; stages: string[] }
   | { kind: "anySucceeded"; stages: string[] }
   | { kind: "anyFailed"; stages: string[] };
 
+/**
+ * Typed predicate DSL — the canonical shape for routes activation and the
+ * `exitPredicates` (done / stalled / blocksMerge) decisions.
+ *
+ * Evaluated by `predicate-evaluator.ts` over a `PredicateCtx` of
+ * `{ run, history, findings }`. The evaluator is pure (no I/O) so the same
+ * predicate can be assessed at scheduling time (dag.ts, with only `run`),
+ * at exit time (reducer.ts, with full ctx), or at observation time.
+ *
+ * Semantics for stage-set predicates (`all_pass`, `any_pass`, `majority_pass`)
+ * treat "pass" as `status === "succeeded"`, matching the legacy
+ * `allSucceeded`/`anySucceeded` behavior. Verdict-based judgement uses the
+ * separate `stage_verdict` kind so the two axes don't collide.
+ */
+export type Predicate =
+  | { kind: "all_pass"; stages: string[] }
+  | { kind: "any_pass"; stages: string[] }
+  | { kind: "majority_pass"; stages: string[] }
+  | { kind: "no_open_findings"; stage?: string }
+  | {
+      kind: "finding_count_below";
+      max: number;
+      stage?: string;
+      severity?: Severity;
+    }
+  | { kind: "loop_rounds_at_least"; n: number }
+  | { kind: "stage_retried_at_least"; stage: string; n: number }
+  | { kind: "stage_verdict"; stage: string; verdict: Verdict }
+  | { kind: "and"; predicates: Predicate[] }
+  | { kind: "or"; predicates: Predicate[] }
+  | { kind: "not"; predicate: Predicate }
+  | { kind: "v0_default" };
+
+/**
+ * Any predicate shape the engine accepts at runtime — the typed `Predicate`
+ * DSL plus the legacy `StageRoutePredicate` forms for back-compat with
+ * hand-constructed `Pipeline` values.
+ */
+export type AnyPredicate = Predicate | StageRoutePredicate;
+
 export interface StageRoutes {
   /** Evaluated once every referenced upstream stage reaches a terminal state. */
-  when: StageRoutePredicate;
+  when: AnyPredicate;
+}
+
+export interface ExitPredicates {
+  /** Run terminates as `done` when this predicate is true after every stage is terminal. */
+  done?: Predicate;
+  /** Run terminates as `stalled` when this predicate is true after every stage is terminal. */
+  stalled?: Predicate;
+  /**
+   * Engine-level "this run blocks merge". Not enforced inside the reducer;
+   * the SCM integration consults the evaluator with the run's current
+   * snapshot to decide whether to surface a merge block.
+   */
+  blocksMerge?: Predicate;
 }
 
 export interface Stage {
@@ -173,6 +220,14 @@ export interface Pipeline {
    * are unaffected (they don't shell out untrusted code from the PR).
    */
   allowForkPRs?: boolean;
+  /**
+   * Optional typed-predicate decisions for run exit and merge blocking. When
+   * absent, the reducer falls back to the v0 hardcoded rules ("done" when
+   * every stage reached a non-failed terminal status; "stalled" when any
+   * stage failed). When any branch is set to `{kind: "v0_default"}`, it
+   * explicitly opts into v0 behavior for that branch only.
+   */
+  exitPredicates?: ExitPredicates;
 }
 
 // ============================================================================
@@ -296,6 +351,15 @@ export interface RunState {
   loopRounds: number;
   /** Keyed by stage name. v0 has at most one entry per stage. */
   stages: Record<string, StageState>;
+  /**
+   * Denormalized materialized findings for predicate evaluation. The reducer
+   * appends new finding artifacts here as STAGE_COMPLETED events arrive so
+   * the predicate evaluator (used at routes evaluation and exit decision
+   * time) can answer `no_open_findings` / `finding_count_below` without
+   * reading the store. JSON artifacts are not mirrored here — they aren't
+   * findings. Capped only by what stages emit.
+   */
+  findings?: Artifact[];
   createdAt: string;
   updatedAt: string;
 }
@@ -347,6 +411,30 @@ export function emptyEngineState(): EngineState {
     currentRunByLoop: {},
     historySummaries: {},
   };
+}
+
+// ============================================================================
+// Predicate evaluation context
+// ============================================================================
+
+/**
+ * Inputs to the typed-predicate evaluator (`predicate-evaluator.ts`). All
+ * fields are read-only snapshots — the evaluator is pure and must never
+ * mutate them.
+ *
+ * - `run` is the current run state being decided over (stages, attempts,
+ *   loopRounds).
+ * - `history` is the per-loop run summary ledger, oldest first. Predicates
+ *   like cross-run stability checks consult this. Routes-time evaluation
+ *   (in the scheduler) passes an empty array; only the reducer's exit
+ *   decision has access to durable history.
+ * - `findings` are the materialized finding artifacts the engine has
+ *   accumulated for this run. `RunState.findings` is the canonical source.
+ */
+export interface PredicateCtx {
+  run: RunState;
+  history: ReadonlyArray<RunSummary>;
+  findings: ReadonlyArray<Artifact>;
 }
 
 // ============================================================================
