@@ -30,6 +30,7 @@ const pr: PRInfo = {
   branch: "feat/my-feature",
   baseBranch: "main",
   isDraft: false,
+  isFromFork: null,
 };
 
 const project: ProjectConfig = {
@@ -400,6 +401,7 @@ describe("scm-github plugin", () => {
           headRefName: "feat/my-feature",
           baseRefName: "main",
           isDraft: false,
+          isCrossRepository: false,
         },
       ]);
 
@@ -413,6 +415,7 @@ describe("scm-github plugin", () => {
         branch: "feat/my-feature",
         baseBranch: "main",
         isDraft: false,
+        isFromFork: false,
       });
     });
 

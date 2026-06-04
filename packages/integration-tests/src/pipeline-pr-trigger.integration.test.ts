@@ -143,6 +143,7 @@ function makePR(): PRInfo {
     branch: "feat/x",
     baseBranch: "main",
     isDraft: false,
+    isFromFork: false,
   };
 }
 

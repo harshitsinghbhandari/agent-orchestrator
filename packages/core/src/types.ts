@@ -954,6 +954,17 @@ export interface PRInfo {
   branch: string;
   baseBranch: string;
   isDraft: boolean;
+  /**
+   * Whether the PR's head branch lives on a fork of the base repo.
+   *
+   * - `true`  — fork PR (untrusted source; the command executor blocks unless
+   *             the pipeline opts in via `allowForkPRs`)
+   * - `false` — same-repo PR
+   * - `null`  — SCM plugin can't determine fork status. The command executor
+   *             treats `null` as "block" (fail-safe) so plugins without fork
+   *             awareness don't accidentally execute untrusted code.
+   */
+  isFromFork: boolean | null;
 }
 
 export type PRState = "open" | "merged" | "closed";
