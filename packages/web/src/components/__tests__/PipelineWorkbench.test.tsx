@@ -2,10 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { PipelineWorkbench } from "../PipelineWorkbench";
+import type * as PipelineEventsModule from "@/hooks/usePipelineEvents";
 import type { PipelineRunSummary } from "@/hooks/usePipelineEvents";
 
 vi.mock("@/hooks/usePipelineEvents", async () => {
-  const actual = await vi.importActual<typeof import("@/hooks/usePipelineEvents")>(
+  const actual = await vi.importActual<typeof PipelineEventsModule>(
     "@/hooks/usePipelineEvents",
   );
   return {
