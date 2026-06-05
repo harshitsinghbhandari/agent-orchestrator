@@ -1,6 +1,6 @@
 {
   "name": "@aoagents/ao-plugin-terminal-web",
-  "version": "0.9.1",
+  "version": "0.9.3-nightly-c3eeecb6862051e13553743fc76841bc010e46cf",
   "description": "Terminal plugin: xterm.js web terminal",
   "license": "MIT",
   "type": "module",
