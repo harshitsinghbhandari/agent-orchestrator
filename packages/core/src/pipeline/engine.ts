@@ -37,12 +37,14 @@ import type { PipelineStore } from "./store.js";
 import {
   asRunId,
   asStageRunId,
+  DEFAULT_PIPELINE_SCOPE,
   emptyEngineState,
   isTerminalLoopState,
   loopKey,
   type Artifact,
   type EngineState,
   type Pipeline,
+  type PipelineScope,
   type RunId,
   type RunState,
   type RunSummary,
@@ -50,6 +52,7 @@ import {
   type StageRunId,
   type StageTriggerEvent,
   type TaskContext,
+  type WorkstreamPredicateCtx,
 } from "./types.js";
 import { validatePipelineAgentModes, validatePipelineDag } from "./validation.js";
 import {
@@ -167,6 +170,12 @@ export interface StartRunInput {
   headSha: string;
   /** Optional issue id forwarded into spawned sessions. */
   issueId?: string;
+  /**
+   * Pipeline-v3 workstream snapshot (issue #199). Required for workstream-
+   * scoped pipelines so the reducer, predicate evaluator, and router can
+   * resolve workstream identity and member state from the RunState.
+   */
+  workstream?: WorkstreamPredicateCtx;
 }
 
 export interface PipelineEngine {
@@ -529,12 +538,21 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
       inputs[upstreamName] = store.listArtifacts(run.runId, upstream.stageRunId);
     }
 
+    const scope: PipelineScope = run.pipelineConfigSnapshot.scope ?? DEFAULT_PIPELINE_SCOPE;
+    // Workstream scope: SEND_TO_AGENT targets the workstream's orchestrator,
+    // never the synthetic workstream session id. Orchestrator scope already
+    // has `linkedSessionId === orchestratorSessionId`. Worker scope leaves
+    // the field unset so the router uses `linkedSessionId`. (#199)
+    const routingTargetSessionId =
+      scope === "workstream" ? run.workstream?.orchestratorSessionId : undefined;
     const ctx: TaskContext = {
       pipelineName: run.pipelineName,
       runId: run.runId,
       stageRunId,
       stage,
       linkedSessionId: run.sessionId,
+      scope,
+      ...(routingTargetSessionId ? { routingTargetSessionId } : {}),
       inputs,
     };
 
@@ -808,6 +826,7 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
         headSha: input.headSha,
         runId,
         stageRunIds,
+        ...(input.workstream ? { workstream: input.workstream } : {}),
       }),
     );
 

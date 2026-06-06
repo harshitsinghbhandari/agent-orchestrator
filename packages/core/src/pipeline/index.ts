@@ -92,6 +92,7 @@ export {
   ConfiguredPipelineSchema,
   PipelinesConfigSchema,
   configuredPipelineToRuntime,
+  isPipelineV3Enabled,
   type ConfiguredPipeline,
   type PipelinesConfig,
 } from "./config-schema.js";
@@ -114,3 +115,15 @@ export {
   type WorkspaceSnapshot,
   type GuardCheckResult,
 } from "./workspace.js";
+
+export {
+  computeWorkstreamAggregateTriggers,
+  freshAggregateSnapshot,
+  workstreamSessionId,
+  workstreamWorkerTriggerFor,
+  type WorkstreamSessionInput,
+  type AggregateSnapshot,
+  type WorkstreamDispatch,
+  type ComputeWorkstreamTriggersInput,
+  type ComputeWorkstreamTriggersOutput,
+} from "./workstream-trigger-bridge.js";

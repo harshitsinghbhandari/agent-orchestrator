@@ -40,7 +40,42 @@ export type StageTriggerEvent =
   | "pr.updated"
   | "pr.merge_ready"
   | "pr.merged"
-  | "manual";
+  | "manual"
+  // ── Pipeline-v3 orchestrator scope (issue #199) ─────────────────────
+  | "orchestrator.started"
+  | "orchestrator.manual"
+  // ── Pipeline-v3 workstream fan-in (issue #199) ──────────────────────
+  | "workstream.created"
+  | "workstream.worker_pr_opened"
+  | "workstream.worker_pr_updated"
+  | "workstream.all_pr_opened"
+  | "workstream.worker_pr_merged"
+  | "workstream.all_merged"
+  | "workstream.any_stalled"
+  | "workstream.manual";
+
+/** Pipeline-v3 scope (issue #199). Default is "worker" — v0/v1/v2 behavior. */
+export type PipelineScope = "worker" | "orchestrator" | "workstream";
+
+export const DEFAULT_PIPELINE_SCOPE: PipelineScope = "worker";
+
+/** Trigger events that only fire for workstream-scoped pipelines. */
+export const WORKSTREAM_TRIGGER_EVENTS: ReadonlySet<StageTriggerEvent> = new Set([
+  "workstream.created",
+  "workstream.worker_pr_opened",
+  "workstream.worker_pr_updated",
+  "workstream.all_pr_opened",
+  "workstream.worker_pr_merged",
+  "workstream.all_merged",
+  "workstream.any_stalled",
+  "workstream.manual",
+]);
+
+/** Trigger events that only fire for orchestrator-scoped pipelines. */
+export const ORCHESTRATOR_TRIGGER_EVENTS: ReadonlySet<StageTriggerEvent> = new Set([
+  "orchestrator.started",
+  "orchestrator.manual",
+]);
 
 export interface StageTrigger {
   on: StageTriggerEvent[];
@@ -150,7 +185,34 @@ export type Predicate =
   | { kind: "and"; predicates: Predicate[] }
   | { kind: "or"; predicates: Predicate[] }
   | { kind: "not"; predicate: Predicate }
-  | { kind: "v0_default" };
+  | { kind: "v0_default" }
+  // ── Pipeline-v3 workstream predicates (issue #199) ─────────────────
+  /**
+   * True when every member worker session in the active workstream is in
+   * one of the listed lifecycle PR states (e.g. `["merged"]`). Returns
+   * false for non-workstream runs.
+   */
+  | { kind: "all_workstream_workers_in_state"; states: WorkstreamMemberPRState[] }
+  /**
+   * True when every member worker session has a terminal run of the named
+   * pipeline whose loopState matches the listed states (e.g. `["done"]`).
+   * Recurses over each member's latest run via the engine's history
+   * ledger. Returns false for non-workstream runs.
+   */
+  | { kind: "all_workstream_workers_match"; pipeline: string; loopStates: LoopStateName[] }
+  /**
+   * True when the workstream has at least `min` members (and optionally at
+   * most `max`). Lets a fan-in stage gate on quorum without hard-coding the
+   * count in the predicate set.
+   */
+  | { kind: "workstream_member_count"; min: number; max?: number };
+
+/**
+ * PR-state buckets the workstream predicate `all_workstream_workers_in_state`
+ * accepts. Mirrors the canonical PR lifecycle states the lifecycle manager
+ * surfaces on each session.
+ */
+export type WorkstreamMemberPRState = "none" | "open" | "merged" | "closed";
 
 /**
  * Any predicate shape the engine accepts at runtime — the typed `Predicate`
@@ -222,6 +284,21 @@ export interface Stage {
 export interface Pipeline {
   id: PipelineId;
   name: string;
+  /**
+   * Pipeline-v3 scope (issue #199). Defaults to `"worker"` — preserves
+   * v0/v1/v2 semantics. `"orchestrator"` and `"workstream"` are opt-in
+   * via `AO_PIPELINE_V3=1`; when the gate is off, configs that declare
+   * those scopes fall back to `"worker"` at load time.
+   *
+   *  - `"worker"`: bound to one worker session, fires on `pr.*` triggers.
+   *  - `"orchestrator"`: bound to an orchestrator session, fires on
+   *    `orchestrator.*` triggers; SEND_TO_AGENT (router) targets the
+   *    orchestrator itself.
+   *  - `"workstream"`: bound to a workstream, fires on `workstream.*`
+   *    fan-in triggers. Router targets the workstream's orchestrator
+   *    session and bypasses the worker-alive pre-send check.
+   */
+  scope?: PipelineScope;
   stages: Stage[];
   /** Default 1 in v0; engine enforces serial execution when unset. */
   maxConcurrentStages?: number;
@@ -391,6 +468,15 @@ export interface RunState {
    * Optional for backward compatibility with RunStates persisted before #197.
    */
   fingerprints?: string[];
+  /**
+   * Pipeline-v3 workstream snapshot frozen at TRIGGER_FIRED time (issue #199).
+   * Present only for workstream-scoped runs. Carries the workstream member
+   * list + per-member PR / pipeline state so predicate evaluation never
+   * needs to call back into the lifecycle manager. Workstream aggregates
+   * refresh by firing a new trigger (next `workstream.*` event) rather than
+   * being recomputed mid-run.
+   */
+  workstream?: WorkstreamPredicateCtx;
   createdAt: string;
   updatedAt: string;
 }
@@ -466,6 +552,39 @@ export interface PredicateCtx {
   run: RunState;
   history: ReadonlyArray<RunSummary>;
   findings: ReadonlyArray<Artifact>;
+  /**
+   * Pipeline-v3 workstream snapshot for workstream-scoped runs (issue #199).
+   * Always undefined for non-workstream runs — the workstream predicates
+   * return `false` when this field is missing.
+   */
+  workstream?: WorkstreamPredicateCtx;
+}
+
+/**
+ * Read-only snapshot the workstream predicates consult. The lifecycle
+ * manager assembles this from `WorkstreamState` + each member's PR state
+ * and the engine's per-member pipeline history before invoking the
+ * evaluator. The predicate evaluator must never mutate this.
+ */
+export interface WorkstreamPredicateCtx {
+  workstreamId: string;
+  /** Orchestrator session that owns the workstream, when set. */
+  orchestratorSessionId?: string;
+  members: ReadonlyArray<WorkstreamMemberSnapshot>;
+}
+
+export interface WorkstreamMemberSnapshot {
+  sessionId: string;
+  /** Latest known PR lifecycle state for the member; `"none"` if no PR exists yet. */
+  prState: WorkstreamMemberPRState;
+  /**
+   * Per-pipeline latest-run loopState, keyed by pipeline name. Used by
+   * `all_workstream_workers_match` to verify every member completed the
+   * named pipeline in a particular terminal state.
+   */
+  latestRunByPipeline: Readonly<Record<string, LoopStateName | undefined>>;
+  /** When the member opted out via `forgiven=true` metadata, exclude from `all_*` aggregates. */
+  forgiven?: boolean;
 }
 
 // ============================================================================
@@ -487,8 +606,25 @@ export interface TaskContext {
   runId: RunId;
   stageRunId: StageRunId;
   stage: Stage;
-  /** The "linked worker" session this pipeline was triggered for. */
+  /**
+   * The session this pipeline was triggered for. For worker scope this is
+   * the worker; for orchestrator scope, the orchestrator; for workstream
+   * scope, a synthetic id derived from the workstream (`ws:{workstreamId}`).
+   */
   linkedSessionId: string;
+  /**
+   * Pipeline-v3 scope (issue #199). Defaults to `"worker"`. Builtins
+   * consult this to bypass worker-alive checks for non-worker scopes
+   * and to choose the routing destination.
+   */
+  scope: PipelineScope;
+  /**
+   * Pipeline-v3 router target (issue #199). Set when the engine has
+   * resolved an alternate destination for `SEND_TO_AGENT` — typically
+   * the orchestrator session for workstream-scoped runs. When unset,
+   * the router falls back to `linkedSessionId`.
+   */
+  routingTargetSessionId?: string;
   /** Upstream stage artifacts, keyed by stage name. Empty record if no deps. */
   inputs: Record<string, Artifact[]>;
 }

@@ -23,6 +23,7 @@ import type {
   Severity,
   StageState,
   Verdict,
+  WorkstreamMemberSnapshot,
 } from "./types.js";
 
 /**
@@ -112,7 +113,46 @@ function evaluateTyped(predicate: Predicate, ctx: PredicateCtx): boolean {
       return !evaluateTyped(predicate.predicate, ctx);
     case "v0_default":
       return false;
+    case "all_workstream_workers_in_state": {
+      const members = activeWorkstreamMembers(ctx);
+      if (!members) return false;
+      const allowed = new Set(predicate.states);
+      return members.every((m) => allowed.has(m.prState));
+    }
+    case "all_workstream_workers_match": {
+      const members = activeWorkstreamMembers(ctx);
+      if (!members) return false;
+      const allowed = new Set(predicate.loopStates);
+      return members.every((m) => {
+        const state = m.latestRunByPipeline[predicate.pipeline];
+        return state !== undefined && allowed.has(state);
+      });
+    }
+    case "workstream_member_count": {
+      const ws = ctx.workstream;
+      if (!ws) return false;
+      const count = ws.members.length;
+      if (count < predicate.min) return false;
+      if (predicate.max !== undefined && count > predicate.max) return false;
+      return true;
+    }
   }
+}
+
+/**
+ * Returns the non-forgiven workstream members, or `undefined` when the
+ * context is not workstream-scoped. The `all_workstream_*` predicates
+ * degrade to `false` on `undefined` so non-workstream runs never trip
+ * them.
+ */
+function activeWorkstreamMembers(
+  ctx: PredicateCtx,
+): ReadonlyArray<WorkstreamMemberSnapshot> | undefined {
+  const ws = ctx.workstream;
+  if (!ws) return undefined;
+  const active = ws.members.filter((m) => !m.forgiven);
+  if (active.length === 0) return undefined;
+  return active;
 }
 
 function visitTyped(predicate: Predicate, fn: (p: Predicate) => void): void {

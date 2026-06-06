@@ -16,20 +16,60 @@ import { findFirstStageCycle } from "./dag.js";
 import { predicateReferencedStages } from "./predicate-evaluator.js";
 import {
   asPipelineId,
+  DEFAULT_PIPELINE_SCOPE,
+  ORCHESTRATOR_TRIGGER_EVENTS,
+  WORKSTREAM_TRIGGER_EVENTS,
   type ExitPredicates,
   type Pipeline,
+  type PipelineScope,
   type Predicate,
   type Stage,
   type StageExecutor,
   type StageRoutes,
+  type StageTriggerEvent,
   type TaskMode,
 } from "./types.js";
+
+/** True when pipeline-v3 (orchestrator / workstream scopes) is opted in. */
+export function isPipelineV3Enabled(): boolean {
+  return process.env["AO_PIPELINE_V3"] === "1";
+}
 
 const TaskModeSchema = z.enum(["review", "code", "answer"]);
 
 const StageTriggerSchema = z.object({
-  on: z.array(z.enum(["pr.opened", "pr.updated", "pr.merge_ready", "pr.merged", "manual"])),
+  on: z.array(
+    z.enum([
+      "pr.opened",
+      "pr.updated",
+      "pr.merge_ready",
+      "pr.merged",
+      "manual",
+      "orchestrator.started",
+      "orchestrator.manual",
+      "workstream.created",
+      "workstream.worker_pr_opened",
+      "workstream.worker_pr_updated",
+      "workstream.all_pr_opened",
+      "workstream.worker_pr_merged",
+      "workstream.all_merged",
+      "workstream.any_stalled",
+      "workstream.manual",
+    ]),
+  ),
 });
+
+const PipelineScopeSchema = z.enum(["worker", "orchestrator", "workstream"]);
+
+const LoopStateNameSchema = z.enum([
+  "running",
+  "awaiting_context",
+  "done",
+  "stalled",
+  "terminated",
+]);
+
+const WorkstreamMemberPRStateSchema = z.enum(["none", "open", "merged", "closed"]);
 
 const AgentExecutorSchema = z.object({
   kind: z.literal("agent"),
@@ -125,6 +165,20 @@ const PredicateSchema: z.ZodType<Predicate> = z.lazy(() =>
     z.object({ kind: z.literal("or"), predicates: z.array(PredicateSchema).min(1) }),
     z.object({ kind: z.literal("not"), predicate: PredicateSchema }),
     z.object({ kind: z.literal("v0_default") }),
+    z.object({
+      kind: z.literal("all_workstream_workers_in_state"),
+      states: z.array(WorkstreamMemberPRStateSchema).min(1),
+    }),
+    z.object({
+      kind: z.literal("all_workstream_workers_match"),
+      pipeline: z.string().min(1),
+      loopStates: z.array(LoopStateNameSchema).min(1),
+    }),
+    z.object({
+      kind: z.literal("workstream_member_count"),
+      min: z.number().int().nonnegative(),
+      max: z.number().int().nonnegative().optional(),
+    }),
   ]),
 );
 
@@ -183,6 +237,13 @@ const StageSchema = z.object({
 export const ConfiguredPipelineSchema = z
   .object({
     name: z.string().min(1).optional(),
+    /**
+     * Pipeline-v3 scope (issue #199). Defaults to `"worker"`. Configs that
+     * declare `"orchestrator"` or `"workstream"` require `AO_PIPELINE_V3=1`
+     * — `configuredPipelineToRuntime` downgrades to `"worker"` when the
+     * gate is off so existing v0/v1/v2 configs keep working.
+     */
+    scope: PipelineScopeSchema.optional(),
     stages: z.array(StageSchema).min(1),
     maxConcurrentStages: z.number().int().positive().optional(),
     exitPredicates: ExitPredicatesSchema.optional(),
@@ -266,6 +327,38 @@ export const ConfiguredPipelineSchema = z
       }
     }
 
+    // Trigger ↔ scope consistency (pipeline-v3, issue #199): orchestrator
+    // and workstream triggers can only appear on pipelines whose scope is
+    // the matching kind. We do NOT cross-check `worker` against `pr.*`
+    // triggers — those have always been the implicit default and remain
+    // legal on worker pipelines.
+    const declaredScope: PipelineScope = pipeline.scope ?? DEFAULT_PIPELINE_SCOPE;
+    for (let i = 0; i < pipeline.stages.length; i++) {
+      const stage = pipeline.stages[i];
+      for (const evt of stage.trigger.on as StageTriggerEvent[]) {
+        if (
+          WORKSTREAM_TRIGGER_EVENTS.has(evt) &&
+          declaredScope !== "workstream"
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", i, "trigger", "on"],
+            message: `Trigger "${evt}" requires \`scope: "workstream"\` on the pipeline.`,
+          });
+        }
+        if (
+          ORCHESTRATOR_TRIGGER_EVENTS.has(evt) &&
+          declaredScope !== "orchestrator"
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", i, "trigger", "on"],
+            message: `Trigger "${evt}" requires \`scope: "orchestrator"\` on the pipeline.`,
+          });
+        }
+      }
+    }
+
     // Cycle detection over the combined dependsOn + routes-refs graph.
     // Iterative DFS; returns the first cycle found in declaration order so
     // the error reads naturally (e.g. "a → b → c → a"). Trivial self-loops
@@ -333,9 +426,20 @@ export function configuredPipelineToRuntime(key: string, configured: ConfiguredP
     };
   });
 
+  // Pipeline-v3 gate: orchestrator/workstream scopes are opt-in via
+  // AO_PIPELINE_V3=1. When the flag is off, declared v3 scopes downgrade
+  // to "worker" so existing v0/v1/v2 deployments keep their semantics —
+  // the trigger/scope validation above still ran, so configs that mix
+  // v3 triggers with the gate off would fail load. Configs that don't
+  // touch v3 scopes are unaffected.
+  const requestedScope: PipelineScope = configured.scope ?? DEFAULT_PIPELINE_SCOPE;
+  const effectiveScope: PipelineScope =
+    requestedScope === "worker" || isPipelineV3Enabled() ? requestedScope : "worker";
+
   return {
     id: asPipelineId(key),
     name: configured.name ?? key,
+    ...(effectiveScope !== DEFAULT_PIPELINE_SCOPE ? { scope: effectiveScope } : {}),
     stages,
     ...(configured.maxConcurrentStages !== undefined
       ? { maxConcurrentStages: configured.maxConcurrentStages }

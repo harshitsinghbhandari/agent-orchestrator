@@ -371,6 +371,47 @@ export interface SessionSpawnConfig {
   agent?: string;
   /** Override the OpenCode subagent for this session (e.g. "sisyphus", "oracle") */
   subagent?: string;
+  /**
+   * Pipeline-v3: parent orchestrator session this worker was spawned from
+   * (when applicable). Persisted as session metadata so the dashboard and
+   * pipeline router can resolve worker → orchestrator relationships.
+   */
+  parentSessionId?: string;
+  /**
+   * Pipeline-v3: workstream this worker belongs to. First spawn with a new
+   * id creates the workstream; subsequent spawns join it. Per-project unique.
+   */
+  workstreamId?: string;
+  /**
+   * Pipeline-v3: optional base branch sibling workers share within a
+   * workstream. Recorded on the WorkstreamState; defaults to the project's
+   * default branch when omitted.
+   */
+  workstreamBaseBranch?: string;
+}
+
+/**
+ * Pipeline-v3 workstream state — a named group of sibling worker sessions
+ * sharing a base branch. Created on first spawn with a fresh
+ * `workstreamId`; later spawns are added as members. Aggregate state
+ * (e.g. all-merged) is recomputed by the lifecycle manager each poll.
+ *
+ * Storage lives under the project's pipelines directory at
+ * `workstreams/{workstreamId}.json` so it survives orchestrator restarts.
+ */
+export interface WorkstreamState {
+  workstreamId: string;
+  projectId: string;
+  /** Orchestrator session that owns the workstream, if any. */
+  orchestratorSessionId?: string;
+  /** Base branch every member worker branches off of. */
+  baseBranch?: string;
+  /** Member worker session ids, in creation order. */
+  members: string[];
+  /** ISO-8601 creation timestamp. */
+  createdAt: string;
+  /** ISO-8601 last-update timestamp. */
+  updatedAt: string;
 }
 
 /** Config for creating an orchestrator session */
