@@ -92,6 +92,7 @@ export {
   ConfiguredPipelineSchema,
   PipelinesConfigSchema,
   configuredPipelineToRuntime,
+  isPipelineV3Enabled,
   type ConfiguredPipeline,
   type PipelinesConfig,
 } from "./config-schema.js";

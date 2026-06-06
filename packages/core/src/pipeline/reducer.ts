@@ -42,6 +42,7 @@ import {
   type StageState,
   type StageTriggerEvent,
   type Verdict,
+  type WorkstreamPredicateCtx,
   isTerminalLoopState,
   loopKey,
 } from "./types.js";
@@ -83,10 +84,13 @@ interface TriggerFiredEvent {
   headSha: string;
   runId: RunId;
   stageRunIds: Record<string, StageRunId>;
+  /** Workstream snapshot for workstream-scoped runs (#199). */
+  workstream?: WorkstreamPredicateCtx;
 }
 
 function reduceTriggerFired(state: EngineState, event: TriggerFiredEvent): ReducerResult {
   const { sessionId, pipeline, headSha, runId, stageRunIds, trigger, now } = event;
+  const workstream = event.workstream;
   const key = loopKey(sessionId, pipeline.name);
 
   if (state.currentRunByLoop[key] && state.runs[state.currentRunByLoop[key]]) {
@@ -114,6 +118,7 @@ function reduceTriggerFired(state: EngineState, event: TriggerFiredEvent): Reduc
     loopState: "running",
     loopRounds,
     stages,
+    ...(workstream ? { workstream } : {}),
     createdAt: iso(now),
     updatedAt: iso(now),
   };
@@ -712,6 +717,7 @@ function decideRunExit(run: RunState, state: EngineState): ExitDecision {
     run,
     history: state.historySummaries[loopKey(run.sessionId, run.pipelineName)] ?? [],
     findings: run.findings ?? [],
+    ...(run.workstream ? { workstream: run.workstream } : {}),
   };
 
   const doneMatched = matchesConfiguredPredicate(exits?.done, ctx);

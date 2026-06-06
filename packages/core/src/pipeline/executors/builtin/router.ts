@@ -44,11 +44,50 @@ export async function runRouter(
 ): Promise<RouterOutcome> {
   const artifacts: ArtifactInput[] = [];
   const observations: RouterObservation[] = [];
-  const targetSessionId = ctx.linkedSessionId;
+  const scope = ctx.scope;
+  // Pipeline-v3 (#199): workstream-scoped runs route to the workstream's
+  // orchestrator; worker scope uses the linked worker. The pre-send
+  // worker-alive check only applies to worker scope — orchestrator and
+  // workstream targets are owned by the human/orchestrator and may have
+  // intermittent runtime presence we don't want to block routing on.
+  const targetSessionId = ctx.routingTargetSessionId ?? ctx.linkedSessionId;
+
+  // Workstream scope without a resolved orchestrator means there's no one
+  // to route to. Emit a single neutral observation per upstream stage
+  // (matching the existing skipped_worker_dead shape) and leave findings
+  // `open` for the next workstream event to re-deliver.
+  if (scope === "workstream" && !ctx.routingTargetSessionId) {
+    for (const [fromStage, stageArtifacts] of Object.entries(ctx.inputs)) {
+      if (stageArtifacts.length === 0) continue;
+      observations.push({
+        name: "routing.orchestrator_absent",
+        data: {
+          runId: ctx.runId,
+          stageRunId: ctx.stageRunId,
+          stageName: ctx.stage.name,
+          fromStage,
+          workstreamSessionId: ctx.linkedSessionId,
+          artifactCount: stageArtifacts.length,
+        },
+      });
+      artifacts.push({
+        kind: "json",
+        data: {
+          result: "delivery_skipped",
+          reason: "orchestrator_absent",
+          fromStage,
+          artifactCount: stageArtifacts.length,
+        },
+      });
+    }
+    return { artifacts, verdict: "neutral", observations };
+  }
 
   // Single liveness probe — input stages share the same target worker, so
   // probing once avoids hammering the runtime when there are many findings.
-  const alive = await deps.isSessionAlive(targetSessionId);
+  // Bypass for non-worker scopes (#199): orchestrator and workstream targets
+  // don't carry the same pre-send liveness contract.
+  const alive = scope === "worker" ? await deps.isSessionAlive(targetSessionId) : true;
 
   for (const [fromStage, stageArtifacts] of Object.entries(ctx.inputs)) {
     if (stageArtifacts.length === 0) continue;

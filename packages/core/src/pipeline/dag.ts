@@ -181,6 +181,7 @@ function evaluatePredicateForRun(predicate: AnyPredicate, run: RunState): boolea
     run,
     history: [],
     findings: run.findings ?? [],
+    ...(run.workstream ? { workstream: run.workstream } : {}),
   };
   return evaluate(predicate, ctx);
 }

@@ -418,6 +418,10 @@ export {
   isTerminalLoopState,
   loopKey,
   emptyEngineState,
+  // Pipeline-v3 scope (#199)
+  DEFAULT_PIPELINE_SCOPE,
+  ORCHESTRATOR_TRIGGER_EVENTS,
+  WORKSTREAM_TRIGGER_EVENTS,
   // Reducer
   reduce,
   // Store
@@ -450,6 +454,7 @@ export {
   ConfiguredPipelineSchema,
   PipelinesConfigSchema,
   configuredPipelineToRuntime,
+  isPipelineV3Enabled,
   // Store migration — fingerprint-preserving backfill (issue #193)
   computeFindingFingerprint,
   migrateStore,
@@ -482,6 +487,11 @@ export type {
   StageBudget,
   Stage,
   Pipeline,
+  // Pipeline-v3 scope + workstream context (#199)
+  PipelineScope,
+  WorkstreamPredicateCtx,
+  WorkstreamMemberSnapshot,
+  WorkstreamMemberPRState,
   // Artifacts
   Severity,
   ArtifactStatus,
@@ -573,6 +583,16 @@ export {
   type DaemonChildSweepResult,
   type AoOrphanProcess,
 } from "./daemon-children.js";
+
+// Pipeline-v3 workstream manager (issue #199) — per-project ledger of
+// sibling worker sessions sharing a base branch. Emits WORKSTREAM_*
+// events so the lifecycle manager can react.
+export { createWorkstreamManager } from "./workstream-manager.js";
+export type {
+  WorkstreamManager,
+  WorkstreamManagerDeps,
+  WorkstreamEvent,
+} from "./workstream-manager.js";
 
 // Activity event logging — structured diagnostic event trail
 export { recordActivityEvent, droppedEventCount } from "./activity-events.js";

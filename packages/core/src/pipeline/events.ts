@@ -20,6 +20,7 @@ import type {
   StageRunId,
   StageTriggerEvent,
   Verdict,
+  WorkstreamPredicateCtx,
 } from "./types.js";
 
 /** Stable identity for a stage-run follow-up thread. */
@@ -44,6 +45,12 @@ export type PipelineEvent =
       runId: RunId;
       /** Driver-allocated stage run ids, keyed by stage name. */
       stageRunIds: Record<string, StageRunId>;
+      /**
+       * Pipeline-v3 workstream snapshot (issue #199). Frozen onto the new
+       * RunState so the reducer/dag/router can resolve workstream context
+       * without re-querying the lifecycle manager mid-run.
+       */
+      workstream?: WorkstreamPredicateCtx;
     })
   | (EventBase & {
       type: "STAGE_STARTED";

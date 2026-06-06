@@ -468,6 +468,15 @@ export interface RunState {
    * Optional for backward compatibility with RunStates persisted before #197.
    */
   fingerprints?: string[];
+  /**
+   * Pipeline-v3 workstream snapshot frozen at TRIGGER_FIRED time (issue #199).
+   * Present only for workstream-scoped runs. Carries the workstream member
+   * list + per-member PR / pipeline state so predicate evaluation never
+   * needs to call back into the lifecycle manager. Workstream aggregates
+   * refresh by firing a new trigger (next `workstream.*` event) rather than
+   * being recomputed mid-run.
+   */
+  workstream?: WorkstreamPredicateCtx;
   createdAt: string;
   updatedAt: string;
 }
@@ -559,6 +568,8 @@ export interface PredicateCtx {
  */
 export interface WorkstreamPredicateCtx {
   workstreamId: string;
+  /** Orchestrator session that owns the workstream, when set. */
+  orchestratorSessionId?: string;
   members: ReadonlyArray<WorkstreamMemberSnapshot>;
 }
 
@@ -595,8 +606,25 @@ export interface TaskContext {
   runId: RunId;
   stageRunId: StageRunId;
   stage: Stage;
-  /** The "linked worker" session this pipeline was triggered for. */
+  /**
+   * The session this pipeline was triggered for. For worker scope this is
+   * the worker; for orchestrator scope, the orchestrator; for workstream
+   * scope, a synthetic id derived from the workstream (`ws:{workstreamId}`).
+   */
   linkedSessionId: string;
+  /**
+   * Pipeline-v3 scope (issue #199). Defaults to `"worker"`. Builtins
+   * consult this to bypass worker-alive checks for non-worker scopes
+   * and to choose the routing destination.
+   */
+  scope: PipelineScope;
+  /**
+   * Pipeline-v3 router target (issue #199). Set when the engine has
+   * resolved an alternate destination for `SEND_TO_AGENT` — typically
+   * the orchestrator session for workstream-scoped runs. When unset,
+   * the router falls back to `linkedSessionId`.
+   */
+  routingTargetSessionId?: string;
   /** Upstream stage artifacts, keyed by stage name. Empty record if no deps. */
   inputs: Record<string, Artifact[]>;
 }
