@@ -55,13 +55,15 @@ import type { PipelineEngine } from "./pipeline/engine.js";
 import { configuredPipelineToRuntime } from "./pipeline/config-schema.js";
 import {
   computeWorkstreamAggregateTriggers,
-  freshAggregateSnapshot,
   type AggregateSnapshot,
   type WorkstreamSessionInput,
 } from "./pipeline/workstream-trigger-bridge.js";
-import type { LoopStateName, WorkstreamPredicateCtx } from "./pipeline/types.js";
+import type {
+  LoopStateName,
+  StageTriggerEvent,
+  WorkstreamPredicateCtx,
+} from "./pipeline/types.js";
 import type { WorkstreamManager } from "./workstream-manager.js";
-import type { StageTriggerEvent } from "./pipeline/types.js";
 import { updateMetadata } from "./metadata.js";
 import { getProjectSessionsDir } from "./paths.js";
 import { applyDecisionToLifecycle as commitLifecycleDecisionInPlace } from "./lifecycle-transition.js";
