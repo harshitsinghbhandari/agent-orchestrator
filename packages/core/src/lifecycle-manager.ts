@@ -53,6 +53,14 @@ import {
 } from "./lifecycle-state.js";
 import type { PipelineEngine } from "./pipeline/engine.js";
 import { configuredPipelineToRuntime } from "./pipeline/config-schema.js";
+import {
+  computeWorkstreamAggregateTriggers,
+  freshAggregateSnapshot,
+  type AggregateSnapshot,
+  type WorkstreamSessionInput,
+} from "./pipeline/workstream-trigger-bridge.js";
+import type { LoopStateName, WorkstreamPredicateCtx } from "./pipeline/types.js";
+import type { WorkstreamManager } from "./workstream-manager.js";
 import type { StageTriggerEvent } from "./pipeline/types.js";
 import { updateMetadata } from "./metadata.js";
 import { getProjectSessionsDir } from "./paths.js";
@@ -493,6 +501,13 @@ export interface LifecycleManagerDeps {
    * pipeline failures must not crash session polling for unrelated sessions.
    */
   pipelineEngine?: PipelineEngine;
+  /**
+   * Pipeline-v3 workstream manager (#199). When provided, the lifecycle
+   * manager bridges workstream membership + aggregate state into
+   * workstream-scoped pipeline triggers each `pollAll` cycle. Optional —
+   * v0/v1/v2 deployments leave this unset.
+   */
+  workstreamManager?: WorkstreamManager;
 }
 
 /** Track attempt counts for reactions per session. */
@@ -506,7 +521,20 @@ interface ReactionTracker {
 
 /** Create a LifecycleManager instance. */
 export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleManager {
-  const { config, registry, sessionManager, projectId: scopedProjectId, pipelineEngine } = deps;
+  const {
+    config,
+    registry,
+    sessionManager,
+    projectId: scopedProjectId,
+    pipelineEngine,
+    workstreamManager,
+  } = deps;
+  /**
+   * Per-workstream edge-trigger latch for `workstream.all_*` events
+   * (#199). Keyed by workstreamId. Cleared/reset on demand by
+   * `computeWorkstreamAggregateTriggers`.
+   */
+  const workstreamAggregates = new Map<string, AggregateSnapshot>();
   const observer = createProjectObserver(config, "lifecycle-manager");
 
   const states = new Map<SessionId, SessionStatus>();
@@ -2270,6 +2298,106 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   }
 
   /**
+   * Pipeline-v3 workstream fan-in (#199). For every persisted workstream
+   * in scope, snapshot members + per-pipeline run state, detect aggregate
+   * edge transitions (e.g. `all_merged`), and dispatch workstream-scoped
+   * pipelines that subscribe.
+   *
+   * The synthetic sessionId `ws:{workstreamId}` keeps the engine's
+   * `loopKey` partitioned away from per-worker keys. The workstream
+   * snapshot is frozen onto RunState so predicate evaluation
+   * (`all_workstream_workers_*`) can resolve member state at decision
+   * time without re-querying the lifecycle manager.
+   */
+  async function runWorkstreamFanIn(sessions: ReadonlyArray<Session>): Promise<void> {
+    if (!pipelineEngine || !workstreamManager) return;
+
+    // Find every project that has workstream-scoped pipelines configured.
+    // We don't iterate workstreams of projects without any v3 pipelines —
+    // there's nothing to dispatch and reading the disk is wasted work.
+    const projectIds = scopedProjectId
+      ? [scopedProjectId]
+      : Object.keys(config.projects);
+
+    for (const projectId of projectIds) {
+      const project = config.projects[projectId];
+      const configured = project?.pipelines;
+      if (!project || !configured) continue;
+
+      // Collect workstream-scoped pipelines (`scope: "workstream"`) up-front.
+      // configuredPipelineToRuntime handles AO_PIPELINE_V3 downgrade, so a
+      // declared workstream scope falls back to "worker" when the gate is
+      // off and we'd find nothing to fan-in to — also the correct behavior.
+      const wsPipelines: Array<{ key: string; runtime: ReturnType<typeof configuredPipelineToRuntime> }> = [];
+      for (const [key, raw] of Object.entries(configured)) {
+        const runtime = configuredPipelineToRuntime(key, raw);
+        if (runtime.scope === "workstream") {
+          wsPipelines.push({ key, runtime });
+        }
+      }
+      if (wsPipelines.length === 0) continue;
+
+      const workstreams = workstreamManager.list(projectId);
+      if (workstreams.length === 0) continue;
+
+      const sessionInputs: WorkstreamSessionInput[] = sessions
+        .filter((s) => s.projectId === projectId)
+        .map((s) => {
+          const stalled =
+            s.lifecycle.session.state === "stuck" ||
+            s.lifecycle.session.state === "detecting" ||
+            s.status === "killed";
+          const forgivenRaw = s.metadata?.["workstreamForgiven"];
+          return {
+            sessionId: s.id,
+            prState: s.lifecycle.pr.state,
+            latestRunByPipeline: {} as Record<string, LoopStateName | undefined>,
+            ...(forgivenRaw === "true" ? { forgiven: true as const } : {}),
+            stalled,
+          } satisfies WorkstreamSessionInput;
+        });
+
+      const { dispatches } = computeWorkstreamAggregateTriggers({
+        workstreams,
+        sessions: sessionInputs,
+        previousAggregates: workstreamAggregates,
+      });
+
+      for (const dispatch of dispatches) {
+        const subscribers = wsPipelines.filter(({ runtime }) =>
+          runtime.stages.some((stage) => stage.trigger.on.includes(dispatch.trigger)),
+        );
+        for (const { runtime } of subscribers) {
+          try {
+            const ctx: WorkstreamPredicateCtx = dispatch.snapshot;
+            await pipelineEngine.startRun({
+              pipeline: runtime,
+              projectId,
+              sessionId: dispatch.syntheticSessionId,
+              trigger: dispatch.trigger,
+              headSha: "workstream",
+              workstream: ctx,
+            });
+          } catch (err) {
+            recordActivityEvent({
+              projectId,
+              source: "lifecycle",
+              kind: "workstream.dispatch_failed",
+              level: "warn",
+              summary: `workstream dispatch failed for ${runtime.name}`,
+              data: {
+                workstreamId: dispatch.workstreamId,
+                trigger: dispatch.trigger,
+                errorMessage: err instanceof Error ? err.message : String(err),
+              },
+            });
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Map a PR state transition to the corresponding pipeline trigger event.
    * Returns null when the transition doesn't correspond to a pipeline trigger
    * (e.g. `open → closed`, or no state change at all).
@@ -3083,6 +3211,26 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             activeSessionCount: activeSessions.length,
           },
         });
+      }
+
+      // Pipeline-v3 workstream fan-in (#199). Before ticking the engine,
+      // walk every workstream + snapshot its members; dispatch any
+      // edge-triggered `workstream.all_*` events so the engine sees them
+      // in this same cycle. Per-member `workstream.worker_pr_*` events
+      // are handled inline by `bridgePipelineTriggers` above.
+      if (pipelineEngine && workstreamManager) {
+        try {
+          await runWorkstreamFanIn(sessions);
+        } catch (err) {
+          recordActivityEvent({
+            projectId: scopedProjectId,
+            source: "lifecycle",
+            kind: "workstream.fanin_failed",
+            level: "warn",
+            summary: "workstream fan-in dispatch failed",
+            data: { errorMessage: err instanceof Error ? err.message : String(err) },
+          });
+        }
       }
 
       // Drive the pipeline engine forward on the same 5s cadence as session

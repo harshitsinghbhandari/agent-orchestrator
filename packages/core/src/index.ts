@@ -558,6 +558,18 @@ export {
 } from "./pipeline/index.js";
 
 export {
+  computeWorkstreamAggregateTriggers,
+  freshAggregateSnapshot,
+  workstreamSessionId,
+  workstreamWorkerTriggerFor,
+} from "./pipeline/index.js";
+export type {
+  WorkstreamSessionInput,
+  AggregateSnapshot,
+  WorkstreamDispatch,
+} from "./pipeline/index.js";
+
+export {
   registerWindowsPtyHost,
   unregisterWindowsPtyHost,
   getWindowsPtyHosts,
