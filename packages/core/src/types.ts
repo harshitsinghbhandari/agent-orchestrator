@@ -1,4 +1,14 @@
 import type { ObservabilityLevel } from "./observability.js";
+import type { ConfiguredPipeline } from "./pipeline/config-schema.js";
+import type {
+  FollowUpContext as PipelineFollowUpContext,
+  FollowUpResult as PipelineFollowUpResult,
+  ThreadMessage as PipelineThreadMessage,
+} from "./pipeline/types.js";
+
+export type FollowUpContext = PipelineFollowUpContext;
+export type FollowUpResult = PipelineFollowUpResult;
+export type ThreadMessage = PipelineThreadMessage;
 
 /**
  * Agent Orchestrator — Core Type Definitions
@@ -268,10 +278,7 @@ export function isRestorable(session: {
   lifecycle?: CanonicalSessionLifecycle;
 }): boolean {
   if (session.lifecycle) {
-    return (
-      isTerminalSession(session) &&
-      !NON_RESTORABLE_STATUSES.has(session.status)
-    );
+    return isTerminalSession(session) && !NON_RESTORABLE_STATUSES.has(session.status);
   }
   return isTerminalSession(session) && !NON_RESTORABLE_STATUSES.has(session.status);
 }
@@ -356,11 +363,7 @@ export function isOrchestratorSession(
   if (allSessionPrefixes) {
     for (const prefix of allSessionPrefixes) {
       if (prefix === sessionPrefix) continue;
-      if (
-        new RegExp(
-          `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`,
-        ).test(session.id)
-      ) {
+      if (new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+$`).test(session.id)) {
         return false;
       }
     }
@@ -378,6 +381,47 @@ export interface SessionSpawnConfig {
   agent?: string;
   /** Override the OpenCode subagent for this session (e.g. "sisyphus", "oracle") */
   subagent?: string;
+  /**
+   * Pipeline-v3: parent orchestrator session this worker was spawned from
+   * (when applicable). Persisted as session metadata so the dashboard and
+   * pipeline router can resolve worker → orchestrator relationships.
+   */
+  parentSessionId?: string;
+  /**
+   * Pipeline-v3: workstream this worker belongs to. First spawn with a new
+   * id creates the workstream; subsequent spawns join it. Per-project unique.
+   */
+  workstreamId?: string;
+  /**
+   * Pipeline-v3: optional base branch sibling workers share within a
+   * workstream. Recorded on the WorkstreamState; defaults to the project's
+   * default branch when omitted.
+   */
+  workstreamBaseBranch?: string;
+}
+
+/**
+ * Pipeline-v3 workstream state — a named group of sibling worker sessions
+ * sharing a base branch. Created on first spawn with a fresh
+ * `workstreamId`; later spawns are added as members. Aggregate state
+ * (e.g. all-merged) is recomputed by the lifecycle manager each poll.
+ *
+ * Storage lives under the project's pipelines directory at
+ * `workstreams/{workstreamId}.json` so it survives orchestrator restarts.
+ */
+export interface WorkstreamState {
+  workstreamId: string;
+  projectId: string;
+  /** Orchestrator session that owns the workstream, if any. */
+  orchestratorSessionId?: string;
+  /** Base branch every member worker branches off of. */
+  baseBranch?: string;
+  /** Member worker session ids, in creation order. */
+  members: string[];
+  /** ISO-8601 creation timestamp. */
+  createdAt: string;
+  /** ISO-8601 last-update timestamp. */
+  updatedAt: string;
 }
 
 /** Config for creating an orchestrator session */
@@ -578,7 +622,24 @@ export interface Agent {
    * it is exercised by `ao spawn`. Throw with an actionable error message.
    */
   preflight?(context: PreflightContext): Promise<void>;
+
+  /**
+   * Optional: deliver a user follow-up message into an existing agent task
+   * (the linked worker session for a pipeline stage in `awaiting_context`).
+   *
+   * Implementations should NOT spawn a new session. Codex implements this via
+   * `codex exec --continue` against the existing rollout file in the workspace;
+   * agents without an equivalent capability omit the method.
+   *
+   * The pipeline engine routes USER_FOLLOWUP events through this method; the
+   * dashboard shows "chat unavailable" gracefully when an agent doesn't
+   * implement it.
+   */
+  sendFollowUpToTask?(ctx: FollowUpContext, message: string): Promise<FollowUpResult>;
 }
+
+// FollowUpContext / FollowUpResult / ThreadMessage live in pipeline/types.ts
+// and are re-exported at the top of this file via `export type`.
 
 export interface AgentLaunchConfig {
   sessionId: SessionId;
@@ -931,6 +992,13 @@ export interface PREnrichmentData {
   isBehind?: boolean;
   /** List of blockers preventing merge */
   blockers?: string[];
+  /**
+   * Head commit SHA of the PR. Surfaced so the lifecycle manager can detect
+   * `pr.updated` (new commit) transitions and dispatch NEW_SHA_DETECTED /
+   * TRIGGER_FIRED into the pipeline engine. Null when the SCM plugin could
+   * not extract it; consumers must treat absence as "unknown", not "unchanged".
+   */
+  headSha?: string | null;
 }
 
 /**
@@ -970,6 +1038,17 @@ export interface PRInfo {
   branch: string;
   baseBranch: string;
   isDraft: boolean;
+  /**
+   * Whether the PR's head branch lives on a fork of the base repo.
+   *
+   * - `true`  — fork PR (untrusted source; the command executor blocks unless
+   *             the pipeline opts in via `allowForkPRs`)
+   * - `false` — same-repo PR
+   * - `null`  — SCM plugin can't determine fork status. The command executor
+   *             treats `null` as "block" (fail-safe) so plugins without fork
+   *             awareness don't accidentally execute untrusted code.
+   */
+  isFromFork: boolean | null;
 }
 
 export type PRState = "open" | "merged" | "closed";
@@ -1137,6 +1216,13 @@ export interface PREnrichmentData {
   blockers?: string[];
   /** Individual CI check results (populated from batch enrichment when available) */
   ciChecks?: CICheck[];
+  /**
+   * Head commit SHA of the PR. Surfaced so the lifecycle manager can detect
+   * `pr.updated` (new commit) transitions and dispatch NEW_SHA_DETECTED /
+   * TRIGGER_FIRED into the pipeline engine. Null when the SCM plugin could
+   * not extract it; consumers must treat absence as "unknown", not "unchanged".
+   */
+  headSha?: string | null;
 }
 
 /**
@@ -1361,7 +1447,7 @@ export interface ObservabilityConfig {
 /** Top-level orchestrator configuration (from agent-orchestrator.yaml) */
 export interface OrchestratorConfig {
   /** Optional JSON Schema hint for editor autocomplete/validation. */
-  "$schema"?: string;
+  $schema?: string;
 
   /**
    * Path to the config file (set automatically during load).
@@ -1597,6 +1683,13 @@ export interface ProjectConfig {
     | "kill-previous";
 
   opencodeIssueSessionStrategy?: "reuse" | "delete" | "ignore";
+
+  /**
+   * Configured pipelines, keyed by pipeline name. Each entry validates
+   * against ConfiguredPipelineSchema; convert to a runtime Pipeline via
+   * configuredPipelineToRuntime (using the map key as the pipeline id).
+   */
+  pipelines?: Record<string, ConfiguredPipeline>;
 }
 
 export interface TrackerConfig {
@@ -1746,6 +1839,15 @@ export interface PluginManifest {
 
   /** Human-readable display name (e.g. "Claude Code") */
   displayName?: string;
+
+  /**
+   * Pipeline task modes this agent plugin advertises support for.
+   * Only meaningful for slot === "agent". Defaults to [] when unset.
+   * Pipeline configs that route a stage with `task.mode = "review"` to an
+   * agent that doesn't claim "review" fail at config load, not runtime.
+   * See pipeline/validation.ts.
+   */
+  supportedTaskModes?: ("review" | "code" | "answer")[];
 }
 
 /** What a plugin module must export */
@@ -2055,40 +2157,44 @@ export class ProjectResolveError extends Error {
 
 /** A project entry in the portfolio index (merged from discovery + registration + preferences) */
 export interface PortfolioProject {
-  id: string;                          // Stable portfolio identity (configProjectKey, with collision suffix if needed)
-  name: string;                        // Human-readable display name
-  configPath: string;                  // Absolute path to agent-orchestrator.yaml
-  configProjectKey: string;            // Key in config.projects map
-  repoPath: string;                    // Absolute local filesystem path
-  repo?: string;                       // "owner/repo" for SCM
+  id: string; // Stable portfolio identity (configProjectKey, with collision suffix if needed)
+  name: string; // Human-readable display name
+  configPath: string; // Absolute path to agent-orchestrator.yaml
+  configProjectKey: string; // Key in config.projects map
+  repoPath: string; // Absolute local filesystem path
+  repo?: string; // "owner/repo" for SCM
   defaultBranch?: string;
   sessionPrefix: string;
   source: "discovered" | "registered" | "config"; // How this entry was found
-  enabled: boolean;                    // User can disable without removing
-  pinned: boolean;                     // User preference for ordering
-  lastSeenAt: string;                  // ISO timestamp
-  resolveError?: string;               // Present only when the project is degraded
+  enabled: boolean; // User can disable without removing
+  pinned: boolean; // User preference for ordering
+  lastSeenAt: string; // ISO timestamp
+  resolveError?: string; // Present only when the project is degraded
 }
 
 /** User preferences overlay (canonical, small file) */
 export interface PortfolioPreferences {
   version: 1;
   defaultProjectId?: string;
-  projectOrder?: string[];             // Ordered project IDs for display
-  projects?: Record<string, {          // Per-project preferences
-    pinned?: boolean;
-    enabled?: boolean;
-    displayName?: string;
-  }>;
+  projectOrder?: string[]; // Ordered project IDs for display
+  projects?: Record<
+    string,
+    {
+      // Per-project preferences
+      pinned?: boolean;
+      enabled?: boolean;
+      displayName?: string;
+    }
+  >;
 }
 
 /** Registered projects (explicit `ao project add`) */
 export interface PortfolioRegistered {
   version: 1;
   projects: Array<{
-    path: string;                      // Repo path
-    configProjectKey?: string;         // Key in config if multi-project YAML
-    addedAt: string;                   // ISO timestamp
+    path: string; // Repo path
+    configProjectKey?: string; // Key in config if multi-project YAML
+    addedAt: string; // ISO timestamp
   }>;
 }
 

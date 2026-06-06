@@ -17,6 +17,9 @@ import { getSessionTitle } from "@/lib/format";
 import { StatusBadge } from "./StatusBadge";
 import { DoneSessionCard } from "./SessionCard.parts";
 import { projectSessionHashPath } from "@/lib/routes";
+// FOLLOW-UP: SessionPipelineStrip (from "./SessionPipelineStrip") needs to be
+// re-wired into the card body after the main+pipelines merge. The pipelines-
+// side insertion was lost when we adopted main's per-PR row refactor here.
 
 /**
  * Tracks which session IDs have already played their entrance animation.

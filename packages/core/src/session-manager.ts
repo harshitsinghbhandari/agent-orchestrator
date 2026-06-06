@@ -1494,6 +1494,14 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
           ...(spawnConfig.prompt ? { userPrompt: spawnConfig.prompt } : {}),
           ...(displayName ? { displayName } : {}),
+          // Pipeline-v3 workstream linkage (#199). Persisted on the worker
+          // so the lifecycle manager and dashboard can group sibling
+          // workers under their workstream card.
+          ...(spawnConfig.parentSessionId ? { parentSessionId: spawnConfig.parentSessionId } : {}),
+          ...(spawnConfig.workstreamId ? { workstreamId: spawnConfig.workstreamId } : {}),
+          ...(spawnConfig.workstreamBaseBranch
+            ? { workstreamBaseBranch: spawnConfig.workstreamBaseBranch }
+            : {}),
         },
       };
 

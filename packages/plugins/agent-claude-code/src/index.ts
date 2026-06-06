@@ -13,6 +13,7 @@ import {
   type ProcessProbeResult,
   type RuntimeHandle,
   type Session,
+  type TaskMode,
   type WorkspaceHooksConfig,
 } from "@aoagents/ao-core";
 import { execFileSync } from "node:child_process";
@@ -668,6 +669,7 @@ export const manifest = {
   description: "Agent plugin: Claude Code CLI",
   version: "0.1.0",
   displayName: "Claude Code",
+  supportedTaskModes: ["review", "code", "answer"] as TaskMode[],
 };
 
 // =============================================================================

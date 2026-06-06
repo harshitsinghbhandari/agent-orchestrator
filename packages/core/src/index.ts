@@ -345,6 +345,7 @@ export {
   getProjectWorktreesDir,
   getProjectCodeReviewsDir,
   getProjectFeedbackReportsDir,
+  getProjectPipelinesDir,
   getOrchestratorPath,
   getSessionPath,
   parseTmuxNameV2,
@@ -519,6 +520,172 @@ export type {
 
 export { atomicWriteFileSync } from "./atomic-write.js";
 
+// Pipeline subsystem — types, reducer, flat-file store (issue #1627)
+export {
+  // Branded ID factories
+  asPipelineId,
+  asRunId,
+  asStageRunId,
+  asArtifactId,
+  // Constants & helpers
+  PIPELINE_FINDINGS_FILENAME,
+  TERMINAL_STAGE_STATUSES,
+  TERMINAL_LOOP_STATES,
+  isTerminalStageStatus,
+  isTerminalLoopState,
+  loopKey,
+  emptyEngineState,
+  // Pipeline-v3 scope (#199)
+  DEFAULT_PIPELINE_SCOPE,
+  ORCHESTRATOR_TRIGGER_EVENTS,
+  WORKSTREAM_TRIGGER_EVENTS,
+  // Reducer
+  reduce,
+  // Store
+  createPipelineStore,
+  // Path helpers
+  pipelineLayout,
+  runFilePath,
+  stageFilePath,
+  artifactsDirForRun,
+  artifactsFilePath,
+  loopFilePath,
+  // v0.2: validation, prompt, executor, engine
+  PipelineConfigError,
+  getSupportedTaskModes,
+  validatePipelineAgentModes,
+  buildStagePrompt,
+  createAgentExecutor,
+  AgentExecutorSpawnError,
+  STAGE_FINDINGS_RELATIVE_PATH,
+  createCommandExecutor,
+  COMMAND_KILL_GRACE_MS,
+  COMMAND_OUTPUT_CAP_BYTES,
+  createPipelineEngine,
+  hydrateEngineState,
+  // v1.1: DAG scheduler + runtime validation defense-in-depth
+  findFirstStageCycle,
+  scheduleAfterChange,
+  validatePipelineDag,
+  // Pipeline config schema (`pipelines:` block)
+  ConfiguredPipelineSchema,
+  PipelinesConfigSchema,
+  configuredPipelineToRuntime,
+  isPipelineV3Enabled,
+  // Store migration — fingerprint-preserving backfill (issue #193)
+  computeFindingFingerprint,
+  migrateStore,
+} from "./pipeline/index.js";
+
+// Legacy `codeReview:` shim — synthesizes a single-stage pipeline (issue #193)
+export {
+  LEGACY_CODE_REVIEW_PIPELINE_NAME,
+  LEGACY_CODE_REVIEW_STAGE_NAME,
+  LegacyCodeReviewSchema,
+  synthesizeLegacyCodeReviewPipeline,
+} from "./config-schema.js";
+export type { LegacyCodeReview } from "./config-schema.js";
+
+export type {
+  // IDs
+  PipelineId,
+  RunId,
+  StageRunId,
+  ArtifactId,
+  // Configuration
+  TaskMode,
+  StageTriggerEvent,
+  StageTrigger,
+  AgentExecutor,
+  CommandExecutor,
+  StageExecutor,
+  TaskSpec,
+  StagePolicy,
+  StageBudget,
+  Stage,
+  Pipeline,
+  // Pipeline-v3 scope + workstream context (#199)
+  PipelineScope,
+  WorkstreamPredicateCtx,
+  WorkstreamMemberSnapshot,
+  WorkstreamMemberPRState,
+  // Artifacts
+  Severity,
+  ArtifactStatus,
+  FindingArtifactInput,
+  JsonArtifactInput,
+  ArtifactInput,
+  Artifact,
+  // Three-tier exit
+  StageStatus,
+  Verdict,
+  RunTerminationReason,
+  LoopStateName,
+  // Runtime state
+  StageState,
+  RunState,
+  LoopState,
+  RunSummary,
+  EngineState,
+  // Reducer surface
+  PipelineEvent,
+  PipelineEffect,
+  ReducerResult,
+  // Store surface
+  PipelineStore,
+  PersistedStageRun,
+  PipelineLayout,
+  // Follow-up + chat thread (v2)
+  FollowUpContext,
+  FollowUpResult,
+  ThreadMessage,
+} from "./pipeline/index.js";
+
+export type {
+  StagePromptInput,
+  AgentStageExecutor,
+  AgentExecutorDeps,
+  AgentExecutorObservation,
+  RunningAgentStage,
+  StageOutcome,
+  StartStageInput,
+  PipelineEngine,
+  PipelineEngineDeps,
+  StartRunInput,
+  ObservationContext,
+  PipelineStoreOptions,
+  ConfiguredPipeline,
+  PipelinesConfig,
+  MigrateResult,
+  WorkspaceClass,
+  WorkspaceSnapshot,
+  GuardCheckResult,
+  FollowUpDeliveryDeps,
+} from "./pipeline/index.js";
+
+export {
+  resolveWorkspaceClass,
+  snapshotWorkspace,
+  verifyWorkspaceUnchanged,
+  buildGuardWarning,
+  createIsolatedWorktree,
+  destroyIsolatedWorktree,
+  isolatedWorktreePath,
+  FINDINGS_FILE_SIZE_CAP_BYTES,
+} from "./pipeline/index.js";
+
+export {
+  computeWorkstreamAggregateTriggers,
+  freshAggregateSnapshot,
+  workstreamSessionId,
+  workstreamWorkerTriggerFor,
+} from "./pipeline/index.js";
+export type {
+  WorkstreamSessionInput,
+  AggregateSnapshot,
+  WorkstreamDispatch,
+} from "./pipeline/index.js";
+
 export {
   registerWindowsPtyHost,
   unregisterWindowsPtyHost,
@@ -545,6 +712,16 @@ export {
   type DaemonChildSweepResult,
   type AoOrphanProcess,
 } from "./daemon-children.js";
+
+// Pipeline-v3 workstream manager (issue #199) — per-project ledger of
+// sibling worker sessions sharing a base branch. Emits WORKSTREAM_*
+// events so the lifecycle manager can react.
+export { createWorkstreamManager } from "./workstream-manager.js";
+export type {
+  WorkstreamManager,
+  WorkstreamManagerDeps,
+  WorkstreamEvent,
+} from "./workstream-manager.js";
 
 // Activity event logging — structured diagnostic event trail
 export { recordActivityEvent, droppedEventCount } from "./activity-events.js";

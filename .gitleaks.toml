@@ -28,4 +28,8 @@ regexes = [
   "your-token-here",
   "example\\.com",
 
+  # Canonical example tokens used in test fixtures (not real secrets)
+  "AKIAIOSFODNN7EXAMPLE",
+  "xoxb-1234567890",
+
 ]

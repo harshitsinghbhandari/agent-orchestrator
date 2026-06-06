@@ -33,6 +33,12 @@ import {
 } from "./global-config.js";
 import { loadEffectiveProjectConfig } from "./project-resolver.js";
 import { recordActivityEvent } from "./activity-events.js";
+import { PipelinesConfigSchema } from "./pipeline/config-schema.js";
+import {
+  LEGACY_CODE_REVIEW_PIPELINE_NAME,
+  LegacyCodeReviewSchema,
+  synthesizeLegacyCodeReviewPipeline,
+} from "./config-schema.js";
 
 function inferScmPlugin(project: {
   repo?: string;
@@ -274,6 +280,15 @@ const ProjectConfigSchema = z.object({
     .enum(["reuse", "delete", "ignore", "delete-new", "ignore-new", "kill-previous"])
     .optional(),
   opencodeIssueSessionStrategy: z.enum(["reuse", "delete", "ignore"]).optional(),
+  pipelines: PipelinesConfigSchema.optional(),
+  /**
+   * Legacy single-stage code-review block. When present, `validateConfig`
+   * synthesizes a `legacy-code-review` pipeline and registers it under
+   * `project.pipelines`. Cannot coexist with an explicit `pipelines:` block —
+   * the conflict is reported at load time so operators don't silently lose
+   * one or the other (issue #193).
+   */
+  codeReview: LegacyCodeReviewSchema.optional(),
 });
 
 const DefaultPluginsSchema = z.object({
@@ -993,6 +1008,39 @@ export function loadConfigWithPath(configPath?: string): {
   return { config: config as LoadedConfig, path };
 }
 
+/**
+ * Walk projects: if `codeReview:` is present, synthesize the
+ * `legacy-code-review` pipeline and install it in `project.pipelines`. Hard
+ * error if both `codeReview:` and `pipelines:` are set on the same project so
+ * operators see the conflict immediately instead of one silently winning.
+ *
+ * The legacy field is stripped after synthesis so downstream consumers only
+ * ever see the unified `pipelines` shape — there is no "is this a synthesized
+ * pipeline" branch elsewhere in the codebase.
+ */
+function applyLegacyCodeReviewShim(config: OrchestratorConfig): OrchestratorConfig {
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    const legacy = (project as { codeReview?: z.infer<typeof LegacyCodeReviewSchema> })
+      .codeReview;
+    if (legacy === undefined) continue;
+
+    if (project.pipelines && Object.keys(project.pipelines).length > 0) {
+      throw new Error(
+        `Project "${projectId}" defines both \`codeReview:\` and \`pipelines:\`. ` +
+          `These are mutually exclusive — \`codeReview:\` is the legacy shim that ` +
+          `synthesizes a \`${LEGACY_CODE_REVIEW_PIPELINE_NAME}\` pipeline, and you ` +
+          `already have a \`pipelines:\` block. Remove one. To finish the migration, ` +
+          `run \`ao pipeline migrate\` and drop the legacy \`codeReview:\` block.`,
+      );
+    }
+
+    const synthesized = synthesizeLegacyCodeReviewPipeline(legacy);
+    project.pipelines = { [LEGACY_CODE_REVIEW_PIPELINE_NAME]: synthesized };
+    delete (project as { codeReview?: unknown }).codeReview;
+  }
+  return config;
+}
+
 /** Validate a raw config object */
 export function validateConfig(raw: unknown): OrchestratorConfig {
   const validated = OrchestratorConfigSchema.parse(raw);
@@ -1001,6 +1049,7 @@ export function validateConfig(raw: unknown): OrchestratorConfig {
   config = expandPaths(config);
   config = applyProjectDefaults(config);
   config = applyDefaultReactions(config);
+  config = applyLegacyCodeReviewShim(config);
 
   // Collect external plugin configs from inline tracker/scm/notifier configs
   // and merge them into config.plugins for loading

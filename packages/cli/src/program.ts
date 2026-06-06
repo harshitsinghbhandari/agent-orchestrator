@@ -19,6 +19,9 @@ import { registerProjectCommand } from "./commands/project.js";
 import { registerMigrateStorage } from "./commands/migrate-storage.js";
 import { registerCompletion } from "./commands/completion.js";
 import { registerEvents } from "./commands/events.js";
+import { registerPipeline } from "./commands/pipeline.js";
+import { registerStage } from "./commands/stage.js";
+import { registerArtifact } from "./commands/artifact.js";
 import { registerConfig } from "./commands/config.js";
 import { getConfigInstruction } from "./lib/config-instruction.js";
 import { getCliVersion } from "./options/version.js";
@@ -54,6 +57,9 @@ export function createProgram(): Command {
   registerMigrateStorage(program);
   registerCompletion(program);
   registerEvents(program);
+  registerPipeline(program);
+  registerStage(program);
+  registerArtifact(program);
   registerConfig(program);
 
   program

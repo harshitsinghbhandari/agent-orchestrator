@@ -1032,6 +1032,7 @@ function extractPREnrichment(
     hasConflicts,
     isBehind,
     blockers,
+    headSha,
     ...(ciChecks !== undefined ? { ciChecks } : {}),
   };
 

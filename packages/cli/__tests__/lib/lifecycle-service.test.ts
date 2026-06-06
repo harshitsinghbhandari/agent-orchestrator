@@ -16,6 +16,15 @@ import {
   listLifecycleWorkers,
 } from "../../src/lib/lifecycle-service.js";
 
+/**
+ * Convenience: `getLifecycleManager` now returns `{ lifecycle, pipelineEngine }`
+ * — we wrap the fake `LifecycleManager` so existing tests don't need to know
+ * about the engine handle.
+ */
+function asHandle(lifecycle: LifecycleManager) {
+  return { lifecycle, pipelineEngine: null };
+}
+
 function makeConfig(projectIds: string[]): OrchestratorConfig {
   return {
     configPath: "/tmp/agent-orchestrator.yaml",
@@ -55,7 +64,7 @@ describe("lifecycle-service", () => {
 
   it("starts polling in-process for a known project", async () => {
     const lifecycle = makeFakeLifecycle();
-    mockGetLifecycleManager.mockResolvedValue(lifecycle);
+    mockGetLifecycleManager.mockResolvedValue(asHandle(lifecycle));
 
     const result = await ensureLifecycleWorker(makeConfig(["app"]), "app", 1000);
 
@@ -66,7 +75,7 @@ describe("lifecycle-service", () => {
 
   it("is idempotent — second ensure is a no-op", async () => {
     const lifecycle = makeFakeLifecycle();
-    mockGetLifecycleManager.mockResolvedValue(lifecycle);
+    mockGetLifecycleManager.mockResolvedValue(asHandle(lifecycle));
 
     const first = await ensureLifecycleWorker(makeConfig(["app"]), "app");
     const second = await ensureLifecycleWorker(makeConfig(["app"]), "app");
@@ -88,7 +97,7 @@ describe("lifecycle-service", () => {
       if (projectId === "broken") {
         throw new Error("boom — broken project plugin");
       }
-      return healthy;
+      return asHandle(healthy);
     });
 
     const config = makeConfig(["healthy", "broken"]);
@@ -111,7 +120,7 @@ describe("lifecycle-service", () => {
     const a = makeFakeLifecycle();
     const b = makeFakeLifecycle();
     mockGetLifecycleManager.mockImplementation(async (_cfg, projectId: string) =>
-      projectId === "a" ? a : b,
+      projectId === "a" ? asHandle(a) : asHandle(b),
     );
 
     const config = makeConfig(["a", "b"]);
@@ -130,7 +139,7 @@ describe("lifecycle-service", () => {
     (broken.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {
       throw new Error("stop failed");
     });
-    mockGetLifecycleManager.mockResolvedValue(broken);
+    mockGetLifecycleManager.mockResolvedValue(asHandle(broken));
 
     await ensureLifecycleWorker(makeConfig(["broken"]), "broken");
 
@@ -147,7 +156,7 @@ describe("lifecycle-service", () => {
     const a = makeFakeLifecycle();
     const b = makeFakeLifecycle();
     mockGetLifecycleManager.mockImplementation(async (_cfg, projectId: string) =>
-      projectId === "a" ? a : b,
+      projectId === "a" ? asHandle(a) : asHandle(b),
     );
 
     const config = makeConfig(["a", "b"]);
@@ -170,7 +179,7 @@ describe("lifecycle-service", () => {
     });
     const healthy = makeFakeLifecycle();
     mockGetLifecycleManager.mockImplementation(async (_cfg, projectId: string) =>
-      projectId === "broken" ? broken : healthy,
+      projectId === "broken" ? asHandle(broken) : asHandle(healthy),
     );
 
     const config = makeConfig(["broken", "healthy"]);

@@ -51,6 +51,19 @@ import {
   cloneLifecycle,
   deriveLegacyStatus,
 } from "./lifecycle-state.js";
+import type { PipelineEngine } from "./pipeline/engine.js";
+import { configuredPipelineToRuntime } from "./pipeline/config-schema.js";
+import {
+  computeWorkstreamAggregateTriggers,
+  type AggregateSnapshot,
+  type WorkstreamSessionInput,
+} from "./pipeline/workstream-trigger-bridge.js";
+import type {
+  LoopStateName,
+  StageTriggerEvent,
+  WorkstreamPredicateCtx,
+} from "./pipeline/types.js";
+import type { WorkstreamManager } from "./workstream-manager.js";
 import { updateMetadata } from "./metadata.js";
 import { getProjectSessionsDir } from "./paths.js";
 import { applyDecisionToLifecycle as commitLifecycleDecisionInPlace } from "./lifecycle-transition.js";
@@ -477,6 +490,24 @@ export interface LifecycleManagerDeps {
   sessionManager: OpenCodeSessionManager;
   /** When set, only poll sessions belonging to this project. */
   projectId?: string;
+  /**
+   * Optional pipeline engine. When provided, the lifecycle manager invokes
+   * `engine.tick()` at the end of every poll cycle so the engine drives
+   * in-flight pipeline stages forward on the same 5s cadence as the rest of
+   * the polling loop (per C-14). The engine was designed to piggyback on this
+   * loop rather than introduce its own timer (see pipeline/engine.ts:19-21).
+   *
+   * Errors from `tick()` are captured and recorded but never bubble out —
+   * pipeline failures must not crash session polling for unrelated sessions.
+   */
+  pipelineEngine?: PipelineEngine;
+  /**
+   * Pipeline-v3 workstream manager (#199). When provided, the lifecycle
+   * manager bridges workstream membership + aggregate state into
+   * workstream-scoped pipeline triggers each `pollAll` cycle. Optional —
+   * v0/v1/v2 deployments leave this unset.
+   */
+  workstreamManager?: WorkstreamManager;
 }
 
 /** Track attempt counts for reactions per session. */
@@ -490,7 +521,20 @@ interface ReactionTracker {
 
 /** Create a LifecycleManager instance. */
 export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleManager {
-  const { config, registry, sessionManager, projectId: scopedProjectId } = deps;
+  const {
+    config,
+    registry,
+    sessionManager,
+    projectId: scopedProjectId,
+    pipelineEngine,
+    workstreamManager,
+  } = deps;
+  /**
+   * Per-workstream edge-trigger latch for `workstream.all_*` events
+   * (#199). Keyed by workstreamId. Cleared/reset on demand by
+   * `computeWorkstreamAggregateTriggers`.
+   */
+  const workstreamAggregates = new Map<string, AggregateSnapshot>();
   const observer = createProjectObserver(config, "lifecycle-manager");
 
   const states = new Map<SessionId, SessionStatus>();
@@ -527,6 +571,15 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   /** Throttle interval for review backlog API calls (2 minutes). */
   const REVIEW_BACKLOG_THROTTLE_MS = 2 * 60 * 1000;
+
+  /**
+   * Last PR head SHA observed per session. Used by the pipeline-trigger bridge
+   * to detect `pr.updated` (new commit) transitions and dispatch
+   * NEW_SHA_DETECTED into the pipeline engine. In-memory only — on restart the
+   * engine's persisted run.headSha plus the reducer's idempotency guard
+   * (`run.headSha === sha` no-op) prevents duplicate dispatches.
+   */
+  const lastPipelineSha = new Map<SessionId, string>();
 
   /**
    * Populate the PR enrichment cache using batch GraphQL queries.
@@ -2353,6 +2406,235 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
   }
 
   /**
+   * Bridge PR-state transitions and HEAD-SHA changes into the pipeline engine.
+   *
+   * Three transitions fire dispatches:
+   *  - PR transitioned to `open` (from any other state): TRIGGER_FIRED(pr.opened)
+   *  - PR transitioned `open → merged`: TRIGGER_FIRED(pr.merged)
+   *  - PR stayed `open` but its HEAD SHA changed: NEW_SHA_DETECTED followed by
+   *    TRIGGER_FIRED(pr.updated). NEW_SHA_DETECTED terminates the prior run as
+   *    `outdated` and frees the loop key so the new TRIGGER_FIRED can start
+   *    a fresh run for the new SHA.
+   *
+   * For each transition, every configured pipeline whose stages subscribe
+   * (`stage.trigger.on` includes the event) is dispatched. Pipelines that
+   * don't subscribe are skipped.
+   *
+   * Idempotency: pr.opened / pr.merged fire on the previousPRState !==
+   * newPRState edge only — repeated polls without a state change emit no
+   * dispatch. pr.updated guards on `lastPipelineSha` and the reducer's
+   * `run.headSha === sha` no-op in NEW_SHA_DETECTED gives a second layer of
+   * idempotency across restarts.
+   */
+  async function bridgePipelineTriggers(
+    session: Session,
+    previousPRState: Session["lifecycle"]["pr"]["state"],
+  ): Promise<void> {
+    if (!pipelineEngine) return;
+
+    const project = config.projects[session.projectId];
+    const configuredPipelines = project?.pipelines;
+    if (!configuredPipelines || Object.keys(configuredPipelines).length === 0) return;
+
+    const newPRState = session.lifecycle.pr.state;
+    let currentHeadSha: string | null = null;
+    if (session.pr) {
+      const prKey = `${session.pr.owner}/${session.pr.repo}#${session.pr.number}`;
+      const cached = prEnrichmentCache.get(prKey);
+      currentHeadSha = cached?.headSha ?? null;
+    }
+
+    const trigger = decidePipelineTrigger(previousPRState, newPRState);
+
+    // SHA-change detection only applies to PRs still in `open` state — a PR
+    // that just transitioned to `open` rides the pr.opened branch instead.
+    const isContinuingOpen =
+      previousPRState === "open" && newPRState === "open" && currentHeadSha !== null;
+    const lastSha = lastPipelineSha.get(session.id);
+    const shaChanged = isContinuingOpen && lastSha !== undefined && lastSha !== currentHeadSha;
+
+    if (currentHeadSha) {
+      lastPipelineSha.set(session.id, currentHeadSha);
+    }
+
+    if (!trigger && !shaChanged) return;
+
+    // On SHA change, dispatch NEW_SHA_DETECTED FIRST so the reducer frees the
+    // loop key before the pr.updated TRIGGER_FIRED arrives — otherwise the
+    // new trigger no-ops against the still-active prior run.
+    if (shaChanged && currentHeadSha) {
+      for (const pipelineName of Object.keys(configuredPipelines)) {
+        try {
+          await pipelineEngine.dispatch({
+            type: "NEW_SHA_DETECTED",
+            now: Date.now(),
+            sessionId: session.id,
+            pipelineName: configuredPipelines[pipelineName].name ?? pipelineName,
+            sha: currentHeadSha,
+          });
+        } catch (err) {
+          recordActivityEvent({
+            projectId: session.projectId,
+            sessionId: session.id,
+            source: "lifecycle",
+            kind: "pipeline.new_sha_dispatch_failed",
+            level: "warn",
+            summary: `NEW_SHA_DETECTED dispatch failed for ${pipelineName}`,
+            data: { errorMessage: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+    }
+
+    const effectiveTrigger: StageTriggerEvent | null = trigger ?? (shaChanged ? "pr.updated" : null);
+    if (!effectiveTrigger) return;
+
+    const dispatchSha = currentHeadSha ?? "unknown";
+    for (const [key, configured] of Object.entries(configuredPipelines)) {
+      const subscribes = configured.stages.some((stage) =>
+        stage.trigger.on.includes(effectiveTrigger),
+      );
+      if (!subscribes) continue;
+      try {
+        const pipeline = configuredPipelineToRuntime(key, configured);
+        await pipelineEngine.startRun({
+          pipeline,
+          projectId: session.projectId,
+          sessionId: session.id,
+          trigger: effectiveTrigger,
+          headSha: dispatchSha,
+          ...(session.issueId ? { issueId: session.issueId } : {}),
+        });
+      } catch (err) {
+        recordActivityEvent({
+          projectId: session.projectId,
+          sessionId: session.id,
+          source: "lifecycle",
+          kind: "pipeline.trigger_fired_dispatch_failed",
+          level: "warn",
+          summary: `TRIGGER_FIRED(${effectiveTrigger}) dispatch failed for ${key}`,
+          data: { errorMessage: err instanceof Error ? err.message : String(err) },
+        });
+      }
+    }
+  }
+
+  /**
+   * Pipeline-v3 workstream fan-in (#199). For every persisted workstream
+   * in scope, snapshot members + per-pipeline run state, detect aggregate
+   * edge transitions (e.g. `all_merged`), and dispatch workstream-scoped
+   * pipelines that subscribe.
+   *
+   * The synthetic sessionId `ws:{workstreamId}` keeps the engine's
+   * `loopKey` partitioned away from per-worker keys. The workstream
+   * snapshot is frozen onto RunState so predicate evaluation
+   * (`all_workstream_workers_*`) can resolve member state at decision
+   * time without re-querying the lifecycle manager.
+   */
+  async function runWorkstreamFanIn(sessions: ReadonlyArray<Session>): Promise<void> {
+    if (!pipelineEngine || !workstreamManager) return;
+
+    // Find every project that has workstream-scoped pipelines configured.
+    // We don't iterate workstreams of projects without any v3 pipelines —
+    // there's nothing to dispatch and reading the disk is wasted work.
+    const projectIds = scopedProjectId
+      ? [scopedProjectId]
+      : Object.keys(config.projects);
+
+    for (const projectId of projectIds) {
+      const project = config.projects[projectId];
+      const configured = project?.pipelines;
+      if (!project || !configured) continue;
+
+      // Collect workstream-scoped pipelines (`scope: "workstream"`) up-front.
+      // configuredPipelineToRuntime handles AO_PIPELINE_V3 downgrade, so a
+      // declared workstream scope falls back to "worker" when the gate is
+      // off and we'd find nothing to fan-in to — also the correct behavior.
+      const wsPipelines: Array<{ key: string; runtime: ReturnType<typeof configuredPipelineToRuntime> }> = [];
+      for (const [key, raw] of Object.entries(configured)) {
+        const runtime = configuredPipelineToRuntime(key, raw);
+        if (runtime.scope === "workstream") {
+          wsPipelines.push({ key, runtime });
+        }
+      }
+      if (wsPipelines.length === 0) continue;
+
+      const workstreams = workstreamManager.list(projectId);
+      if (workstreams.length === 0) continue;
+
+      const sessionInputs: WorkstreamSessionInput[] = sessions
+        .filter((s) => s.projectId === projectId)
+        .map((s) => {
+          const stalled =
+            s.lifecycle.session.state === "stuck" ||
+            s.lifecycle.session.state === "detecting" ||
+            s.status === "killed";
+          const forgivenRaw = s.metadata?.["workstreamForgiven"];
+          return {
+            sessionId: s.id,
+            prState: s.lifecycle.pr.state,
+            latestRunByPipeline: {} as Record<string, LoopStateName | undefined>,
+            ...(forgivenRaw === "true" ? { forgiven: true as const } : {}),
+            stalled,
+          } satisfies WorkstreamSessionInput;
+        });
+
+      const { dispatches } = computeWorkstreamAggregateTriggers({
+        workstreams,
+        sessions: sessionInputs,
+        previousAggregates: workstreamAggregates,
+      });
+
+      for (const dispatch of dispatches) {
+        const subscribers = wsPipelines.filter(({ runtime }) =>
+          runtime.stages.some((stage) => stage.trigger.on.includes(dispatch.trigger)),
+        );
+        for (const { runtime } of subscribers) {
+          try {
+            const ctx: WorkstreamPredicateCtx = dispatch.snapshot;
+            await pipelineEngine.startRun({
+              pipeline: runtime,
+              projectId,
+              sessionId: dispatch.syntheticSessionId,
+              trigger: dispatch.trigger,
+              headSha: "workstream",
+              workstream: ctx,
+            });
+          } catch (err) {
+            recordActivityEvent({
+              projectId,
+              source: "lifecycle",
+              kind: "workstream.dispatch_failed",
+              level: "warn",
+              summary: `workstream dispatch failed for ${runtime.name}`,
+              data: {
+                workstreamId: dispatch.workstreamId,
+                trigger: dispatch.trigger,
+                errorMessage: err instanceof Error ? err.message : String(err),
+              },
+            });
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Map a PR state transition to the corresponding pipeline trigger event.
+   * Returns null when the transition doesn't correspond to a pipeline trigger
+   * (e.g. `open → closed`, or no state change at all).
+   */
+  function decidePipelineTrigger(
+    previousPRState: Session["lifecycle"]["pr"]["state"],
+    newPRState: Session["lifecycle"]["pr"]["state"],
+  ): StageTriggerEvent | null {
+    if (previousPRState === newPRState) return null;
+    if (newPRState === "open") return "pr.opened";
+    if (newPRState === "merged" && previousPRState === "open") return "pr.merged";
+    return null;
+  }
+
+  /**
    * Dispatch merge conflict notifications to the agent session.
    * Conflicts are detected from the PR enrichment cache or getMergeability()
    * and dispatched independently of the session status (conflicts can coexist
@@ -2929,6 +3211,26 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
+    // Bridge PR-state transitions into the pipeline engine: when a PR
+    // transitions none→open, open→merged, or a new HEAD SHA lands on an open
+    // PR, fire TRIGGER_FIRED (and NEW_SHA_DETECTED on SHA change) so any
+    // configured pipeline subscribed to the corresponding event auto-runs.
+    // Errors are swallowed: a misconfigured pipeline must not block session
+    // lifecycle progression for unrelated sessions.
+    try {
+      await bridgePipelineTriggers(session, previousPRState);
+    } catch (err) {
+      recordActivityEvent({
+        projectId: session.projectId,
+        sessionId: session.id,
+        source: "lifecycle",
+        kind: "pipeline.trigger_bridge_failed",
+        level: "warn",
+        summary: "pipeline trigger bridge failed",
+        data: { errorMessage: err instanceof Error ? err.message : String(err) },
+      });
+    }
+
     // Pin first quality summary for title stability
     if (
       session.agentInfo?.summary &&
@@ -3165,6 +3467,55 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             activeSessionCount: activeSessions.length,
           },
         });
+      }
+
+      // Pipeline-v3 workstream fan-in (#199). Before ticking the engine,
+      // walk every workstream + snapshot its members; dispatch any
+      // edge-triggered `workstream.all_*` events so the engine sees them
+      // in this same cycle. Per-member `workstream.worker_pr_*` events
+      // are handled inline by `bridgePipelineTriggers` above.
+      if (pipelineEngine && workstreamManager) {
+        try {
+          await runWorkstreamFanIn(sessions);
+        } catch (err) {
+          recordActivityEvent({
+            projectId: scopedProjectId,
+            source: "lifecycle",
+            kind: "workstream.fanin_failed",
+            level: "warn",
+            summary: "workstream fan-in dispatch failed",
+            data: { errorMessage: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+
+      // Drive the pipeline engine forward on the same 5s cadence as session
+      // polling (per C-14, no new timers). Errors are swallowed so a pipeline
+      // poll failure cannot crash the session loop for unrelated sessions.
+      if (pipelineEngine) {
+        try {
+          await pipelineEngine.tick();
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          observer.recordOperation({
+            metric: "lifecycle_poll",
+            operation: "pipeline.tick",
+            outcome: "failure",
+            correlationId,
+            projectId: scopedProjectId,
+            durationMs: Date.now() - startedAt,
+            reason: errorMsg,
+            level: "warn",
+          });
+          recordActivityEvent({
+            projectId: scopedProjectId,
+            source: "lifecycle",
+            kind: "pipeline.tick_failed",
+            level: "warn",
+            summary: "pipeline engine tick failed",
+            data: { errorMessage: errorMsg },
+          });
+        }
       }
     } catch (err) {
       const errorReason = err instanceof Error ? err.message : String(err);

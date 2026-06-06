@@ -111,6 +111,7 @@ describe("findAffectedSessions", () => {
           branch: "feat/one",
           baseBranch: "main",
           isDraft: false,
+          isFromFork: false,
         },
         prs: [
           {
@@ -153,6 +154,7 @@ describe("findAffectedSessions", () => {
           branch: "feat/one",
           baseBranch: "main",
           isDraft: false,
+          isFromFork: false,
         },
         prs: [
           {

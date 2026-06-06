@@ -135,6 +135,11 @@ export function getProjectFeedbackReportsDir(projectId: string): string {
   return join(getProjectDir(projectId), "feedback-reports");
 }
 
+/** Get the pipelines directory for a project. Holds runs/, stages/, artifacts/, loops/. */
+export function getProjectPipelinesDir(projectId: string): string {
+  return join(getProjectDir(projectId), "pipelines");
+}
+
 /** Get the orchestrator metadata file path for a project. */
 export function getOrchestratorPath(projectId: string): string {
   return join(getProjectDir(projectId), "orchestrator.json");

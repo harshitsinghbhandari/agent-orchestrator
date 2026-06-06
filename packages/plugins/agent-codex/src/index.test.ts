@@ -245,6 +245,7 @@ describe("plugin manifest & exports", () => {
       description: "Agent plugin: OpenAI Codex CLI",
       version: "0.1.1",
       displayName: "OpenAI Codex",
+      supportedTaskModes: ["review", "code", "answer"],
     });
   });
 

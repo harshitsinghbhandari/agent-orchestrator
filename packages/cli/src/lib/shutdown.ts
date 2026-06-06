@@ -21,7 +21,10 @@ import {
 } from "@aoagents/ao-core";
 import { stopBunTmpJanitor } from "./bun-tmp-janitor.js";
 import { getSessionManager } from "./create-session-manager.js";
-import { stopAllLifecycleWorkers } from "./lifecycle-service.js";
+import {
+  drainAllLifecycleWorkerPipelines,
+  stopAllLifecycleWorkers,
+} from "./lifecycle-service.js";
 import { stopProjectSupervisor } from "./project-supervisor.js";
 import { unregister, writeLastStop } from "./running-state.js";
 
@@ -93,6 +96,15 @@ export function installShutdownHandlers(ctx: ShutdownContext): void {
     forceExit.unref();
 
     void (async () => {
+      try {
+        // Drain pipeline engines first so RUN_CANCELLED dispatches reach the
+        // store before we tear down session managers and sessions. The hard
+        // 10s force-exit timer above caps total shutdown time; drain is
+        // best-effort within that budget.
+        await drainAllLifecycleWorkerPipelines();
+      } catch {
+        // Best-effort — drain errors are recorded by lifecycle-service.
+      }
       try {
         const shutdownConfig = loadConfig(ctx.configPath);
         const sm = await getSessionManager(shutdownConfig);

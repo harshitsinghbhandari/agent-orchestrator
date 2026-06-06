@@ -479,12 +479,22 @@ function createGitLabSCM(config?: Record<string, unknown>): SCM {
             source_branch: string;
             target_branch: string;
             draft: boolean;
+            /** Project the MR's source branch lives in (the fork, if forked). */
+            source_project_id?: number | null;
+            /** Project the MR targets (the upstream). */
+            target_project_id?: number | null;
           }>
         >(raw, `detectPR for branch "${session.branch}"`);
 
         if (mrs.length === 0) return null;
 
         const mr = mrs[0];
+        // GitLab marks a fork MR when source and target live in different
+        // projects. Either id missing → can't classify → null (fail-safe).
+        const isFromFork: boolean | null =
+          typeof mr.source_project_id === "number" && typeof mr.target_project_id === "number"
+            ? mr.source_project_id !== mr.target_project_id
+            : null;
         return {
           number: mr.iid,
           url: mr.web_url,
@@ -494,6 +504,7 @@ function createGitLabSCM(config?: Record<string, unknown>): SCM {
           branch: mr.source_branch,
           baseBranch: mr.target_branch,
           isDraft: mr.draft ?? false,
+          isFromFork,
         };
       } catch (err) {
         console.warn(`detectPR: failed for branch "${session.branch}": ${(err as Error).message}`);

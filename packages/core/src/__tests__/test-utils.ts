@@ -131,6 +131,7 @@ export function makePR(overrides: Partial<PRInfo> = {}): PRInfo {
     branch: "feat/test",
     baseBranch: "main",
     isDraft: false,
+    isFromFork: false,
     ...overrides,
   };
 }

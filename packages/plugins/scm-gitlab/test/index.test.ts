@@ -347,6 +347,8 @@ describe("scm-gitlab plugin", () => {
           source_branch: "feat/my-feature",
           target_branch: "main",
           draft: false,
+          source_project_id: 1,
+          target_project_id: 1,
         },
       ]);
 
@@ -360,6 +362,7 @@ describe("scm-gitlab plugin", () => {
         branch: "feat/my-feature",
         baseBranch: "main",
         isDraft: false,
+        isFromFork: false,
       });
     });
 

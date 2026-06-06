@@ -3,10 +3,14 @@ import ora from "ora";
 import type { Command } from "commander";
 import { resolve } from "node:path";
 import {
+  createWorkstreamManager,
+  getOrchestratorSessionId,
   loadConfig,
+  readMetadataRaw,
   recordActivityEvent,
   resolveSpawnTarget,
   TERMINAL_STATUSES,
+  getProjectSessionsDir,
   type OrchestratorConfig,
   type PreflightContext,
 } from "@aoagents/ao-core";
@@ -196,6 +200,49 @@ async function runSpawnPreflight(
   }
 }
 
+interface SpawnWorkstreamOptions {
+  workstreamId: string;
+  baseBranch?: string;
+}
+
+/**
+ * Resolve workstream linkage for `ao spawn --workstream`. First call with
+ * a fresh id creates the workstream + records the orchestrator owner;
+ * subsequent calls join it. Returns the metadata to thread into the spawn
+ * call so the worker is persisted with its workstream linkage.
+ */
+function prepareWorkstreamSpawn(
+  config: OrchestratorConfig,
+  projectId: string,
+  options: SpawnWorkstreamOptions,
+): { workstreamId: string; baseBranch?: string; parentSessionId?: string } {
+  const project = config.projects[projectId];
+  if (!project) throw new Error(`Unknown project: ${projectId}`);
+
+  // Workstream linkage is opt-in (and matches the v3 gate phasing #199).
+  // We allow joining/creation here even with the engine flag off so the
+  // membership ledger stays accurate — the engine just won't promote v3
+  // pipeline scopes until AO_PIPELINE_V3=1.
+  const orchestratorSessionId = getOrchestratorSessionId(project);
+  const sessionsDir = getProjectSessionsDir(projectId);
+  const orchestratorExists = readMetadataRaw(sessionsDir, orchestratorSessionId) !== null;
+  const parentSessionId = orchestratorExists ? orchestratorSessionId : undefined;
+
+  const manager = createWorkstreamManager();
+  const existing = manager.get(projectId, options.workstreamId);
+  const baseBranch = options.baseBranch ?? existing?.baseBranch;
+  manager.getOrCreate(projectId, options.workstreamId, {
+    ...(parentSessionId ? { orchestratorSessionId: parentSessionId } : {}),
+    ...(baseBranch ? { baseBranch } : {}),
+  });
+
+  return {
+    workstreamId: options.workstreamId,
+    ...(baseBranch ? { baseBranch } : {}),
+    ...(parentSessionId ? { parentSessionId } : {}),
+  };
+}
+
 async function spawnSession(
   config: OrchestratorConfig,
   projectId: string,
@@ -204,6 +251,7 @@ async function spawnSession(
   agent?: string,
   claimOptions?: SpawnClaimOptions,
   prompt?: string,
+  workstream?: SpawnWorkstreamOptions,
 ): Promise<void> {
   const spinner = ora("Creating session").start();
 
@@ -228,15 +276,34 @@ async function spawnSession(
         agent: agent ?? null,
         hasPrompt: !!sanitizedPrompt,
         claimPr: claimOptions?.claimPr ?? null,
+        workstream: workstream ?? null,
       },
     });
+
+    const workstreamLinkage = workstream
+      ? prepareWorkstreamSpawn(config, projectId, workstream)
+      : undefined;
 
     const session = await sm.spawn({
       projectId,
       issueId,
       agent,
       prompt: sanitizedPrompt,
+      ...(workstreamLinkage?.workstreamId ? { workstreamId: workstreamLinkage.workstreamId } : {}),
+      ...(workstreamLinkage?.baseBranch
+        ? { workstreamBaseBranch: workstreamLinkage.baseBranch }
+        : {}),
+      ...(workstreamLinkage?.parentSessionId
+        ? { parentSessionId: workstreamLinkage.parentSessionId }
+        : {}),
     });
+
+    // Workstream membership is recorded only AFTER spawn succeeds — failed
+    // spawns must not pollute the workstream ledger.
+    if (workstreamLinkage?.workstreamId) {
+      const manager = createWorkstreamManager();
+      manager.addMember(projectId, workstreamLinkage.workstreamId, session.id);
+    }
 
     let claimedPrUrl: string | null = null;
 
@@ -308,6 +375,14 @@ export function registerSpawn(program: Command): void {
       "--prompt <text>",
       "Initial prompt/instructions for the agent (use instead of an issue)",
     )
+    .option(
+      "--workstream <id>",
+      "Attach this worker to a pipeline-v3 workstream. First spawn with a new id creates the workstream; later spawns join it.",
+    )
+    .option(
+      "--workstream-base-branch <branch>",
+      "Base branch every worker in the workstream branches off (defaults to project default branch).",
+    )
     .action(
       async (
         issue: string | undefined,
@@ -317,6 +392,8 @@ export function registerSpawn(program: Command): void {
           claimPr?: string;
           assignOnGithub?: boolean;
           prompt?: string;
+          workstream?: string;
+          workstreamBaseBranch?: string;
         },
         command: Command,
       ) => {
@@ -351,6 +428,20 @@ export function registerSpawn(program: Command): void {
           assignOnGithub: opts.assignOnGithub,
         };
 
+        if (opts.workstreamBaseBranch && !opts.workstream) {
+          console.error(
+            chalk.red("--workstream-base-branch requires --workstream <id> on `ao spawn`."),
+          );
+          process.exit(1);
+        }
+
+        const workstreamOptions: SpawnWorkstreamOptions | undefined = opts.workstream
+          ? {
+              workstreamId: opts.workstream,
+              ...(opts.workstreamBaseBranch ? { baseBranch: opts.workstreamBaseBranch } : {}),
+            }
+          : undefined;
+
         try {
           await runSpawnPreflight(config, projectId, claimOptions);
           await ensureAOPollingProject(projectId);
@@ -381,6 +472,7 @@ export function registerSpawn(program: Command): void {
             opts.agent,
             claimOptions,
             opts.prompt,
+            workstreamOptions,
           );
         } catch (err) {
           console.error(chalk.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
