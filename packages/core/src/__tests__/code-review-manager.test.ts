@@ -77,6 +77,7 @@ function makeSession(overrides: Partial<Session> & { id?: string } = {}): Sessio
       branch: "feat/todos",
       baseBranch: "main",
       isDraft: false,
+      isFromFork: null,
     },
     prs: [
       {
@@ -88,6 +89,7 @@ function makeSession(overrides: Partial<Session> & { id?: string } = {}): Sessio
         branch: "feat/todos",
         baseBranch: "main",
         isDraft: false,
+        isFromFork: null,
       },
     ],
     workspacePath: "/tmp/app-worktree",

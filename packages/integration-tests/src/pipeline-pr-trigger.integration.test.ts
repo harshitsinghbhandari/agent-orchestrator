@@ -194,6 +194,7 @@ function makeSession(pr: PRInfo): Session {
     branch: "feat/x",
     issueId: null,
     pr,
+    prs: pr ? [pr] : [],
     workspacePath: "/tmp/ws",
     runtimeHandle: { id: "rt-1", runtimeName: "stub", data: {} },
     agentInfo: null,

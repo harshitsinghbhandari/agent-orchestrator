@@ -58,6 +58,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     branch: "feat/x",
     issueId: null,
     pr: null,
+    prs: [],
     workspacePath: workspaceRoot,
     runtimeHandle: { id: "tmux-1", runtimeName: "tmux", data: {} },
     agentInfo: null,
