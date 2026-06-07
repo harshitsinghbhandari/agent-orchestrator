@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createActivitySignal } from "../activity-signal.js";
+import { isWindows } from "../platform.js";
 import { createCodeReviewStore, type CodeReviewStore } from "../code-review-store.js";
 import {
   buildCodexCodeReviewArgs,
@@ -643,7 +644,7 @@ describe("runCodexCodeReview", () => {
     expect(args).not.toContain("--base");
   });
 
-  it.skipIf(process.platform === "win32")(
+  it.skipIf(isWindows())(
     "throws an install-hint error when the codex CLI is missing from PATH",
     async () => {
       const tmpRoot = join(tmpdir(), `ao-test-codex-missing-${randomUUID()}`);
