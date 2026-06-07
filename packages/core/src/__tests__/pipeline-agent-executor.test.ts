@@ -298,20 +298,108 @@ describe("agent executor — pollStage", () => {
     expect(outcome.status).toBe("failed");
     if (outcome.status !== "failed") throw new Error("unreachable");
     expect(outcome.errorMessage).toContain("terminated without findings");
+    // Defect 3 regression: must not surface the initial `spawn_requested`
+    // lifecycle reason — fall back to activity-derived terminal reason.
+    expect(outcome.errorMessage).not.toContain("spawn_requested");
+    expect(outcome.errorMessage).toContain("reason=agent_process_exited");
   });
 
-  it("returns failed when session reaches `done` before findings are harvested", async () => {
-    // Regression: stages should never reach `done` ahead of findings — `done`
-    // is reserved for post-merge / explicit completion. Treating it as a still-
-    // running state would hang the stage forever.
-    const mock = makeMockSessionManager({ activity: "idle", status: "done" });
+  it("harvests findings as success even when the session has already exited", async () => {
+    // Defect 2 regression: the reviewer wrote findings (the contract's
+    // completion signal) and then exited. We must not short-circuit to
+    // failure before checking the findings file.
+    const mock = makeMockSessionManager({ activity: "exited", status: "killed" });
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+    const handle = await exec.startStage(makeStartInput());
+
+    writeFindingsFile(workspaceRoot, [
+      JSON.stringify({
+        kind: "finding",
+        filePath: "src/a.ts",
+        startLine: 1,
+        endLine: 1,
+        title: "t",
+        description: "d",
+        category: "c",
+        severity: "info",
+        confidence: 0.5,
+      }),
+    ]);
+
+    const outcome = await exec.pollStage(handle);
+    expect(outcome.status).toBe("completed");
+    if (outcome.status !== "completed") throw new Error("unreachable");
+    expect(outcome.artifacts).toHaveLength(1);
+    expect(mock.kill).toHaveBeenCalledWith(handle.sessionId, { reason: "auto_cleanup" });
+  });
+
+  it("harvests an empty findings file as success even when the session has already exited", async () => {
+    // Defect 2 regression: the file's existence — not its contents — is the
+    // completion signal. An empty file from a reviewer that found nothing must
+    // succeed, not fail, regardless of post-write session state.
+    const mock = makeMockSessionManager({ activity: "exited", status: "killed" });
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+    const handle = await exec.startStage(makeStartInput());
+
+    writeFindingsFile(workspaceRoot, []);
+
+    const outcome = await exec.pollStage(handle);
+    expect(outcome).toEqual({ status: "completed", artifacts: [] });
+    expect(mock.kill).toHaveBeenCalledWith(handle.sessionId, { reason: "auto_cleanup" });
+  });
+
+  it("reports a real terminal reason when lifecycle reason is a whitelisted terminal one", async () => {
+    const seedLifecycle = createInitialCanonicalLifecycle("worker", new Date());
+    seedLifecycle.session.state = "terminated";
+    seedLifecycle.session.reason = "manually_killed";
+    const mock = makeMockSessionManager({
+      activity: "idle",
+      status: "killed",
+      lifecycle: seedLifecycle,
+    });
     const exec = createAgentExecutor({ sessionManager: mock.sm });
     const handle = await exec.startStage(makeStartInput());
 
     const outcome = await exec.pollStage(handle);
     expect(outcome.status).toBe("failed");
     if (outcome.status !== "failed") throw new Error("unreachable");
-    expect(outcome.errorMessage).toContain("terminated without findings");
+    expect(outcome.errorMessage).toContain("reason=manually_killed");
+  });
+
+  it("falls back to `terminated` when lifecycle is terminal but the reason is not a terminal one", async () => {
+    // Mirrors the real Defect 3 scenario: lifecycle.state transitions to
+    // `terminated` but the reason field still carries the initial
+    // `spawn_requested` — we must not echo that misleading reason.
+    const seedLifecycle = createInitialCanonicalLifecycle("worker", new Date());
+    seedLifecycle.session.state = "terminated";
+    const mock = makeMockSessionManager({
+      activity: "idle",
+      status: "killed",
+      lifecycle: seedLifecycle,
+    });
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+    const handle = await exec.startStage(makeStartInput());
+
+    const outcome = await exec.pollStage(handle);
+    expect(outcome.status).toBe("failed");
+    if (outcome.status !== "failed") throw new Error("unreachable");
+    expect(outcome.errorMessage).not.toContain("spawn_requested");
+    expect(outcome.errorMessage).toContain("reason=terminated");
+  });
+
+  it("does not treat a healthy `done` status as failure when findings are still pending", async () => {
+    // Defect 2 fix: dropping the conservative `done`-as-failure clause means a
+    // session reporting `done` without a terminal lifecycle state and without
+    // findings is treated as still in flight — the next poll will harvest if
+    // the file appears, or surface a real terminal reason when the runtime
+    // actually dies.
+    const mock = makeMockSessionManager({ activity: "idle", status: "done" });
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+    const handle = await exec.startStage(makeStartInput());
+
+    const outcome = await exec.pollStage(handle);
+    expect(outcome).toEqual({ status: "running" });
+    expect(mock.kill).not.toHaveBeenCalled();
   });
 
   it("rejects findings whose confidence is outside [0, 1]", async () => {

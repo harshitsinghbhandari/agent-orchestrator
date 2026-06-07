@@ -194,22 +194,22 @@ export function createAgentExecutor(deps: AgentExecutorDeps): AgentStageExecutor
       };
     }
 
-    // The runtime/lifecycle escaping `idle` (e.g. session crashed, was killed
-    // out-of-band, or the agent exited without producing findings) is treated
-    // as a failure. The session is already terminal; nothing more to harvest.
-    if (isFailedTerminalSession(session)) {
-      const reason = session.lifecycle?.session.reason ?? session.status;
-      return {
-        status: "failed",
-        errorMessage: `Stage "${handle.stageName}" session ${handle.sessionId} terminated without findings (reason=${reason})`,
-      };
-    }
-
+    // Harvest-first: the findings file's existence is the completion signal,
+    // per the stage-prompt contract. Check it before any terminal-state
+    // bailout so a reviewer that wrote findings and exited cleanly still has
+    // its work picked up. Only when findings are absent do we look at
+    // session state to decide between "still working" and "dead without
+    // delivering".
     const findingsPath = join(handle.workspacePath, STAGE_FINDINGS_RELATIVE_PATH);
     const findingsReady = existsSync(findingsPath);
-    const isIdle = session.activity === "idle";
 
-    if (!isIdle || !findingsReady) {
+    if (!findingsReady) {
+      if (isFailedTerminalSession(session)) {
+        return {
+          status: "failed",
+          errorMessage: `Stage "${handle.stageName}" session ${handle.sessionId} terminated without findings (reason=${resolveTerminalReason(session)})`,
+        };
+      }
       return { status: "running" };
     }
 
@@ -261,13 +261,35 @@ function isFailedTerminalSession(session: {
 }): boolean {
   if (session.activity === "exited") return true;
   if (session.lifecycle?.session.state === "terminated") return true;
-  // `done` is a healthy terminal — but for stages we never expect a session to
-  // reach `done` before findings are harvested, so treat it as a failure too.
-  // (Sessions only transition to `done` after PR merge / explicit completion.)
-  if (session.status === "killed" || session.status === "errored" || session.status === "done") {
-    return true;
-  }
+  if (session.status === "killed" || session.status === "errored") return true;
   return false;
+}
+
+// Whitelist of lifecycle reasons that actually correspond to a terminal
+// transition. `spawn_requested` and friends are *initial* lifecycle reasons —
+// reading the reason field blindly would surface them as the cause of
+// termination, which is misleading. Fall back to activity/state/status when the
+// raw reason isn't a real terminal one.
+const TERMINAL_REASONS: ReadonlySet<string> = new Set([
+  "manually_killed",
+  "runtime_lost",
+  "agent_process_exited",
+  "probe_failure",
+  "error_in_process",
+  "auto_cleanup",
+  "pr_merged",
+]);
+
+function resolveTerminalReason(session: {
+  status: string;
+  activity: string | null;
+  lifecycle?: { session: { state: string; reason?: string } };
+}): string {
+  const rawReason = session.lifecycle?.session.reason;
+  if (rawReason && TERMINAL_REASONS.has(rawReason)) return rawReason;
+  if (session.activity === "exited") return "agent_process_exited";
+  if (session.lifecycle?.session.state === "terminated") return "terminated";
+  return session.status;
 }
 
 interface ParseFindingsResult {
