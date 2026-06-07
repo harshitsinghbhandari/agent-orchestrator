@@ -751,6 +751,12 @@ export async function runCodexCodeReview(
     const rawOutput = outputFileContents ?? (stdout.trim() || stderr.trim());
     return { rawOutput };
   } catch (error) {
+    if (isFsErrorWithCode(error, "ENOENT")) {
+      throw new Error(
+        "Codex CLI ('codex') was not found on PATH. AO's built-in reviewer requires the Codex CLI — install it from https://github.com/openai/codex (or `npm i -g @openai/codex`) and retry the review.",
+        { cause: error },
+      );
+    }
     const details =
       error instanceof Error && "stderr" in error && typeof error.stderr === "string"
         ? error.stderr.trim()
