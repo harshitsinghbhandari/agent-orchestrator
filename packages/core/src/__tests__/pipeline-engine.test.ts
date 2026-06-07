@@ -27,7 +27,14 @@ import {
   type TaskMode,
 } from "../pipeline/index.js";
 import { createPluginRegistry } from "../plugin-registry.js";
-import type { Agent, PluginManifest, PluginModule, PluginRegistry } from "../types.js";
+import type {
+  Agent,
+  PluginManifest,
+  PluginModule,
+  PluginRegistry,
+  Session,
+  SessionId,
+} from "../types.js";
 
 let storeRoot: string;
 
@@ -488,5 +495,180 @@ describe("pipeline engine — end-to-end", () => {
 
     expect(executor.startCalls).toHaveLength(2);
     expect(executor.startCalls[1]?.projectId).toBe("proj-b");
+  });
+});
+
+describe("pipeline engine — prContext threading (#215)", () => {
+  function makeSession(overrides: Partial<Session> = {}): Session {
+    return {
+      id: "ses-1" as SessionId,
+      projectId: "proj-a",
+      status: "working",
+      activity: "active",
+      activitySignal: {
+        state: "valid",
+        activity: "active",
+        source: "runtime",
+        timestamp: new Date(),
+      },
+      lifecycle: {
+        session: { state: "working", reason: undefined },
+        agent: { state: "active", reason: undefined },
+        ci: { state: "no_pr", reason: undefined },
+        review: { state: "no_pr", reason: undefined },
+        updatedAt: new Date(),
+      } as unknown as Session["lifecycle"],
+      branch: "feat/x",
+      issueId: null,
+      pr: null,
+      prs: [],
+      workspacePath: "/tmp/mock",
+      runtimeHandle: { id: "tmux-1", runtimeName: "tmux", data: {} },
+      agentInfo: null,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      metadata: {},
+      ...overrides,
+    } as Session;
+  }
+
+  it("builds PrContext from run.headSha + worker session PRInfo and threads it into startInput", async () => {
+    const registry = withRegistry([makeAgentPlugin("codex", ["review"])]);
+    const store = createPipelineStore(storeRoot);
+    const executor = makeMockExecutor();
+    const workerSession = makeSession({
+      pr: {
+        number: 42,
+        url: "https://github.com/acme/widget/pull/42",
+        title: "feat: add foo",
+        owner: "acme",
+        repo: "widget",
+        branch: "feat/foo",
+        baseBranch: "main",
+        isDraft: false,
+        isFromFork: false,
+      },
+    });
+    const getSession = vi.fn(async () => workerSession);
+
+    const engine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor: executor,
+      getSession,
+    });
+
+    await engine.startRun({
+      pipeline: makePipeline(),
+      projectId: "proj-a",
+      sessionId: "ses-1",
+      headSha: "dfd6560abcdef0",
+    });
+
+    expect(executor.startCalls).toHaveLength(1);
+    const startInput = executor.startCalls[0]!;
+    expect(startInput.prContext).toBeDefined();
+    expect(startInput.prContext?.headSha).toBe("dfd6560abcdef0");
+    expect(startInput.prContext?.prNumber).toBe(42);
+    expect(startInput.prContext?.url).toBe("https://github.com/acme/widget/pull/42");
+    expect(startInput.prContext?.headBranch).toBe("feat/foo");
+    expect(startInput.prContext?.baseBranch).toBe("main");
+    expect(startInput.prContext?.isFromFork).toBe(false);
+    expect(getSession).toHaveBeenCalledWith("ses-1");
+  });
+
+  it("threads PrContext with headSha only when the worker session has no PR yet", async () => {
+    const registry = withRegistry([makeAgentPlugin("codex", ["review"])]);
+    const store = createPipelineStore(storeRoot);
+    const executor = makeMockExecutor();
+    const getSession = vi.fn(async () => makeSession({ pr: null }));
+
+    const engine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor: executor,
+      getSession,
+    });
+
+    await engine.startRun({
+      pipeline: makePipeline(),
+      projectId: "proj-a",
+      sessionId: "ses-1",
+      headSha: "abc1234",
+    });
+
+    const startInput = executor.startCalls[0]!;
+    expect(startInput.prContext).toEqual({ headSha: "abc1234" });
+  });
+
+  it("omits prContext entirely for manual triggers (sentinel headSha === \"manual\")", async () => {
+    const registry = withRegistry([makeAgentPlugin("codex", ["review"])]);
+    const store = createPipelineStore(storeRoot);
+    const executor = makeMockExecutor();
+    const getSession = vi.fn(async () => makeSession());
+
+    const engine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor: executor,
+      getSession,
+    });
+
+    await engine.startRun({
+      pipeline: makePipeline(),
+      projectId: "proj-a",
+      sessionId: "ses-1",
+      headSha: "manual",
+    });
+
+    expect(executor.startCalls[0]?.prContext).toBeUndefined();
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it("omits prContext when getSession is not wired (legacy / test engines)", async () => {
+    const registry = withRegistry([makeAgentPlugin("codex", ["review"])]);
+    const store = createPipelineStore(storeRoot);
+    const executor = makeMockExecutor();
+
+    const engine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor: executor,
+      // no getSession
+    });
+
+    await engine.startRun({
+      pipeline: makePipeline(),
+      projectId: "proj-a",
+      sessionId: "ses-1",
+      headSha: "abc1234",
+    });
+
+    expect(executor.startCalls[0]?.prContext).toBeUndefined();
+  });
+
+  it("swallows getSession errors and falls back to no prContext", async () => {
+    const registry = withRegistry([makeAgentPlugin("codex", ["review"])]);
+    const store = createPipelineStore(storeRoot);
+    const executor = makeMockExecutor();
+    const getSession = vi.fn(async () => {
+      throw new Error("session store unreachable");
+    });
+
+    const engine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor: executor,
+      getSession,
+    });
+
+    await engine.startRun({
+      pipeline: makePipeline(),
+      projectId: "proj-a",
+      sessionId: "ses-1",
+      headSha: "abc1234",
+    });
+
+    expect(executor.startCalls[0]?.prContext).toBeUndefined();
   });
 });

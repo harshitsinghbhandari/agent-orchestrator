@@ -709,6 +709,77 @@ describe("workspace.create()", () => {
       { cwd: "/repo/path", windowsHide: true, timeout: 30_000 },
     );
   });
+
+  it("pins the worktree to checkoutSha after creation via git checkout --detach (#215)", async () => {
+    const ws = create();
+
+    mockOriginRemote(); // remote get-url + fetch
+    mockGitSuccess(""); // git rev-parse --verify --quiet origin/main
+    mockGitSuccess(""); // worktree add -b ...
+    mockGitSuccess(""); // git fetch origin <sha> --quiet
+    mockGitSuccess(""); // git checkout --detach <sha>
+
+    await ws.create(makeCreateConfig({ checkoutSha: "dfd6560abcdef0" }));
+
+    // Fetch the SHA so it's reachable even if the local repo hasn't pulled
+    // the PR head yet.
+    expect(mockExecFileAsync).toHaveBeenCalledWith(
+      "git",
+      ["fetch", "origin", "dfd6560abcdef0", "--quiet"],
+      { cwd: "/repo/path", windowsHide: true, timeout: 30_000 },
+    );
+    // Detach onto the SHA inside the worktree.
+    expect(mockExecFileAsync).toHaveBeenCalledWith(
+      "git",
+      ["checkout", "--detach", "dfd6560abcdef0"],
+      {
+        cwd: "/mock-home/.worktrees/myproject/session-1",
+        windowsHide: true,
+        timeout: 30_000,
+      },
+    );
+  });
+
+  it("does not invoke checkout --detach when checkoutSha is absent", async () => {
+    const ws = create();
+
+    mockOriginRemote();
+    mockGitSuccess(""); // origin/main
+    mockGitSuccess(""); // worktree add
+
+    await ws.create(makeCreateConfig());
+
+    const checkoutCalls = mockExecFileAsync.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && c[1][0] === "checkout",
+    );
+    expect(checkoutCalls).toHaveLength(0);
+  });
+
+  it("tears down the half-built worktree if pinning to checkoutSha fails", async () => {
+    const ws = create();
+
+    mockOriginRemote();
+    mockGitSuccess(""); // origin/main
+    mockGitSuccess(""); // worktree add -b
+    mockGitSuccess(""); // git fetch origin <sha> --quiet
+    mockGitError("unknown revision deadbeef"); // git checkout --detach
+    mockGitSuccess(""); // git worktree remove --force (cleanup)
+
+    await expect(
+      ws.create(makeCreateConfig({ checkoutSha: "deadbeef" })),
+    ).rejects.toThrow(/Failed to pin worktree .* to checkoutSha "deadbeef"/);
+
+    expect(mockExecFileAsync).toHaveBeenCalledWith(
+      "git",
+      [
+        "worktree",
+        "remove",
+        "--force",
+        "/mock-home/.worktrees/myproject/session-1",
+      ],
+      { cwd: "/repo/path", windowsHide: true, timeout: 30_000 },
+    );
+  });
 });
 
 describe("workspace.restore()", () => {

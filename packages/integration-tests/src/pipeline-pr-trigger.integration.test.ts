@@ -99,17 +99,21 @@ function buildConfig(configPath: string): OrchestratorConfig {
 interface StubExecutor extends AgentStageExecutor {
   setNextOutcome(outcome: StageOutcome): void;
   inflightCount(): number;
+  startCalls(): readonly StartStageInput[];
 }
 
 function buildStubExecutor(): StubExecutor {
   let nextOutcome: StageOutcome = { status: "running" };
   const inflight = new Set<string>();
+  const calls: StartStageInput[] = [];
   return {
     setNextOutcome: (o) => {
       nextOutcome = o;
     },
     inflightCount: () => inflight.size,
+    startCalls: () => calls,
     async startStage(input: StartStageInput): Promise<RunningAgentStage> {
+      calls.push(input);
       inflight.add(input.stageRunId);
       return {
         runId: input.runId,
@@ -427,5 +431,50 @@ describe("pipeline trigger bridge (PR opened → engine starts run → done)", (
     // Persistence round-trip: a fresh store reads back the same terminal run.
     const reloaded = store.loadRun(finalRun.runId);
     expect(reloaded?.loopState).toBe("done");
+  });
+
+  it("threads PrContext (PR + head SHA) into the reviewer stage when getSession is wired (#215)", async () => {
+    // End-to-end check for Defects 4 + 1: the engine must hand the reviewer
+    // stage a `PrContext` it can use to (a) describe the PR in the prompt
+    // (Defect 4) and (b) pin the worktree to the head SHA (Defect 1).
+    const pr = makePR();
+    const config = buildConfig(join(tmpRoot, "agent-orchestrator.yaml"));
+    const session = makeSession(pr);
+    const scm = buildStubSCM(pr, "sha-init");
+    const registry = buildRegistry(scm, buildAgentManifest());
+    const sessionManager = buildSessionManager(session);
+    const executor = buildStubExecutor();
+    const store = createPipelineStore(join(tmpRoot, "pipelines"));
+
+    engine = createPipelineEngine({
+      store,
+      registry,
+      agentExecutor: executor,
+      initialState: hydrateEngineState(store),
+      getSession: (sessionId) => sessionManager.get(sessionId),
+    });
+
+    lifecycle = createLifecycleManager({
+      config,
+      registry,
+      sessionManager,
+      projectId: PROJECT_ID,
+      pipelineEngine: engine,
+    });
+
+    await lifecycle.check(SESSION_ID);
+
+    const calls = executor.startCalls();
+    expect(calls).toHaveLength(1);
+    const ctx = calls[0]!.prContext;
+    expect(ctx).toBeDefined();
+    // Defect 1: head SHA must arrive at the executor so spawn can pin the worktree.
+    expect(ctx?.headSha).toBe("sha-init");
+    // Defect 4: PR identity must reach the executor so the prompt has a diff target.
+    expect(ctx?.prNumber).toBe(99);
+    expect(ctx?.url).toBe("https://github.com/org/test-project/pull/99");
+    expect(ctx?.headBranch).toBe("feat/x");
+    expect(ctx?.baseBranch).toBe("main");
+    expect(ctx?.isFromFork).toBe(false);
   });
 });
