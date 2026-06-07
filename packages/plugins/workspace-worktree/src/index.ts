@@ -348,7 +348,13 @@ export function create(config?: Record<string, unknown>): Workspace {
 
       const baseRef = await resolveBaseRef(repoPath, cfg.project.defaultBranch, { hasOrigin });
 
-      // Create worktree with a new branch
+      // Create worktree with a new branch.
+      //
+      // Note: when the caller passes `checkoutSha`, we still create the
+      // worktree on a fresh session branch first, then detach onto the
+      // requested SHA below. Going straight to `worktree add --detach <sha>`
+      // would skip branch creation and break the rest of AO's machinery —
+      // session-archive expects a session branch to be present.
       try {
         await git(repoPath, "worktree", "add", "-b", cfg.branch, worktreePath, baseRef);
       } catch (err: unknown) {
@@ -400,6 +406,43 @@ export function create(config?: Record<string, unknown>): Workspace {
           throw new Error(`Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`, {
             cause: retryErr,
           });
+        }
+      }
+
+      // Pin the worktree to a specific commit when the caller requests it
+      // (pipeline reviewer stages — #215). The worktree is currently on the
+      // freshly-created session branch at HEAD of `baseRef`; detach to the
+      // requested SHA so `git diff` against the PR's base has a meaningful
+      // target. Fetch the SHA first so it's reachable even when the repo
+      // hasn't pulled the PR head yet (fork PRs, stale checkouts).
+      if (cfg.checkoutSha) {
+        if (hasOrigin) {
+          try {
+            await git(repoPath, "fetch", "origin", cfg.checkoutSha, "--quiet");
+          } catch {
+            // Fetch may fail for fork PRs without configured refspecs or
+            // when offline. Fall through to checkout — it succeeds when the
+            // SHA is already reachable, and fails loudly otherwise so the
+            // session-spawn caller can surface a clear error instead of
+            // silently leaving the worktree on the wrong commit.
+          }
+        }
+        try {
+          await git(worktreePath, "checkout", "--detach", cfg.checkoutSha);
+        } catch (err) {
+          // Tear down the half-built worktree so the next spawn can retry
+          // cleanly. Without this the registered worktree at the session
+          // branch would block a subsequent `worktree add` at the same path.
+          try {
+            await git(repoPath, "worktree", "remove", "--force", worktreePath);
+          } catch {
+            // Best-effort
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `Failed to pin worktree "${worktreePath}" to checkoutSha "${cfg.checkoutSha}": ${msg}`,
+            { cause: err },
+          );
         }
       }
 

@@ -30,7 +30,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { PluginRegistry } from "../types.js";
+import type { PluginRegistry, Session } from "../types.js";
 import type { PipelineEffect, PipelineEvent } from "./events.js";
 import { reduce } from "./reducer.js";
 import type { PipelineStore } from "./store.js";
@@ -45,6 +45,7 @@ import {
   type EngineState,
   type Pipeline,
   type PipelineScope,
+  type PrContext,
   type RunId,
   type RunState,
   type RunSummary,
@@ -132,6 +133,16 @@ export interface PipelineEngineDeps {
     event: { name: string; data: Record<string, unknown> },
     context: ObservationContext,
   ) => void;
+  /**
+   * Look up a worker session by id when building `PrContext` for agent
+   * stages. Wired to `sessionManager.get` in production; absent in tests
+   * that don't exercise PR-triggered runs.
+   *
+   * When omitted, agent stages still run — they just don't get a
+   * `prContext` block in the prompt or a `checkoutSha` pin on the worktree,
+   * which is the correct fallback for manual / orchestrator-triggered runs.
+   */
+  getSession?: (sessionId: string) => Promise<Session | null>;
 }
 
 /**
@@ -272,6 +283,7 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
   const { store, registry, agentExecutor, commandExecutor, builtin, followUp, now = Date.now } =
     deps;
   const onObservation = deps.onObservation;
+  const getSession = deps.getSession;
 
   let state: EngineState = deps.initialState ?? emptyEngineState();
   /**
@@ -418,6 +430,7 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
         });
 
         const meta = runMetadata.get(run.runId);
+        const prContext = await buildPrContext(run);
         const startInput: StartStageInput = {
           pipelineName: run.pipelineName,
           projectId: meta?.projectId ?? "",
@@ -426,6 +439,7 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
           stage: effect.stage,
           loopRound: run.loopRounds,
           ...(meta?.issueId ? { issueId: meta.issueId } : {}),
+          ...(prContext ? { prContext } : {}),
         };
 
         try {
@@ -501,6 +515,48 @@ export function createPipelineEngine(deps: PipelineEngineDeps): PipelineEngine {
    * BuiltinTaskContext; this engine code never constructs one directly so
    * `sendToSession` stays gated behind the dispatcher.
    */
+  /**
+   * Build a PrContext for the agent executor from `run.headSha` and the
+   * worker session's PRInfo (#215). Returns `undefined` when:
+   *   - `getSession` wasn't wired (test / non-PR engine),
+   *   - the worker session is gone (e.g. cancelled between dispatch + tick),
+   *   - `run.headSha` is the sentinel "manual" used by orchestrator-triggered
+   *     and manual runs that aren't pinned to a real commit,
+   *
+   * which is the right fallback: those runs have no SHA to pin to and no PR
+   * to describe, so the executor falls back to the pre-#215 behavior (worktree
+   * on `session/<id>`, no PR Context block in the prompt).
+   *
+   * Best-effort: failures are swallowed so prContext stays absent rather than
+   * crashing the stage.
+   */
+  async function buildPrContext(run: RunState): Promise<PrContext | undefined> {
+    if (!getSession) return undefined;
+    if (!run.headSha || run.headSha === "manual") return undefined;
+
+    let session: Session | null;
+    try {
+      session = await getSession(run.sessionId);
+    } catch {
+      return undefined;
+    }
+    if (!session) return undefined;
+
+    const pr = session.pr;
+    const ctx: PrContext = { headSha: run.headSha };
+    if (pr) {
+      ctx.prNumber = pr.number;
+      ctx.url = pr.url;
+      ctx.headBranch = pr.branch;
+      ctx.baseBranch = pr.baseBranch;
+      // `isFromFork` is `boolean | null` on PRInfo; thread through verbatim
+      // so the prompt can reflect "fork status unknown" when the SCM plugin
+      // can't tell.
+      ctx.isFromFork = pr.isFromFork;
+    }
+    return ctx;
+  }
+
   async function runBuiltinStage(
     run: RunState,
     stage: Stage,

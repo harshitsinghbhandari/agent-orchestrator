@@ -134,6 +134,9 @@ export async function getLifecycleManager(
       agentExecutor,
       initialState: hydrateEngineState(store),
       onObservation: routePipelineObservation,
+      // Wire worker session lookups so the engine can build `PrContext`
+      // (head SHA + PR number/URL/branches) for agent stages — see #215.
+      getSession: (sessionId) => sessionManager.get(sessionId),
     });
     // Reconcile stages left in `running` from a previous process: their
     // in-flight executor handles are gone, so dispatch STAGE_FAILED to let
@@ -180,5 +183,8 @@ export async function getOneShotPipelineEngine(
     agentExecutor,
     initialState: hydrateEngineState(store),
     onObservation: routePipelineObservation,
+    // Wire worker session lookups so the engine can build `PrContext`
+    // (head SHA + PR number/URL/branches) for agent stages — see #215.
+    getSession: (sessionId) => sessionManager.get(sessionId),
   });
 }
