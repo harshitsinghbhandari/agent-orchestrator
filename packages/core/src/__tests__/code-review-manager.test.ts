@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createActivitySignal } from "../activity-signal.js";
+import { isWindows } from "../platform.js";
 import { createCodeReviewStore, type CodeReviewStore } from "../code-review-store.js";
 import {
   buildCodexCodeReviewArgs,
@@ -13,6 +14,7 @@ import {
   markOutdatedCodeReviewRunsForSession,
   parseReviewerOutput,
   prepareGitReviewerWorkspace,
+  runCodexCodeReview,
   sendCodeReviewFindingsToAgent,
   triggerCodeReviewForSession,
 } from "../code-review-manager.js";
@@ -641,6 +643,42 @@ describe("runCodexCodeReview", () => {
     expect(args).not.toContain("review");
     expect(args).not.toContain("--base");
   });
+
+  it.skipIf(isWindows())(
+    "throws an install-hint error when the codex CLI is missing from PATH",
+    async () => {
+      const tmpRoot = join(tmpdir(), `ao-test-codex-missing-${randomUUID()}`);
+      mkdirSync(tmpRoot, { recursive: true });
+      const originalPath = process.env["PATH"];
+      process.env["PATH"] = tmpRoot;
+
+      const run = store.createRun({
+        linkedSessionId: "app-1",
+        reviewerSessionId: "app-rev-missing",
+        status: "queued",
+      });
+
+      try {
+        await expect(
+          runCodexCodeReview({
+            config,
+            project: config.projects.app!,
+            session: makeSession({ workspacePath: tmpRoot }),
+            run,
+            workspacePath: tmpRoot,
+            baseRef: "main",
+          }),
+        ).rejects.toThrow(/Codex CLI .* was not found on PATH/);
+      } finally {
+        if (originalPath === undefined) {
+          delete process.env["PATH"];
+        } else {
+          process.env["PATH"] = originalPath;
+        }
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("prepareGitReviewerWorkspace", () => {
