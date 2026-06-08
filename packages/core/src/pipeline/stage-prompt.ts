@@ -10,13 +10,21 @@
  * spawn-time `prompt` field. Keep it terse — agents read it once.
  */
 
-import { PIPELINE_FINDINGS_FILENAME, type Stage, type TaskMode } from "./types.js";
+import { PIPELINE_FINDINGS_FILENAME, type PrContext, type Stage, type TaskMode } from "./types.js";
 
 export interface StagePromptInput {
   pipelineName: string;
   stage: Stage;
   /** Loop counter from the engine — included so prompts surface progress. */
   loopRound?: number;
+  /**
+   * PR context the stage is executing against. Present for PR-triggered runs
+   * (e.g. reviewer stages) — emitted as a `## PR Context` block so the agent
+   * has the PR number, URL, head/base SHAs, branches, and a copy-pasteable
+   * `git diff` command. Absent for manual / orchestrator-triggered runs that
+   * are not scoped to a PR — in that case the block is omitted entirely.
+   */
+  prContext?: PrContext;
 }
 
 /**
@@ -26,7 +34,7 @@ export interface StagePromptInput {
  * agent doesn't need to know the absolute path.
  */
 export function buildStagePrompt(input: StagePromptInput): string {
-  const { pipelineName, stage, loopRound } = input;
+  const { pipelineName, stage, loopRound, prContext } = input;
   const mode = stage.executor.kind === "agent" ? stage.executor.mode : null;
   const lines: string[] = [];
 
@@ -37,6 +45,12 @@ export function buildStagePrompt(input: StagePromptInput): string {
   if (typeof loopRound === "number") lines.push(`Loop round: ${loopRound}`);
   if (stage.policy?.blocksMerge) {
     lines.push(`This stage's findings will block merge until they are resolved.`);
+  }
+
+  if (prContext) {
+    lines.push(``);
+    lines.push(`## PR Context`);
+    lines.push(...formatPrContext(prContext));
   }
 
   if (stage.task.prompt) {
@@ -58,6 +72,43 @@ export function buildStagePrompt(input: StagePromptInput): string {
   lines.push(formatFindingsInstructions(mode));
 
   return lines.join("\n");
+}
+
+function formatPrContext(ctx: PrContext): string[] {
+  const lines: string[] = [];
+
+  if (typeof ctx.prNumber === "number") lines.push(`PR: #${ctx.prNumber}`);
+  if (ctx.url) lines.push(`URL: ${ctx.url}`);
+  if (ctx.headBranch) lines.push(`Head branch: ${ctx.headBranch}`);
+  if (ctx.baseBranch) lines.push(`Base branch: ${ctx.baseBranch}`);
+  lines.push(`Head SHA: ${ctx.headSha}`);
+  if (ctx.baseSha) lines.push(`Base SHA: ${ctx.baseSha}`);
+  if (ctx.isFromFork === true) {
+    lines.push(`Fork PR: yes (head branch lives on a fork of the base repo)`);
+  }
+
+  // Pin the diff target so the agent doesn't have to guess. Prefer the
+  // explicit base SHA when present; otherwise use the base branch with
+  // three-dot syntax (`base...HEAD`) so the diff is from the merge-base,
+  // matching what GitHub shows in the PR's "Files changed" tab.
+  const diffBase = ctx.baseSha ?? (ctx.baseBranch ? `origin/${ctx.baseBranch}` : null);
+  if (diffBase) {
+    lines.push(``);
+    lines.push(
+      `Your worktree is already checked out at the PR head SHA (\`${ctx.headSha}\`). ` +
+        `Inspect the diff with:`,
+    );
+    lines.push("```bash");
+    lines.push(`git diff ${diffBase}...HEAD`);
+    lines.push("```");
+  } else {
+    lines.push(``);
+    lines.push(
+      `Your worktree is already checked out at the PR head SHA (\`${ctx.headSha}\`).`,
+    );
+  }
+
+  return lines;
 }
 
 function formatFindingsInstructions(mode: TaskMode | null): string {

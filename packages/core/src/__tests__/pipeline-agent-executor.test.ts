@@ -474,3 +474,84 @@ describe("agent executor — cancelStage", () => {
     await expect(exec.cancelStage(handle)).resolves.toBeUndefined();
   });
 });
+
+describe("agent executor — prContext threading (#215)", () => {
+  it("threads prContext.headSha into spawn as checkoutSha and renders the PR Context block", async () => {
+    const mock = makeMockSessionManager();
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+
+    await exec.startStage(
+      makeStartInput({
+        prContext: {
+          prNumber: 42,
+          url: "https://github.com/acme/widget/pull/42",
+          headSha: "dfd6560abcdef0123456789abcdef0123456789a",
+          headBranch: "feat/foo",
+          baseBranch: "main",
+          isFromFork: false,
+        },
+      }),
+    );
+
+    expect(mock.spawn).toHaveBeenCalledTimes(1);
+    const spawnArgs = mock.spawn.mock.calls[0]?.[0] as SessionSpawnConfig;
+    // Defect 1: worktree must be pinned to the PR head SHA.
+    expect(spawnArgs.checkoutSha).toBe("dfd6560abcdef0123456789abcdef0123456789a");
+    // Defect 4: the prompt must carry the PR identity + a diff command.
+    expect(spawnArgs.prompt).toContain("## PR Context");
+    expect(spawnArgs.prompt).toContain("PR: #42");
+    expect(spawnArgs.prompt).toContain("https://github.com/acme/widget/pull/42");
+    expect(spawnArgs.prompt).toContain("Head branch: feat/foo");
+    expect(spawnArgs.prompt).toContain("Base branch: main");
+    expect(spawnArgs.prompt).toContain("Head SHA: dfd6560abcdef0123456789abcdef0123456789a");
+    expect(spawnArgs.prompt).toContain("git diff origin/main...HEAD");
+  });
+
+  it("omits the PR Context block and leaves checkoutSha unset when prContext is absent", async () => {
+    const mock = makeMockSessionManager();
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+
+    await exec.startStage(makeStartInput()); // no prContext — manual / orchestrator trigger
+
+    const spawnArgs = mock.spawn.mock.calls[0]?.[0] as SessionSpawnConfig;
+    expect(spawnArgs.checkoutSha).toBeUndefined();
+    expect(spawnArgs.prompt).not.toContain("## PR Context");
+    expect(spawnArgs.prompt).not.toContain("Head SHA");
+  });
+
+  it("uses baseSha in the diff command when present, in preference to baseBranch", async () => {
+    const mock = makeMockSessionManager();
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+
+    await exec.startStage(
+      makeStartInput({
+        prContext: {
+          headSha: "abc1234",
+          baseSha: "base5678",
+          baseBranch: "main",
+        },
+      }),
+    );
+
+    const spawnArgs = mock.spawn.mock.calls[0]?.[0] as SessionSpawnConfig;
+    expect(spawnArgs.prompt).toContain("git diff base5678...HEAD");
+    expect(spawnArgs.prompt).not.toContain("git diff origin/main...HEAD");
+  });
+
+  it("surfaces the fork warning line when isFromFork is true", async () => {
+    const mock = makeMockSessionManager();
+    const exec = createAgentExecutor({ sessionManager: mock.sm });
+
+    await exec.startStage(
+      makeStartInput({
+        prContext: {
+          headSha: "deadbeef",
+          isFromFork: true,
+        },
+      }),
+    );
+
+    const spawnArgs = mock.spawn.mock.calls[0]?.[0] as SessionSpawnConfig;
+    expect(spawnArgs.prompt).toContain("Fork PR: yes");
+  });
+});

@@ -30,6 +30,7 @@ import { buildStagePrompt } from "../stage-prompt.js";
 import {
   PIPELINE_FINDINGS_FILENAME,
   type ArtifactInput,
+  type PrContext,
   type RunId,
   type Stage,
   type StageRunId,
@@ -52,6 +53,13 @@ export interface StartStageInput {
   issueId?: string;
   /** Loop counter from the engine. Surfaced in the prompt only. */
   loopRound?: number;
+  /**
+   * PR context for the run, threaded into both the prompt (so the agent
+   * knows what's being reviewed) and the spawn (so the worktree is pinned
+   * to the PR head SHA via `checkoutSha`). Absent for manual / orchestrator
+   * triggers that aren't scoped to a PR.
+   */
+  prContext?: PrContext;
 }
 
 /**
@@ -142,6 +150,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): AgentStageExecutor
       pipelineName: input.pipelineName,
       stage: input.stage,
       loopRound: input.loopRound,
+      ...(input.prContext ? { prContext: input.prContext } : {}),
     });
 
     let session;
@@ -151,6 +160,10 @@ export function createAgentExecutor(deps: AgentExecutorDeps): AgentStageExecutor
         issueId: input.issueId,
         prompt: stagePrompt,
         agent: input.stage.executor.plugin,
+        // Pin the worktree to the PR head SHA so the reviewer sees the
+        // diff being reviewed instead of `origin/<defaultBranch>` (#215).
+        // Workspaces that can't pin a commit (workspace-clone) ignore it.
+        ...(input.prContext?.headSha ? { checkoutSha: input.prContext.headSha } : {}),
       });
     } catch (err) {
       throw new AgentExecutorSpawnError(

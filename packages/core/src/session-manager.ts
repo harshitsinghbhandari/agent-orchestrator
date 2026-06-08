@@ -1313,6 +1313,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           sessionId,
           branch,
           worktreeDir: getProjectWorktreesDir(spawnConfig.projectId),
+          // Pipeline reviewer stages pass `checkoutSha` so the worktree
+          // starts at the PR head SHA rather than `origin/<defaultBranch>`.
+          ...(spawnConfig.checkoutSha ? { checkoutSha: spawnConfig.checkoutSha } : {}),
         });
         workspacePath = wsInfo.path;
         // Only register destroy when the path is inside a managed root —

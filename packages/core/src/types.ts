@@ -398,6 +398,18 @@ export interface SessionSpawnConfig {
    * default branch when omitted.
    */
   workstreamBaseBranch?: string;
+  /**
+   * Pin the workspace to a specific commit after creation (detached HEAD).
+   *
+   * Set by the pipeline engine when spawning a reviewer session against an
+   * existing PR: without it, the reviewer worktree would come up on
+   * `session/<id> -> origin/<defaultBranch>` and "review the diff" would
+   * have no diff target.
+   *
+   * Workspace plugins that don't track commits (e.g. workspace-clone) treat
+   * this as a no-op.
+   */
+  checkoutSha?: string;
 }
 
 /**
@@ -760,6 +772,16 @@ export interface WorkspaceCreateConfig {
   branch: string;
   /** Override the base directory for worktrees (e.g. V2 project-scoped dir). */
   worktreeDir?: string;
+  /**
+   * Pin the workspace to this commit after creation (`git checkout --detach`).
+   *
+   * Used by the pipeline engine when spawning a reviewer session against an
+   * existing PR head SHA so the reviewer's worktree starts at the SHA being
+   * reviewed rather than the freshly-created session branch at HEAD of
+   * `origin/<defaultBranch>`. Workspace plugins that cannot pin to a commit
+   * (e.g. workspace-clone) treat this as a no-op.
+   */
+  checkoutSha?: string;
 }
 
 export interface WorkspaceInfo {

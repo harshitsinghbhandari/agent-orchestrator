@@ -35,6 +35,37 @@ export const asArtifactId = (id: string): ArtifactId => id as ArtifactId;
 /** Modes an agent plugin advertises in its manifest's `supportedTaskModes` field. */
 export type TaskMode = "review" | "code" | "answer";
 
+/**
+ * PR context threaded into agent stage executions so reviewer prompts know which
+ * commit/branch to look at and the worktree can be pinned to the PR's head SHA.
+ *
+ * Built by the engine from `RunState.headSha` + the worker session's `PRInfo`
+ * at START_STAGE time. Absent for manual / orchestrator-triggered runs that
+ * are not scoped to a PR.
+ */
+export interface PrContext {
+  /** PR number, when known. Absent if the worker session has no PR yet. */
+  prNumber?: number;
+  /** Canonical PR URL (web). */
+  url?: string;
+  /**
+   * Head commit the reviewer's worktree should be checked out at. Required —
+   * a `PrContext` only exists when the engine has a head SHA to pin to.
+   */
+  headSha: string;
+  /** Optional base SHA — typically the merge-base; absent unless the SCM plugin surfaces it. */
+  baseSha?: string;
+  /** PR head branch name (no `refs/` prefix). */
+  headBranch?: string;
+  /** PR base branch name. */
+  baseBranch?: string;
+  /**
+   * Whether the PR's head lives on a fork of the base repo. Mirrors
+   * `PRInfo.isFromFork`; `null` means the SCM plugin can't tell.
+   */
+  isFromFork?: boolean | null;
+}
+
 export type StageTriggerEvent =
   | "pr.opened"
   | "pr.updated"
