@@ -1,6 +1,6 @@
 {
   "name": "@aoagents/ao-plugin-notifier-openclaw",
-  "version": "0.9.1",
+  "version": "0.9.3-nightly-5897b4e8d8cefc33f681ab73bf0e3ebc0b17b517",
   "description": "Notifier plugin: OpenClaw webhook notifications",
   "license": "MIT",
   "type": "module",
