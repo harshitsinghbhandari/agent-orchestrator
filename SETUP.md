@@ -299,7 +299,7 @@ projects:
     workspace: worktree
 
   backend:
-    runtime: docker # Use Docker for backend
+    runtime: process # Use process for backend
     agent: codex # Use Codex instead of Claude
 ```
 
@@ -706,7 +706,7 @@ notifiers:
 A session is an isolated workspace where an agent works on a single issue. Each session has:
 
 - Its own git worktree or clone
-- Its own tmux session (or Docker container, etc.)
+- Its own tmux session (or process, etc.)
 - Its own metadata (branch, PR, status)
 - Its own event log
 

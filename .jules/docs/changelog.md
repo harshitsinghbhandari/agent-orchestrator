@@ -9,3 +9,14 @@
 - [x] Commands tested
 - [x] Cross-referenced with code
 - [x] No broken links
+
+## 2026-06-14
+
+### Files Updated
+- `README.md` - Removed mention of Docker runtime as it is not a supported plugin.
+- `SETUP.md` - Removed mentions of Docker runtime and replaced with process runtime.
+
+### Verification
+- [ ] Commands tested
+- [ ] Cross-referenced with code
+- [ ] No broken links
