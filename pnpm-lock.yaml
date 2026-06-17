@@ -151,6 +151,10 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+    optionalDependencies:
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
     devDependencies:
       '@types/node':
         specifier: ^25.2.3

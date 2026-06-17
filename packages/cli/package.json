@@ -25,7 +25,7 @@
     "node": ">=20.18.3"
   },
   "scripts": {
-    "build": "tsc && node --input-type=commonjs -e \"require('fs').cpSync('src/assets','dist/assets',{recursive:true})\"",
+    "build": "tsc && node --input-type=commonjs -e \"const fs=require('fs');fs.cpSync('src/assets','dist/assets',{recursive:true});fs.cpSync('src/lib/migrations','dist/lib/migrations',{recursive:true})\"",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -66,6 +66,9 @@
     "ora": "^8.1.0",
     "yaml": "^2.7.0",
     "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.10.0"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
