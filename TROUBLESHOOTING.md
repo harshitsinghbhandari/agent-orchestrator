@@ -50,6 +50,12 @@ npx node-gyp rebuild
 
 ## Other Issues
 
+### "Codex agent not recognized"
+
+**Problem**: The orchestrator does not recognize the Codex agent plugin.
+
+**Fix**: Ensure you are on the latest version of Agent Orchestrator to obtain the fix from commit `8e19f35`.
+
 ### Config file not found
 
 **Symptom**: API returns 500 with "No agent-orchestrator.yaml found"
