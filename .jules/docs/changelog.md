@@ -9,3 +9,15 @@
 - [x] Commands tested
 - [x] Cross-referenced with code
 - [x] No broken links
+
+## 2025-06-21
+
+### Files Updated
+- `README.md` - Removed specific hardcoded test counts since they frequently change.
+- `SETUP.md` - Added Environment Variables section to document missing configuration settings like `AO_VOICE_ENABLED` and `GEMINI_API_KEY`.
+- `TROUBLESHOOTING.md` - Added a section documenting the fix for Codex agent not being recognized in recent versions.
+
+### Verification
+- [x] Commands tested
+- [x] Cross-referenced with code
+- [x] No broken links

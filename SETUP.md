@@ -428,6 +428,16 @@ curl -X POST -H 'Content-type: application/json' \
        token: ${OPENCLAW_HOOKS_TOKEN}
    ```
 
+### Environment Variables
+
+The orchestrator and dashboard support the following environment variables:
+
+- `AO_CONFIG_PATH` - Override the path to `agent-orchestrator.yaml`.
+- `AO_VOICE_ENABLED` / `NEXT_PUBLIC_AO_VOICE_ENABLED` - Set to `true` to enable the Voice Copilot feature on the dashboard.
+- `GEMINI_API_KEY` - Required if the voice feature is enabled.
+- `VOICE_TOKEN_SECRET` - Required for voice authentication.
+- `AO_DASHBOARD_TOKEN` - Optional bearer token to secure voice token generation endpoint.
+
 ### Custom Trackers
 
 To add a custom tracker (Jira, Asana, etc.), create a plugin:
