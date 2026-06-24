@@ -39,7 +39,9 @@ const config: ForgeConfig = {
 			},
 			["win32"],
 		),
-		{ name: "@electron-forge/maker-zip", platforms: ["darwin"], config: {} },
+		// Portable archives: macOS .zip (existing) and Linux .zip (unpack-and-run,
+		// what the npm bootstrapper fetches). Linux installers stay below.
+		{ name: "@electron-forge/maker-zip", platforms: ["darwin", "linux"], config: {} },
 		{
 			name: "@electron-forge/maker-deb",
 			config: {

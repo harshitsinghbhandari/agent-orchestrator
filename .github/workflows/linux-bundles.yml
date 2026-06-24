@@ -1,0 +1,79 @@
+name: Linux bundles (npm bootstrapper assets)
+
+# Cross-builds portable Linux .zip bundles (x64 + arm64) on a single x64 runner
+# and uploads them, with a merged SHA256SUMS, to a GitHub Release so the
+# @theharshitsingh/ao npm bootstrapper can fetch them. Electron is packaged for
+# each target arch (downloaded, never executed here) and the bundled Go daemon is
+# cross-compiled to match via AO_DAEMON_GOOS/GOARCH. Linux has no code-signing
+# equivalent to macOS notarization; integrity is the published SHA256SUMS.
+#
+# Run it from the Actions tab ("Run workflow") or:
+#   gh workflow run linux-bundles.yml -f tag=npm-bootstrap-0.10.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload the Linux assets to"
+        required: true
+        default: "npm-bootstrap-0.10.0"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      CGO_ENABLED: "0"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: npm ci
+
+      - name: Build linux-x64 bundle
+        env:
+          AO_DAEMON_GOOS: linux
+          AO_DAEMON_GOARCH: amd64
+        run: npm run make -- --arch=x64 --targets @electron-forge/maker-zip
+
+      - name: Build linux-arm64 bundle
+        env:
+          AO_DAEMON_GOOS: linux
+          AO_DAEMON_GOARCH: arm64
+        run: npm run make -- --arch=arm64 --targets @electron-forge/maker-zip
+
+      - name: Stage bundles and merge checksums
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist && cd ../dist
+          cp "$(ls ../frontend/out/make/zip/linux/x64/*.zip | head -1)" agent-orchestrator-linux-x64.zip
+          cp "$(ls ../frontend/out/make/zip/linux/arm64/*.zip | head -1)" agent-orchestrator-linux-arm64.zip
+          # Preserve the macOS entries already on the release; replace any stale
+          # linux ones. Idempotent across re-runs.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --output existing || true
+          { [ -f existing ] && grep -v 'linux' existing || true; } > SHA256SUMS
+          shasum -a 256 agent-orchestrator-linux-x64.zip agent-orchestrator-linux-arm64.zip >> SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload to the release
+        run: |
+          set -euo pipefail
+          cd ../dist
+          gh release upload "$TAG" \
+            agent-orchestrator-linux-x64.zip \
+            agent-orchestrator-linux-arm64.zip \
+            SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
