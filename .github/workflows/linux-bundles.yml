@@ -11,6 +11,14 @@ name: Linux bundles (npm bootstrapper assets)
 #   gh workflow run linux-bundles.yml -f tag=npm-bootstrap-0.10.0
 
 on:
+  # Push trigger lets this run from the feature branch before it lands on the
+  # default branch (workflow_dispatch only registers once on the default branch).
+  push:
+    branches: ["feat/npm-distribution"]
+    paths:
+      - ".github/workflows/linux-bundles.yml"
+      - "frontend/forge.config.ts"
+      - "frontend/scripts/build-daemon.mjs"
   workflow_dispatch:
     inputs:
       tag:
@@ -29,7 +37,7 @@ jobs:
     env:
       CGO_ENABLED: "0"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: ${{ inputs.tag }}
+      TAG: ${{ inputs.tag || 'npm-bootstrap-0.10.0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
