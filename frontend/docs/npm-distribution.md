@@ -40,12 +40,12 @@ because the os/cpu split buys nothing once the payload comes from a Release.
 
 Four targets in this round:
 
-| Target         | Release asset                              |
-| -------------- | ------------------------------------------ |
-| `darwin-arm64` | `agent-orchestrator-darwin-arm64.zip`      |
-| `darwin-x64`   | `agent-orchestrator-darwin-x64.zip`        |
-| `linux-x64`    | `agent-orchestrator-linux-x64.tar.gz`      |
-| `linux-arm64`  | `agent-orchestrator-linux-arm64.tar.gz`    |
+| Target         | Release asset                           |
+| -------------- | --------------------------------------- |
+| `darwin-arm64` | `agent-orchestrator-darwin-arm64.zip`   |
+| `darwin-x64`   | `agent-orchestrator-darwin-x64.zip`     |
+| `linux-x64`    | `agent-orchestrator-linux-x64.tar.gz`   |
+| `linux-arm64`  | `agent-orchestrator-linux-arm64.tar.gz` |
 
 Windows is **out of scope** for npm in this round. The NSIS `.exe` installer
 stays the Windows path. Any unsupported platform or architecture (Windows,

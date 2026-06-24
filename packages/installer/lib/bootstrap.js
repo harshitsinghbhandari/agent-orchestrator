@@ -102,8 +102,7 @@ function extract(archive, dest) {
 		// ditto preserves the code signature / xattrs of the signed .app better
 		// than unzip. Present on every macOS.
 		const tool = process.platform === "darwin" ? "ditto" : "unzip";
-		const args =
-			tool === "ditto" ? ["-x", "-k", archive, dest] : ["-q", archive, "-d", dest];
+		const args = tool === "ditto" ? ["-x", "-k", archive, dest] : ["-q", archive, "-d", dest];
 		const r = spawnSync(tool, args, { stdio: "inherit" });
 		if (r.status !== 0) throw new Error(`extract failed (${tool} exit ${r.status})`);
 	} else {

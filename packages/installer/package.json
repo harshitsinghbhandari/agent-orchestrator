@@ -1,39 +1,39 @@
 {
-  "name": "@theharshitsingh/ao",
-  "version": "0.10.1",
-  "description": "Bootstrapper for the Agent Orchestrator desktop app. Downloads the signed app for your platform and launches it.",
-  "license": "MIT",
-  "homepage": "https://github.com/harshitsinghbhandari/agent-orchestrator",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/harshitsinghbhandari/agent-orchestrator.git"
-  },
-  "bin": {
-    "ao": "bin/ao.js"
-  },
-  "scripts": {
-    "postinstall": "node install.js",
-    "test": "node test/selfcheck.js"
-  },
-  "files": [
-    "bin/",
-    "lib/",
-    "install.js",
-    "README.md"
-  ],
-  "engines": {
-    "node": ">=20"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "ao": {
-    "releaseRepo": "harshitsinghbhandari/agent-orchestrator",
-    "releaseTag": "npm-bootstrap-0.10.0",
-    "checksums": "SHA256SUMS",
-    "assets": {
-      "darwin-arm64": "agent-orchestrator-darwin-arm64.zip",
-      "darwin-x64": "agent-orchestrator-darwin-x64.zip"
-    }
-  }
+	"name": "@theharshitsingh/ao",
+	"version": "0.10.1",
+	"description": "Bootstrapper for the Agent Orchestrator desktop app. Downloads the signed app for your platform and launches it.",
+	"license": "MIT",
+	"homepage": "https://github.com/harshitsinghbhandari/agent-orchestrator",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/harshitsinghbhandari/agent-orchestrator.git"
+	},
+	"bin": {
+		"ao": "bin/ao.js"
+	},
+	"scripts": {
+		"postinstall": "node install.js",
+		"test": "node test/selfcheck.js"
+	},
+	"files": [
+		"bin/",
+		"lib/",
+		"install.js",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"ao": {
+		"releaseRepo": "harshitsinghbhandari/agent-orchestrator",
+		"releaseTag": "npm-bootstrap-0.10.0",
+		"checksums": "SHA256SUMS",
+		"assets": {
+			"darwin-arm64": "agent-orchestrator-darwin-arm64.zip",
+			"darwin-x64": "agent-orchestrator-darwin-x64.zip"
+		}
+	}
 }
