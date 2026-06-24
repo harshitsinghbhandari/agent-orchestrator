@@ -33,7 +33,9 @@
 		"checksums": "SHA256SUMS",
 		"assets": {
 			"darwin-arm64": "agent-orchestrator-darwin-arm64.zip",
-			"darwin-x64": "agent-orchestrator-darwin-x64.zip"
+			"darwin-x64": "agent-orchestrator-darwin-x64.zip",
+			"linux-x64": "agent-orchestrator-linux-x64.zip",
+			"linux-arm64": "agent-orchestrator-linux-arm64.zip"
 		}
 	}
 }

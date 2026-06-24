@@ -21,8 +21,13 @@ async function main() {
 			stdio: "ignore",
 		});
 	} else {
-		// linux: launch the packaged executable directly.
-		child = spawn(`${app}/agent-orchestrator`, process.argv.slice(2), {
+		// linux: launch the packaged executable directly. Ensure the exec bit
+		// survived unzip (some unzip impls drop it).
+		const exe = `${app}/agent-orchestrator`;
+		try {
+			require("node:fs").chmodSync(exe, 0o755);
+		} catch {}
+		child = spawn(exe, process.argv.slice(2), {
 			detached: true,
 			stdio: "ignore",
 		});

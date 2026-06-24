@@ -42,8 +42,9 @@ function appLaunchPath() {
 	if (process.platform === "darwin") {
 		return path.join(vendorDir, "Agent Orchestrator.app");
 	}
-	// linux: the maker-zip/tar lays the packaged app dir down directly.
-	return path.join(vendorDir, "agent-orchestrator");
+	// linux: maker-zip lays down "Agent Orchestrator-linux-<arch>/" with the
+	// executable inside it.
+	return path.join(vendorDir, `Agent Orchestrator-linux-${process.arch}`);
 }
 
 function isInstalled() {

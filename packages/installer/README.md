@@ -17,7 +17,9 @@ through its built-in updater. `npm update` is **not** the update path.
 ## Supported platforms
 
 This build ships macOS `darwin-arm64` (Apple Silicon) and `darwin-x64` (Intel),
-both signed + notarized. Other platforms fail the install with a pointer to the
+both signed + notarized, plus Linux `linux-x64` and `linux-arm64` portable bundles
+(checksum-verified; Linux has no Apple-style notarization). Other platforms,
+including Windows, fail the install with a pointer to the
 [Releases page](https://github.com/harshitsinghbhandari/agent-orchestrator/releases),
 where direct installers (`.dmg` / `.deb` / `.exe`) live.
 
