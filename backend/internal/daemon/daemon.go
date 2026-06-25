@@ -15,6 +15,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/daemon/supervisor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/notify"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -147,6 +148,19 @@ func Run() error {
 	// before srv.Run so sessions are consistent before the server serves.
 	if reconcileErr := sessMgr.Reconcile(ctx); reconcileErr != nil {
 		log.Error("reconcile sessions on boot failed", "err", reconcileErr)
+	}
+
+	// ponytail: 5s tolerates a brief frontend restart; tune if dev hot-reload trips it.
+	const supervisorGrace = 5 * time.Second
+
+	if ln, addr, err := supervisor.Listen(cfg.RunFilePath); err != nil {
+		// Non-fatal: without the link the daemon still works (e.g. headless "ao start"),
+		// it just will not auto-stop when a frontend dies. Do not block startup on it.
+		log.Warn("supervisor: listener unavailable; frontend-death auto-stop disabled", "err", err)
+	} else {
+		log.Info("supervisor: listening", "addr", addr)
+		sup := supervisor.New(supervisorGrace, srv.RequestShutdown, log)
+		go sup.Serve(ctx, ln)
 	}
 
 	runErr := srv.Run(ctx)
