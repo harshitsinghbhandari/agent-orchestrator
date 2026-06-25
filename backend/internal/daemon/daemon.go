@@ -175,8 +175,11 @@ func Run() error {
 //
 // ponytail: no-op on purpose; exists as a testable seam so the test can assert
 // SaveAndTeardownAll is never called on the shutdown path.
-func runShutdownSessionLifecycle(_ context.Context, _ sessionLifecycle) {
-	// Intentionally empty. Sessions stay alive; next boot's Reconcile adopts them.
+func runShutdownSessionLifecycle(_ context.Context, sl sessionLifecycle) {
+	// Intentionally empty. sl.SaveAndTeardownAll is deliberately NOT called here:
+	// sessions stay alive across daemon exit; next boot's Reconcile adopts them.
+	// ponytail: no-op on purpose; the test asserts sl.SaveAndTeardownAll is never
+	// called on this path (TestShutdown_DoesNotCallSaveAndTeardownAll).
 }
 
 // newLogger returns the daemon's slog logger. It writes to stderr so supervisors
