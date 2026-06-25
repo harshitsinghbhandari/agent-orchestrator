@@ -381,16 +381,17 @@ func TestProjectRepoResolver_ResolvesRegisteredProject(t *testing.T) {
 	}
 }
 
-// fakeSessionLifecycle records calls to Reconcile, RestoreAll, and
-// SaveAndTeardownAll so tests can assert the daemon wiring invokes the correct
-// methods without needing a real runtime or worktree.
+// fakeSessionLifecycle records calls to Reconcile and RestoreAll so tests can
+// assert the daemon wiring invokes the correct methods without needing a real
+// runtime or worktree. saveAndTeardownCalled is intentionally retained so
+// TestShutdown_DoesNotCallSaveAndTeardownAll can assert it stays false;
+// it is set from outside the interface (not via a method the interface requires).
 type fakeSessionLifecycle struct {
 	reconcileCalled       bool
 	restoreAllCalled      bool
 	saveAndTeardownCalled bool
 	reconcileErr          error
 	restoreErr            error
-	saveErr               error
 }
 
 func (f *fakeSessionLifecycle) Reconcile(_ context.Context) error {
@@ -403,16 +404,10 @@ func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 	return f.restoreErr
 }
 
-func (f *fakeSessionLifecycle) SaveAndTeardownAll(_ context.Context) error {
-	f.saveAndTeardownCalled = true
-	return f.saveErr
-}
-
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
 // sessionLifecycle interface is satisfied by *sessionmanager.Manager (compile
-// check) and that Reconcile, RestoreAll, and SaveAndTeardownAll dispatch
-// correctly through the interface, matching what daemon.go wires at
-// boot/shutdown.
+// check) and that Reconcile and RestoreAll dispatch correctly through the
+// interface, matching what daemon.go wires at boot.
 func TestWiring_SessionLifecycleInterfaceInvokedByDaemon(t *testing.T) {
 	// Verify *sessionmanager.Manager satisfies the interface at compile time.
 	var _ sessionLifecycle = (*sessionmanager.Manager)(nil)
@@ -437,11 +432,21 @@ func TestWiring_SessionLifecycleInterfaceInvokedByDaemon(t *testing.T) {
 	if !fake.restoreAllCalled {
 		t.Fatal("RestoreAll was not called through the interface")
 	}
+}
 
-	if err := sl.SaveAndTeardownAll(ctx); err != nil {
-		t.Fatalf("SaveAndTeardownAll: %v", err)
-	}
-	if !fake.saveAndTeardownCalled {
-		t.Fatal("SaveAndTeardownAll was not called through the interface")
+// TestShutdown_DoesNotCallSaveAndTeardownAll asserts that the daemon's graceful
+// shutdown path does NOT invoke SaveAndTeardownAll on the session lifecycle.
+// Live sessions must survive shutdown so the next boot's Reconcile can adopt
+// them: tearing them down here causes id-increment on restart.
+//
+// RED: before the fix, runShutdownSessionLifecycle called SaveAndTeardownAll
+// (saveAndTeardownCalled would be true). GREEN: after the fix it is never set.
+func TestShutdown_DoesNotCallSaveAndTeardownAll(t *testing.T) {
+	fake := &fakeSessionLifecycle{}
+	// Simulate the daemon shutdown path. runShutdownSessionLifecycle must not
+	// set saveAndTeardownCalled (it is only set if someone calls SaveAndTeardownAll).
+	runShutdownSessionLifecycle(context.Background(), fake)
+	if fake.saveAndTeardownCalled {
+		t.Fatal("graceful shutdown must NOT call SaveAndTeardownAll: live sessions must survive for Reconcile to adopt on next boot")
 	}
 }
