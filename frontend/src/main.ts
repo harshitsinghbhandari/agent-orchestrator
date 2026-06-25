@@ -34,6 +34,7 @@ import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/post
 import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
+import { shouldLinkOnAttach } from "./main/daemon-owner";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -303,11 +304,15 @@ function ensureShellEnv(): Promise<void> {
 }
 
 function daemonEnv(): NodeJS.ProcessEnv {
+	// AO_OWNER=app marks this daemon as app-spawned so the app can re-link the
+	// supervisor on attach (headless `ao start` daemons get no AO_OWNER and stay
+	// unlinked, preserving their persistence across app quit).
+	const ownerTag = { AO_OWNER: "app" };
 	// Windows keeps the old behavior exactly: no shell probe, no unix PATH floor.
 	if (process.platform === "win32") {
-		return { ...process.env, ...telemetryOverrides() };
+		return { ...process.env, ...telemetryOverrides(), ...ownerTag };
 	}
-	return buildDaemonEnv(process.env, cachedShellEnv, telemetryOverrides());
+	return buildDaemonEnv(process.env, cachedShellEnv, { ...telemetryOverrides(), ...ownerTag });
 }
 
 function pathKey(value: string): string {
@@ -374,7 +379,38 @@ function daemonIdentityError(launch: DaemonLaunchSpec, probe: DaemonProbe): stri
 	return null;
 }
 
-async function inspectExistingDaemon(launch: DaemonLaunchSpec): Promise<DaemonStatus | null> {
+/**
+ * Establish (or re-establish) the OS-native liveness link to the daemon's
+ * supervisor socket. Holding this connection keeps the daemon alive: when
+ * Electron exits for any reason (Cmd+Q, crash, SIGKILL), the OS closes the fd
+ * and the daemon detects EOF, then self-stops after its ~5s grace period.
+ *
+ * Called unconditionally on the spawn path (we always own that daemon).
+ * Called on the attach path only when the daemon is app-owned (owner === "app");
+ * headless `ao start` daemons stay unlinked so they remain persistent after
+ * app quit.
+ */
+function establishSupervisorLink(): void {
+	const rfp = runFilePath();
+	const addr =
+		process.platform === "win32"
+			? "\\\\.\\pipe\\ao-supervise"
+			: rfp
+				? path.join(path.dirname(rfp), "supervise.sock")
+				: null;
+	if (addr) {
+		supervisorLink?.dispose();
+		supervisorLink = connectSupervisor(addr, {
+			log: (msg) => console.log(`AO: ${msg}`),
+		});
+	} else {
+		console.warn("AO: supervisor link skipped; run-file path unavailable");
+	}
+}
+
+async function inspectExistingDaemon(
+	launch: DaemonLaunchSpec,
+): Promise<{ status: DaemonStatus; owner: string | undefined } | null> {
 	const handshakePath = runFilePath();
 	let runFileContents: string | null = null;
 	if (handshakePath) {
@@ -384,12 +420,15 @@ async function inspectExistingDaemon(launch: DaemonLaunchSpec): Promise<DaemonSt
 			runFileContents = null;
 		}
 	}
-	return resolveDaemonFromRunFile({
+	const status = await resolveDaemonFromRunFile({
 		runFileContents,
 		isProcessAlive: processAlive,
 		probe: readDaemonProbe,
 		identityError: (probe) => daemonIdentityError(launch, probe),
 	});
+	if (!status) return null;
+	const owner = runFileContents ? (parseRunFile(runFileContents)?.owner ?? undefined) : undefined;
+	return { status, owner };
 }
 
 async function refreshDaemonStatus(): Promise<DaemonStatus> {
@@ -406,7 +445,7 @@ async function refreshDaemonStatus(): Promise<DaemonStatus> {
 	if (!launch) return daemonStatus;
 	const existing = await inspectExistingDaemon(launch);
 	if (existing) {
-		setDaemonStatus(existing);
+		setDaemonStatus(existing.status);
 	} else if (
 		daemonStatus.state === "ready" ||
 		(daemonStatus.state === "error" && (daemonStatus.pid || daemonStatus.port))
@@ -463,7 +502,13 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		return daemonStatus;
 	}
 	if (existing) {
-		setDaemonStatus(existing);
+		setDaemonStatus(existing.status);
+		// Re-link the supervisor only when attaching to an app-owned daemon (one we
+		// previously spawned). Headless `ao start` daemons (owner unset) stay unlinked
+		// so they remain persistent after app quit.
+		if (shouldLinkOnAttach(existing.owner)) {
+			establishSupervisorLink();
+		}
 		return daemonStatus;
 	}
 
@@ -485,6 +530,20 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	}
 	if (directDaemon) {
 		setDaemonStatus(directDaemon);
+		// Re-link iff the daemon is app-owned. Read the run-file for the owner tag;
+		// if unavailable (run-file absent or unreadable), treat as headless and skip.
+		const rfp = runFilePath();
+		let portAttachOwner: string | undefined;
+		if (rfp) {
+			try {
+				portAttachOwner = parseRunFile(await readFile(rfp, "utf8"))?.owner ?? undefined;
+			} catch {
+				// run-file absent or unreadable: treat as headless, skip link.
+			}
+		}
+		if (shouldLinkOnAttach(portAttachOwner)) {
+			establishSupervisorLink();
+		}
 		return daemonStatus;
 	}
 
@@ -597,34 +656,14 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		stopDiscovery();
 		setDaemonStatus({ state: "ready", port });
 
-		// Establish (or re-establish) the OS-native liveness link to the daemon's
-		// supervisor socket. Holding this connection keeps the daemon alive. When
-		// Electron exits for any reason (Cmd+Q, crash, SIGKILL), the OS closes the
-		// fd; the daemon detects EOF and self-stops after its ~5s grace period,
-		// leaving tmux/ConPTY sessions alive for the next launch to adopt.
-		//
-		// Scope: this runs only on the path where WE spawned the daemon (it is the
-		// bound-port discovery callback). The attach path (connecting to a daemon
-		// that was already running) intentionally does NOT link, to preserve
-		// headless safety: a daemon started via `ao start` must stay persistent and
-		// must not be self-stopped when the app quits. A daemon left lingering by a
-		// prior app instance self-stops via its own grace; a relaunch within that
-		// window respawns and adopts the live sessions (Task 1), so no work is lost.
-		const rfp = runFilePath();
-		const addr =
-			process.platform === "win32"
-				? "\\\\.\\pipe\\ao-supervise"
-				: rfp
-					? path.join(path.dirname(rfp), "supervise.sock")
-					: null;
-		if (addr) {
-			supervisorLink?.dispose();
-			supervisorLink = connectSupervisor(addr, {
-				log: (msg) => console.log(`AO: ${msg}`),
-			});
-		} else {
-			console.warn("AO: supervisor link skipped; run-file path unavailable");
-		}
+		// Establish the OS-native liveness link unconditionally: this callback fires
+		// only on the spawn path (we own this daemon). Holding the connection keeps
+		// the daemon alive; when Electron exits for any reason, the OS closes the fd
+		// and the daemon detects EOF, then self-stops after its ~5s grace period.
+		// The attach paths link only when the daemon is app-owned (see
+		// establishSupervisorLink + shouldLinkOnAttach); headless `ao start` daemons
+		// stay unlinked so they remain persistent across app quit.
+		establishSupervisorLink();
 	};
 
 	// One scanner per stream: each keeps its own partial-line buffer.
