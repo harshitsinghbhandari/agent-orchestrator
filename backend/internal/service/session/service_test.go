@@ -602,25 +602,6 @@ func TestSpawnOrchestratorNoCleanSpawnsWhenNoneExists(t *testing.T) {
 	}
 }
 
-// TestSpawnOrchestratorNoCleanSkipsKills is preserved for backward-compat
-// documentation: the old assertion that clean=false does not kill is still true.
-// The spawn behavior is now covered by the idempotency tests above.
-func TestSpawnOrchestratorNoCleanSkipsKills(t *testing.T) {
-	st := newFakeStore()
-	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
-	// No pre-existing active orchestrator so a spawn is expected.
-
-	fc := &fakeCommander{}
-	svc := &Service{manager: fc, store: st}
-
-	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false); err != nil {
-		t.Fatalf("SpawnOrchestrator: %v", err)
-	}
-	if len(fc.killed) != 0 {
-		t.Fatalf("clean=false must not kill anything, got %v", fc.killed)
-	}
-}
-
 type fakePRClaimer struct {
 	out errorFreeClaimOutcome
 	err error
