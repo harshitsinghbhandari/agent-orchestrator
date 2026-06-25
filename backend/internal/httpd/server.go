@@ -148,3 +148,7 @@ func (s *Server) requestShutdown() {
 		close(s.shutdownRequested)
 	})
 }
+
+// RequestShutdown triggers the same clean shutdown as POST /shutdown: it makes
+// Run return so the daemon exits without tearing down sessions. Idempotent.
+func (s *Server) RequestShutdown() { s.requestShutdown() }
