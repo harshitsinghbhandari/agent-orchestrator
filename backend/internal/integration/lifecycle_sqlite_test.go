@@ -212,7 +212,7 @@ func TestRestoreRoundTripPreservesMetadata(t *testing.T) {
 //     mark it terminated in the DB.
 //   - Session B: is_terminated=1 but its runtime is still ALIVE (leaked teardown)
 //     => Reconcile must call Destroy on its handle.
-func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
+func TestReconcile_RestoresDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	ctx := context.Background()
 	st := newStack(t)
 
@@ -274,7 +274,11 @@ func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// Session A must now be terminated in the store.
+	// Session A's runtime was gone, so reconcileLive captured its work, marked it
+	// terminated, and RestoreAll relaunched it fresh on the SAME boot (the
+	// documented crash-recovery path: a promptless session relaunches with the
+	// system prompt only rather than being abandoned). End state: live again in
+	// the same id, via a fresh runtime Create.
 	gotA, ok, err := st.store.GetSession(ctx, recA.ID)
 	if err != nil {
 		t.Fatalf("get session A: %v", err)
@@ -282,8 +286,14 @@ func TestReconcile_TerminatesDeadLiveSessionAndReapsLeakedTmux(t *testing.T) {
 	if !ok {
 		t.Fatalf("session A: not found after Reconcile")
 	}
-	if !gotA.IsTerminated {
-		t.Fatalf("session A: want is_terminated=true after Reconcile, got false")
+	if gotA.IsTerminated {
+		t.Fatalf("session A: want restored (is_terminated=false) after crash recovery, got terminated")
+	}
+	// Exactly one fresh runtime Create: A was torn down and relaunched. An
+	// adopted (still-alive) session would not Create; this proves the full
+	// terminate-then-restore cycle ran for A and only A.
+	if st.rt.created != 1 {
+		t.Fatalf("want 1 runtime Create for A's fresh relaunch, got %d", st.rt.created)
 	}
 
 	// Session B's leaked runtime must have been destroyed.
