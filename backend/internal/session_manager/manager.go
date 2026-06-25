@@ -828,7 +828,14 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 
 		// Step 3: relaunch via the existing single-session Restore method.
 		if _, err := m.Restore(ctx, rec.ID); err != nil {
-			m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
+			// A promptless, unresumable worker is intentionally left terminated
+			// (ErrNotResumable): expected, not an operational failure, so log it
+			// quietly rather than as an error.
+			if errors.Is(err, ErrNotResumable) {
+				m.logger.Warn("restore-all: session left terminated (nothing to resume)", "sessionID", rec.ID)
+			} else {
+				m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
+			}
 		}
 	}
 	return nil

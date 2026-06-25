@@ -532,6 +532,11 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		setDaemonStatus(directDaemon);
 		// Re-link iff the daemon is app-owned. Read the run-file for the owner tag;
 		// if unavailable (run-file absent or unreadable), treat as headless and skip.
+		// ponytail: narrow TOCTOU here (the port was probed live, then the run-file
+		// is read separately), so in theory a headless daemon could have replaced an
+		// app-owned one in the gap. Acceptable: the window is tiny, the worst case is
+		// linking a headless daemon, and establishSupervisorLink disposes any prior
+		// link so nothing leaks.
 		const rfp = runFilePath();
 		let portAttachOwner: string | undefined;
 		if (rfp) {
