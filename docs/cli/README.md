@@ -12,15 +12,15 @@ Every product command resolves to a daemon HTTP route. Run `ao <command>
 
 ### Daemon control
 
-| Command                       | Purpose                                                                                     |
-| ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `ao start`                    | Start the daemon in the background and wait for `/readyz`.                                  |
-| `ao stop`                     | Gracefully stop the daemon via loopback `POST /shutdown` after verifying daemon identity.   |
-| `ao status` / `--json`        | Report daemon state from `running.json`, process liveness, `/healthz`, and `/readyz`.       |
+| Command                       | Purpose                                                                                                                           |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `ao start`                    | Start the daemon in the background and wait for `/readyz`.                                                                        |
+| `ao stop`                     | Gracefully stop the daemon via loopback `POST /shutdown` after verifying daemon identity.                                         |
+| `ao status` / `--json`        | Report daemon state from `running.json`, process liveness, `/healthz`, and `/readyz`.                                             |
 | `ao doctor` / `--json`        | Check config, data directory, DB-file presence, daemon state, `git`, and (on Darwin/Linux) `tmux`; on Windows conpty is built in. |
-| `ao completion <shell>`       | Generate completions for `bash`, `zsh`, `fish`, or `powershell`.                            |
-| `ao version` / `ao --version` | Print build metadata.                                                                       |
-| `ao daemon`                   | Hidden internal daemon entrypoint used by `ao start`.                                       |
+| `ao completion <shell>`       | Generate completions for `bash`, `zsh`, `fish`, or `powershell`.                                                                  |
+| `ao version` / `ao --version` | Print build metadata.                                                                                                             |
+| `ao daemon`                   | Hidden internal daemon entrypoint used by `ao start`.                                                                             |
 
 ### Product commands
 
