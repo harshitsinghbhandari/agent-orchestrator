@@ -602,6 +602,14 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		// Electron exits for any reason (Cmd+Q, crash, SIGKILL), the OS closes the
 		// fd; the daemon detects EOF and self-stops after its ~5s grace period,
 		// leaving tmux/ConPTY sessions alive for the next launch to adopt.
+		//
+		// Scope: this runs only on the path where WE spawned the daemon (it is the
+		// bound-port discovery callback). The attach path (connecting to a daemon
+		// that was already running) intentionally does NOT link, to preserve
+		// headless safety: a daemon started via `ao start` must stay persistent and
+		// must not be self-stopped when the app quits. A daemon left lingering by a
+		// prior app instance self-stops via its own grace; a relaunch within that
+		// window respawns and adopts the live sessions (Task 1), so no work is lost.
 		const rfp = runFilePath();
 		const addr =
 			process.platform === "win32"
@@ -707,6 +715,11 @@ function stopDaemon(): DaemonStatus {
 	}
 
 	daemonStoppingProcess = daemonProcess;
+	// Drop the liveness link: an explicit stop is not a frontend death, so stop
+	// holding the socket open (and stop the reconnect loop retrying a dead daemon).
+	// A later daemon:start re-establishes the link via reportBoundPort.
+	supervisorLink?.dispose();
+	supervisorLink = null;
 	killDaemon(daemonProcess);
 	setDaemonStatus({ state: "stopped" });
 	return daemonStatus;
