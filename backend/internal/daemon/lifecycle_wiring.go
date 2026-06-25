@@ -62,11 +62,17 @@ func (l *lifecycleStack) Stop() {
 // boot/shutdown wiring. A minimal interface keeps the daemon testable without
 // depending on the concrete manager type.
 //
-// SaveAndTeardownAll is intentionally absent: shutdown no longer tears down
-// live sessions. Reconcile on the next boot adopts them (see runShutdownSessionLifecycle).
+// SaveAndTeardownAll is part of this surface but runShutdownSessionLifecycle
+// intentionally does NOT call it on shutdown: live tmux/ConPTY sessions survive
+// the daemon exit and Reconcile on the next boot adopts them, preserving session
+// IDs. Keeping the method on the interface (rather than removing it) means any
+// future caller that accidentally re-adds a teardown call is a compile error
+// against the fake, making TestShutdown_DoesNotCallSaveAndTeardownAll genuinely
+// falsifiable.
 type sessionLifecycle interface {
 	Reconcile(ctx context.Context) error
 	RestoreAll(ctx context.Context) error
+	SaveAndTeardownAll(ctx context.Context) error
 }
 
 // startSession builds the controller-facing session service: a session manager

@@ -381,17 +381,22 @@ func TestProjectRepoResolver_ResolvesRegisteredProject(t *testing.T) {
 	}
 }
 
-// fakeSessionLifecycle records calls to Reconcile and RestoreAll so tests can
-// assert the daemon wiring invokes the correct methods without needing a real
-// runtime or worktree. saveAndTeardownCalled is intentionally retained so
-// TestShutdown_DoesNotCallSaveAndTeardownAll can assert it stays false;
-// it is set from outside the interface (not via a method the interface requires).
+// fakeSessionLifecycle records calls to Reconcile, RestoreAll, and
+// SaveAndTeardownAll so tests can assert the daemon wiring invokes the correct
+// methods without needing a real runtime or worktree.
+//
+// SaveAndTeardownAll is on the interface (and therefore on the fake) so that
+// TestShutdown_DoesNotCallSaveAndTeardownAll is genuinely falsifiable: if
+// runShutdownSessionLifecycle ever calls sl.SaveAndTeardownAll, the flag flips
+// and the test fails. Without the method here the flag could never be set and
+// the assertion would be tautological.
 type fakeSessionLifecycle struct {
 	reconcileCalled       bool
 	restoreAllCalled      bool
 	saveAndTeardownCalled bool
 	reconcileErr          error
 	restoreErr            error
+	saveErr               error
 }
 
 func (f *fakeSessionLifecycle) Reconcile(_ context.Context) error {
@@ -402,6 +407,11 @@ func (f *fakeSessionLifecycle) Reconcile(_ context.Context) error {
 func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 	f.restoreAllCalled = true
 	return f.restoreErr
+}
+
+func (f *fakeSessionLifecycle) SaveAndTeardownAll(_ context.Context) error {
+	f.saveAndTeardownCalled = true
+	return f.saveErr
 }
 
 // TestWiring_SessionLifecycleInterfaceInvokedByDaemon asserts the
