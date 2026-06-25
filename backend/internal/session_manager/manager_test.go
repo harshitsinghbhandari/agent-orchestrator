@@ -968,6 +968,39 @@ func TestRestore_PromptlessUnresumableRelaunchesFresh(t *testing.T) {
 	}
 }
 
+// TestRestore_PromptlessWorkerNotResumable is the RED test for the promptless-worker
+// fix: a KindWorker session with no prompt and no captured AgentSessionID (so the
+// adapter returns ok=false) must NOT be blank-relaunched. The session had no task
+// to replay and no native id to resume from, so relaunching fresh would silently
+// drop its work. Restore must return ErrNotResumable and leave the session terminated
+// (runtime.Create must NOT be called).
+func TestRestore_PromptlessWorkerNotResumable(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, IsTerminated: true,
+		// No AgentSessionID, no Prompt: promptless worker with no resume handle.
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root"},
+		Activity: domain.Activity{State: domain.ActivityExited},
+	}
+	rt := &fakeRuntime{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	// fakeAgents resolves to fakeAgent, whose GetRestoreCommand returns ok=false
+	// when there is no AgentSessionID. With a KindWorker and empty Prompt, this
+	// must produce ErrNotResumable instead of a blank relaunch.
+	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
+
+	_, err := m.Restore(ctx, "mer-1")
+	if !errors.Is(err, ErrNotResumable) {
+		t.Fatalf("promptless unresumable worker must return ErrNotResumable, got %v", err)
+	}
+	if rt.created != 0 {
+		t.Fatalf("runtime.Create = %d, want 0 (must not relaunch a promptless worker)", rt.created)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Error("session must remain terminated after ErrNotResumable")
+	}
+}
+
 // TestRestore_WorkerPointsAtCurrentOrchestrator: a restored worker's
 // coordination hint must reference the orchestrator active at restore time,
 // not the one from its original spawn.

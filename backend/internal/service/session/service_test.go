@@ -542,6 +542,17 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 	}
 }
 
+// TestToAPIError_NotResumable asserts that ErrNotResumable (promptless worker
+// with no adapter resume handle) maps to a Conflict with code SESSION_NOT_RESUMABLE.
+func TestToAPIError_NotResumable(t *testing.T) {
+	err := fmt.Errorf("restore mer-1: %w", sessionmanager.ErrNotResumable)
+	mapped := toAPIError(err)
+	var e *apierr.Error
+	if !errors.As(mapped, &e) || e.Kind != apierr.KindConflict || e.Code != "SESSION_NOT_RESUMABLE" {
+		t.Fatalf("mapped = %v, want Conflict SESSION_NOT_RESUMABLE", mapped)
+	}
+}
+
 // TestSpawnOrchestratorNoCleanReturnsExistingWhenActiveExists is the RED test
 // for the idempotency fix: when an active orchestrator already exists and
 // clean=false, SpawnOrchestrator must return that orchestrator without minting
