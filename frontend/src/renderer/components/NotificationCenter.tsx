@@ -91,9 +91,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 					style={style}
 					type="button"
 				>
-					<Bell className="h-[15px] w-[15px]" aria-hidden="true" />
+					<Bell className="h-[15px] w-[15px] fill-current" aria-hidden="true" />
 					{unreadCount > 0 ? (
-						<span className="absolute right-[5px] top-[5px] grid min-w-[15px] place-items-center rounded-full bg-warning px-1 text-[9px] font-semibold leading-[15px] text-background">
+						<span className="pointer-events-none absolute right-[3px] top-[2px] font-mono text-[11px] font-semibold leading-none text-warning">
 							{unreadCount > 99 ? "99+" : unreadCount}
 						</span>
 					) : null}

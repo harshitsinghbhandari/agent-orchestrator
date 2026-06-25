@@ -33,6 +33,8 @@ import { buildDaemonEnv, resolveShellEnv, type ShellRunner } from "./shared/shel
 import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
 import { buildTelemetryBootstrap } from "./shared/telemetry";
 import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view-host";
+import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
+import { shouldLinkOnAttach } from "./main/daemon-owner";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -68,6 +70,8 @@ let daemonStartPromise: Promise<DaemonStatus> | null = null;
 let daemonStartEpoch = 0;
 let daemonStatus: DaemonStatus = { state: "stopped" };
 let browserViewHost: BrowserViewHost | null = null;
+// Held for the app lifetime. Dropping it (on any exit) triggers daemon self-stop.
+let supervisorLink: SupervisorLinkHandle | null = null;
 
 const isDev = !app.isPackaged;
 
@@ -300,11 +304,15 @@ function ensureShellEnv(): Promise<void> {
 }
 
 function daemonEnv(): NodeJS.ProcessEnv {
+	// AO_OWNER=app marks this daemon as app-spawned so the app can re-link the
+	// supervisor on attach (headless `ao start` daemons get no AO_OWNER and stay
+	// unlinked, preserving their persistence across app quit).
+	const ownerTag = { AO_OWNER: "app" };
 	// Windows keeps the old behavior exactly: no shell probe, no unix PATH floor.
 	if (process.platform === "win32") {
-		return { ...process.env, ...telemetryOverrides() };
+		return { ...process.env, ...telemetryOverrides(), ...ownerTag };
 	}
-	return buildDaemonEnv(process.env, cachedShellEnv, telemetryOverrides());
+	return buildDaemonEnv(process.env, cachedShellEnv, { ...telemetryOverrides(), ...ownerTag });
 }
 
 function pathKey(value: string): string {
@@ -371,7 +379,38 @@ function daemonIdentityError(launch: DaemonLaunchSpec, probe: DaemonProbe): stri
 	return null;
 }
 
-async function inspectExistingDaemon(launch: DaemonLaunchSpec): Promise<DaemonStatus | null> {
+/**
+ * Establish (or re-establish) the OS-native liveness link to the daemon's
+ * supervisor socket. Holding this connection keeps the daemon alive: when
+ * Electron exits for any reason (Cmd+Q, crash, SIGKILL), the OS closes the fd
+ * and the daemon detects EOF, then self-stops after its ~5s grace period.
+ *
+ * Called unconditionally on the spawn path (we always own that daemon).
+ * Called on the attach path only when the daemon is app-owned (owner === "app");
+ * headless `ao start` daemons stay unlinked so they remain persistent after
+ * app quit.
+ */
+function establishSupervisorLink(): void {
+	const rfp = runFilePath();
+	const addr =
+		process.platform === "win32"
+			? "\\\\.\\pipe\\ao-supervise"
+			: rfp
+				? path.join(path.dirname(rfp), "supervise.sock")
+				: null;
+	if (addr) {
+		supervisorLink?.dispose();
+		supervisorLink = connectSupervisor(addr, {
+			log: (msg) => console.log(`AO: ${msg}`),
+		});
+	} else {
+		console.warn("AO: supervisor link skipped; run-file path unavailable");
+	}
+}
+
+async function inspectExistingDaemon(
+	launch: DaemonLaunchSpec,
+): Promise<{ status: DaemonStatus; owner: string | undefined } | null> {
 	const handshakePath = runFilePath();
 	let runFileContents: string | null = null;
 	if (handshakePath) {
@@ -381,12 +420,15 @@ async function inspectExistingDaemon(launch: DaemonLaunchSpec): Promise<DaemonSt
 			runFileContents = null;
 		}
 	}
-	return resolveDaemonFromRunFile({
+	const status = await resolveDaemonFromRunFile({
 		runFileContents,
 		isProcessAlive: processAlive,
 		probe: readDaemonProbe,
 		identityError: (probe) => daemonIdentityError(launch, probe),
 	});
+	if (!status) return null;
+	const owner = runFileContents ? (parseRunFile(runFileContents)?.owner ?? undefined) : undefined;
+	return { status, owner };
 }
 
 async function refreshDaemonStatus(): Promise<DaemonStatus> {
@@ -403,7 +445,7 @@ async function refreshDaemonStatus(): Promise<DaemonStatus> {
 	if (!launch) return daemonStatus;
 	const existing = await inspectExistingDaemon(launch);
 	if (existing) {
-		setDaemonStatus(existing);
+		setDaemonStatus(existing.status);
 	} else if (
 		daemonStatus.state === "ready" ||
 		(daemonStatus.state === "error" && (daemonStatus.pid || daemonStatus.port))
@@ -460,7 +502,13 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		return daemonStatus;
 	}
 	if (existing) {
-		setDaemonStatus(existing);
+		setDaemonStatus(existing.status);
+		// Re-link the supervisor only when attaching to an app-owned daemon (one we
+		// previously spawned). Headless `ao start` daemons (owner unset) stay unlinked
+		// so they remain persistent after app quit.
+		if (shouldLinkOnAttach(existing.owner)) {
+			establishSupervisorLink();
+		}
 		return daemonStatus;
 	}
 
@@ -482,6 +530,25 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	}
 	if (directDaemon) {
 		setDaemonStatus(directDaemon);
+		// Re-link iff the daemon is app-owned. Read the run-file for the owner tag;
+		// if unavailable (run-file absent or unreadable), treat as headless and skip.
+		// ponytail: narrow TOCTOU here (the port was probed live, then the run-file
+		// is read separately), so in theory a headless daemon could have replaced an
+		// app-owned one in the gap. Acceptable: the window is tiny, the worst case is
+		// linking a headless daemon, and establishSupervisorLink disposes any prior
+		// link so nothing leaks.
+		const rfp = runFilePath();
+		let portAttachOwner: string | undefined;
+		if (rfp) {
+			try {
+				portAttachOwner = parseRunFile(await readFile(rfp, "utf8"))?.owner ?? undefined;
+			} catch {
+				// run-file absent or unreadable: treat as headless, skip link.
+			}
+		}
+		if (shouldLinkOnAttach(portAttachOwner)) {
+			establishSupervisorLink();
+		}
 		return daemonStatus;
 	}
 
@@ -593,6 +660,15 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		portConfirmed = true;
 		stopDiscovery();
 		setDaemonStatus({ state: "ready", port });
+
+		// Establish the OS-native liveness link unconditionally: this callback fires
+		// only on the spawn path (we own this daemon). Holding the connection keeps
+		// the daemon alive; when Electron exits for any reason, the OS closes the fd
+		// and the daemon detects EOF, then self-stops after its ~5s grace period.
+		// The attach paths link only when the daemon is app-owned (see
+		// establishSupervisorLink + shouldLinkOnAttach); headless `ao start` daemons
+		// stay unlinked so they remain persistent across app quit.
+		establishSupervisorLink();
 	};
 
 	// One scanner per stream: each keeps its own partial-line buffer.
@@ -683,6 +759,11 @@ function stopDaemon(): DaemonStatus {
 	}
 
 	daemonStoppingProcess = daemonProcess;
+	// Drop the liveness link: an explicit stop is not a frontend death, so stop
+	// holding the socket open (and stop the reconnect loop retrying a dead daemon).
+	// A later daemon:start re-establishes the link via reportBoundPort.
+	supervisorLink?.dispose();
+	supervisorLink = null;
 	killDaemon(daemonProcess);
 	setDaemonStatus({ state: "stopped" });
 	return daemonStatus;
@@ -751,77 +832,24 @@ app.whenReady().then(() => {
 	});
 });
 
-// Re-entrancy guard: the first before-quit fires, prevents default, does async
-// work, then calls app.exit(). If app.quit() is called concurrently (e.g. from
-// window-all-closed on non-darwin), the second before-quit fires while the first
-// is still in flight. Without a guard it would preventDefault again and loop.
-// With the guard set to true, the second invocation falls through and lets the
-// quit proceed. app.exit() itself does NOT re-fire before-quit, so the guard
-// mainly protects against a concurrent app.quit() race.
-let quitting = false;
-
-app.on("before-quit", (event) => {
+// Daemon teardown is now handled via the OS-native supervisor socket: the daemon
+// self-stops ~5s after the last client (this process) drops its connection.
+// The supervisorLink fd is NOT explicitly closed on quit; the OS closes it when
+// the process exits for any reason (Cmd+Q, crash, SIGKILL). Sessions survive.
+app.on("before-quit", () => {
 	browserViewHost?.dispose();
 	browserViewHost = null;
-
-	// Re-entrancy: if we already started the async quit sequence, let this
-	// invocation fall through so the app actually exits.
-	if (quitting) return;
-	quitting = true;
-
-	// Capture the current daemon handle and port before any async gap so that
-	// a race with stopDaemon() cannot null them out underneath us.
-	const child = daemonProcess;
-	const port = daemonStatus.state === "ready" ? daemonStatus.port : undefined;
-
-	if (!child) {
-		// No daemon we own: nothing to shut down.
-		return;
-	}
-
-	// Prevent the synchronous quit so we can ask the daemon to save gracefully
-	// before killing it.
-	event.preventDefault();
-
-	const doQuit = async () => {
-		// Best-effort graceful shutdown: POST /shutdown so the daemon flushes
-		// its session state before exiting. An ~8s timeout prevents a hung or
-		// absent daemon from blocking quit indefinitely.
-		// Note: the daemon's internal save bound is 30s (shutdownSaveTimeout), so
-		// if this fetch times out and we proceed to killDaemon (SIGTERM), the first
-		// SIGTERM only cancels the daemon's listen context; the daemon's in-flight
-		// save (on a fresh context) still runs to completion or its own 30s bound.
-		if (port !== undefined) {
-			try {
-				await fetch(`http://127.0.0.1:${port}/shutdown`, {
-					method: "POST",
-					signal: AbortSignal.timeout(8_000),
-				});
-			} catch {
-				// Timeout, network error, or daemon already gone: proceed to kill.
-				console.log(`AO: /shutdown fetch failed (port ${port}); proceeding with SIGTERM.`);
-			}
-		}
-
-		// Kill the daemon process group (reaches the daemon behind any shell
-		// wrapper and its PTY children).
-		killDaemon(child);
-
-		// Exit without re-firing before-quit (app.exit bypasses the event).
-		app.exit(0);
-	};
-
-	void doQuit();
 });
 
-// Last-resort teardown. before-quit covers the normal quit path, but app.exit()
-// and some shutdown routes skip it, which would orphan the detached daemon and
-// leave it holding the port for the next launch. The Node 'exit' event fires
-// synchronously on those paths too, so the daemon's process group is always
-// signalled when the supervisor goes away. (A hard SIGKILL/crash still can't run
-// JS; the daemon's port-conflict fallback covers the orphan that leaves behind.)
+// Last resort: if the OS-native supervisor link is not actually connected
+// (daemon socket never bound, e.g. UDS path-length limit, or addr was null),
+// the dropped fd will NOT stop the daemon on quit, so kill it here to avoid an
+// orphan. Safe because Phase A made the daemon's SIGTERM non-destructive: it
+// exits without tearing down sessions, which survive for the next boot to adopt.
+// When the link IS connected we do nothing here and rely on the OS closing the
+// fd on exit, which covers crash and SIGKILL uniformly.
 process.on("exit", () => {
-	if (daemonProcess) {
+	if (daemonProcess && !supervisorLink?.connected) {
 		killDaemon(daemonProcess);
 	}
 });
