@@ -151,19 +151,7 @@ func Run() error {
 
 	runErr := srv.Run(ctx)
 
-	// Save and tear down all live sessions before the store closes. Both SIGTERM
-	// and POST /shutdown funnel through srv.Run returning (SIGTERM cancels ctx,
-	// which srv.Run selects on; POST /shutdown closes the shutdownRequested channel,
-	// which srv.Run also selects on), so this single call site covers both paths.
-	//
-	// Use a fresh context with a bounded deadline: the ctx that caused srv.Run
-	// to return is already cancelled, so passing it would abort the save
-	// immediately and leave every session unsaved.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownSaveTimeout)
-	defer shutdownCancel()
-	if saveErr := sessMgr.SaveAndTeardownAll(shutdownCtx); saveErr != nil {
-		log.Error("save sessions on shutdown failed", "err", saveErr)
-	}
+	runShutdownSessionLifecycle(context.Background(), sessMgr)
 
 	// Shut the background goroutines down in order: cancel the context FIRST so
 	// their loops exit, then wait for them to drain. Doing this explicitly (not
@@ -178,9 +166,18 @@ func Run() error {
 	return runErr
 }
 
-// shutdownSaveTimeout bounds the SaveAndTeardownAll call on shutdown so a
-// pathological session cannot stall the process exit indefinitely.
-const shutdownSaveTimeout = 30 * time.Second
+// runShutdownSessionLifecycle is called after srv.Run returns on both graceful
+// shutdown paths (SIGTERM and POST /shutdown). It does NOT call
+// SaveAndTeardownAll: live tmux/ConPTY sessions survive the daemon exit and
+// are adopted by Reconcile on the next boot, preserving session IDs.
+// Destroying them here caused the id-increment bug where the orchestrator
+// session counter incremented on every restart.
+//
+// ponytail: no-op on purpose; exists as a testable seam so the test can assert
+// SaveAndTeardownAll is never called on the shutdown path.
+func runShutdownSessionLifecycle(_ context.Context, _ sessionLifecycle) {
+	// Intentionally empty. Sessions stay alive; next boot's Reconcile adopts them.
+}
 
 // newLogger returns the daemon's slog logger. It writes to stderr so supervisors
 // can capture it separately from any structured stdout protocol added later.
