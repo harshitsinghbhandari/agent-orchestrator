@@ -35,7 +35,7 @@ backend/internal/storage          SQLite persistence and DB-triggered CDC
 backend/internal/cdc              change-log poller and broadcaster
 backend/internal/httpd            daemon HTTP surface (REST + SSE + terminal mux)
 backend/internal/terminal         WebSocket terminal multiplexer
-backend/internal/adapters         agent/Zellij/git-worktree/GitHub SCM + tracker adapters
+backend/internal/adapters         agent/tmux+conpty runtime/git-worktree/GitHub SCM + tracker adapters
 backend/internal/daemon           production wiring and shutdown
 backend/internal/config           daemon env/default config
 ```

@@ -269,7 +269,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	// Pre-flight: confirm argv[0] actually exists on PATH (or as an absolute
 	// path the adapter returned) BEFORE handing the launch to the runtime.
-	// Zellij happily creates a session+pane around a missing command, so an
+	// tmux happily creates a session+pane around a missing command, so an
 	// unresolved binary would leak through as a "live" session that never ran.
 	if err := m.validateAgentBinary(argv); err != nil {
 		_ = m.workspace.Destroy(ctx, ws)

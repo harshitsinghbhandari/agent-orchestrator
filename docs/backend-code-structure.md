@@ -42,11 +42,11 @@ Does not belong here:
 - CLI output shapes;
 - OpenAPI wrapper/envelope types;
 - sqlc generated rows;
-- GitHub, Zellij, Claude, Codex, or OpenCode payloads;
+- GitHub, tmux, Claude, Codex, or OpenCode payloads;
 - one-resource controller helper types.
 
 Rule of thumb: if AO would still use the concept after replacing HTTP, the CLI,
-SQLite, GitHub, Zellij, and every agent adapter, and more than one package needs
+SQLite, GitHub, the tmux/conpty runtime, and every agent adapter, and more than one package needs
 the exact vocabulary, it may belong in `domain`.
 
 ### `internal/service/*`
@@ -168,7 +168,10 @@ Current examples:
 internal/adapters/agent/claudecode
 internal/adapters/agent/codex
 internal/adapters/agent/opencode
-internal/adapters/runtime/zellij
+internal/adapters/runtime/tmux
+internal/adapters/runtime/conpty
+internal/adapters/runtime/runtimeselect
+internal/adapters/runtime/ptyexec
 internal/adapters/workspace/gitworktree
 internal/adapters/scm/github
 internal/adapters/tracker/github
@@ -181,7 +184,7 @@ Good:
 
 ```txt
 session_manager -> ports.Runtime
-adapters/runtime/zellij -> ports + domain
+adapters/runtime/tmux -> ports + domain
 adapters/workspace/gitworktree -> ports + domain
 daemon -> adapters + services + storage
 ```
@@ -190,7 +193,7 @@ Avoid:
 
 ```txt
 domain -> adapters
-service/session -> adapters/runtime/zellij
+service/session -> adapters/runtime/tmux
 httpd/controllers -> storage/sqlite/store
 adapters/* -> httpd
 ```
@@ -239,9 +242,12 @@ Does not belong here:
 ### `internal/terminal`
 
 `terminal` owns the terminal session protocol and PTY attach management used by
-the HTTP mux. Every client that opens a pane gets its own `zellij attach` PTY —
-zellij owns screen state and scrollback and replays its init handshake + full
-repaint per attach, so there is no shared per-pane buffer.
+the HTTP mux. The runtime is selected by `runtimeselect`: tmux on Darwin/Linux,
+conpty on Windows. Every client that opens a pane gets its own attach Stream. On
+unix, tmux spawns `tmux attach` on a local PTY via ptyexec; on Windows, conpty
+dials the session's loopback pty-host directly. Either way the runtime owns
+screen state and scrollback and replays its init handshake plus a full repaint
+per attach, so there is no shared per-pane buffer.
 
 Belongs here:
 

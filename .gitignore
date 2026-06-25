@@ -47,6 +47,10 @@ session-events.jsonl.*
 *.swp
 *~
 
+# Local tooling (not for the team)
+.codegraph/
+.cursor/
+
 # OS
 .DS_Store
 Thumbs.db

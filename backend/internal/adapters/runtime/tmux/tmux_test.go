@@ -13,7 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// -- fakeRunner test seam (mirrors zellij_test.go exactly) --
+// -- fakeRunner test seam --
 
 type fakeRunner struct {
 	calls   []runnerCall

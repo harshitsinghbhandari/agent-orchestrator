@@ -1,5 +1,5 @@
 // attach.go - conpty Attach: a loopback Stream over the B3 pty-host. Unlike
-// tmux/zellij, conpty does not spawn an attach CLI; it dials the session's
+// tmux, conpty does not spawn an attach CLI; it dials the session's
 // loopback host and speaks the B1 framing protocol directly. The host replays
 // the scrollback Snapshot as the first MsgTerminalData on connect, so a fresh
 // Read naturally yields the repaint first.

@@ -68,7 +68,7 @@ func TestTick_ReportsAliveProbe(t *testing.T) {
 func TestTick_ReportsProbeErrorAsFailed(t *testing.T) {
 	lcm := &fakeLCM{}
 	sessions := fakeSessions{rows: []domain.SessionRecord{probableSession("mer-1")}}
-	if err := newReaper(lcm, sessions, fakeRuntime{err: errors.New("Zellij gone")}).Tick(ctx); err != nil {
+	if err := newReaper(lcm, sessions, fakeRuntime{err: errors.New("tmux gone")}).Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if lcm.observed["mer-1"].Probe != ports.ProbeFailed {

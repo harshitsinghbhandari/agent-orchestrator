@@ -152,7 +152,7 @@ func (r *Runtime) Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 //     then-failed I/O). The reaper records ProbeFailed and retries rather than
 //     treating it as a death conclusion.
 //
-// tmux/zellij return a non-nil error for transient failures for the same
+// tmux returns a non-nil error for transient failures for the same
 // reason; conpty matches that contract here.
 func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
 	sess := r.resolve(handle.ID)

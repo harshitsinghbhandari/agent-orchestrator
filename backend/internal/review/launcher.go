@@ -34,7 +34,7 @@ type LaunchSpec struct {
 }
 
 // reviewerRuntime is the runtime surface the launcher needs: create a pane,
-// inject a message into a running pane, and probe liveness. The zellij runtime
+// inject a message into a running pane, and probe liveness. The tmux runtime
 // satisfies it.
 type reviewerRuntime interface {
 	Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error)

@@ -204,7 +204,7 @@ func kilocodePermissionConfig(mode ports.PermissionMode) map[string]string {
 // kilocode. A bare `KILO_CONFIG_CONTENT=...` argv element would not work: the
 // runtime shell-quotes every element, and a quoted token is run as a command
 // rather than read as an assignment — hence the explicit `env` wrapper.
-// POSIX-only, which matches the zellij runtime.
+// POSIX-only, which matches the tmux runtime.
 func kilocodePermissionEnvPrefix(mode ports.PermissionMode) []string {
 	config := kilocodePermissionConfig(mode)
 	if len(config) == 0 {

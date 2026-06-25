@@ -12,7 +12,7 @@ import (
 
 // Source is what the terminal needs from the runtime: open an attach Stream and
 // a liveness check used to decide whether a dropped Stream should be re-attached
-// or treated as a clean exit. The runtime adapters (tmux/zellij/conpty) satisfy
+// or treated as a clean exit. The runtime adapters (tmux/conpty) satisfy
 // it via Attach/IsAlive; the interface lives here, next to its only consumer, so
 // terminal does not depend on a concrete adapter.
 type Source interface {

@@ -1046,7 +1046,7 @@ func TestRollbackSpawn_FallsBackToKillForLiveRow(t *testing.T) {
 
 // TestSpawn_RejectsMissingAgentBinary covers Bug 6: when the agent adapter
 // returns an argv whose binary is not on PATH, Manager.Spawn must abort BEFORE
-// runtime.Create rather than launching into an empty zellij pane that the
+// runtime.Create rather than launching into an empty tmux pane that the
 // reaper later mistakes for a live session.
 func TestSpawn_RejectsMissingAgentBinary(t *testing.T) {
 	st := newFakeStore()

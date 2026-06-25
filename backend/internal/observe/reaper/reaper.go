@@ -152,7 +152,7 @@ func (r *Reaper) probeOne(ctx context.Context, sess domain.SessionRecord, now ti
 	switch {
 	case probeErr != nil:
 		// Failed probe must NOT be collapsed to alive — that would let a
-		// transient Zellij outage hide a really-dead session, and a
+		// transient tmux outage hide a really-dead session, and a
 		// transient adapter bug terminate a really-alive one. Report failed
 		// and let the LCM arbitrate.
 		facts.Probe = ports.ProbeFailed

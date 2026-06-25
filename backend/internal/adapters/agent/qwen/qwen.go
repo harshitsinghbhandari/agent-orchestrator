@@ -147,7 +147,7 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 // searching PATH then a handful of well-known install locations (Homebrew, npm
 // global). Returns ports.ErrAgentBinaryNotFound when none of those find the
 // binary — better than the previous silent `"qwen"` fallback, which let an
-// empty zellij pane masquerade as a live session.
+// empty tmux pane masquerade as a live session.
 func ResolveQwenBinary(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

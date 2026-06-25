@@ -15,7 +15,7 @@ import (
 )
 
 // commandTimeout bounds a mutating daemon call. Spawns do real work (git
-// worktree add, zellij launch, hook install), so it is generous compared to the
+// worktree add, tmux launch, hook install), so it is generous compared to the
 // status probe timeout.
 const commandTimeout = 2 * time.Minute
 
