@@ -25,13 +25,6 @@ var (
 	ErrNotRestorable    = errors.New("session: not restorable (not terminal)")
 	ErrTerminated       = errors.New("session: terminated")
 	ErrIncompleteHandle = errors.New("session: incomplete teardown handle")
-	// ErrNotResumable means there is nothing for Restore to relaunch from: the
-	// harness adapter cannot resume the session (no native or derivable session
-	// id) AND no prompt was saved to fresh-launch from. Resumability is decided
-	// by the adapter (e.g. Claude Code pins a deterministic --session-id, so it
-	// resumes with no captured token), not by inspecting metadata fields here.
-	// Distinct from ErrNotRestorable (which is "not terminal yet").
-	ErrNotResumable = errors.New("session: nothing to resume from")
 	// ErrProjectNotResolvable means the spawn's project has no usable repo
 	// (unregistered, archived, or missing a path). The API maps it to a 400.
 	ErrProjectNotResolvable = errors.New("session: project repo not resolvable")
@@ -488,8 +481,8 @@ func (m *Manager) Restore(ctx context.Context, id domain.SessionID) (domain.Sess
 	}
 	// Resumability is NOT decided here: a promptless session can still be fully
 	// resumable when the harness pins a deterministic session id (Claude Code).
-	// restoreArgv asks the adapter and returns ErrNotResumable only when the
-	// adapter cannot resume AND there is no prompt to fresh-launch from.
+	// restoreArgv always produces a launch command: adapter resume, saved-prompt
+	// replay, or fresh launch (empty prompt with system prompt only). Same id.
 
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
@@ -1232,12 +1225,10 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	if ok {
 		return cmd, nil
 	}
-	// The adapter reports no session to resume (no native or derivable session
-	// id). A saved prompt lets us relaunch fresh; with neither, there is
-	// genuinely nothing to restore from.
-	if meta.Prompt == "" {
-		return nil, ErrNotResumable
-	}
+	// The adapter cannot resume the session (no native or derivable session id).
+	// Relaunch fresh via GetLaunchCommand: a saved prompt is replayed, an empty
+	// prompt (e.g. an orchestrator) launches fresh with the system prompt only.
+	// Same id, same workspace - no new session is minted.
 	argv, err := agent.GetLaunchCommand(ctx, ports.LaunchConfig{
 		SessionID:     string(id),
 		WorkspacePath: workspacePath,
