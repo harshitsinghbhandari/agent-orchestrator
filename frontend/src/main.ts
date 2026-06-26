@@ -866,8 +866,21 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-	// Order is load-bearing: relocate FIRST, then write the marker, so the marker
-	// records the post-relocation bundle path (spec §7.1).
+	// Capture install provenance BEFORE relocation. moveToApplicationsFolder()
+	// relaunches from /Applications WITHOUT forwarding our --installed-via arg, and
+	// code past a successful move never runs in this instance, so a post-move-only
+	// write would record installSource="unknown" and the sticky logic in
+	// writeAppStateMarker would then lock it there forever. Writing now (only when
+	// the arg is present, i.e. the npm-bootstrap launch) persists the source so the
+	// post-move instance preserves it while refreshing appPath to /Applications.
+	if (parseInstalledVia(process.argv)) {
+		try {
+			await writeAppStateOnLaunch();
+		} catch (err) {
+			console.error("failed to write pre-relocation app-state marker:", err);
+		}
+	}
+
 	if (process.platform === "darwin" && app.isPackaged) {
 		try {
 			// On success this restarts the app from /Applications, so code past
@@ -878,7 +891,9 @@ app.whenReady().then(async () => {
 		}
 	}
 
-	// A marker-write failure is non-fatal: log and continue so the app still boots.
+	// Refresh the marker post-relocation so appPath records the final bundle path;
+	// the sticky installSource preserves the value captured above. A marker-write
+	// failure is non-fatal: log and continue so the app still boots.
 	try {
 		await writeAppStateOnLaunch();
 	} catch (err) {
