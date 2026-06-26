@@ -89,6 +89,33 @@ describe("useBrowserView", () => {
 		expect(result.current.viewId).toBe("42:sess-1");
 	});
 
+	it("clamps the native view to its resizable-panel column when the slot overspills", async () => {
+		const bridge = setupBridge();
+		// The slot is wider than its column (e.g. the `min-w-[280px]` wrapper on a
+		// narrower inspector panel). The native overlay isn't clipped by DOM
+		// overflow, so the reported bounds must be intersected with the column.
+		const column = document.createElement("div");
+		column.setAttribute("data-panel", "");
+		column.getBoundingClientRect = vi.fn(
+			() => ({ x: 100, y: 0, width: 150, height: 600, top: 0, right: 250, bottom: 600, left: 100, toJSON: () => ({}) }),
+		);
+		const slot = createSlot();
+		column.appendChild(slot);
+		document.body.appendChild(column);
+
+		const { result } = renderHook(() => useBrowserView({ sessionId: "sess-1", active: true, poppedOut: false }));
+		await waitFor(() => expect(bridge.ensure).toHaveBeenCalledWith("sess-1"));
+		act(() => result.current.slotRef(slot));
+
+		await waitFor(() =>
+			expect(bridge.setBounds).toHaveBeenCalledWith({
+				viewId: "42:sess-1",
+				rect: { x: 100, y: 34, width: 150, height: 240 },
+				visible: true,
+			}),
+		);
+	});
+
 	it("hides the native view when inactive and on unmount without destroying session state", async () => {
 		const bridge = setupBridge();
 		const slot = createSlot();

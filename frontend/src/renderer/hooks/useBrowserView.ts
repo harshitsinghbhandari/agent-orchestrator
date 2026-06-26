@@ -44,6 +44,26 @@ const EMPTY_NAV_STATE: BrowserNavState = {
 
 const HIDDEN_RECT: BrowserRect = { x: 0, y: 0, width: 0, height: 0 };
 
+// The native WebContentsView is a window-level overlay, so DOM `overflow:
+// hidden` never clips it — it paints wherever the slot's bounding box lands.
+// Inside the collapsible inspector the slot sits in a `min-w-[280px]` wrapper,
+// so on a narrow panel (small window, or mid-collapse) the slot's box spills
+// past its resizable-panel column. Intersect the slot box with that column so
+// the view can only ever paint inside it, never over the terminal/sidebar.
+function visibleSlotRect(node: HTMLElement): BrowserRect {
+	const rect = node.getBoundingClientRect();
+	let { left, top, right, bottom } = rect;
+	const column = node.closest<HTMLElement>("[data-panel]");
+	if (column) {
+		const bounds = column.getBoundingClientRect();
+		left = Math.max(left, bounds.left);
+		top = Math.max(top, bounds.top);
+		right = Math.min(right, bounds.right);
+		bottom = Math.min(bottom, bounds.bottom);
+	}
+	return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+
 export function useBrowserView({
 	sessionId,
 	active,
@@ -78,15 +98,10 @@ export function useBrowserView({
 			sendHiddenBounds(id);
 			return;
 		}
-		const rect = node.getBoundingClientRect();
+		const rect = visibleSlotRect(node);
 		const payload = {
 			viewId: id,
-			rect: {
-				x: rect.x,
-				y: rect.y,
-				width: rect.width,
-				height: rect.height,
-			},
+			rect,
 			visible: rect.width > 0 && rect.height > 0,
 		};
 		window.ao?.browser.setBounds(payload);
@@ -115,6 +130,13 @@ export function useBrowserView({
 			if (node) {
 				const observer = new ResizeObserver(scheduleMeasure);
 				observer.observe(node);
+				// Also track the resizable-panel column: while the inspector
+				// collapse/expand animates, the slot's own width stays pinned by
+				// `min-w-[280px]` (so a slot-only observer never fires), but the
+				// column's width changes every frame. Observing it re-measures
+				// through the whole animation so the view never lags behind.
+				const column = node.closest("[data-panel]");
+				if (column) observer.observe(column);
 				observerRef.current = observer;
 			}
 			scheduleMeasure();
