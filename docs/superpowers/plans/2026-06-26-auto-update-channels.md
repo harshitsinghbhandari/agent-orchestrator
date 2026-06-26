@@ -40,10 +40,12 @@
 ## Task 1: Nightly version compute module
 
 **Files:**
+
 - Create: `frontend/scripts/nightly-version.mjs`
 - Test: `frontend/scripts/nightly-version.test.mjs`
 
 **Interfaces:**
+
 - Produces: `computeNightlyVersion(latestStableTag: string, now: Date, shortSha: string): string` returning `X.Y.(Z+1)-nightly.<YYYYMMDDHHMM>+<shortSha>`. Accepts `latestStableTag` either bare (`0.10.3`) or tag-prefixed (`v0.10.3` / `desktop-v0.10.3`).
 - Produces (CLI): `node scripts/nightly-version.mjs <latestStableTag> <shortSha>` prints the version using the current UTC time, for the CI workflow.
 
@@ -58,25 +60,25 @@ import { computeNightlyVersion } from "./nightly-version.mjs";
 const now = new Date("2026-06-27T03:00:00.000Z");
 
 describe("computeNightlyVersion", () => {
-  it("bumps the patch and formats a UTC-timestamped nightly prerelease with sha build metadata", () => {
-    expect(computeNightlyVersion("0.10.3", now, "ab12cd3")).toBe("0.10.4-nightly.202606270300+ab12cd3");
-  });
+	it("bumps the patch and formats a UTC-timestamped nightly prerelease with sha build metadata", () => {
+		expect(computeNightlyVersion("0.10.3", now, "ab12cd3")).toBe("0.10.4-nightly.202606270300+ab12cd3");
+	});
 
-  it("strips a v / desktop-v tag prefix", () => {
-    expect(computeNightlyVersion("v0.10.3", now, "ab12cd3")).toBe("0.10.4-nightly.202606270300+ab12cd3");
-    expect(computeNightlyVersion("desktop-v0.10.3", now, "ab12cd3")).toBe("0.10.4-nightly.202606270300+ab12cd3");
-  });
+	it("strips a v / desktop-v tag prefix", () => {
+		expect(computeNightlyVersion("v0.10.3", now, "ab12cd3")).toBe("0.10.4-nightly.202606270300+ab12cd3");
+		expect(computeNightlyVersion("desktop-v0.10.3", now, "ab12cd3")).toBe("0.10.4-nightly.202606270300+ab12cd3");
+	});
 
-  it("orders monotonically by timestamp for the same base", () => {
-    const earlier = computeNightlyVersion("0.10.3", new Date("2026-06-27T03:00:00Z"), "aaaaaaa");
-    const later = computeNightlyVersion("0.10.3", new Date("2026-06-27T04:00:00Z"), "bbbbbbb");
-    // prerelease identifiers compare lexically; zero-padded fixed-width timestamp sorts correctly
-    expect(later > earlier).toBe(true);
-  });
+	it("orders monotonically by timestamp for the same base", () => {
+		const earlier = computeNightlyVersion("0.10.3", new Date("2026-06-27T03:00:00Z"), "aaaaaaa");
+		const later = computeNightlyVersion("0.10.3", new Date("2026-06-27T04:00:00Z"), "bbbbbbb");
+		// prerelease identifiers compare lexically; zero-padded fixed-width timestamp sorts correctly
+		expect(later > earlier).toBe(true);
+	});
 
-  it("rejects a non-semver base tag", () => {
-    expect(() => computeNightlyVersion("not-a-version", now, "ab12cd3")).toThrow();
-  });
+	it("rejects a non-semver base tag", () => {
+		expect(() => computeNightlyVersion("not-a-version", now, "ab12cd3")).toThrow();
+	});
 });
 ```
 
@@ -101,29 +103,29 @@ const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
 // The fixed-width UTC timestamp makes prerelease ids order by build time; the
 // sha is semver build metadata (ignored for ordering, kept for traceability).
 export function computeNightlyVersion(latestStableTag, now, shortSha) {
-  const bare = String(latestStableTag).replace(/^(desktop-)?v/, "");
-  const m = SEMVER.exec(bare);
-  if (!m) {
-    throw new Error(`nightly-version: base tag is not X.Y.Z: ${latestStableTag}`);
-  }
-  const [major, minor, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const ts =
-    String(now.getUTCFullYear()) +
-    String(now.getUTCMonth() + 1).padStart(2, "0") +
-    String(now.getUTCDate()).padStart(2, "0") +
-    String(now.getUTCHours()).padStart(2, "0") +
-    String(now.getUTCMinutes()).padStart(2, "0");
-  return `${major}.${minor}.${patch + 1}-nightly.${ts}+${shortSha}`;
+	const bare = String(latestStableTag).replace(/^(desktop-)?v/, "");
+	const m = SEMVER.exec(bare);
+	if (!m) {
+		throw new Error(`nightly-version: base tag is not X.Y.Z: ${latestStableTag}`);
+	}
+	const [major, minor, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
+	const ts =
+		String(now.getUTCFullYear()) +
+		String(now.getUTCMonth() + 1).padStart(2, "0") +
+		String(now.getUTCDate()).padStart(2, "0") +
+		String(now.getUTCHours()).padStart(2, "0") +
+		String(now.getUTCMinutes()).padStart(2, "0");
+	return `${major}.${minor}.${patch + 1}-nightly.${ts}+${shortSha}`;
 }
 
 // CLI entry for CI: node scripts/nightly-version.mjs <latestStableTag> <shortSha>
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const [, , latestStableTag, shortSha] = process.argv;
-  if (!latestStableTag || !shortSha) {
-    process.stderr.write("usage: node nightly-version.mjs <latestStableTag> <shortSha>\n");
-    process.exit(2);
-  }
-  process.stdout.write(computeNightlyVersion(latestStableTag, new Date(), shortSha));
+	const [, , latestStableTag, shortSha] = process.argv;
+	if (!latestStableTag || !shortSha) {
+		process.stderr.write("usage: node nightly-version.mjs <latestStableTag> <shortSha>\n");
+		process.exit(2);
+	}
+	process.stdout.write(computeNightlyVersion(latestStableTag, new Date(), shortSha));
 }
 ```
 
@@ -155,9 +157,11 @@ EOF
 ## Task 2: Nightly daily cron workflow
 
 **Files:**
+
 - Create: `.github/workflows/frontend-nightly.yml`
 
 **Interfaces:**
+
 - Consumes: `frontend/scripts/nightly-version.mjs` CLI (Task 1).
 - Produces: a daily prerelease GitHub release tagged `desktop-v<nightly-version-without-build-metadata>` carrying per-platform installers + electron-updater `nightly*.yml`, on the `nightly` channel.
 
@@ -294,9 +298,11 @@ EOF
 ## Task 3: macOS electron-updater feed metadata
 
 **Files:**
+
 - Modify: `.github/workflows/frontend-release.yml` (add a macOS feed-metadata step; the same step is needed in `frontend-nightly.yml`, add it there too)
 
 **Interfaces:**
+
 - Produces: `latest-mac.yml` (stable) / `nightly-mac.yml` (nightly) uploaded to the release, so electron-updater can resolve macOS updates. Windows/Linux already emit their `*.yml` via the electron-builder-backed makers.
 
 - [ ] **Step 1: Add the macOS feed step**
@@ -304,21 +310,21 @@ EOF
 electron-forge's `maker-zip` does not emit electron-updater metadata. Generate it from the built zip with electron-builder's helper. Add this step to the macOS branch of both release workflows, after the existing alias upload:
 
 ```yaml
-      - name: Generate + upload macOS update feed (electron-updater)
-        if: startsWith(matrix.os, 'macos')
-        shell: bash
-        run: |
-          tag="v$(node -p "require('./package.json').version")"
-          # electron-builder ships `app-builder`-based metadata generation; emit
-          # the channel yml from the zip. Channel is derived from the version's
-          # prerelease tag: stable -> latest-mac.yml, nightly -> nightly-mac.yml.
-          npx --yes electron-builder --pd "$(ls -d out/*-darwin-* | head -n1)" \
-            --config.publish=null --mac zip 2>/dev/null || true
-          ymls="$(ls dist/latest-mac.yml dist/nightly-mac.yml 2>/dev/null || true)"
-          if [ -z "$ymls" ]; then echo "no macOS update feed yml generated" >&2; exit 1; fi
-          for f in $ymls; do gh release upload "$tag" "$f" --clobber; done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- name: Generate + upload macOS update feed (electron-updater)
+  if: startsWith(matrix.os, 'macos')
+  shell: bash
+  run: |
+    tag="v$(node -p "require('./package.json').version")"
+    # electron-builder ships `app-builder`-based metadata generation; emit
+    # the channel yml from the zip. Channel is derived from the version's
+    # prerelease tag: stable -> latest-mac.yml, nightly -> nightly-mac.yml.
+    npx --yes electron-builder --pd "$(ls -d out/*-darwin-* | head -n1)" \
+      --config.publish=null --mac zip 2>/dev/null || true
+    ymls="$(ls dist/latest-mac.yml dist/nightly-mac.yml 2>/dev/null || true)"
+    if [ -z "$ymls" ]; then echo "no macOS update feed yml generated" >&2; exit 1; fi
+    for f in $ymls; do gh release upload "$tag" "$f" --clobber; done
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 > Note: the exact electron-builder invocation to emit only the mac yml from a forge-built bundle must be confirmed on the first real CI run (it cannot run on a contributor laptop without the signed bundle). The step fails loudly if no yml is produced so the run surfaces it rather than silently shipping a feed-less macOS release.
@@ -351,10 +357,12 @@ EOF
 ## Task 4: Update settings module
 
 **Files:**
+
 - Create: `frontend/src/main/update-settings.ts`
 - Test: `frontend/src/main/update-settings.test.ts`
 
 **Interfaces:**
+
 - Produces:
   - `type UpdateChannel = "latest" | "nightly"`
   - `interface UpdateSettings { enabled: boolean; channel: UpdateChannel; nightlyAck: boolean }`
@@ -374,38 +382,42 @@ import path from "node:path";
 import { readUpdateSettings, writeUpdateSettings, UPDATE_SETTINGS_FILE_NAME } from "./update-settings";
 
 describe("update-settings", () => {
-  let dir: string;
-  beforeEach(async () => {
-    dir = await mkdtemp(path.join(os.tmpdir(), "ao-update-settings-"));
-  });
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
+	let dir: string;
+	beforeEach(async () => {
+		dir = await mkdtemp(path.join(os.tmpdir(), "ao-update-settings-"));
+	});
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
+	});
 
-  it("returns safe defaults when no file exists", async () => {
-    expect(await readUpdateSettings(dir)).toEqual({ enabled: false, channel: "latest", nightlyAck: false });
-  });
+	it("returns safe defaults when no file exists", async () => {
+		expect(await readUpdateSettings(dir)).toEqual({ enabled: false, channel: "latest", nightlyAck: false });
+	});
 
-  it("round-trips written settings", async () => {
-    await writeUpdateSettings(dir, { enabled: true, channel: "nightly", nightlyAck: true });
-    expect(await readUpdateSettings(dir)).toEqual({ enabled: true, channel: "nightly", nightlyAck: true });
-  });
+	it("round-trips written settings", async () => {
+		await writeUpdateSettings(dir, { enabled: true, channel: "nightly", nightlyAck: true });
+		expect(await readUpdateSettings(dir)).toEqual({ enabled: true, channel: "nightly", nightlyAck: true });
+	});
 
-  it("falls back to defaults on garbage", async () => {
-    await writeFile(path.join(dir, UPDATE_SETTINGS_FILE_NAME), "{not json", "utf8");
-    expect(await readUpdateSettings(dir)).toEqual({ enabled: false, channel: "latest", nightlyAck: false });
-  });
+	it("falls back to defaults on garbage", async () => {
+		await writeFile(path.join(dir, UPDATE_SETTINGS_FILE_NAME), "{not json", "utf8");
+		expect(await readUpdateSettings(dir)).toEqual({ enabled: false, channel: "latest", nightlyAck: false });
+	});
 
-  it("coerces an unknown channel back to latest", async () => {
-    await writeFile(path.join(dir, UPDATE_SETTINGS_FILE_NAME), JSON.stringify({ enabled: true, channel: "weird", nightlyAck: false }), "utf8");
-    expect((await readUpdateSettings(dir)).channel).toBe("latest");
-  });
+	it("coerces an unknown channel back to latest", async () => {
+		await writeFile(
+			path.join(dir, UPDATE_SETTINGS_FILE_NAME),
+			JSON.stringify({ enabled: true, channel: "weird", nightlyAck: false }),
+			"utf8",
+		);
+		expect((await readUpdateSettings(dir)).channel).toBe("latest");
+	});
 
-  it("atomic write leaves no temp file behind", async () => {
-    await writeUpdateSettings(dir, { enabled: true, channel: "latest", nightlyAck: false });
-    const entries = await readdir(dir);
-    expect(entries).toEqual([UPDATE_SETTINGS_FILE_NAME]);
-  });
+	it("atomic write leaves no temp file behind", async () => {
+		await writeUpdateSettings(dir, { enabled: true, channel: "latest", nightlyAck: false });
+		const entries = await readdir(dir);
+		expect(entries).toEqual([UPDATE_SETTINGS_FILE_NAME]);
+	});
 });
 ```
 
@@ -424,9 +436,9 @@ import path from "node:path";
 export type UpdateChannel = "latest" | "nightly";
 
 export interface UpdateSettings {
-  enabled: boolean;
-  channel: UpdateChannel;
-  nightlyAck: boolean;
+	enabled: boolean;
+	channel: UpdateChannel;
+	nightlyAck: boolean;
 }
 
 /** File holding the user's auto-update preferences under the ~/.ao state dir. */
@@ -435,37 +447,37 @@ export const UPDATE_SETTINGS_FILE_NAME = "update-settings.json";
 const DEFAULTS: UpdateSettings = { enabled: false, channel: "latest", nightlyAck: false };
 
 function coerce(raw: unknown): UpdateSettings {
-  const o = (raw ?? {}) as Record<string, unknown>;
-  return {
-    enabled: o.enabled === true,
-    channel: o.channel === "nightly" ? "nightly" : "latest",
-    nightlyAck: o.nightlyAck === true,
-  };
+	const o = (raw ?? {}) as Record<string, unknown>;
+	return {
+		enabled: o.enabled === true,
+		channel: o.channel === "nightly" ? "nightly" : "latest",
+		nightlyAck: o.nightlyAck === true,
+	};
 }
 
 /** Read update settings, tolerating a missing or corrupt file (returns defaults). */
 export async function readUpdateSettings(stateDir: string): Promise<UpdateSettings> {
-  let raw: string;
-  try {
-    raw = await readFile(path.join(stateDir, UPDATE_SETTINGS_FILE_NAME), "utf8");
-  } catch {
-    return { ...DEFAULTS };
-  }
-  try {
-    return coerce(JSON.parse(raw));
-  } catch {
-    return { ...DEFAULTS };
-  }
+	let raw: string;
+	try {
+		raw = await readFile(path.join(stateDir, UPDATE_SETTINGS_FILE_NAME), "utf8");
+	} catch {
+		return { ...DEFAULTS };
+	}
+	try {
+		return coerce(JSON.parse(raw));
+	} catch {
+		return { ...DEFAULTS };
+	}
 }
 
 /** Atomically write update settings (temp file + rename), mirroring app-state.ts. */
 export async function writeUpdateSettings(stateDir: string, settings: UpdateSettings): Promise<void> {
-  await mkdir(stateDir, { recursive: true, mode: 0o750 });
-  const file = path.join(stateDir, UPDATE_SETTINGS_FILE_NAME);
-  const data = `${JSON.stringify(coerce(settings), null, 2)}\n`;
-  const tmp = path.join(stateDir, `.update-settings-${process.pid}-${Date.now()}.json`);
-  await writeFile(tmp, data, { mode: 0o600 });
-  await rename(tmp, file);
+	await mkdir(stateDir, { recursive: true, mode: 0o750 });
+	const file = path.join(stateDir, UPDATE_SETTINGS_FILE_NAME);
+	const data = `${JSON.stringify(coerce(settings), null, 2)}\n`;
+	const tmp = path.join(stateDir, `.update-settings-${process.pid}-${Date.now()}.json`);
+	await writeFile(tmp, data, { mode: 0o600 });
+	await rename(tmp, file);
 }
 ```
 
@@ -491,20 +503,24 @@ EOF
 ## Task 5: electron-updater shell + main.ts wiring
 
 **Files:**
+
 - Modify: `frontend/package.json` (remove `update-electron-app`, add `electron-updater`)
 - Create: `frontend/src/main/auto-updater.ts`
 - Modify: `frontend/src/main.ts` (`initAutoUpdates` + the import)
 
 **Interfaces:**
+
 - Consumes: `readUpdateSettings` (Task 4); `releaseRepo` resolution (mirror the owner/repo default `AgentWrapper/agent-orchestrator`).
 - Produces: `startAutoUpdates(stateDir: string): Promise<void>` that configures and starts electron-updater from settings. No-op-safe to call once on app ready.
 
 - [ ] **Step 1: Swap the dependency**
 
 Run:
+
 ```bash
 cd frontend && npm uninstall update-electron-app && npm install electron-updater@^6
 ```
+
 Expected: `package.json` no longer lists `update-electron-app`; lists `electron-updater`.
 
 - [ ] **Step 2: Write the shell**
@@ -519,36 +535,36 @@ import { readUpdateSettings } from "./update-settings";
 const DEFAULT_RELEASE_REPO = "AgentWrapper/agent-orchestrator";
 
 function repo(): { owner: string; name: string } {
-  const [owner, name] = (process.env.AO_RELEASE_REPO || DEFAULT_RELEASE_REPO).split("/");
-  if (owner && name) return { owner, name };
-  const [defOwner, defName] = DEFAULT_RELEASE_REPO.split("/");
-  return { owner: defOwner, name: defName };
+	const [owner, name] = (process.env.AO_RELEASE_REPO || DEFAULT_RELEASE_REPO).split("/");
+	if (owner && name) return { owner, name };
+	const [defOwner, defName] = DEFAULT_RELEASE_REPO.split("/");
+	return { owner: defOwner, name: defName };
 }
 
 // startAutoUpdates configures electron-updater from the user's ~/.ao settings.
 // It is a thin shell: all policy (channel, opt-in) comes from update-settings.
 // Caller guards on app.isPackaged.
 export async function startAutoUpdates(stateDir: string): Promise<void> {
-  const settings = await readUpdateSettings(stateDir);
-  if (!settings.enabled) return;
+	const settings = await readUpdateSettings(stateDir);
+	if (!settings.enabled) return;
 
-  const { owner, name } = repo();
-  autoUpdater.setFeedURL({ provider: "github", owner, repo: name });
-  autoUpdater.channel = settings.channel; // "latest" | "nightly"
-  autoUpdater.allowDowngrade = true; // permits a nightly -> stable channel switch
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+	const { owner, name } = repo();
+	autoUpdater.setFeedURL({ provider: "github", owner, repo: name });
+	autoUpdater.channel = settings.channel; // "latest" | "nightly"
+	autoUpdater.allowDowngrade = true; // permits a nightly -> stable channel switch
+	autoUpdater.autoDownload = true;
+	autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on("error", (err) => {
-    // Never crash on update failure (offline, unsigned macOS, etc.).
-    console.error("auto-update error:", err?.message ?? err);
-  });
+	autoUpdater.on("error", (err) => {
+		// Never crash on update failure (offline, unsigned macOS, etc.).
+		console.error("auto-update error:", err?.message ?? err);
+	});
 
-  try {
-    await autoUpdater.checkForUpdates();
-  } catch (err) {
-    console.error("auto-update check failed:", err);
-  }
+	try {
+		await autoUpdater.checkForUpdates();
+	} catch (err) {
+		console.error("auto-update check failed:", err);
+	}
 }
 ```
 
@@ -557,14 +573,19 @@ export async function startAutoUpdates(stateDir: string): Promise<void> {
 In `frontend/src/main.ts`, replace the `update-electron-app` import and `initAutoUpdates` body:
 
 Remove:
+
 ```typescript
 import { updateElectronApp } from "update-electron-app";
 ```
+
 Add (with the other `./main/*` imports):
+
 ```typescript
 import { startAutoUpdates } from "./main/auto-updater";
 ```
+
 Replace `initAutoUpdates`:
+
 ```typescript
 function initAutoUpdates(): void {
 	if (!app.isPackaged) return;
@@ -601,10 +622,12 @@ EOF
 ## Task 6: Opt-in + channel + nightly-disclaimer prompts (minimal)
 
 **Files:**
+
 - Modify: `frontend/src/main.ts` (first-run prompt via `dialog`)
 - Modify: `frontend/src/main/auto-updater.ts` (export a helper to persist a channel choice)
 
 **Interfaces:**
+
 - Consumes: `writeUpdateSettings`, `readUpdateSettings` (Task 4).
 - Produces: `ensureUpdatePrefs(stateDir: string): Promise<void>` that, on first run (no settings file written yet), prompts the user once for opt-in + channel and, if nightly, shows the instability/data-loss disclaimer; persists the result.
 
@@ -627,48 +650,48 @@ import path from "node:path";
 // ensureUpdatePrefs prompts once (first run, before any settings file exists)
 // for auto-update opt-in + channel, with a nightly instability disclaimer.
 export async function ensureUpdatePrefs(stateDir: string): Promise<void> {
-  if (existsSync(path.join(stateDir, UPDATE_SETTINGS_FILE_NAME))) return;
+	if (existsSync(path.join(stateDir, UPDATE_SETTINGS_FILE_NAME))) return;
 
-  const optIn = await dialog.showMessageBox({
-    type: "question",
-    buttons: ["Enable auto-updates", "Not now"],
-    defaultId: 0,
-    cancelId: 1,
-    message: "Keep Agent Orchestrator up to date automatically?",
-    detail: "You can change this later in Settings.",
-  });
-  if (optIn.response !== 0) {
-    await writeUpdateSettings(stateDir, { enabled: false, channel: "latest", nightlyAck: false });
-    return;
-  }
+	const optIn = await dialog.showMessageBox({
+		type: "question",
+		buttons: ["Enable auto-updates", "Not now"],
+		defaultId: 0,
+		cancelId: 1,
+		message: "Keep Agent Orchestrator up to date automatically?",
+		detail: "You can change this later in Settings.",
+	});
+	if (optIn.response !== 0) {
+		await writeUpdateSettings(stateDir, { enabled: false, channel: "latest", nightlyAck: false });
+		return;
+	}
 
-  const chan = await dialog.showMessageBox({
-    type: "question",
-    buttons: ["Stable", "Nightly"],
-    defaultId: 0,
-    cancelId: 0,
-    message: "Which update channel?",
-    detail: "Stable is released and tested. Nightly is the newest daily build.",
-  });
-  if (chan.response !== 1) {
-    await writeUpdateSettings(stateDir, { enabled: true, channel: "latest", nightlyAck: false });
-    return;
-  }
+	const chan = await dialog.showMessageBox({
+		type: "question",
+		buttons: ["Stable", "Nightly"],
+		defaultId: 0,
+		cancelId: 0,
+		message: "Which update channel?",
+		detail: "Stable is released and tested. Nightly is the newest daily build.",
+	});
+	if (chan.response !== 1) {
+		await writeUpdateSettings(stateDir, { enabled: true, channel: "latest", nightlyAck: false });
+		return;
+	}
 
-  const ack = await dialog.showMessageBox({
-    type: "warning",
-    buttons: ["I understand, use Nightly", "Use Stable instead"],
-    defaultId: 1,
-    cancelId: 1,
-    message: "Nightly builds can be unstable",
-    detail: "Nightly is built every day and may be broken or lose data. Only use it if you are comfortable with that.",
-  });
-  await writeUpdateSettings(
-    stateDir,
-    ack.response === 0
-      ? { enabled: true, channel: "nightly", nightlyAck: true }
-      : { enabled: true, channel: "latest", nightlyAck: false },
-  );
+	const ack = await dialog.showMessageBox({
+		type: "warning",
+		buttons: ["I understand, use Nightly", "Use Stable instead"],
+		defaultId: 1,
+		cancelId: 1,
+		message: "Nightly builds can be unstable",
+		detail: "Nightly is built every day and may be broken or lose data. Only use it if you are comfortable with that.",
+	});
+	await writeUpdateSettings(
+		stateDir,
+		ack.response === 0
+			? { enabled: true, channel: "nightly", nightlyAck: true }
+			: { enabled: true, channel: "latest", nightlyAck: false },
+	);
 }
 ```
 

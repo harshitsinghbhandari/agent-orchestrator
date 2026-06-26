@@ -197,18 +197,18 @@ not unit-tested (Electron runtime).
 - `auto-updater` shell (`main.ts`): wires `electron-updater` to the two modules;
   no logic of its own beyond Electron event glue.
 - nightly CI workflow: version computation (reuses the same logic, shell form)
-  + build + publish.
+  - build + publish.
 - macOS feed step in the release workflow: emit + upload `*-mac.yml`.
 
 ## Open prerequisites summary
 
-| Item | Status | Blocks |
-|---|---|---|
+| Item                                      | Status                  | Blocks                                               |
+| ----------------------------------------- | ----------------------- | ---------------------------------------------------- |
 | Feed `*.yml` publishing (all 3 platforms) | NOT done (verified gap) | ALL auto-update (no feed = updater inert everywhere) |
-| CI signing + notarization | Track B, not done | macOS auto-update (functional) |
-| Stable version stamping | Track B, not done | stable channel correctness |
-| Polished channel UI (#2207) | deferred | nicety only; minimal selector now |
-| Global Settings page (#2218) | done | (unblocks #2207) |
+| CI signing + notarization                 | Track B, not done       | macOS auto-update (functional)                       |
+| Stable version stamping                   | Track B, not done       | stable channel correctness                           |
+| Polished channel UI (#2207)               | deferred                | nicety only; minimal selector now                    |
+| Global Settings page (#2218)              | done                    | (unblocks #2207)                                     |
 
 The feed-publishing item is the load-bearing prerequisite the original spec
 missed. The runtime implemented here does nothing useful until it lands.
