@@ -1,18 +1,32 @@
 name: Desktop release
 
 # Builds and publishes the Electron desktop app via electron-forge.
-# Generates a GitHub Release (draft) with installers + update manifests.
-# Triggered by a `desktop-v*` tag or manually.
+# Generates a GitHub Release with installers + update manifests, then uploads
+# stable, version-free asset aliases so `ao start`'s constant
+# releases/latest/download/<name> URL resolves (spec §8, §11.4).
 #
 # Each target OS builds on its own runner so the bundled `ao` daemon is compiled
 # natively for that platform. build-daemon.mjs keys the binary off the build
 # host's platform, so cross-OS packaging (e.g. building the Windows installer on
 # macOS) would ship a non-Windows binary named `ao` and the app could not launch
-# the daemon (issues #235/#256). The per-OS matrix keeps host == target.
+# the daemon (issues #235/#256). The per-OS matrix keeps host == target, and the
+# Linux daemon is built on the Linux runner (AgentWrapper/agent-orchestrator#2191).
 #
 # ⚠️ Until macOS code signing + notarization secrets are configured (see
 # frontend/docs/desktop-release.md), published builds are UNSIGNED and will
 # NOT auto-update on macOS. The workflow still produces installable artifacts.
+#
+# ── Cutting a FORK test release (dev loop) ────────────────────────────────────
+# Test releases go to harshitsinghbhandari/agent-orchestrator (the fork), never
+# to AgentWrapper. To cut one, on the FORK:
+#   - push a `desktop-v*` tag (e.g. `git push fork desktop-v0.0.0-test1`), or
+#   - run this workflow via `workflow_dispatch` from the fork's Actions tab.
+# AO_RELEASE_REPO MUST be set to the fork for a test run. It is derived
+# automatically below from `github.repository`, so a fork run publishes to the
+# fork and a run on AgentWrapper publishes to AgentWrapper, with no edit. The
+# matching test `ao` binary is built with
+# `-ldflags -X ...cli.releaseRepo=harshitsinghbhandari/agent-orchestrator` so it
+# fetches from the same fork (spec §6.3).
 
 on:
   push:
@@ -25,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -50,6 +64,10 @@ jobs:
         run: npm run publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Release target: the repo this run lives on. On the fork this is
+          # harshitsinghbhandari/agent-orchestrator; on AgentWrapper it is prod.
+          # forge.config.ts parses "owner/repo" into the publisher's repository.
+          AO_RELEASE_REPO: ${{ github.repository }}
           # macOS signing + notarization — add as repository secrets and
           # set osxSign/osxNotarize in forge.config.ts to enable.
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -57,3 +75,57 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Upload stable, version-free asset aliases for this runner's platform so
+      # `ao start`'s constant releases/latest/download/<name> URL resolves. The
+      # forge makers emit versioned, productName-derived filenames; we copy them
+      # to the space-free names `ao start` fetches and upload to the v<version>
+      # release the publish step just created, with --clobber (so re-runs replace).
+      #
+      # Arch-coverage note: each runner only builds its host arch, so macos-latest
+      # (Apple silicon) produces darwin-arm64 only. The darwin-x64 alias needs an
+      # Intel macOS runner (e.g. macos-13) and is NOT produced here (gap, spec §8).
+      # The Linux stable name is undecided (spec §11.3), so we build the deb/rpm
+      # but intentionally upload no Linux alias yet.
+      - name: Upload stable asset aliases (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          # electron-forge publisher-github creates the release as v<package.json
+          # version> (PublisherGithub.js: `${tagPrefix ?? 'v'}${version}`), NOT the
+          # triggering git tag. Target that release, not GITHUB_REF_NAME, or the
+          # upload hits a non-existent release.
+          tag="v$(node -p "require('./package.json').version")"
+          arch="$(uname -m)"
+          case "$arch" in
+            arm64) alias_name="agent-orchestrator-darwin-arm64.zip" ;;
+            x86_64) alias_name="agent-orchestrator-darwin-x64.zip" ;;
+            *) echo "unsupported macOS arch: $arch" >&2; exit 1 ;;
+          esac
+          # maker-zip output: out/make/zip/darwin/<arch>/<dir-basename>-<version>.zip
+          src="$(ls out/make/zip/darwin/*/*.zip | head -n1)"
+          if [ -z "$src" ]; then echo "no macOS zip found under out/make/zip/darwin" >&2; exit 1; fi
+          cp "$src" "$alias_name"
+          gh release upload "$tag" "$alias_name" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload stable asset aliases (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          # Forge publishes to v<version> (see the macOS step), not the git tag.
+          tag="v$(node -p "require('./package.json').version")"
+          alias_name="agent-orchestrator-win32-x64.exe"
+          # NSIS (electron-builder) output: out/make/<productName> Setup <version>.exe
+          src="$(ls "out/make/"*Setup*.exe | head -n1)"
+          if [ -z "$src" ]; then echo "no NSIS installer found under out/make" >&2; exit 1; fi
+          cp "$src" "$alias_name"
+          gh release upload "$tag" "$alias_name" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Linux: deb/rpm build on this runner (issue #2191), but the stable asset
+      # name for the fetch-and-run bootstrapper is still undecided (deb/rpm vs
+      # AppImage, spec §11.3). No alias is uploaded until that decision lands; the
+      # versioned deb/rpm are still published by the forge publisher above.
