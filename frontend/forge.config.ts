@@ -119,13 +119,7 @@ const config: ForgeConfig = {
 			// intentionally NOT the default; releases land on AgentWrapper.
 			config: {
 				repository: parseReleaseRepo(process.env.AO_RELEASE_REPO),
-				prerelease: false,
-				// draft:false so the release is immediately live, which is what the
-				// `ao start` bootstrapper's constant
-				// releases/latest/download/<asset> URL needs to 302-resolve. A draft
-				// release 404s on that URL (spec §2.7, §8, §11.4). Prod may later
-				// switch to a draft + manual-finalize flow; for now the bootstrapper
-				// needs a published release.
+				prerelease: process.env.AO_RELEASE_PRERELEASE === "true",
 				draft: false,
 			},
 		},
