@@ -11,7 +11,7 @@ import {
 	WebContentsView,
 	type OpenDialogOptions,
 } from "electron";
-import { updateElectronApp } from "update-electron-app";
+import { startAutoUpdates } from "./main/auto-updater";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
@@ -817,7 +817,9 @@ ipcMain.handle("notifications:show", (_event, notification: { id: string; title:
 // frontend/docs/desktop-release.md.
 function initAutoUpdates(): void {
 	if (!app.isPackaged) return;
-	updateElectronApp();
+	const runFile = runFilePath();
+	if (!runFile) return;
+	void startAutoUpdates(path.dirname(runFile));
 }
 
 // Resolve the bundle path `ao start` will later `open` and stat as a usable app.
