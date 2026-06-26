@@ -91,6 +91,7 @@ function useSelection() {
 		activeSessionId: params.sessionId,
 		goHome: () => void navigate({ to: "/" }),
 		goPrs: () => void navigate({ to: "/prs" }),
+		goGlobalSettings: () => void navigate({ to: "/settings" }),
 		goSettings: (projectId: string) => void navigate({ to: "/projects/$projectId/settings", params: { projectId } }),
 		goProject: (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
 		goSession: (projectId: string, sessionId: string) =>
@@ -284,14 +285,17 @@ export function Sidebar({
 								Search
 								<DropdownMenuShortcut>⌘K</DropdownMenuShortcut>
 							</DropdownMenuItem>
-							{selection.activeProjectId && (
-								<>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem onSelect={() => selection.goSettings(selection.activeProjectId!)}>
-										<Settings aria-hidden="true" />
-										Project settings
-									</DropdownMenuItem>
-								</>
+							<DropdownMenuSeparator />
+							{selection.activeProjectId ? (
+								<DropdownMenuItem onSelect={() => selection.goSettings(selection.activeProjectId!)}>
+									<Settings aria-hidden="true" />
+									Project settings
+								</DropdownMenuItem>
+							) : (
+								<DropdownMenuItem onSelect={selection.goGlobalSettings}>
+									<Settings aria-hidden="true" />
+									Global settings
+								</DropdownMenuItem>
 							)}
 						</DropdownMenuContent>
 					</DropdownMenu>
@@ -342,14 +346,17 @@ export function Sidebar({
 								Search
 								<DropdownMenuShortcut>⌘K</DropdownMenuShortcut>
 							</DropdownMenuItem>
-							{selection.activeProjectId && (
-								<>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem onSelect={() => selection.goSettings(selection.activeProjectId!)}>
-										<Settings aria-hidden="true" />
-										Project settings
-									</DropdownMenuItem>
-								</>
+							<DropdownMenuSeparator />
+							{selection.activeProjectId ? (
+								<DropdownMenuItem onSelect={() => selection.goSettings(selection.activeProjectId!)}>
+									<Settings aria-hidden="true" />
+									Project settings
+								</DropdownMenuItem>
+							) : (
+								<DropdownMenuItem onSelect={selection.goGlobalSettings}>
+									<Settings aria-hidden="true" />
+									Global settings
+								</DropdownMenuItem>
 							)}
 						</DropdownMenuContent>
 					</DropdownMenu>
