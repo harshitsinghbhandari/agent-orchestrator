@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           # Skip if HEAD is already covered by the most recent nightly tag.
-          last_nightly="$(git tag --list 'desktop-v*-nightly.*' --sort=-creatordate | head -n1)"
+          last_nightly="$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n1)"
           if [ -n "$last_nightly" ] && [ "$(git rev-list -n1 "$last_nightly")" = "$(git rev-parse HEAD)" ]; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
