@@ -39,7 +39,7 @@ Versions installed: `app-builder-lib@26.15.3`, `builder-util-runtime@9.7.0`,
 package** in this tree.
 
 1. **Blockmap generation is pure JS**, not a CLI. `buildBlockMap(inFile,
-   compressionFormat, outFile)` in
+compressionFormat, outFile)` in
    `app-builder-lib/out/targets/blockmap/blockmap.js`. Sidecar mode
    (`compressionFormat: "gzip"`, `outFile` set) writes a gzipped `.blockmap`
    file and returns `{ size, sha512 }` (raw file size, base64 SHA-512 of the
@@ -89,7 +89,7 @@ Mirrors the existing `nightly-version.mjs` (+ `.test.mjs`) pattern.
 
 - Input: `{ channel: "latest" | "nightly", version, platform, files: [paths] }`.
 - For each file: compute base64 SHA-512 + byte size; call `buildBlockMap(file,
-  "gzip", file + ".blockmap")` (via a one-file wrapper around the internal
+"gzip", file + ".blockmap")` (via a one-file wrapper around the internal
   import, see Risks) to write the sidecar.
 - Assemble the platform yml:
   - win: `latest.yml` -> `files: [{ url: <exe>, sha512, size }]`.
@@ -155,7 +155,7 @@ secret passthrough in both workflows. Gaps to fill:
 3. **Rewire `osxNotarize` to the API-key (`apiKey`) variant** and delete the
    `as unknown as ...` double cast (the one known typecheck error). New branch:
    `{ appleApiKey: <path to .p8>, appleApiKeyId: <APPLE_API_KEY_ID>, appleApiIssuer:
-   <APPLE_API_ISSUER> }`. Since `appleApiKey` is a file PATH, a CI step decodes
+<APPLE_API_ISSUER> }`. Since `appleApiKey` is a file PATH, a CI step decodes
    the base64 `.p8` secret to a temp file and exports `APPLE_API_KEY` to it before
    `npm run publish`. Keep the local `AO_NOTARY_PROFILE` (`keychainProfile`)
    branch for the manual runbook; just fix its typing.

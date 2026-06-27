@@ -31,10 +31,12 @@
 Isolate the single fragile dependency: app-builder-lib's internal pure-JS blockmap generator. Everything that could break on an app-builder-lib upgrade lives in this one file, and it is smoke-tested first so the risk surfaces immediately.
 
 **Files:**
+
 - Create: `frontend/scripts/blockmap.mjs`
 - Test: `frontend/scripts/blockmap.test.mjs`
 
 **Interfaces:**
+
 - Produces: `writeBlockmap(filePath: string): Promise<{ sha512: string, size: number }>` — writes `<filePath>.blockmap` (gzip sidecar) and returns the file's base64 SHA-512 and raw byte size.
 
 - [ ] **Step 1: Write the failing test**
@@ -49,27 +51,27 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 
 describe("writeBlockmap", () => {
-  it("writes a gzip sidecar and returns the file's base64 sha512 + size", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "bm-"));
-    const file = join(dir, "artifact.bin");
-    // ~200KB of varied bytes so the chunker produces multiple chunks.
-    const buf = Buffer.alloc(200_000);
-    for (let i = 0; i < buf.length; i++) buf[i] = (i * 37) % 256;
-    writeFileSync(file, buf);
+	it("writes a gzip sidecar and returns the file's base64 sha512 + size", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "bm-"));
+		const file = join(dir, "artifact.bin");
+		// ~200KB of varied bytes so the chunker produces multiple chunks.
+		const buf = Buffer.alloc(200_000);
+		for (let i = 0; i < buf.length; i++) buf[i] = (i * 37) % 256;
+		writeFileSync(file, buf);
 
-    const { sha512, size } = await writeBlockmap(file);
+		const { sha512, size } = await writeBlockmap(file);
 
-    expect(size).toBe(buf.length);
-    // Must match electron-updater's expectation: base64 SHA-512 of the raw file.
-    expect(sha512).toBe(createHash("sha512").update(buf).digest("base64"));
-    // Sidecar exists, is non-empty, and is gzip (magic bytes 1f 8b).
-    expect(existsSync(`${file}.blockmap`)).toBe(true);
-    const sidecar = readFileSync(`${file}.blockmap`);
-    expect(sidecar.length).toBeGreaterThan(0);
-    expect(sidecar[0]).toBe(0x1f);
-    expect(sidecar[1]).toBe(0x8b);
-    expect(statSync(`${file}.blockmap`).size).toBe(sidecar.length);
-  });
+		expect(size).toBe(buf.length);
+		// Must match electron-updater's expectation: base64 SHA-512 of the raw file.
+		expect(sha512).toBe(createHash("sha512").update(buf).digest("base64"));
+		// Sidecar exists, is non-empty, and is gzip (magic bytes 1f 8b).
+		expect(existsSync(`${file}.blockmap`)).toBe(true);
+		const sidecar = readFileSync(`${file}.blockmap`);
+		expect(sidecar.length).toBeGreaterThan(0);
+		expect(sidecar[0]).toBe(0x1f);
+		expect(sidecar[1]).toBe(0x8b);
+		expect(statSync(`${file}.blockmap`).size).toBe(sidecar.length);
+	});
 });
 ```
 
@@ -98,8 +100,8 @@ const { buildBlockMap } = require("app-builder-lib/out/targets/blockmap/blockmap
 // the yml forces the client onto the sidecar differential path on every
 // platform (verified against MacUpdater / NsisUpdater / AppImage).
 export async function writeBlockmap(filePath) {
-  const { sha512, size } = await buildBlockMap(filePath, "gzip", `${filePath}.blockmap`);
-  return { sha512, size };
+	const { sha512, size } = await buildBlockMap(filePath, "gzip", `${filePath}.blockmap`);
+	return { sha512, size };
 }
 ```
 
@@ -122,10 +124,12 @@ git -c user.email=dev@theharshitsingh.com commit -m "feat(feed): blockmap sideca
 The pure, tested heart of the feature. Given a directory of downloaded release assets, a version, and a channel, it picks the right installers, writes sidecar blockmaps, and emits the channel yml files.
 
 **Files:**
+
 - Create: `frontend/scripts/feed.mjs`
 - Test: `frontend/scripts/feed.test.mjs`
 
 **Interfaces:**
+
 - Consumes: `writeBlockmap` from Task 1.
 - Produces:
   - `selectInstallers(filenames: string[], version: string): { win: string[], linux: string[], macArm64: string[], macX64: string[] }`
@@ -142,71 +146,71 @@ import { selectInstallers, feedFilename, buildYml } from "./feed.mjs";
 
 const V = "0.10.4";
 const NAMES = [
-  "Agent.Orchestrator.Setup.0.10.4.exe",          // win versioned
-  "Agent.Orchestrator-0.10.4.AppImage",           // linux versioned
-  "Agent.Orchestrator-darwin-arm64-0.10.4.zip",   // mac arm64 versioned
-  "Agent.Orchestrator-darwin-x64-0.10.4.zip",     // mac x64 versioned
-  "agent-orchestrator-darwin-arm64.zip",          // ao-start alias (no version) -> excluded
-  "agent-orchestrator-win32-x64.exe",             // alias (no version) -> excluded
-  "agent-orchestrator_0.10.4_amd64.deb",          // deb -> excluded by extension
-  "agent-orchestrator-0.10.4.x86_64.rpm",         // rpm -> excluded by extension
+	"Agent.Orchestrator.Setup.0.10.4.exe", // win versioned
+	"Agent.Orchestrator-0.10.4.AppImage", // linux versioned
+	"Agent.Orchestrator-darwin-arm64-0.10.4.zip", // mac arm64 versioned
+	"Agent.Orchestrator-darwin-x64-0.10.4.zip", // mac x64 versioned
+	"agent-orchestrator-darwin-arm64.zip", // ao-start alias (no version) -> excluded
+	"agent-orchestrator-win32-x64.exe", // alias (no version) -> excluded
+	"agent-orchestrator_0.10.4_amd64.deb", // deb -> excluded by extension
+	"agent-orchestrator-0.10.4.x86_64.rpm", // rpm -> excluded by extension
 ];
 
 describe("selectInstallers", () => {
-  it("keeps only versioned exe/AppImage/darwin-zip, split by arch", () => {
-    const s = selectInstallers(NAMES, V);
-    expect(s.win).toEqual(["Agent.Orchestrator.Setup.0.10.4.exe"]);
-    expect(s.linux).toEqual(["Agent.Orchestrator-0.10.4.AppImage"]);
-    expect(s.macArm64).toEqual(["Agent.Orchestrator-darwin-arm64-0.10.4.zip"]);
-    expect(s.macX64).toEqual(["Agent.Orchestrator-darwin-x64-0.10.4.zip"]);
-  });
+	it("keeps only versioned exe/AppImage/darwin-zip, split by arch", () => {
+		const s = selectInstallers(NAMES, V);
+		expect(s.win).toEqual(["Agent.Orchestrator.Setup.0.10.4.exe"]);
+		expect(s.linux).toEqual(["Agent.Orchestrator-0.10.4.AppImage"]);
+		expect(s.macArm64).toEqual(["Agent.Orchestrator-darwin-arm64-0.10.4.zip"]);
+		expect(s.macX64).toEqual(["Agent.Orchestrator-darwin-x64-0.10.4.zip"]);
+	});
 });
 
 describe("feedFilename", () => {
-  it("maps channel + platform to electron-updater names", () => {
-    expect(feedFilename("latest", "win")).toBe("latest.yml");
-    expect(feedFilename("latest", "mac")).toBe("latest-mac.yml");
-    expect(feedFilename("latest", "linux")).toBe("latest-linux.yml");
-    expect(feedFilename("nightly", "win")).toBe("nightly.yml");
-    expect(feedFilename("nightly", "mac")).toBe("nightly-mac.yml");
-    expect(feedFilename("nightly", "linux")).toBe("nightly-linux.yml");
-  });
+	it("maps channel + platform to electron-updater names", () => {
+		expect(feedFilename("latest", "win")).toBe("latest.yml");
+		expect(feedFilename("latest", "mac")).toBe("latest-mac.yml");
+		expect(feedFilename("latest", "linux")).toBe("latest-linux.yml");
+		expect(feedFilename("nightly", "win")).toBe("nightly.yml");
+		expect(feedFilename("nightly", "mac")).toBe("nightly-mac.yml");
+		expect(feedFilename("nightly", "linux")).toBe("nightly-linux.yml");
+	});
 });
 
 describe("buildYml", () => {
-  it("serializes one file with deprecated top-level fields and no blockMapSize", () => {
-    const yml = buildYml(
-      "0.10.4",
-      [{ url: "Agent.Orchestrator.Setup.0.10.4.exe", sha512: "AA/BB+cc==", size: 123 }],
-      "2026-06-27T12:00:00.000Z",
-    );
-    expect(yml).toBe(
-      "version: 0.10.4\n" +
-        "files:\n" +
-        "  - url: Agent.Orchestrator.Setup.0.10.4.exe\n" +
-        "    sha512: AA/BB+cc==\n" +
-        "    size: 123\n" +
-        "path: Agent.Orchestrator.Setup.0.10.4.exe\n" +
-        "sha512: AA/BB+cc==\n" +
-        "releaseDate: '2026-06-27T12:00:00.000Z'\n",
-    );
-    expect(yml).not.toContain("blockMapSize");
-  });
+	it("serializes one file with deprecated top-level fields and no blockMapSize", () => {
+		const yml = buildYml(
+			"0.10.4",
+			[{ url: "Agent.Orchestrator.Setup.0.10.4.exe", sha512: "AA/BB+cc==", size: 123 }],
+			"2026-06-27T12:00:00.000Z",
+		);
+		expect(yml).toBe(
+			"version: 0.10.4\n" +
+				"files:\n" +
+				"  - url: Agent.Orchestrator.Setup.0.10.4.exe\n" +
+				"    sha512: AA/BB+cc==\n" +
+				"    size: 123\n" +
+				"path: Agent.Orchestrator.Setup.0.10.4.exe\n" +
+				"sha512: AA/BB+cc==\n" +
+				"releaseDate: '2026-06-27T12:00:00.000Z'\n",
+		);
+		expect(yml).not.toContain("blockMapSize");
+	});
 
-  it("lists both mac arches with arm64 first and points top-level at arm64", () => {
-    const yml = buildYml(
-      "0.10.4",
-      [
-        { url: "Agent.Orchestrator-darwin-arm64-0.10.4.zip", sha512: "ARM==", size: 10 },
-        { url: "Agent.Orchestrator-darwin-x64-0.10.4.zip", sha512: "X64==", size: 20 },
-      ],
-      "2026-06-27T12:00:00.000Z",
-    );
-    const lines = yml.split("\n");
-    expect(lines[2]).toBe("  - url: Agent.Orchestrator-darwin-arm64-0.10.4.zip");
-    expect(lines[5]).toBe("  - url: Agent.Orchestrator-darwin-x64-0.10.4.zip");
-    expect(yml).toContain("path: Agent.Orchestrator-darwin-arm64-0.10.4.zip");
-  });
+	it("lists both mac arches with arm64 first and points top-level at arm64", () => {
+		const yml = buildYml(
+			"0.10.4",
+			[
+				{ url: "Agent.Orchestrator-darwin-arm64-0.10.4.zip", sha512: "ARM==", size: 10 },
+				{ url: "Agent.Orchestrator-darwin-x64-0.10.4.zip", sha512: "X64==", size: 20 },
+			],
+			"2026-06-27T12:00:00.000Z",
+		);
+		const lines = yml.split("\n");
+		expect(lines[2]).toBe("  - url: Agent.Orchestrator-darwin-arm64-0.10.4.zip");
+		expect(lines[5]).toBe("  - url: Agent.Orchestrator-darwin-x64-0.10.4.zip");
+		expect(yml).toContain("path: Agent.Orchestrator-darwin-arm64-0.10.4.zip");
+	});
 });
 ```
 
@@ -234,72 +238,72 @@ import { writeBlockmap } from "./blockmap.mjs";
 // arch split keys on the literal "arm64" substring, the same discriminator the
 // updater (MacUpdater.filterFilesForArch) uses.
 export function selectInstallers(filenames, version) {
-  const versioned = filenames.filter((f) => f.includes(version));
-  const isDarwinZip = (f) => f.endsWith(".zip") && f.includes("darwin");
-  return {
-    win: versioned.filter((f) => f.endsWith(".exe")),
-    linux: versioned.filter((f) => f.endsWith(".AppImage")),
-    macArm64: versioned.filter((f) => isDarwinZip(f) && f.includes("arm64")),
-    macX64: versioned.filter((f) => isDarwinZip(f) && !f.includes("arm64")),
-  };
+	const versioned = filenames.filter((f) => f.includes(version));
+	const isDarwinZip = (f) => f.endsWith(".zip") && f.includes("darwin");
+	return {
+		win: versioned.filter((f) => f.endsWith(".exe")),
+		linux: versioned.filter((f) => f.endsWith(".AppImage")),
+		macArm64: versioned.filter((f) => isDarwinZip(f) && f.includes("arm64")),
+		macX64: versioned.filter((f) => isDarwinZip(f) && !f.includes("arm64")),
+	};
 }
 
 // feedFilename maps (channel, platform) to electron-updater's expected feed name.
 // The updater adds its own OS/arch suffix client-side; we name the published
 // asset to match: "" (win), "-mac", "-linux" (x64 Linux).
 export function feedFilename(channel, platform) {
-  const suffix = platform === "mac" ? "-mac" : platform === "linux" ? "-linux" : "";
-  return `${channel}${suffix}.yml`;
+	const suffix = platform === "mac" ? "-mac" : platform === "linux" ? "-linux" : "";
+	return `${channel}${suffix}.yml`;
 }
 
 // buildYml serializes one platform's feed. files is [{ url, sha512, size }];
 // for mac the arm64 entry comes first. The deprecated top-level path/sha512
 // point at files[0]. blockMapSize is never written (forces sidecar differential).
 export function buildYml(version, files, releaseDate) {
-  const lines = [`version: ${version}`, "files:"];
-  for (const f of files) {
-    lines.push(`  - url: ${f.url}`);
-    lines.push(`    sha512: ${f.sha512}`);
-    lines.push(`    size: ${f.size}`);
-  }
-  lines.push(`path: ${files[0].url}`);
-  lines.push(`sha512: ${files[0].sha512}`);
-  lines.push(`releaseDate: '${releaseDate}'`);
-  return lines.join("\n") + "\n";
+	const lines = [`version: ${version}`, "files:"];
+	for (const f of files) {
+		lines.push(`  - url: ${f.url}`);
+		lines.push(`    sha512: ${f.sha512}`);
+		lines.push(`    size: ${f.size}`);
+	}
+	lines.push(`path: ${files[0].url}`);
+	lines.push(`sha512: ${files[0].sha512}`);
+	lines.push(`releaseDate: '${releaseDate}'`);
+	return lines.join("\n") + "\n";
 }
 
 // generateFeeds writes the yml + sidecar blockmaps for every platform present in
 // dir. version may carry +build metadata (nightly); strip it for the yml.
 async function generateFeeds(dir, rawVersion, channel, releaseDate) {
-  const version = rawVersion.split("+")[0];
-  const sel = selectInstallers(readdirSync(dir), version);
-  const groups = [
-    { platform: "win", names: sel.win },
-    { platform: "linux", names: sel.linux },
-    { platform: "mac", names: [...sel.macArm64, ...sel.macX64] }, // arm64 first
-  ];
-  for (const { platform, names } of groups) {
-    if (names.length === 0) continue;
-    const files = [];
-    for (const name of names) {
-      const { sha512, size } = await writeBlockmap(join(dir, name));
-      files.push({ url: name, sha512, size });
-    }
-    writeFileSync(join(dir, feedFilename(channel, platform)), buildYml(version, files, releaseDate));
-  }
+	const version = rawVersion.split("+")[0];
+	const sel = selectInstallers(readdirSync(dir), version);
+	const groups = [
+		{ platform: "win", names: sel.win },
+		{ platform: "linux", names: sel.linux },
+		{ platform: "mac", names: [...sel.macArm64, ...sel.macX64] }, // arm64 first
+	];
+	for (const { platform, names } of groups) {
+		if (names.length === 0) continue;
+		const files = [];
+		for (const name of names) {
+			const { sha512, size } = await writeBlockmap(join(dir, name));
+			files.push({ url: name, sha512, size });
+		}
+		writeFileSync(join(dir, feedFilename(channel, platform)), buildYml(version, files, releaseDate));
+	}
 }
 
 // CLI: node scripts/feed.mjs <dir> <version> <channel>
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const [, , dir, version, channel] = process.argv;
-  if (!dir || !version || !channel) {
-    process.stderr.write("usage: node feed.mjs <dir> <version> <channel>\n");
-    process.exit(2);
-  }
-  generateFeeds(dir, version, channel, new Date().toISOString()).catch((err) => {
-    process.stderr.write(`${err.stack || err}\n`);
-    process.exit(1);
-  });
+	const [, , dir, version, channel] = process.argv;
+	if (!dir || !version || !channel) {
+		process.stderr.write("usage: node feed.mjs <dir> <version> <channel>\n");
+		process.exit(2);
+	}
+	generateFeeds(dir, version, channel, new Date().toISOString()).catch((err) => {
+		process.stderr.write(`${err.stack || err}\n`);
+		process.exit(1);
+	});
 }
 ```
 
@@ -327,9 +331,11 @@ git -c user.email=dev@theharshitsingh.com commit -m "feat(feed): installer selec
 Switch `osxNotarize` to the `.p8` API-key variant (matching the proven local creds) and delete the `as unknown as ...` double cast that was the one known typecheck error. `osxSign` is unchanged — the runbook proves `{ identity }` + default entitlements notarize the app and the bundled daemon.
 
 **Files:**
+
 - Modify: `frontend/forge.config.ts:46-57`
 
 **Interfaces:**
+
 - Produces: a `forge.config.ts` whose `osxNotarize` reads `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` in CI (and keeps `AO_NOTARY_PROFILE` for the local runbook), consumed by the workflows in Tasks 5-6.
 
 - [ ] **Step 1: Confirm the current typecheck error exists**
@@ -381,9 +387,11 @@ git -c user.email=dev@theharshitsingh.com commit -m "feat(sign): notarize via Ap
 One reusable action provisions everything signing/notarization needs on the macOS runners: imports the Developer ID cert into a keychain (forge does not decode `CSC_LINK` itself), decodes the `.p8`, and exports the notarization env. Used by both workflows so they cannot drift.
 
 **Files:**
+
 - Create: `.github/actions/macos-signing-setup/action.yml`
 
 **Interfaces:**
+
 - Consumes (inputs): `csc-link`, `csc-key-password`, `apple-api-key-base64`, `apple-api-key-id`, `apple-api-issuer`, `apple-signing-identity`.
 - Produces (via `$GITHUB_ENV`, for the later Publish step in the same job): `APPLE_API_KEY` (path to the decoded `.p8`), `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_SIGNING_IDENTITY`.
 
@@ -465,9 +473,11 @@ git -c user.email=dev@theharshitsingh.com commit -m "feat(ci): macOS signing-set
 Add the signing-setup step on the macOS legs, swap the publish env to the API-key creds, and append a post-matrix `publish-feed` job that emits the `latest*` feed.
 
 **Files:**
+
 - Modify: `.github/workflows/frontend-release.yml` (the `release` job steps around `:62-77`; add a new `publish-feed` job at the end)
 
 **Interfaces:**
+
 - Consumes: `macos-signing-setup` (Task 4); `frontend/scripts/feed.mjs` (Task 2).
 - Produces: `latest.yml` / `latest-mac.yml` / `latest-linux.yml` + `.blockmap` sidecars on the `v<version>` release.
 
@@ -476,16 +486,16 @@ Add the signing-setup step on the macOS legs, swap the publish env to the API-ke
 In `.github/workflows/frontend-release.yml`, between the `- run: npm ci` step and the `- name: Publish` step, insert:
 
 ```yaml
-      - name: macOS signing setup
-        if: startsWith(matrix.os, 'macos')
-        uses: ./.github/actions/macos-signing-setup
-        with:
-          csc-link: ${{ secrets.CSC_LINK }}
-          csc-key-password: ${{ secrets.CSC_KEY_PASSWORD }}
-          apple-api-key-base64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          apple-api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
-          apple-api-issuer: ${{ secrets.APPLE_API_ISSUER }}
-          apple-signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+- name: macOS signing setup
+  if: startsWith(matrix.os, 'macos')
+  uses: ./.github/actions/macos-signing-setup
+  with:
+    csc-link: ${{ secrets.CSC_LINK }}
+    csc-key-password: ${{ secrets.CSC_KEY_PASSWORD }}
+    apple-api-key-base64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+    apple-api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+    apple-api-issuer: ${{ secrets.APPLE_API_ISSUER }}
+    apple-signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
 ```
 
 Note: `uses:` steps cannot set `working-directory`, which is fine — the composite action manages its own paths.
@@ -495,13 +505,13 @@ Note: `uses:` steps cannot set `working-directory`, which is fine — the compos
 In the `- name: Publish` step's `env:` block, replace the five lines `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` with a comment only — the signing-setup step already exported `APPLE_API_KEY*` and `APPLE_SIGNING_IDENTITY` via `$GITHUB_ENV`, and the cert is in the keychain. Resulting env block:
 
 ```yaml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AO_RELEASE_REPO: ${{ github.repository }}
-          # macOS signing + notarization env (APPLE_SIGNING_IDENTITY, APPLE_API_KEY,
-          # APPLE_API_KEY_ID, APPLE_API_ISSUER) is exported by the "macOS signing
-          # setup" step above via $GITHUB_ENV; the Developer ID cert is in the
-          # keychain. No-op on non-macOS runners.
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  AO_RELEASE_REPO: ${{ github.repository }}
+  # macOS signing + notarization env (APPLE_SIGNING_IDENTITY, APPLE_API_KEY,
+  # APPLE_API_KEY_ID, APPLE_API_ISSUER) is exported by the "macOS signing
+  # setup" step above via $GITHUB_ENV; the Developer ID cert is in the
+  # keychain. No-op on non-macOS runners.
 ```
 
 - [ ] **Step 3: Append the `publish-feed` job**
@@ -509,41 +519,41 @@ In the `- name: Publish` step's `env:` block, replace the five lines `CSC_LINK` 
 At the end of `.github/workflows/frontend-release.yml`, add a new top-level job (sibling of `release`):
 
 ```yaml
-  # After every platform has built and uploaded its installers, generate the
-  # electron-updater feed (latest*.yml + .blockmap sidecars) from the versioned
-  # assets and upload them to the same release. Runs once, on Linux: it only
-  # hashes already-built artifacts, so it needs no per-OS runner.
-  publish-feed:
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      # feed.mjs imports app-builder-lib's blockmap generator, so deps are needed.
-      - run: npm ci
-      - name: Generate and upload the latest feed
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Forge publishes to v<package.json version> (not the git tag).
-          tag="v$(node -p "require('./package.json').version")"
-          mkdir -p dist
-          gh release download "$tag" --dir dist --clobber
-          node scripts/feed.mjs dist "${tag#v}" latest
-          shopt -s nullglob
-          assets=(dist/latest*.yml dist/*.blockmap)
-          if [ ${#assets[@]} -eq 0 ]; then echo "no feed assets generated" >&2; exit 1; fi
-          gh release upload "$tag" "${assets[@]}" --clobber
+# After every platform has built and uploaded its installers, generate the
+# electron-updater feed (latest*.yml + .blockmap sidecars) from the versioned
+# assets and upload them to the same release. Runs once, on Linux: it only
+# hashes already-built artifacts, so it needs no per-OS runner.
+publish-feed:
+  needs: release
+  runs-on: ubuntu-latest
+  permissions:
+    contents: write
+  defaults:
+    run:
+      working-directory: frontend
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    # feed.mjs imports app-builder-lib's blockmap generator, so deps are needed.
+    - run: npm ci
+    - name: Generate and upload the latest feed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Forge publishes to v<package.json version> (not the git tag).
+        tag="v$(node -p "require('./package.json').version")"
+        mkdir -p dist
+        gh release download "$tag" --dir dist --clobber
+        node scripts/feed.mjs dist "${tag#v}" latest
+        shopt -s nullglob
+        assets=(dist/latest*.yml dist/*.blockmap)
+        if [ ${#assets[@]} -eq 0 ]; then echo "no feed assets generated" >&2; exit 1; fi
+        gh release upload "$tag" "${assets[@]}" --clobber
 ```
 
 - [ ] **Step 4: Validate the workflow YAML parses**
@@ -565,9 +575,11 @@ git -c user.email=dev@theharshitsingh.com commit -m "feat(ci): sign macOS + publ
 Mirror Task 5 on the nightly workflow, with `channel=nightly` and the tag derived from the guard job's computed version (the nightly version is stamped in-memory on the build runners only, so the feed job cannot read it from `package.json`).
 
 **Files:**
+
 - Modify: `.github/workflows/frontend-nightly.yml` (the `release` job steps around `:70-89`; add a `publish-feed` job)
 
 **Interfaces:**
+
 - Consumes: `macos-signing-setup` (Task 4); `frontend/scripts/feed.mjs` (Task 2); `needs.guard.outputs.version` (existing).
 - Produces: `nightly.yml` / `nightly-mac.yml` / `nightly-linux.yml` + `.blockmap` sidecars on the nightly prerelease.
 
@@ -576,16 +588,16 @@ Mirror Task 5 on the nightly workflow, with `channel=nightly` and the tag derive
 In `.github/workflows/frontend-nightly.yml`, between the `- name: Stamp nightly version` step and the `- name: Publish` step, insert the same block as Task 5 Step 1:
 
 ```yaml
-      - name: macOS signing setup
-        if: startsWith(matrix.os, 'macos')
-        uses: ./.github/actions/macos-signing-setup
-        with:
-          csc-link: ${{ secrets.CSC_LINK }}
-          csc-key-password: ${{ secrets.CSC_KEY_PASSWORD }}
-          apple-api-key-base64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          apple-api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
-          apple-api-issuer: ${{ secrets.APPLE_API_ISSUER }}
-          apple-signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+- name: macOS signing setup
+  if: startsWith(matrix.os, 'macos')
+  uses: ./.github/actions/macos-signing-setup
+  with:
+    csc-link: ${{ secrets.CSC_LINK }}
+    csc-key-password: ${{ secrets.CSC_KEY_PASSWORD }}
+    apple-api-key-base64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+    apple-api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+    apple-api-issuer: ${{ secrets.APPLE_API_ISSUER }}
+    apple-signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
 ```
 
 - [ ] **Step 2: Replace the Publish step's apple env**
@@ -593,12 +605,12 @@ In `.github/workflows/frontend-nightly.yml`, between the `- name: Stamp nightly 
 In the nightly `- name: Publish` step's `env:` block, replace the five `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` lines with the same comment-only note as Task 5 Step 2, keeping `GITHUB_TOKEN`, `AO_RELEASE_REPO`, and `AO_RELEASE_PRERELEASE: "true"`:
 
 ```yaml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AO_RELEASE_REPO: ${{ github.repository }}
-          AO_RELEASE_PRERELEASE: "true"
-          # macOS signing + notarization env is exported by the "macOS signing
-          # setup" step above via $GITHUB_ENV; the cert is in the keychain.
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  AO_RELEASE_REPO: ${{ github.repository }}
+  AO_RELEASE_PRERELEASE: "true"
+  # macOS signing + notarization env is exported by the "macOS signing
+  # setup" step above via $GITHUB_ENV; the cert is in the keychain.
 ```
 
 - [ ] **Step 3: Append the `publish-feed` job**
@@ -606,42 +618,42 @@ In the nightly `- name: Publish` step's `env:` block, replace the five `CSC_LINK
 At the end of `.github/workflows/frontend-nightly.yml`, add:
 
 ```yaml
-  # Generate the nightly electron-updater feed from the versioned prerelease
-  # assets. The nightly version is only stamped in-memory on the build runners,
-  # so derive the tag from the guard job's computed version, not package.json.
-  publish-feed:
-    needs: [guard, release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - name: Generate and upload the nightly feed
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NIGHTLY_VERSION: ${{ needs.guard.outputs.version }}
-        run: |
-          # Forge stamps package.json to VERSION without +build metadata and
-          # publishes to v<that>. Match it.
-          version="${NIGHTLY_VERSION%%+*}"
-          tag="v$version"
-          mkdir -p dist
-          gh release download "$tag" --dir dist --clobber
-          node scripts/feed.mjs dist "$version" nightly
-          shopt -s nullglob
-          assets=(dist/nightly*.yml dist/*.blockmap)
-          if [ ${#assets[@]} -eq 0 ]; then echo "no feed assets generated" >&2; exit 1; fi
-          gh release upload "$tag" "${assets[@]}" --clobber
+# Generate the nightly electron-updater feed from the versioned prerelease
+# assets. The nightly version is only stamped in-memory on the build runners,
+# so derive the tag from the guard job's computed version, not package.json.
+publish-feed:
+  needs: [guard, release]
+  runs-on: ubuntu-latest
+  permissions:
+    contents: write
+  defaults:
+    run:
+      working-directory: frontend
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - run: npm ci
+    - name: Generate and upload the nightly feed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        NIGHTLY_VERSION: ${{ needs.guard.outputs.version }}
+      run: |
+        # Forge stamps package.json to VERSION without +build metadata and
+        # publishes to v<that>. Match it.
+        version="${NIGHTLY_VERSION%%+*}"
+        tag="v$version"
+        mkdir -p dist
+        gh release download "$tag" --dir dist --clobber
+        node scripts/feed.mjs dist "$version" nightly
+        shopt -s nullglob
+        assets=(dist/nightly*.yml dist/*.blockmap)
+        if [ ${#assets[@]} -eq 0 ]; then echo "no feed assets generated" >&2; exit 1; fi
+        gh release upload "$tag" "${assets[@]}" --clobber
 ```
 
 - [ ] **Step 4: Validate the workflow YAML parses**

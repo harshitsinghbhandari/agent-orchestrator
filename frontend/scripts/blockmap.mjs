@@ -15,6 +15,6 @@ const { buildBlockMap } = require("app-builder-lib/out/targets/blockmap/blockmap
 // the yml forces the client onto the sidecar differential path on every
 // platform (verified against MacUpdater / NsisUpdater / AppImage).
 export async function writeBlockmap(filePath) {
-  const { sha512, size } = await buildBlockMap(filePath, "gzip", `${filePath}.blockmap`);
-  return { sha512, size };
+	const { sha512, size } = await buildBlockMap(filePath, "gzip", `${filePath}.blockmap`);
+	return { sha512, size };
 }
