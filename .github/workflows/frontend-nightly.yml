@@ -94,14 +94,15 @@ jobs:
           # setup" step above via $GITHUB_ENV; the cert is in the keychain.
 
   # Dedicated Intel (darwin-x64) nightly build leg, decoupled from the release
-  # matrix so the scarce macos-13 runner does not block publish-feed. Mirrors
+  # matrix so the Intel runner does not block publish-feed. Mirrors
   # the release job's macOS steps exactly. publish-feed stays needs: release
   # only (three fast legs); the x64 feed entry appears if this job finishes
   # first, but the feed is not gated on it.
+  # Runner: macos-15-intel (macos-13 is deprecated/unavailable; see release wf).
   release-intel:
     needs: guard
     if: needs.guard.outputs.should_build == 'true'
-    runs-on: macos-13
+    runs-on: macos-15-intel
     permissions:
       contents: write
     defaults:

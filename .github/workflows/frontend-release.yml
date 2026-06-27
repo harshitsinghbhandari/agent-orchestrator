@@ -87,7 +87,7 @@ jobs:
       # release the publish step just created, with --clobber (so re-runs replace).
       #
       # Arch-coverage note: each runner only builds its host arch. macos-latest
-      # (Apple silicon) produces darwin-arm64; macos-13 (Intel x64) produces
+      # (Apple silicon) produces darwin-arm64; macos-15-intel (Intel x64) produces
       # darwin-x64. Both macOS runners run this step (see the `if` below), so the
       # arm64 and x64 stable aliases are now both built (spec §8).
       # The Linux stable name is undecided (spec §11.3), so we build the deb/rpm
@@ -151,12 +151,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Dedicated Intel (darwin-x64) build leg, decoupled from the release matrix so
-  # the scarce macos-13 runner does not block publish-feed. publish-feed needs
+  # the Intel runner does not block publish-feed. publish-feed needs
   # only the three fast legs (release); this job uploads the x64 installer and
   # stable alias independently. feed.mjs includes the x64 entry if this job
   # finishes before publish-feed, but the feed is not gated on it.
+  # Runner: macos-15-intel. macos-13 is deprecated/unavailable (no capacity ->
+  # multi-hour queues), so this leg now uses the supported Intel x64 image.
   release-intel:
-    runs-on: macos-13
+    runs-on: macos-15-intel
     permissions:
       contents: write
     defaults:
