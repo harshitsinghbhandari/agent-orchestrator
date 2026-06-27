@@ -141,5 +141,9 @@ if (typeof window !== "undefined") {
 			getMigration: async () => ({ status: "pending" }),
 			setMigration: async () => undefined,
 		},
+		updateSettings: {
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false }),
+			set: async () => undefined,
+		},
 	};
 } // end if (typeof window !== "undefined")
