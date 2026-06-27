@@ -63,12 +63,13 @@ const config: ForgeConfig = {
 		// owner/repo (baked from AO_RELEASE_REPO at build time) is always present.
 		postPackage: async (_forgeConfig, { platform, outputPaths }) => {
 			const { owner, name } = parseReleaseRepo(process.env.AO_RELEASE_REPO);
-			const yml = [
-				"provider: github",
-				`owner: ${owner}`,
-				`repo: ${name}`,
-				"updaterCacheDirName: agent-orchestrator-updater",
-			].join("\n") + "\n";
+			const yml =
+				[
+					"provider: github",
+					`owner: ${owner}`,
+					`repo: ${name}`,
+					"updaterCacheDirName: agent-orchestrator-updater",
+				].join("\n") + "\n";
 
 			for (const outputPath of outputPaths) {
 				let resourcesDir: string;
