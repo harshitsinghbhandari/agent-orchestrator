@@ -9,3 +9,14 @@
 - [x] Commands tested
 - [x] Cross-referenced with code
 - [x] No broken links
+
+## 2024-06-28
+
+### Files Updated
+- `SETUP.md` - Changed `webhook:` to `webhookUrl:` for Slack configuration based on codebase verification, explicitly noted `LINEAR_API_KEY` is required for issue deletion cleanup, and added `OPENCLAW_HOOKS_TOKEN` to optional prerequisites.
+- `TROUBLESHOOTING.md` - Added a section documenting the Codex agent not recognised issue, guiding users to verify the installation path based on recent commit 8e19f35.
+
+### Verification
+- [x] Commands tested
+- [x] Cross-referenced with code
+- [x] No broken links
