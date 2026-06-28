@@ -94,9 +94,12 @@ jobs:
           # setup" step above via $GITHUB_ENV; the cert is in the keychain.
 
   # Dedicated Intel (darwin-x64) nightly build leg. Kept separate from the
-  # release matrix (only a macOS host can build the x64 installer); publish-feed
-  # now waits on it so the x64 entry is present in nightly-mac.yml and Intel
-  # nightly users get auto-updates. Mirrors the release job's macOS steps exactly.
+  # release matrix (only a macOS host can build the x64 installer) and, unlike
+  # the stable release, NON-BLOCKING for the nightly feed: publish-feed does NOT
+  # depend on it. The Intel macOS leg is flaky (transient notary -1009 and
+  # osx-sign keychain races), and a daily nightly must not die for every-one when
+  # Intel hiccups. feed.mjs still picks up the x64 entry when this leg finishes
+  # in time (best-effort). Mirrors the release job's macOS steps otherwise.
   # Runner is macos-15-intel (macos-13 deprecated/no capacity; see release wf).
   release-intel:
     needs: guard
@@ -161,7 +164,7 @@ jobs:
   # assets. The nightly version is only stamped in-memory on the build runners,
   # so derive the tag from the guard job's computed version, not package.json.
   publish-feed:
-    needs: [guard, release, release-intel]
+    needs: [guard, release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
