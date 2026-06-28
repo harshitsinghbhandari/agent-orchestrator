@@ -50,6 +50,20 @@ npx node-gyp rebuild
 
 ## Other Issues
 
+### Codex agent not recognised
+
+**Symptom**: The orchestrator fails to launch the Codex agent, or reports that Codex is not found.
+
+**Root Cause**: The `codex` executable is not available in your system `PATH` or in common standard installation locations.
+
+**Fix**: Verify that Codex is installed correctly. Agent Orchestrator automatically checks the following common locations if it isn't found in your `PATH`:
+- `/usr/local/bin/codex`
+- `/opt/homebrew/bin/codex`
+- `~/.cargo/bin/codex` (Codex is now Rust-based)
+- `~/.npm/bin/codex`
+
+Ensure that the executable exists in one of these directories or is correctly added to your shell's `PATH`.
+
 ### Config file not found
 
 **Symptom**: API returns 500 with "No agent-orchestrator.yaml found"

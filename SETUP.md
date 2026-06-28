@@ -53,13 +53,17 @@ Comprehensive guide to installing, configuring, and troubleshooting Agent Orches
 
 ### Optional
 
-- **Linear API Key** - If using Linear for issue tracking
+- **Linear API Key** - If using Linear for issue tracking. This is the primary way to configure Linear and is required for issue deletion cleanup.
   - Get it from: https://linear.app/settings/api
   - Set environment variable: `export LINEAR_API_KEY="lin_api_..."`
 
 - **Slack Webhook** - If using Slack notifications
   - Create incoming webhook: https://api.slack.com/messaging/webhooks
   - Set environment variable: `export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."`
+
+- **OpenClaw Hooks Token** - If using OpenClaw notifications
+  - Obtain your OpenClaw hooks token
+  - Set environment variable: `export OPENCLAW_HOOKS_TOKEN="your-hooks-token"`
 
 ## Installation
 
@@ -375,7 +379,7 @@ echo $LINEAR_API_KEY  # Should print your key
    notifiers:
      slack:
        plugin: slack
-       webhook: ${SLACK_WEBHOOK_URL}
+       webhookUrl: ${SLACK_WEBHOOK_URL}
        channel: "#agent-updates"
    ```
 
