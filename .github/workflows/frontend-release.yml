@@ -76,7 +76,16 @@ jobs:
           apple-api-issuer: ${{ secrets.APPLE_API_ISSUER }}
           apple-signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       - name: Publish
-        run: npm run publish
+        run: |
+          # Retry transient macOS sign/notary flakes (Apple notary -1009,
+          # osx-sign keychain races) so the build self-heals instead of failing.
+          for i in 1 2 3; do
+            if npm run publish; then exit 0; fi
+            echo "::warning::publish attempt $i/3 failed (likely a transient macOS sign/notary flake)"
+            [ "$i" -lt 3 ] && sleep 30
+          done
+          echo "::error::publish failed after 3 attempts" >&2
+          exit 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AO_RELEASE_REPO: ${{ github.repository }}
@@ -191,7 +200,16 @@ jobs:
           apple-api-issuer: ${{ secrets.APPLE_API_ISSUER }}
           apple-signing-identity: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       - name: Publish
-        run: npm run publish
+        run: |
+          # Retry transient macOS sign/notary flakes (Apple notary -1009,
+          # osx-sign keychain races) so the build self-heals instead of failing.
+          for i in 1 2 3; do
+            if npm run publish; then exit 0; fi
+            echo "::warning::publish attempt $i/3 failed (likely a transient macOS sign/notary flake)"
+            [ "$i" -lt 3 ] && sleep 30
+          done
+          echo "::error::publish failed after 3 attempts" >&2
+          exit 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AO_RELEASE_REPO: ${{ github.repository }}
