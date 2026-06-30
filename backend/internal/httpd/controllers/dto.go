@@ -146,9 +146,10 @@ type SpawnSessionRequest struct {
 	Harness   domain.AgentHarness `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,kiro,kilocode,vibe,pi,autohand"`
 	Branch    string              `json:"branch,omitempty"`
 	Prompt    string              `json:"prompt,omitempty" maxLength:"4096"`
-	// DisplayName is the required sidebar label for the session, capped at 20
-	// characters. `ao spawn --name` sets it.
-	DisplayName string `json:"displayName" maxLength:"20"`
+	// DisplayName is the sidebar label for the session, capped at 20 characters.
+	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
+	// dialog) may omit it and fall back to the session id in the read model.
+	DisplayName string `json:"displayName,omitempty" maxLength:"20"`
 }
 
 // SessionResponse is the { session } body shared by session create/get.
