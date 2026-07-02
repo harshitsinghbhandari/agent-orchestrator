@@ -1000,8 +1000,16 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 	if base == "" {
 		return "", nil
 	}
-	return base + systemPromptGuard, nil
+	return base + aoSkillPointer + systemPromptGuard, nil
 }
+
+// aoSkillPointer is appended to every agent system prompt. It points the agent at
+// the checked-in using-ao skill instead of inlining the whole CLI catalog: the
+// skill file (and its per-command references) carries exact flags and examples,
+// so the standing prompt stays a short pointer rather than a command dump.
+const aoSkillPointer = "\n\n" + `## Using the ao CLI
+
+When you need to use the ` + "`ao`" + ` CLI in this workspace, read ` + "`skills/using-ao/SKILL.md`" + ` first (and the relevant ` + "`skills/using-ao/commands/*.md`" + `) for the full command catalog, flags, and examples.`
 
 func (m *Manager) activeOrchestratorSessionID(ctx context.Context, project domain.ProjectID) (domain.SessionID, bool, error) {
 	recs, err := m.store.ListSessions(ctx, project)
