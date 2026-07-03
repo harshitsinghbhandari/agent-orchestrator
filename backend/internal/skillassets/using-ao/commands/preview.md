@@ -31,6 +31,7 @@ ao preview
 ```bash
 # Open a local dev server
 ao preview http://localhost:5173
+(or wherever the dev server is running)
 ```
 
 ```bash
