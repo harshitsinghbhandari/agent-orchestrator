@@ -92,7 +92,7 @@ func TestGetLaunchCommandMapsPermissionModes(t *testing.T) {
 }
 
 func TestGetPromptDeliveryStrategyIsInCommand(t *testing.T) {
-	plugin := &Plugin{resolvedBinary: "kilocode"}
+	plugin := &Plugin{}
 
 	got, err := plugin.GetPromptDeliveryStrategy(context.Background(), ports.LaunchConfig{})
 	if err != nil {
@@ -104,7 +104,7 @@ func TestGetPromptDeliveryStrategyIsInCommand(t *testing.T) {
 }
 
 func TestGetConfigSpecHasNoCustomFieldsYet(t *testing.T) {
-	plugin := &Plugin{resolvedBinary: "kilocode"}
+	plugin := &Plugin{}
 
 	spec, err := plugin.GetConfigSpec(context.Background())
 	if err != nil {
