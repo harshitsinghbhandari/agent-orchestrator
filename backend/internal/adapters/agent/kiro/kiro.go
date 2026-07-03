@@ -114,14 +114,19 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 }
 
 var kiroBinarySpec = binaryutil.BinarySpec{
-	Label:                "kiro",
-	Names:                []string{"kiro-cli"},
-	WinNames:             []string{"kiro-cli.cmd", "kiro-cli.exe", "kiro-cli"},
-	UnixPaths:            []string{"/usr/local/bin/kiro-cli", "/opt/homebrew/bin/kiro-cli"},
-	UnixHomePaths:        [][]string{{".kiro", "bin", "kiro-cli"}, {".local", "bin", "kiro-cli"}},
-	WinLocalAppDataPaths: [][]string{{"Programs", "kiro", "kiro-cli.exe"}},
-	WinAppDataPaths:      [][]string{{"npm", "kiro-cli.cmd"}, {"npm", "kiro-cli.exe"}},
-	WinHomePaths:         [][]string{{".kiro", "bin", "kiro-cli.exe"}},
+	Label:         "kiro",
+	Names:         []string{"kiro-cli"},
+	WinNames:      []string{"kiro-cli.cmd", "kiro-cli.exe", "kiro-cli"},
+	UnixPaths:     []string{"/usr/local/bin/kiro-cli", "/opt/homebrew/bin/kiro-cli"},
+	UnixHomePaths: [][]string{{".kiro", "bin", "kiro-cli"}, {".local", "bin", "kiro-cli"}},
+	// The native Kiro installer location is probed before the npm shim, matching
+	// the pre-refactor order so a native install still wins when both are present.
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinLocalAppData, Parts: []string{"Programs", "kiro", "kiro-cli.exe"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "kiro-cli.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "kiro-cli.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".kiro", "bin", "kiro-cli.exe"}},
+	},
 }
 
 // ResolveKiroBinary returns the path to the kiro-cli binary on this machine,

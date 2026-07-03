@@ -27,13 +27,16 @@ import (
 )
 
 var grokBinarySpec = binaryutil.BinarySpec{
-	Label:           "grok",
-	Names:           []string{"grok"},
-	WinNames:        []string{"grok.cmd", "grok.exe", "grok"},
-	UnixPaths:       []string{"/usr/local/bin/grok", "/opt/homebrew/bin/grok"},
-	UnixHomePaths:   [][]string{{".grok", "bin", "grok"}, {".local", "bin", "grok"}},
-	WinAppDataPaths: [][]string{{"npm", "grok.cmd"}, {"npm", "grok.exe"}},
-	WinHomePaths:    [][]string{{".grok", "bin", "grok.exe"}},
+	Label:         "grok",
+	Names:         []string{"grok"},
+	WinNames:      []string{"grok.cmd", "grok.exe", "grok"},
+	UnixPaths:     []string{"/usr/local/bin/grok", "/opt/homebrew/bin/grok"},
+	UnixHomePaths: [][]string{{".grok", "bin", "grok"}, {".local", "bin", "grok"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "grok.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "grok.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".grok", "bin", "grok.exe"}},
+	},
 }
 
 // Plugin is the Grok Build agent adapter.

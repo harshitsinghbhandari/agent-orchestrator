@@ -113,12 +113,15 @@ func appendPermissionFlags(cmd *[]string, mode ports.PermissionMode) {
 }
 
 var ampBinarySpec = binaryutil.BinarySpec{
-	Label:           "amp",
-	Names:           []string{"amp"},
-	WinNames:        []string{"amp.cmd", "amp.exe", "amp"},
-	UnixPaths:       []string{"/usr/local/bin/amp", "/opt/homebrew/bin/amp"},
-	UnixHomePaths:   [][]string{{".local", "bin", "amp"}, {".npm", "bin", "amp"}},
-	WinAppDataPaths: [][]string{{"npm", "amp.cmd"}, {"npm", "amp.exe"}},
+	Label:         "amp",
+	Names:         []string{"amp"},
+	WinNames:      []string{"amp.cmd", "amp.exe", "amp"},
+	UnixPaths:     []string{"/usr/local/bin/amp", "/opt/homebrew/bin/amp"},
+	UnixHomePaths: [][]string{{".local", "bin", "amp"}, {".npm", "bin", "amp"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "amp.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "amp.exe"}},
+	},
 }
 
 // ResolveAmpBinary finds the `amp` binary, searching PATH then common install

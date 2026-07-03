@@ -125,12 +125,15 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 }
 
 var piBinarySpec = binaryutil.BinarySpec{
-	Label:           "pi",
-	Names:           []string{"pi"},
-	WinNames:        []string{"pi.cmd", "pi.exe", "pi"},
-	UnixPaths:       []string{"/usr/local/bin/pi", "/opt/homebrew/bin/pi"},
-	UnixHomePaths:   [][]string{{".npm-global", "bin", "pi"}, {".local", "bin", "pi"}, {".pi", "bin", "pi"}},
-	WinAppDataPaths: [][]string{{"npm", "pi.cmd"}, {"npm", "pi.exe"}},
+	Label:         "pi",
+	Names:         []string{"pi"},
+	WinNames:      []string{"pi.cmd", "pi.exe", "pi"},
+	UnixPaths:     []string{"/usr/local/bin/pi", "/opt/homebrew/bin/pi"},
+	UnixHomePaths: [][]string{{".npm-global", "bin", "pi"}, {".local", "bin", "pi"}, {".pi", "bin", "pi"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "pi.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "pi.exe"}},
+	},
 }
 
 // ResolvePiBinary finds the `pi` binary, searching PATH then common install

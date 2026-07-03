@@ -113,12 +113,15 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 }
 
 var clineBinarySpec = binaryutil.BinarySpec{
-	Label:           "cline",
-	Names:           []string{"cline"},
-	WinNames:        []string{"cline.cmd", "cline.exe", "cline"},
-	UnixPaths:       []string{"/usr/local/bin/cline", "/opt/homebrew/bin/cline"},
-	UnixHomePaths:   [][]string{{".npm-global", "bin", "cline"}, {".npm", "bin", "cline"}, {".local", "bin", "cline"}},
-	WinAppDataPaths: [][]string{{"npm", "cline.cmd"}, {"npm", "cline.exe"}},
+	Label:         "cline",
+	Names:         []string{"cline"},
+	WinNames:      []string{"cline.cmd", "cline.exe", "cline"},
+	UnixPaths:     []string{"/usr/local/bin/cline", "/opt/homebrew/bin/cline"},
+	UnixHomePaths: [][]string{{".npm-global", "bin", "cline"}, {".npm", "bin", "cline"}, {".local", "bin", "cline"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "cline.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "cline.exe"}},
+	},
 }
 
 // ResolveClineBinary returns the path to the cline binary on this machine,

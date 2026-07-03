@@ -316,12 +316,15 @@ func appendToolFlags(cmd *[]string, allowed, disallowed []string) {
 // claudeBinarySpec locates the claude binary: PATH first, then the native
 // installer's locations, npm global, Homebrew, and the claude-managed dir.
 var claudeBinarySpec = binaryutil.BinarySpec{
-	Label:           "claude",
-	Names:           []string{"claude"},
-	WinNames:        []string{"claude.cmd", "claude.exe", "claude"},
-	UnixPaths:       []string{"/usr/local/bin/claude", "/opt/homebrew/bin/claude"},
-	UnixHomePaths:   [][]string{{".local", "bin", "claude"}, {".npm", "bin", "claude"}, {".claude", "local", "claude"}},
-	WinAppDataPaths: [][]string{{"npm", "claude.cmd"}, {"npm", "claude.exe"}},
+	Label:         "claude",
+	Names:         []string{"claude"},
+	WinNames:      []string{"claude.cmd", "claude.exe", "claude"},
+	UnixPaths:     []string{"/usr/local/bin/claude", "/opt/homebrew/bin/claude"},
+	UnixHomePaths: [][]string{{".local", "bin", "claude"}, {".npm", "bin", "claude"}, {".claude", "local", "claude"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "claude.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "claude.exe"}},
+	},
 }
 
 // ResolveClaudeBinary returns the path to the claude binary, or a wrapped

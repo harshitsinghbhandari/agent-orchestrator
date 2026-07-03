@@ -40,7 +40,9 @@ var devinBinarySpec = binaryutil.BinarySpec{
 	WinNames:      []string{"devin.cmd", "devin.exe", "devin"},
 	UnixPaths:     []string{"/usr/local/bin/devin", "/opt/homebrew/bin/devin"},
 	UnixHomePaths: [][]string{{".devin", "bin", "devin"}, {".local", "bin", "devin"}},
-	WinHomePaths:  [][]string{{".devin", "bin", "devin.exe"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinHome, Parts: []string{".devin", "bin", "devin.exe"}},
+	},
 }
 
 // Plugin is the Devin for Terminal agent adapter.

@@ -145,13 +145,16 @@ func appendApprovalFlags(cmd *[]string, permissions ports.PermissionMode) {
 }
 
 var autohandBinarySpec = binaryutil.BinarySpec{
-	Label:           "autohand",
-	Names:           []string{"autohand"},
-	WinNames:        []string{"autohand.cmd", "autohand.exe", "autohand"},
-	UnixPaths:       []string{"/usr/local/bin/autohand", "/opt/homebrew/bin/autohand"},
-	UnixHomePaths:   [][]string{{".local", "bin", "autohand"}, {".npm", "bin", "autohand"}},
-	WinAppDataPaths: [][]string{{"npm", "autohand.cmd"}, {"npm", "autohand.exe"}},
-	WinHomePaths:    [][]string{{".local", "bin", "autohand.exe"}},
+	Label:         "autohand",
+	Names:         []string{"autohand"},
+	WinNames:      []string{"autohand.cmd", "autohand.exe", "autohand"},
+	UnixPaths:     []string{"/usr/local/bin/autohand", "/opt/homebrew/bin/autohand"},
+	UnixHomePaths: [][]string{{".local", "bin", "autohand"}, {".npm", "bin", "autohand"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "autohand.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "autohand.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".local", "bin", "autohand.exe"}},
+	},
 }
 
 // ResolveAutohandBinary returns the path to the autohand binary, or a wrapped

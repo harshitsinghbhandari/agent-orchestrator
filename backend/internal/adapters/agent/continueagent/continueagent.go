@@ -37,12 +37,15 @@ import (
 const adapterID = "continue"
 
 var continueBinarySpec = binaryutil.BinarySpec{
-	Label:           "cn",
-	Names:           []string{"cn"},
-	WinNames:        []string{"cn.cmd", "cn.exe", "cn"},
-	UnixPaths:       []string{"/usr/local/bin/cn", "/opt/homebrew/bin/cn"},
-	UnixHomePaths:   [][]string{{".npm-global", "bin", "cn"}, {".local", "bin", "cn"}, {".npm", "bin", "cn"}},
-	WinAppDataPaths: [][]string{{"npm", "cn.cmd"}, {"npm", "cn.exe"}},
+	Label:         "cn",
+	Names:         []string{"cn"},
+	WinNames:      []string{"cn.cmd", "cn.exe", "cn"},
+	UnixPaths:     []string{"/usr/local/bin/cn", "/opt/homebrew/bin/cn"},
+	UnixHomePaths: [][]string{{".npm-global", "bin", "cn"}, {".local", "bin", "cn"}, {".npm", "bin", "cn"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "cn.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "cn.exe"}},
+	},
 }
 
 // Plugin is the Continue CLI agent adapter. It is safe for concurrent use; the

@@ -194,14 +194,17 @@ func gooseMode(mode ports.PermissionMode) string {
 // gooseBinarySpec locates the goose binary: PATH first, then the install
 // script's ~/.local/bin, Homebrew, Cargo, and npm global locations.
 var gooseBinarySpec = binaryutil.BinarySpec{
-	Label:                "goose",
-	Names:                []string{"goose"},
-	WinNames:             []string{"goose.cmd", "goose.exe", "goose"},
-	UnixPaths:            []string{"/usr/local/bin/goose", "/opt/homebrew/bin/goose"},
-	UnixHomePaths:        [][]string{{".local", "bin", "goose"}, {".cargo", "bin", "goose"}, {".npm", "bin", "goose"}},
-	WinAppDataPaths:      [][]string{{"npm", "goose.cmd"}, {"npm", "goose.exe"}},
-	WinLocalAppDataPaths: [][]string{{"Programs", "goose", "goose.exe"}},
-	WinHomePaths:         [][]string{{".cargo", "bin", "goose.exe"}},
+	Label:         "goose",
+	Names:         []string{"goose"},
+	WinNames:      []string{"goose.cmd", "goose.exe", "goose"},
+	UnixPaths:     []string{"/usr/local/bin/goose", "/opt/homebrew/bin/goose"},
+	UnixHomePaths: [][]string{{".local", "bin", "goose"}, {".cargo", "bin", "goose"}, {".npm", "bin", "goose"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "goose.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "goose.exe"}},
+		{Base: binaryutil.WinLocalAppData, Parts: []string{"Programs", "goose", "goose.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".cargo", "bin", "goose.exe"}},
+	},
 }
 
 // ResolveGooseBinary returns the path to the goose binary, or a wrapped

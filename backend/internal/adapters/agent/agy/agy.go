@@ -17,13 +17,16 @@ import (
 const adapterID = "agy"
 
 var agyBinarySpec = binaryutil.BinarySpec{
-	Label:           "agy",
-	Names:           []string{"agy"},
-	WinNames:        []string{"agy.cmd", "agy.exe", "agy"},
-	UnixPaths:       []string{"/usr/local/bin/agy", "/opt/homebrew/bin/agy"},
-	UnixHomePaths:   [][]string{{".local", "bin", "agy"}, {".cargo", "bin", "agy"}, {".npm", "bin", "agy"}},
-	WinAppDataPaths: [][]string{{"npm", "agy.cmd"}, {"npm", "agy.exe"}},
-	WinHomePaths:    [][]string{{".cargo", "bin", "agy.exe"}},
+	Label:         "agy",
+	Names:         []string{"agy"},
+	WinNames:      []string{"agy.cmd", "agy.exe", "agy"},
+	UnixPaths:     []string{"/usr/local/bin/agy", "/opt/homebrew/bin/agy"},
+	UnixHomePaths: [][]string{{".local", "bin", "agy"}, {".cargo", "bin", "agy"}, {".npm", "bin", "agy"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "agy.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "agy.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".cargo", "bin", "agy.exe"}},
+	},
 }
 
 // Plugin is the Agy agent adapter. It is safe for concurrent use; the binary

@@ -122,13 +122,16 @@ func (p *Plugin) SessionInfo(ctx context.Context, session ports.SessionRef) (por
 }
 
 var copilotBinarySpec = binaryutil.BinarySpec{
-	Label:           "copilot",
-	Names:           []string{"copilot"},
-	WinNames:        []string{"copilot.cmd", "copilot.exe", "copilot"},
-	UnixPaths:       []string{"/usr/local/bin/copilot", "/opt/homebrew/bin/copilot"},
-	UnixHomePaths:   [][]string{{".copilot", "bin", "copilot"}, {".npm", "bin", "copilot"}, {".local", "bin", "copilot"}},
-	WinAppDataPaths: [][]string{{"npm", "copilot.cmd"}, {"npm", "copilot.exe"}},
-	WinHomePaths:    [][]string{{".copilot", "bin", "copilot.exe"}},
+	Label:         "copilot",
+	Names:         []string{"copilot"},
+	WinNames:      []string{"copilot.cmd", "copilot.exe", "copilot"},
+	UnixPaths:     []string{"/usr/local/bin/copilot", "/opt/homebrew/bin/copilot"},
+	UnixHomePaths: [][]string{{".copilot", "bin", "copilot"}, {".npm", "bin", "copilot"}, {".local", "bin", "copilot"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "copilot.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "copilot.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".copilot", "bin", "copilot.exe"}},
+	},
 }
 
 // ResolveCopilotBinary returns the path to the copilot binary on this machine,

@@ -219,13 +219,17 @@ func sanitizeSessionID(id string) string {
 }
 
 var droidBinarySpec = binaryutil.BinarySpec{
-	Label:           "droid",
-	Names:           []string{"droid"},
-	WinNames:        []string{"droid.cmd", "droid.exe", "droid"},
-	UnixPaths:       []string{"/usr/local/bin/droid", "/opt/homebrew/bin/droid"},
-	UnixHomePaths:   [][]string{{".local", "bin", "droid"}, {".factory", "bin", "droid"}},
-	WinAppDataPaths: [][]string{{"npm", "droid.cmd"}, {"npm", "droid.exe"}},
-	WinHomePaths:    [][]string{{".local", "bin", "droid.exe"}, {".factory", "bin", "droid.exe"}},
+	Label:         "droid",
+	Names:         []string{"droid"},
+	WinNames:      []string{"droid.cmd", "droid.exe", "droid"},
+	UnixPaths:     []string{"/usr/local/bin/droid", "/opt/homebrew/bin/droid"},
+	UnixHomePaths: [][]string{{".local", "bin", "droid"}, {".factory", "bin", "droid"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "droid.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "droid.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".local", "bin", "droid.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".factory", "bin", "droid.exe"}},
+	},
 }
 
 // ResolveDroidBinary returns the path to the droid binary, or a wrapped

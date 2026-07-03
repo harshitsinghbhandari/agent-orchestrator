@@ -190,12 +190,15 @@ func kilocodePermissionEnvPrefix(mode ports.PermissionMode) []string {
 }
 
 var kilocodeBinarySpec = binaryutil.BinarySpec{
-	Label:           "kilocode",
-	Names:           []string{"kilocode"},
-	WinNames:        []string{"kilocode.cmd", "kilocode.exe", "kilocode"},
-	UnixPaths:       []string{"/usr/local/bin/kilocode", "/opt/homebrew/bin/kilocode"},
-	UnixHomePaths:   [][]string{{".npm-global", "bin", "kilocode"}, {".npm", "bin", "kilocode"}, {".local", "bin", "kilocode"}},
-	WinAppDataPaths: [][]string{{"npm", "kilocode.cmd"}, {"npm", "kilocode.exe"}},
+	Label:         "kilocode",
+	Names:         []string{"kilocode"},
+	WinNames:      []string{"kilocode.cmd", "kilocode.exe", "kilocode"},
+	UnixPaths:     []string{"/usr/local/bin/kilocode", "/opt/homebrew/bin/kilocode"},
+	UnixHomePaths: [][]string{{".npm-global", "bin", "kilocode"}, {".npm", "bin", "kilocode"}, {".local", "bin", "kilocode"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "kilocode.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "kilocode.exe"}},
+	},
 }
 
 // ResolveKilocodeBinary returns the path to the kilocode binary, or a wrapped

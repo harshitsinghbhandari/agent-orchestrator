@@ -129,13 +129,15 @@ func appendAgentFlags(cmd *[]string, mode ports.PermissionMode) {
 }
 
 var vibeBinarySpec = binaryutil.BinarySpec{
-	Label:                "vibe",
-	Names:                []string{"vibe"},
-	WinNames:             []string{"vibe.exe", "vibe.cmd", "vibe"},
-	UnixPaths:            []string{"/usr/local/bin/vibe", "/opt/homebrew/bin/vibe"},
-	UnixHomePaths:        [][]string{{".local", "bin", "vibe"}, {".local", "share", "uv", "tools", "mistral-vibe", "bin", "vibe"}},
-	WinAppDataPaths:      [][]string{{"Python", "Scripts", "vibe.exe"}},
-	WinLocalAppDataPaths: [][]string{{"uv", "tools", "mistral-vibe", "Scripts", "vibe.exe"}},
+	Label:         "vibe",
+	Names:         []string{"vibe"},
+	WinNames:      []string{"vibe.exe", "vibe.cmd", "vibe"},
+	UnixPaths:     []string{"/usr/local/bin/vibe", "/opt/homebrew/bin/vibe"},
+	UnixHomePaths: [][]string{{".local", "bin", "vibe"}, {".local", "share", "uv", "tools", "mistral-vibe", "bin", "vibe"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"Python", "Scripts", "vibe.exe"}},
+		{Base: binaryutil.WinLocalAppData, Parts: []string{"uv", "tools", "mistral-vibe", "Scripts", "vibe.exe"}},
+	},
 }
 
 // ResolveVibeBinary finds the `vibe` binary, searching PATH then common install

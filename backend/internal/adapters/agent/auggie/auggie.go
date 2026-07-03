@@ -136,12 +136,15 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 // There is therefore no appendApprovalFlags helper for this adapter.
 
 var auggieBinarySpec = binaryutil.BinarySpec{
-	Label:           "auggie",
-	Names:           []string{"auggie"},
-	WinNames:        []string{"auggie.cmd", "auggie.exe", "auggie"},
-	UnixPaths:       []string{"/usr/local/bin/auggie", "/opt/homebrew/bin/auggie"},
-	UnixHomePaths:   [][]string{{".local", "bin", "auggie"}, {".npm", "bin", "auggie"}, {".npm-global", "bin", "auggie"}},
-	WinAppDataPaths: [][]string{{"npm", "auggie.cmd"}, {"npm", "auggie.exe"}},
+	Label:         "auggie",
+	Names:         []string{"auggie"},
+	WinNames:      []string{"auggie.cmd", "auggie.exe", "auggie"},
+	UnixPaths:     []string{"/usr/local/bin/auggie", "/opt/homebrew/bin/auggie"},
+	UnixHomePaths: [][]string{{".local", "bin", "auggie"}, {".npm", "bin", "auggie"}, {".npm-global", "bin", "auggie"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "auggie.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "auggie.exe"}},
+	},
 }
 
 // ResolveAuggieBinary finds the `auggie` binary, searching PATH then common

@@ -148,13 +148,16 @@ func normalizePermissionMode(mode ports.PermissionMode) ports.PermissionMode {
 }
 
 var kimiBinarySpec = binaryutil.BinarySpec{
-	Label:           "kimi",
-	Names:           []string{"kimi"},
-	WinNames:        []string{"kimi.cmd", "kimi.exe", "kimi"},
-	UnixPaths:       []string{"/usr/local/bin/kimi", "/opt/homebrew/bin/kimi"},
-	UnixHomePaths:   [][]string{{".local", "bin", "kimi"}, {".cargo", "bin", "kimi"}},
-	WinAppDataPaths: [][]string{{"npm", "kimi.cmd"}, {"npm", "kimi.exe"}},
-	WinHomePaths:    [][]string{{".local", "bin", "kimi.exe"}},
+	Label:         "kimi",
+	Names:         []string{"kimi"},
+	WinNames:      []string{"kimi.cmd", "kimi.exe", "kimi"},
+	UnixPaths:     []string{"/usr/local/bin/kimi", "/opt/homebrew/bin/kimi"},
+	UnixHomePaths: [][]string{{".local", "bin", "kimi"}, {".cargo", "bin", "kimi"}},
+	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "kimi.cmd"}},
+		{Base: binaryutil.WinAppData, Parts: []string{"npm", "kimi.exe"}},
+		{Base: binaryutil.WinHome, Parts: []string{".local", "bin", "kimi.exe"}},
+	},
 }
 
 // ResolveKimiBinary finds the `kimi` binary, searching PATH then common install

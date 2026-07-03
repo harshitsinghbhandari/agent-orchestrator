@@ -40,12 +40,28 @@ type BinarySpec struct {
 	// non-Windows; each entry is the components to join onto $HOME.
 	UnixHomePaths [][]string
 
-	// WinAppDataPaths, WinLocalAppDataPaths, and WinHomePaths are candidate
-	// paths on Windows relative to %APPDATA%, %LOCALAPPDATA%, and the user's
-	// home dir respectively; each entry is the components to join onto that base.
-	WinAppDataPaths      [][]string
-	WinLocalAppDataPaths [][]string
-	WinHomePaths         [][]string
+	// WinPaths are candidate paths probed on Windows, in the exact order given.
+	// Each entry names the base directory (%APPDATA%, %LOCALAPPDATA%, or home) it
+	// is joined onto. Order is significant: a native installer location listed
+	// before an npm shim wins when both are present, so it is spelled out here
+	// rather than assumed. Entries whose base env is unset are skipped.
+	WinPaths []WinPath
+}
+
+// WinBase names the base directory a Windows candidate path is joined onto.
+type WinBase int
+
+// The base directories a Windows candidate path can resolve against.
+const (
+	WinAppData      WinBase = iota // %APPDATA%
+	WinLocalAppData                // %LOCALAPPDATA%
+	WinHome                        // the user's home directory
+)
+
+// WinPath is one Windows candidate: Parts joined onto Base's directory.
+type WinPath struct {
+	Base  WinBase
+	Parts []string
 }
 
 // ResolveBinary returns the path to spec's binary, searching PATH then the
@@ -62,14 +78,23 @@ func ResolveBinary(ctx context.Context, spec BinarySpec) (string, error) {
 	var candidates []string
 	if runtime.GOOS == "windows" {
 		names = spec.WinNames
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			candidates = append(candidates, joinAll(appData, spec.WinAppDataPaths)...)
-		}
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			candidates = append(candidates, joinAll(localAppData, spec.WinLocalAppDataPaths)...)
-		}
-		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates, joinAll(home, spec.WinHomePaths)...)
+		home, _ := os.UserHomeDir()
+		appData := os.Getenv("APPDATA")
+		localAppData := os.Getenv("LOCALAPPDATA")
+		for _, wp := range spec.WinPaths {
+			var base string
+			switch wp.Base {
+			case WinAppData:
+				base = appData
+			case WinLocalAppData:
+				base = localAppData
+			case WinHome:
+				base = home
+			}
+			if base == "" {
+				continue
+			}
+			candidates = append(candidates, filepath.Join(append([]string{base}, wp.Parts...)...))
 		}
 	} else {
 		candidates = append(candidates, spec.UnixPaths...)
