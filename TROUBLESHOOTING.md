@@ -48,6 +48,23 @@ cd node_modules/.pnpm/node-pty@1.1.0/node_modules/node-pty
 npx node-gyp rebuild
 ```
 
+## Voice Copilot Issues
+
+### "WebSocket connection failed"
+
+**Symptom**: The Voice Copilot interface fails to connect to the server and shows a "WebSocket connection failed" error on port 3002.
+
+**Root Cause**: The voice server is not running or missing required environment variables.
+
+**Fix**: Ensure the voice server is enabled and properly configured.
+
+1. Set the required environment variables:
+   - `AO_VOICE_ENABLED="true"` (or `NEXT_PUBLIC_AO_VOICE_ENABLED="true"`)
+   - `GEMINI_API_KEY="your-api-key"`
+   - `VOICE_TOKEN_SECRET="your-secret-string"`
+
+2. Rebuild the project if necessary (`pnpm build`) and restart the server. In dev mode (`pnpm dev`), voice is enabled by default, but the keys are still required.
+
 ## Other Issues
 
 ### Config file not found
