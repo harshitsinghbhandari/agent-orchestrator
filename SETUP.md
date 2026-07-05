@@ -61,6 +61,17 @@ Comprehensive guide to installing, configuring, and troubleshooting Agent Orches
   - Create incoming webhook: https://api.slack.com/messaging/webhooks
   - Set environment variable: `export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."`
 
+- **Composio API Key** - If using Composio integration
+  - Set environment variable: `export COMPOSIO_API_KEY="your-api-key"`
+
+- **OpenClaw Token** - If using OpenClaw hooks
+  - Set environment variable: `export OPENCLAW_HOOKS_TOKEN="your-hooks-token"`
+
+- **Voice Copilot** - If using Voice features
+  - Enable via: `export AO_VOICE_ENABLED="true"` or `export NEXT_PUBLIC_AO_VOICE_ENABLED="true"`
+  - Set Gemini key: `export GEMINI_API_KEY="your-gemini-key"`
+  - Set Token secret: `export VOICE_TOKEN_SECRET="your-secret"`
+
 ## Installation
 
 ### Install via npm (recommended)

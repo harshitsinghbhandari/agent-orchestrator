@@ -9,3 +9,15 @@
 - [x] Commands tested
 - [x] Cross-referenced with code
 - [x] No broken links
+
+## 2026-07-05
+
+### Files Updated
+- `README.md` - Added pnpm 9.15.4 to prerequisites section.
+- `SETUP.md` - Added `COMPOSIO_API_KEY`, `OPENCLAW_HOOKS_TOKEN` and Voice Copilot environment variables to optional prerequisites.
+- `TROUBLESHOOTING.md` - Added Voice Copilot WebSocket connection failure troubleshooting entry.
+
+### Verification
+- [x] Commands tested
+- [x] Cross-referenced with code
+- [x] No broken links
