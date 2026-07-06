@@ -334,7 +334,7 @@ jobs:
           gh release edit "$TAG" \
             --repo "$REPO" \
             --title "[feature] PR #${PR_NUMBER}: ${TITLE}" \
-            --body "$new_body"
+            --notes "$new_body"
 
   # ── release-intel (dedicated darwin-x64 leg) ──────────────────────────────
   # Mirrors the release-intel job in frontend-nightly.yml. Only macOS can build
