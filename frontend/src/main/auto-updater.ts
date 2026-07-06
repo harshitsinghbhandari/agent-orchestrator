@@ -7,6 +7,7 @@ import {
 	writeUpdateSettings,
 	UPDATE_SETTINGS_FILE_NAME,
 	type UpdateChannel,
+	type UpdateSettings,
 	type UpdateStatus,
 } from "./update-settings";
 
@@ -15,7 +16,21 @@ import {
 // postPackage hook into the app's Resources dir at build time). No runtime env
 // or setFeedURL call is needed; electron-updater reads the bundled yml on first
 // checkForUpdates.
-function configureFeed(channel: UpdateChannel): void {
+//
+// When settings.feature is set, the feed tracks the pr<N> prerelease channel
+// (e.g. "pr2270") with allowPrerelease and allowDowngrade enabled so the user
+// can switch back to stable after testing. Otherwise falls back to the home
+// channel logic (latest vs nightly).
+function configureFeed(settings: Pick<UpdateSettings, "channel" | "feature">): void {
+	if (settings.feature !== null && settings.feature !== undefined) {
+		// Feature build: pin to the pr<N> semver prerelease identifier channel.
+		autoUpdater.channel = `pr${settings.feature.pr}`;
+		autoUpdater.allowPrerelease = true;
+		autoUpdater.allowDowngrade = true; // allows switching back to stable/nightly
+		return;
+	}
+
+	const channel: UpdateChannel = settings.channel;
 	autoUpdater.channel = channel; // "latest" | "nightly"
 	// Nightly builds ship as GitHub *prereleases*. With allowPrerelease false
 	// (the default) electron-updater only inspects the latest NON-prerelease
@@ -68,7 +83,7 @@ export async function startAutoUpdates(stateDir: string): Promise<void> {
 	if (!settings.enabled) return;
 
 	wireUpdaterEvents();
-	configureFeed(settings.channel);
+	configureFeed(settings);
 	autoUpdater.autoDownload = true;
 	autoUpdater.autoInstallOnAppQuit = true;
 
@@ -91,7 +106,7 @@ export async function checkForUpdatesNow(stateDir: string): Promise<void> {
 		return;
 	}
 	const settings = await readUpdateSettings(stateDir);
-	configureFeed(settings.channel);
+	configureFeed(settings);
 	autoUpdater.autoDownload = false;
 	autoUpdater.autoInstallOnAppQuit = true;
 	broadcast({ state: "checking" });
@@ -137,7 +152,7 @@ export async function ensureUpdatePrefs(stateDir: string): Promise<void> {
 		detail: "You can change this later in Settings.",
 	});
 	if (optIn.response !== 0) {
-		await writeUpdateSettings(stateDir, { enabled: false, channel: "latest", nightlyAck: false });
+		await writeUpdateSettings(stateDir, { enabled: false, channel: "latest", nightlyAck: false, feature: null });
 		return;
 	}
 
@@ -150,7 +165,7 @@ export async function ensureUpdatePrefs(stateDir: string): Promise<void> {
 		detail: "Stable is released and tested. Nightly is the newest daily build.",
 	});
 	if (chan.response !== 1) {
-		await writeUpdateSettings(stateDir, { enabled: true, channel: "latest", nightlyAck: false });
+		await writeUpdateSettings(stateDir, { enabled: true, channel: "latest", nightlyAck: false, feature: null });
 		return;
 	}
 
@@ -165,7 +180,7 @@ export async function ensureUpdatePrefs(stateDir: string): Promise<void> {
 	await writeUpdateSettings(
 		stateDir,
 		ack.response === 0
-			? { enabled: true, channel: "nightly", nightlyAck: true }
-			: { enabled: true, channel: "latest", nightlyAck: false },
+			? { enabled: true, channel: "nightly", nightlyAck: true, feature: null }
+			: { enabled: true, channel: "latest", nightlyAck: false, feature: null },
 	);
 }

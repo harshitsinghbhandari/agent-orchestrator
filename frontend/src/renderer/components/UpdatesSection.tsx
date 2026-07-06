@@ -26,7 +26,7 @@ export function UpdatesSection() {
 		queryFn: () => aoBridge.updateSettings.get(),
 	});
 
-	const [form, setForm] = useState<UpdateSettings>({ enabled: false, channel: "latest", nightlyAck: false });
+	const [form, setForm] = useState<UpdateSettings>({ enabled: false, channel: "latest", nightlyAck: false, feature: null });
 	const [savedAt, setSavedAt] = useState<number | null>(null);
 
 	// Seed the form once settings load (and on refetch). Keying off the loaded

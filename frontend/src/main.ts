@@ -856,7 +856,7 @@ ipcMain.handle("appState:setMigration", async (_event, migration: MigrationState
 
 ipcMain.handle("updateSettings:get", async (): Promise<UpdateSettings> => {
 	const runFile = runFilePath();
-	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false };
+	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
 	return readUpdateSettings(path.dirname(runFile));
 });
 ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) => {
