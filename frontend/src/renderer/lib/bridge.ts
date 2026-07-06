@@ -1,4 +1,5 @@
 import type { AoBridge } from "../../preload";
+export type { FeatureBuild } from "../../main/feature-builds";
 
 export const aoBridge: AoBridge =
 	window.ao ??
@@ -106,5 +107,9 @@ export const aoBridge: AoBridge =
 			download: async () => undefined,
 			install: async () => undefined,
 			onStatus: () => () => undefined,
+		},
+		featureBuilds: {
+			list: async () => [],
+			getActive: async () => null,
 		},
 	} satisfies AoBridge);

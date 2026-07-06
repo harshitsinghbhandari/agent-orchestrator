@@ -21,7 +21,7 @@ import {
 // (e.g. "pr2270") with allowPrerelease and allowDowngrade enabled so the user
 // can switch back to stable after testing. Otherwise falls back to the home
 // channel logic (latest vs nightly).
-function configureFeed(settings: Pick<UpdateSettings, "channel" | "feature">): void {
+export function configureFeed(settings: Pick<UpdateSettings, "channel" | "feature">): void {
 	if (settings.feature !== null && settings.feature !== undefined) {
 		// Feature build: pin to the pr<N> semver prerelease identifier channel.
 		autoUpdater.channel = `pr${settings.feature.pr}`;

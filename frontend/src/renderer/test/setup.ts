@@ -152,5 +152,9 @@ if (typeof window !== "undefined") {
 			install: async () => undefined,
 			onStatus: () => () => undefined,
 		},
+		featureBuilds: {
+			list: async () => [],
+			getActive: async () => null,
+		},
 	};
 } // end if (typeof window !== "undefined")
