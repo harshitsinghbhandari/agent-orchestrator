@@ -203,6 +203,9 @@ jobs:
       - name: Skip if platform not requested
         id: gate
         shell: bash
+        # Runs before checkout, so it must not use the job's `frontend`
+        # working-directory (that dir does not exist yet). Read env only.
+        working-directory: ${{ github.workspace }}
         env:
           PLATFORM: ${{ matrix.platform }}
           BUILD_MAC: ${{ needs.guard.outputs.build_mac }}
