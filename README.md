@@ -136,18 +136,19 @@ Reviewer agents are configured separately. The current reviewer harnesses are:
 
 Download the latest desktop build for your platform:
 
-| Platform | Download                                                                                          |
-| -------- | ------------------------------------------------------------------------------------------------- |
-| Windows  | [Setup.exe](https://github.com/AgentWrapper/agent-orchestrator/releases/latest)                   |
-| macOS    | [Agent Orchestrator.dmg](https://github.com/AgentWrapper/agent-orchestrator/releases/latest)      |
-| Linux    | [Agent Orchestrator.AppImage](https://github.com/AgentWrapper/agent-orchestrator/releases/latest) |
+| Platform            | Download                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| macOS (Apple silicon) | [.zip](https://github.com/AgentWrapper/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-arm64.zip)        |
+| macOS (Intel)       | [.zip](https://github.com/AgentWrapper/agent-orchestrator/releases/latest/download/agent-orchestrator-darwin-x64.zip)            |
+| Windows             | [.exe](https://github.com/AgentWrapper/agent-orchestrator/releases/latest/download/agent-orchestrator-win32-x64.exe)             |
+| Linux               | [.AppImage](https://github.com/AgentWrapper/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.AppImage)   |
 
-After installing, run `ao start` from the repository you want AO to manage. See the [installation guide](https://ao-agents.com/docs/installation) for agent CLI setup and troubleshooting.
+After installing, open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://ao-agents.com/docs/installation) for agent CLI setup and troubleshooting.
 
 <details>
-<summary>Install via npm (still works, but no longer recommended)</summary>
+<summary>Install via npm (legacy CLI, no longer recommended)</summary>
 
-The `@aoagents/ao` npm package is frozen and no longer receives updates. Prefer the desktop build above.
+The `@aoagents/ao` npm package is frozen and no longer receives updates. It ships the `ao` CLI for existing users; `ao start` fetches and opens the same desktop build linked above. Prefer the desktop download for a fresh setup.
 
 ```bash
 npm install -g @aoagents/ao
