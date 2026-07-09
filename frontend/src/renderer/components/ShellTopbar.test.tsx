@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession } from "../types/workspace";
 import { TopbarKillButton } from "./ShellTopbar";
 
-const { postMock } = vi.hoisted(() => ({
+const { onKilledMock, postMock } = vi.hoisted(() => ({
+	onKilledMock: vi.fn(),
 	postMock: vi.fn(),
 }));
 
@@ -35,7 +36,20 @@ const worker: WorkspaceSession = {
 	prs: [],
 };
 
-function renderKill(session: WorkspaceSession = worker) {
+const orchestrator: WorkspaceSession = {
+	id: "orch-1",
+	workspaceId: "proj-1",
+	workspaceName: "my-app",
+	title: "orchestrator",
+	provider: "claude-code",
+	kind: "orchestrator",
+	branch: "main",
+	status: "working",
+	updatedAt: "2026-06-10T00:00:00Z",
+	prs: [],
+};
+
+function renderKill(session: WorkspaceSession = worker, orchestratorId?: string) {
 	const queryClient = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -44,13 +58,14 @@ function renderKill(session: WorkspaceSession = worker) {
 	});
 	render(
 		<QueryClientProvider client={queryClient}>
-			<TopbarKillButton session={session} />
+			<TopbarKillButton session={session} orchestratorId={orchestratorId} onKilled={onKilledMock} />
 		</QueryClientProvider>,
 	);
 	return queryClient;
 }
 
 beforeEach(() => {
+	onKilledMock.mockReset();
 	postMock.mockReset();
 	postMock.mockResolvedValue({ data: { ok: true, sessionId: "sess-1" }, error: undefined });
 });
@@ -88,5 +103,27 @@ describe("TopbarKillButton", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Confirm kill" }));
 
 		expect(await screen.findByText("session not found")).toBeInTheDocument();
+	});
+
+	it("navigates back to the project orchestrator after a successful kill", async () => {
+		renderKill(worker, orchestrator.id);
+
+		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Confirm kill" }));
+
+		await waitFor(() => {
+			expect(onKilledMock).toHaveBeenCalledWith("proj-1", "orch-1");
+		});
+	});
+
+	it("falls back to the project board when no orchestrator is available", async () => {
+		renderKill();
+
+		await userEvent.click(screen.getByRole("button", { name: "Kill session" }));
+		await userEvent.click(screen.getByRole("button", { name: "Confirm kill" }));
+
+		await waitFor(() => {
+			expect(onKilledMock).toHaveBeenCalledWith("proj-1", undefined);
+		});
 	});
 });

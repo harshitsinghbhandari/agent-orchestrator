@@ -100,11 +100,48 @@ The authenticated account must be able to read the repository, create branches, 
 AO launches an agent CLI inside each worker session. Start with the one you already use, then add more later if you want per-project or per-role choices.
 
 <Tabs items={["Claude Code", "Codex", "Cursor", "Aider", "OpenCode"]}>
-	<Tab value="Claude Code">```bash npm install -g @anthropic-ai/claude-code claude ```</Tab>
-	<Tab value="Codex">```bash npm install -g @openai/codex codex ```</Tab>
-	<Tab value="Cursor">```bash curl https://cursor.com/install -fsS | bash agent --help ```</Tab>
-	<Tab value="Aider">```bash pip install aider-install aider-install aider --help ```</Tab>
-	<Tab value="OpenCode">```bash npm install -g opencode-ai opencode --help ```</Tab>
+	<Tab value="Claude Code">
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude
+```
+
+    </Tab>
+    <Tab value="Codex">
+
+```bash
+npm install -g @openai/codex
+codex
+```
+
+    </Tab>
+    <Tab value="Cursor">
+
+```bash
+curl https://cursor.com/install -fsS | bash
+agent --help
+```
+
+    </Tab>
+    <Tab value="Aider">
+
+```bash
+pip install aider-install
+aider-install
+aider --help
+```
+
+    </Tab>
+    <Tab value="OpenCode">
+
+```bash
+npm install -g opencode-ai
+opencode --help
+```
+
+    </Tab>
+
 </Tabs>
 
 </Step>

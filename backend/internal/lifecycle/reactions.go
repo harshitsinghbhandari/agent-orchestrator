@@ -157,12 +157,22 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	if rec.IsTerminated || rec.Activity.State == domain.ActivityWaitingInput {
 		return nil
 	}
-	// Queue every applicable nudge so one PR condition cannot hide another.
+	// A single PR can trip several actionable conditions at once (failing CI,
+	// unresolved review comments, a merge conflict). Queue every applicable nudge
+	// and send them together, so each surfaces independently instead of one
+	// returning early and hiding the rest — the bug this reducer had, where a CI
+	// failure suppressed review feedback on the same PR. Each nudge self-dedups
+	// via sendOnce; a send error short-circuits, and nudges already sent have
+	// persisted their own dedup signature so the next poll retries only the rest.
+	ident := prIdentity(o)
 	var nudges []pendingNudge
 
 	if o.CI == domain.CIFailing {
 		if ch, ok := firstFailedCheck(o.Checks); ok {
-			msg := "CI is failing on your PR. Review the output below and push a fix."
+			msg := "CI is failing on " + ident + ". Review the output below and push a fix."
+			if o.URL != "" {
+				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+			}
 			if ch.LogTail != "" {
 				// LogTail is raw CI job output; sanitize before it reaches the
 				// agent's live pane so embedded escape sequences can't drive the
@@ -174,7 +184,10 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	}
 	if o.Review == domain.ReviewChangesRequest || hasUnresolvedComments(o.Comments) {
 		comments, sig := reviewContent(o.Comments)
-		msg := "A reviewer left feedback on your PR. Address it and push."
+		msg := "A reviewer left feedback on " + ident + ". Address it and push."
+		if o.URL != "" {
+			msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+		}
 		if comments != "" {
 			msg += "\n\n" + comments
 		}
@@ -194,7 +207,11 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 			return err
 		}
 		if !blocked {
-			nudges = append(nudges, pendingNudge{key: "merge-conflict:" + o.URL, sig: string(o.Mergeability), msg: "Your PR has merge conflicts. Rebase onto the base branch and resolve them.", maxAttempts: 0})
+			msg := "There are merge conflicts on " + ident + ". Rebase onto the base branch and resolve them."
+			if o.URL != "" {
+				msg += "\nPR: " + domain.SanitizeControlChars(o.URL)
+			}
+			nudges = append(nudges, pendingNudge{key: "merge-conflict:" + o.URL, sig: string(o.Mergeability), msg: msg, maxAttempts: 0})
 		}
 	}
 
@@ -386,6 +403,9 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 		Fetched:      o.Fetched,
 		URL:          firstSCMNonEmpty(o.PR.URL, o.PR.HTMLURL),
 		Number:       o.PR.Number,
+		Title:        o.PR.Title,
+		SourceBranch: o.PR.SourceBranch,
+		TargetBranch: o.PR.TargetBranch,
 		Draft:        o.PR.Draft,
 		Merged:       o.PR.Merged,
 		Closed:       o.PR.Closed,
@@ -522,6 +542,25 @@ func firstSCMNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// prIdentity renders a short, sanitized PR identity ("PR #123 \"Title\"
+// (feat/x → main)") for nudge messages so an agent in a multi-PR session can
+// tell which PR — and where in a stack — a nudge refers to. Title and branch
+// names are provider-controlled and reach the agent's live pane, so both are
+// control-char sanitized. Falls back to "your PR" when the number is unknown.
+func prIdentity(o ports.PRObservation) string {
+	if o.Number <= 0 {
+		return "your PR"
+	}
+	id := fmt.Sprintf("PR #%d", o.Number)
+	if o.Title != "" {
+		id += fmt.Sprintf(" %q", domain.SanitizeControlChars(o.Title))
+	}
+	if o.SourceBranch != "" && o.TargetBranch != "" {
+		id += fmt.Sprintf(" (%s → %s)", domain.SanitizeControlChars(o.SourceBranch), domain.SanitizeControlChars(o.TargetBranch))
+	}
+	return id
 }
 
 // firstFailedCheck returns the first check in a failed state, preserving the
