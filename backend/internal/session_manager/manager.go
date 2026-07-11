@@ -684,11 +684,13 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	}
 
 	ws := workspaceInfo(rec)
+	staleWorkspace := false
 	if _, err := m.workspace.StashUncommitted(ctx, ws); err != nil {
-		return fmt.Errorf("retire replacement %s: stash: %w", id, err)
-	}
-	if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
-		return fmt.Errorf("retire replacement %s: clear restore markers: %w", id, err)
+		if !errors.Is(err, ports.ErrWorkspaceStale) {
+			return fmt.Errorf("retire replacement %s: stash: %w", id, err)
+		}
+		staleWorkspace = true
+		m.logger.Warn("retire replacement: stale workspace; skipping preserve", "sessionID", id, "path", ws.Path, "error", err)
 	}
 	handle := runtimeHandle(rec.Metadata)
 	if handle.ID != "" {
@@ -697,7 +699,13 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 		}
 	}
 	if err := m.workspace.ForceDestroy(ctx, ws); err != nil {
+		if staleWorkspace {
+			m.logger.Warn("retire replacement: stale workspace cleanup failed", "sessionID", id, "path", ws.Path, "error", err)
+		}
 		return fmt.Errorf("retire replacement %s: force destroy: %w", id, err)
+	}
+	if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
+		return fmt.Errorf("retire replacement %s: clear restore markers: %w", id, err)
 	}
 	if err := m.lcm.MarkTerminated(ctx, rec.ID); err != nil {
 		return fmt.Errorf("retire replacement %s: mark terminated: %w", id, err)
@@ -706,9 +714,14 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 }
 
 func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec domain.SessionRecord, rows []ports.WorkspaceRepoInfo) error {
+	staleRepos := make(map[string]bool)
 	for _, row := range rows {
 		if _, err := m.workspace.StashUncommitted(ctx, workspaceInfoFromRepoInfo(row)); err != nil {
-			return fmt.Errorf("retire replacement %s repo %s: stash: %w", rec.ID, row.RepoName, err)
+			if !errors.Is(err, ports.ErrWorkspaceStale) {
+				return fmt.Errorf("retire replacement %s repo %s: stash: %w", rec.ID, row.RepoName, err)
+			}
+			staleRepos[row.RepoName] = true
+			m.logger.Warn("retire replacement: stale workspace repo; skipping preserve", "sessionID", rec.ID, "repo", row.RepoName, "path", row.Path, "error", err)
 		}
 	}
 	handle := runtimeHandle(rec.Metadata)
@@ -719,6 +732,9 @@ func (m *Manager) retireWorkspaceProjectForReplacement(ctx context.Context, rec 
 	}
 	for i := len(rows) - 1; i >= 0; i-- {
 		if err := m.workspace.ForceDestroy(ctx, workspaceInfoFromRepoInfo(rows[i])); err != nil {
+			if staleRepos[rows[i].RepoName] {
+				m.logger.Warn("retire replacement: stale workspace repo cleanup failed", "sessionID", rec.ID, "repo", rows[i].RepoName, "path", rows[i].Path, "error", err)
+			}
 			return fmt.Errorf("retire replacement %s repo %s: force destroy: %w", rec.ID, rows[i].RepoName, err)
 		}
 	}

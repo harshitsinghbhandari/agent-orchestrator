@@ -170,6 +170,11 @@ var (
 	// it holds uncommitted changes or untracked files. Teardown is never
 	// forced; callers treat the workspace as intentionally preserved.
 	ErrWorkspaceDirty = errors.New("workspace: uncommitted changes present")
+	// ErrWorkspaceStale reports an AO-managed workspace path no longer points
+	// at a registered git worktree. Replacement paths may skip preservation for
+	// this state after path-safety checks, while real preserve failures remain
+	// fatal.
+	ErrWorkspaceStale = errors.New("workspace: stale managed worktree")
 	// ErrPreservedConflict is returned by ApplyPreserved when replaying a
 	// preserved ref onto the worktree produces merge conflicts. The ref is
 	// kept intact (never deleted on conflict); the working tree is left with
