@@ -45,7 +45,6 @@ type ListFilter struct {
 type commander interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error)
 	Restore(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error)
-	SwitchHarness(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, model string) (domain.SessionRecord, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	RetireForReplacement(ctx context.Context, id domain.SessionID) error
 	Send(ctx context.Context, id domain.SessionID, message string) error
@@ -88,6 +87,7 @@ type Service struct {
 	store               Store
 	prClaimer           ports.PRClaimer
 	scm                 scmProvider
+	tracker             ports.Tracker
 	clock               func() time.Time
 	telemetry           ports.EventSink
 	orchestratorLocksMu sync.Mutex
@@ -112,6 +112,7 @@ type Deps struct {
 	Store     Store
 	PRClaimer ports.PRClaimer
 	SCM       scmProvider
+	Tracker   ports.Tracker
 	Clock     func() time.Time
 	Telemetry ports.EventSink
 	// SignalCapable gates the no_signal status downgrade per harness; daemon
@@ -122,7 +123,7 @@ type Deps struct {
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
 func NewWithDeps(d Deps) *Service {
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, clock: d.Clock, signalCapable: d.SignalCapable, telemetry: d.Telemetry}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, signalCapable: d.SignalCapable, telemetry: d.Telemetry}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -145,6 +146,7 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("count sessions: %w", err)
 	}
+	cfg = s.withIssueContext(ctx, cfg, project)
 	rec, err := s.manager.Spawn(ctx, cfg)
 	if err != nil {
 		s.emitSpawnFailed(cfg, err, s.now().Sub(start).Milliseconds())
@@ -389,36 +391,6 @@ func (s *Service) Restore(ctx context.Context, id domain.SessionID) (domain.Sess
 	return s.toSession(ctx, rec)
 }
 
-// SwitchHarness swaps a live session's agent in place and returns the updated
-// read model. model, when non-empty, overrides the agent model for the new launch.
-//
-// A merged session is locked: it must never switch. "merged" is a DERIVED
-// read-model status (from PR facts), so the internal manager — which sees only
-// durable session/workspace facts — cannot enforce it. Reject it here so direct
-// API/CLI callers are held to the same rule as the inspector UI.
-func (s *Service) SwitchHarness(ctx context.Context, id domain.SessionID, harness domain.AgentHarness, model string) (domain.Session, error) {
-	if s.store != nil {
-		cur, ok, err := s.store.GetSession(ctx, id)
-		if err != nil {
-			return domain.Session{}, fmt.Errorf("switch %s: %w", id, err)
-		}
-		if ok {
-			sess, err := s.toSession(ctx, cur)
-			if err != nil {
-				return domain.Session{}, err
-			}
-			if sess.Status == domain.StatusMerged {
-				return domain.Session{}, apierr.Conflict("SESSION_MERGED", "A merged session cannot switch agents", nil)
-			}
-		}
-	}
-	rec, err := s.manager.SwitchHarness(ctx, id, harness, model)
-	if err != nil {
-		return domain.Session{}, toAPIError(err)
-	}
-	return s.toSession(ctx, rec)
-}
-
 // Kill delegates terminal intent and teardown to the internal manager.
 func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	freed, err := s.manager.Kill(ctx, id)
@@ -585,13 +557,14 @@ func toAPIError(err error) error {
 		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
 	case errors.Is(err, sessionmanager.ErrTerminated):
 		return apierr.Conflict("SESSION_TERMINATED", "Session is terminated", nil)
+	case errors.Is(err, sessionmanager.ErrAwaitingDecision):
+		return apierr.Conflict("SESSION_AWAITING_DECISION",
+			"Session is paused on a permission decision; answer it in the session terminal first", nil)
 	case errors.Is(err, sessionmanager.ErrIncompleteHandle):
 		return apierr.Conflict("SESSION_INCOMPLETE_HANDLE", "Session is missing runtime or workspace handles", nil)
 	case errors.Is(err, sessionmanager.ErrNotResumable):
 		return apierr.Conflict("SESSION_NOT_RESUMABLE",
 			"This session has no saved agent session or prompt to resume from", nil)
-	case errors.Is(err, sessionmanager.ErrSwitchInProgress):
-		return apierr.Conflict("SWITCH_IN_PROGRESS", "An agent switch is already in progress for this session", nil)
 	case errors.Is(err, sessionmanager.ErrProjectNotResolvable):
 		return apierr.Invalid("PROJECT_NOT_RESOLVABLE", "Project is not registered or has no repo. Register it with `ao project add`", nil)
 	case errors.Is(err, sessionmanager.ErrUnknownHarness):
