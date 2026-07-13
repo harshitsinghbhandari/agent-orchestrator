@@ -53,6 +53,7 @@ import { createBrowserViewHost, type BrowserViewHost } from "./main/browser-view
 import { connectSupervisor, type SupervisorLinkHandle } from "./main/supervisor-link";
 import { shouldLinkOnAttach } from "./main/daemon-owner";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
+import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -321,7 +322,7 @@ function createWindow(): void {
 	// navigate the privileged window away from the app origin. External links go to
 	// the OS browser. Keep this in place before exposing any daemon output to the renderer.
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-		if (/^https?:\/\//.test(url)) {
+		if (isAllowedAppExternalURL(url)) {
 			void shell.openExternal(url);
 		}
 		return { action: "deny" };
@@ -957,6 +958,9 @@ ipcMain.handle("daemon:getStatus", () => refreshDaemonStatus());
 ipcMain.handle("daemon:start", () => startDaemon());
 ipcMain.handle("daemon:stop", () => stopDaemon());
 ipcMain.handle("app:getVersion", () => app.getVersion());
+ipcMain.handle("app:openExternal", async (_event, url: string) => {
+	await openAllowedAppExternalURL(url, shell);
+});
 
 // Re-tint the native window-button overlay (min/max/close) to match the active
 // theme; the renderer calls this on theme change. No-op unless the window was
