@@ -315,6 +315,34 @@ func TestPipelinesGetArtifact_HappyAndNotFound(t *testing.T) {
 	assertErrorCode(t, body, status, http.StatusNotFound, "PIPELINE_ARTIFACT_NOT_FOUND")
 }
 
+// TestPipelinesFlagOffReturns501 is the AO_PIPELINES=off contract (T11): the
+// daemon passes a nil Pipelines Manager when the flag is off, and every route
+// stays registered but returns 501 Not Implemented, across all method kinds.
+func TestPipelinesFlagOffReturns501(t *testing.T) {
+	srv := newPipelineTestServer(t, nil)
+
+	cases := []struct {
+		method, path, body string
+	}{
+		{"GET", "/api/v1/pipelines?project=mer", ""},
+		{"POST", "/api/v1/pipelines?project=mer", `{"yamlSource":"name: review"}`},
+		{"PUT", "/api/v1/pipelines/pl-1", `{"yamlSource":"name: review"}`},
+		{"DELETE", "/api/v1/pipelines/pl-1", ""},
+		{"GET", "/api/v1/pipelines/schema", ""},
+		{"GET", "/api/v1/pipelines/runs?project=mer", ""},
+		{"GET", "/api/v1/pipelines/runs/run-1", ""},
+		{"POST", "/api/v1/pipelines/runs/run-1/cancel", ""},
+		{"POST", "/api/v1/pipelines/runs/run-1/resume", ""},
+		{"GET", "/api/v1/pipelines/runs/run-1/artifacts/a-1", ""},
+	}
+	for _, tc := range cases {
+		_, status, _ := doRequest(t, srv, tc.method, tc.path, tc.body)
+		if status != http.StatusNotImplemented {
+			t.Errorf("%s %s with flag off = %d, want 501", tc.method, tc.path, status)
+		}
+	}
+}
+
 func contains(body []byte, sub string) bool {
 	return strings.Contains(string(body), sub)
 }
