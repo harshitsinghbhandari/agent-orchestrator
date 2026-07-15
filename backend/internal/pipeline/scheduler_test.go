@@ -79,9 +79,9 @@ func TestScheduleAfterChange(t *testing.T) {
 
 	t.Run("routes.when recovery branch starts when the predicate matches a failure", func(t *testing.T) {
 		// recover activates when a failed (stage_verdict fail).
-		recover := withRoutes(stageDef("recover", "a"),
+		recoverStage := withRoutes(stageDef("recover", "a"),
 			Predicate{Kind: PredicateStageVerdict, Stage: "a", Verdict: VerdictFail})
-		p := pipelineOf("routed", 1, stageDef("a"), recover)
+		p := pipelineOf("routed", 1, stageDef("a"), recoverStage)
 		run := runState("r1", p, map[string]StageStatus{"a": StageStatusFailed})
 		sched := scheduleAfterChange(run, testNow)
 		if got := startedStageNames(sched.startEffects); !reflect.DeepEqual(got, []string{"recover"}) {

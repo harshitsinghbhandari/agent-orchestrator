@@ -117,10 +117,11 @@ func reduceTriggerFired(state EngineState, event TriggerFired) (EngineState, []E
 	nextState := replaceRun(state, runState)
 	nextState = withCurrentRun(nextState, key, event.RunID)
 
-	effects := []Effect{
+	effects := make([]Effect, 0, 3+len(sched.startEffects)+len(sched.newlySkipped))
+	effects = append(effects,
 		PersistRun{RunState: runState},
 		PersistLoopState{RunID: event.RunID, LoopState: deriveLoopStateFromRun(runState, now)},
-	}
+	)
 	effects = append(effects, sched.startEffects...)
 	effects = append(effects, createdObs)
 	effects = append(effects, skipObservations(runState.RunID, sched.newlySkipped, runState)...)

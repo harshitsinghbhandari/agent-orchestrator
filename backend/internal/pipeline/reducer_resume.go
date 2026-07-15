@@ -70,7 +70,7 @@ func reduceRunResumed(state EngineState, event RunResumed) (EngineState, []Effec
 			return invalidTransition(state, "RUN_RESUMED missing stageRunId for failed stage \""+name+"\"")
 		}
 		prior := run.Stages[name]
-		if cap := retriesByName[name]; cap != nil && prior.Attempt >= *cap+1 {
+		if retryCap := retriesByName[name]; retryCap != nil && prior.Attempt >= *retryCap+1 {
 			return invalidTransition(state, "RUN_RESUMED would exceed stage.retries for \""+name+"\"")
 		}
 		stageDelta[name] = StageState{
@@ -128,10 +128,11 @@ func reduceRunResumed(state EngineState, event RunResumed) (EngineState, []Effec
 	nextState := replaceRun(state, finalRun)
 	nextState = withCurrentRun(nextState, key, event.RunID)
 
-	effects := []Effect{
+	effects := make([]Effect, 0, 3+len(sched.startEffects)+len(sched.newlySkipped))
+	effects = append(effects,
 		PersistRun{RunState: finalRun},
 		PersistLoopState{RunID: event.RunID, LoopState: deriveLoopStateFromRun(finalRun, now)},
-	}
+	)
 	effects = append(effects, sched.startEffects...)
 	effects = append(effects, skipObservations(event.RunID, sched.newlySkipped, finalRun)...)
 	resumedNames := append(append([]string{}, failedStageNames...), outdatedStageNames...)

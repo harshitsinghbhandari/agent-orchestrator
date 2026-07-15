@@ -43,9 +43,9 @@ type scheduleResult struct {
 func scheduleAfterChange(run RunState, now time.Time) scheduleResult {
 	current, newlySkipped := applyEligibleSkips(run, now)
 
-	max := 1
+	maxConcurrent := 1
 	if current.PipelineConfigSnapshot.MaxConcurrentStages != nil {
-		max = *current.PipelineConfigSnapshot.MaxConcurrentStages
+		maxConcurrent = *current.PipelineConfigSnapshot.MaxConcurrentStages
 	}
 	inflight := 0
 	for _, s := range current.Stages {
@@ -53,7 +53,7 @@ func scheduleAfterChange(run RunState, now time.Time) scheduleResult {
 			inflight++
 		}
 	}
-	slots := max - inflight
+	slots := maxConcurrent - inflight
 	if slots < 0 {
 		slots = 0
 	}
