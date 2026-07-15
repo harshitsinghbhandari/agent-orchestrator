@@ -1,0 +1,181 @@
+package executors
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
+)
+
+// SpawnRequest is the narrow spawn payload the agent executor hands the session
+// manager. It carries only what a pipeline stage needs; the concrete adapter
+// (wired by T5) maps it onto ports.SpawnConfig.
+type SpawnRequest struct {
+	ProjectID string
+	IssueID   string
+	// Prompt is the fully-assembled stage prompt injected at spawn time.
+	Prompt string
+	// Harness is the agent plugin the stage requested (stage.executor.plugin).
+	// Empty lets the project default pick the harness.
+	Harness string
+}
+
+// SpawnedSession is what the session manager returns for a fresh spawn.
+type SpawnedSession struct {
+	SessionID     string
+	WorkspacePath string
+}
+
+// SessionSnapshot is the subset of session state the agent executor polls: is
+// the agent idle, and has the session gone terminal (killed/exited) without
+// producing findings.
+type SessionSnapshot struct {
+	// Activity is the agent's reported activity state (domain.ActivityState
+	// value, e.g. "idle", "active", "exited").
+	Activity string
+	// Terminated reports whether the session row is terminated.
+	Terminated bool
+}
+
+// SessionSpawner is the session-manager seam the agent executor needs: spawn a
+// fresh visible session, snapshot its state, and kill it. Mirrors the DI style
+// of internal/review's Launcher so the concrete Manager never enters this
+// package's core logic.
+type SessionSpawner interface {
+	Spawn(ctx context.Context, req SpawnRequest) (SpawnedSession, error)
+	// Get returns a snapshot and whether the session still exists.
+	Get(ctx context.Context, sessionID string) (SessionSnapshot, bool, error)
+	// Kill tears the session down. Idempotent; a missing session is not an error.
+	Kill(ctx context.Context, sessionID string) error
+}
+
+// agentHandle is the running-stage token for an agent stage.
+type agentHandle struct {
+	stageIdentity
+	sessionID     string
+	workspacePath string
+}
+
+// AgentExecutor bridges a pipeline stage to a real, visible AO session: spawn a
+// fresh session with the stage prompt, wait for the agent to go idle AND drop
+// its findings file, harvest the findings, then kill the session. It touches
+// neither the reducer nor the store; the engine threads outcomes onward.
+type AgentExecutor struct {
+	sessions SessionSpawner
+}
+
+// NewAgentExecutor builds an agent executor over the given session seam.
+func NewAgentExecutor(sessions SessionSpawner) *AgentExecutor {
+	return &AgentExecutor{sessions: sessions}
+}
+
+var _ StageExecutor = (*AgentExecutor)(nil)
+
+// Start spawns the stage's session and returns a handle. It errors (mapped by
+// the engine to STAGE_FAILED) when the stage is not an agent stage, the spawn
+// fails, or the spawned session has no workspace to harvest findings from.
+func (e *AgentExecutor) Start(ctx context.Context, in StartInput) (Handle, error) {
+	if in.Stage.Executor.Kind != pipeline.ExecutorAgent {
+		return nil, fmt.Errorf("agent executor cannot start stage %q with executor.kind=%s", in.Stage.Name, in.Stage.Executor.Kind)
+	}
+
+	prompt := buildStagePrompt(in.PipelineName, in.Stage, in.LoopRound)
+	session, err := e.sessions.Spawn(ctx, SpawnRequest{
+		ProjectID: in.ProjectID,
+		IssueID:   in.IssueID,
+		Prompt:    prompt,
+		Harness:   in.Stage.Executor.Plugin,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent executor: spawn session for stage %q: %w", in.Stage.Name, err)
+	}
+	if session.WorkspacePath == "" {
+		// Belt-and-suspenders: without a workspace there is no known path to
+		// harvest findings from. Kill the orphan and fail the start.
+		_ = e.sessions.Kill(ctx, session.SessionID)
+		return nil, fmt.Errorf("agent executor: session %s for stage %q has no workspace; cannot harvest findings", session.SessionID, in.Stage.Name)
+	}
+
+	return &agentHandle{
+		stageIdentity: stageIdentity{runID: in.RunID, stageRunID: in.StageRunID, stageName: in.Stage.Name},
+		sessionID:     session.SessionID,
+		workspacePath: session.WorkspacePath,
+	}, nil
+}
+
+// Poll reports OutcomeRunning until the session is idle AND the findings file
+// exists, then harvests findings, kills the session, and returns
+// OutcomeCompleted. A vanished or terminal-without-findings session, or an
+// unparseable findings file, yields OutcomeFailed. On a bad findings file the
+// session is left alive for human inspection.
+func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Outcome, error) {
+	handle, ok := h.(*agentHandle)
+	if !ok {
+		return Outcome{}, fmt.Errorf("agent executor: unexpected handle type %T", h)
+	}
+
+	snap, exists, err := e.sessions.Get(ctx, handle.sessionID)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("agent executor: get session %s: %w", handle.sessionID, err)
+	}
+	if !exists {
+		// The session vanished between polls: fail rather than spin forever
+		// waiting for an idle signal that will never come.
+		return Outcome{
+			Status:       OutcomeFailed,
+			ErrorMessage: fmt.Sprintf("stage %q session %s no longer exists", handle.stageName, handle.sessionID),
+		}, nil
+	}
+	if snap.Terminated || snap.Activity == "exited" {
+		return Outcome{
+			Status:       OutcomeFailed,
+			ErrorMessage: fmt.Sprintf("stage %q session %s terminated without findings (activity=%s)", handle.stageName, handle.sessionID, snap.Activity),
+		}, nil
+	}
+
+	findingsPath := filepath.Join(handle.workspacePath, stageFindingsRelativePath)
+	if snap.Activity != "idle" || !fileExists(findingsPath) {
+		return Outcome{Status: OutcomeRunning}, nil
+	}
+
+	result, err := parseFindingsFile(findingsPath)
+	if err != nil {
+		// Leave the session up so a human can inspect the bad findings file.
+		return Outcome{
+			Status:       OutcomeFailed,
+			ErrorMessage: fmt.Sprintf("stage %q produced unparseable findings at %s: %v", handle.stageName, findingsPath, err),
+		}, nil
+	}
+
+	_ = e.sessions.Kill(ctx, handle.sessionID)
+
+	outcome := Outcome{Status: OutcomeCompleted, Artifacts: result.artifacts}
+	if result.truncated {
+		outcome.Observations = []Observation{{
+			Name: "pipeline.findings.truncated",
+			Data: map[string]any{
+				"runId":        string(handle.runID),
+				"stageRunId":   string(handle.stageRunID),
+				"stageName":    handle.stageName,
+				"findingsPath": findingsPath,
+				"capBytes":     findingsFileSizeCapBytes,
+				"bytesRead":    result.bytesRead,
+			},
+		}}
+	}
+	return outcome, nil
+}
+
+// Cancel kills the underlying session early. Idempotent.
+func (e *AgentExecutor) Cancel(ctx context.Context, h Handle) error {
+	handle, ok := h.(*agentHandle)
+	if !ok {
+		return fmt.Errorf("agent executor: unexpected handle type %T", h)
+	}
+	if err := e.sessions.Kill(ctx, handle.sessionID); err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("agent executor: kill session %s: %w", handle.sessionID, err)
+	}
+	return nil
+}
