@@ -32,6 +32,7 @@ import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { renameSession } from "../lib/rename-session";
 import { useEventsConnection } from "../hooks/useEventsConnection";
+import { usePipelinesEnabled } from "../hooks/usePipelinesEnabled";
 import { useResizable } from "../hooks/useResizable";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import { ConnectMobileModal } from "./ConnectMobileModal";
@@ -157,6 +158,7 @@ export function Sidebar({
 }: SidebarProps) {
 	const selection = useSelection();
 	const eventsConnection = useEventsConnection();
+	const { enabled: pipelinesEnabled } = usePipelinesEnabled();
 	const { state, setOpen } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	const [expandedChromeVisible, setExpandedChromeVisible] = useState(!isCollapsed);
@@ -379,10 +381,12 @@ export function Sidebar({
 								<GitPullRequest aria-hidden="true" />
 								Pull requests
 							</DropdownMenuItem>
-							<DropdownMenuItem onSelect={selection.goPipelines}>
-								<Workflow aria-hidden="true" />
-								Pipelines
-							</DropdownMenuItem>
+							{pipelinesEnabled === true && (
+								<DropdownMenuItem onSelect={selection.goPipelines}>
+									<Workflow aria-hidden="true" />
+									Pipelines
+								</DropdownMenuItem>
+							)}
 							<DropdownMenuItem disabled>
 								<Search aria-hidden="true" />
 								Search
@@ -453,10 +457,12 @@ export function Sidebar({
 								<GitPullRequest aria-hidden="true" />
 								Pull requests
 							</DropdownMenuItem>
-							<DropdownMenuItem onSelect={selection.goPipelines}>
-								<Workflow aria-hidden="true" />
-								Pipelines
-							</DropdownMenuItem>
+							{pipelinesEnabled === true && (
+								<DropdownMenuItem onSelect={selection.goPipelines}>
+									<Workflow aria-hidden="true" />
+									Pipelines
+								</DropdownMenuItem>
+							)}
 							<DropdownMenuItem disabled>
 								<Search aria-hidden="true" />
 								Search
