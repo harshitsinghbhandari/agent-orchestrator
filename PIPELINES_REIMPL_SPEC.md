@@ -1,6 +1,6 @@
 # Pipelines v1 — Reimplementation Spec
 
-> **Status:** Resolved spec + build-time resolutions (§4b). Execution in progress via AO workers, orchestrated from session `agent-orchestrator-29`.
+> **Status:** Execution complete. All 11 tasks (T1-T11) built and merged onto `pipelines` via AO workers, orchestrated from session `agent-orchestrator-29`; shipped behind the `AO_PIPELINES` flag (default off).
 > **Target:** fork (`origin` = `harshitsinghbhandari/agent-orchestrator`) only. Integration branch: `pipelines` (kept rebased onto `upstream/main`). Task branches off `pipelines`, PRs into `pipelines`. Upstream (`AgentWrapper`) is untouched and must never learn about this work.
 > **Behavioral source of truth:** git branch `origin/legacy-pipelines` (old pre-rewrite TypeScript monorepo; renamed from `pipelines` on 2026-07-03, which auto-closed old PR #211). It is a *reference spec*, **not** portable code.
 > **Fork-only artifacts:** this spec file lives only on the `pipelines` branch and is removed before the final upstream PR.

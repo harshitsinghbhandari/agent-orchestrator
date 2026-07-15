@@ -135,10 +135,17 @@ func Run() error {
 	}
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, log)
 
-	// Pipelines v1 (spec §4b T5): one actor-loop engine per project, driving the
-	// pure reducer + executors + store. Single wiring seam so T11 can gate the
-	// whole subsystem behind AO_PIPELINES here.
-	pipelineStk := startPipelineEngine(ctx, store, sessionSvc, cdcPipe.Broadcaster, log)
+	// Pipelines v1 (spec §4b T5/T11): one actor-loop engine per project, driving
+	// the pure reducer + executors + store. Gated behind AO_PIPELINES (default
+	// off): when off, no engines and no CDC trigger bridge start, and Pipelines
+	// stays nil below so every API route returns 501. pipelineStk.Stop is
+	// nil-safe, so teardown needs no extra guard.
+	var pipelineStk *pipelineStack
+	var pipelinesSvc pipelinesvc.Manager
+	if cfg.Pipelines {
+		pipelineStk = startPipelineEngine(ctx, store, sessionSvc, cdcPipe.Broadcaster, log)
+		pipelinesSvc = pipelinesvc.New(store, pipelinesvc.SupervisorEngines(pipelineStk.supervisor))
+	}
 
 	previewDone := preview.NewPoller(store, sessionSvc, "http://"+cfg.Addr(), preview.PollerConfig{Logger: log}).Start(ctx)
 	agentSvc := agentsvc.New()
@@ -168,7 +175,7 @@ func Run() error {
 		Notifications:      notifier,
 		NotificationStream: notificationHub,
 		Import:             importsvc.New(importsvc.Deps{Store: store}),
-		Pipelines:          pipelinesvc.New(store, pipelinesvc.SupervisorEngines(pipelineStk.supervisor)),
+		Pipelines:          pipelinesSvc,
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           lcStack.LCM,

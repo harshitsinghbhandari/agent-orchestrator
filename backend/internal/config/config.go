@@ -94,6 +94,10 @@ type Config struct {
 	AllowedOrigins []string
 	// Telemetry controls local/remote telemetry sinks.
 	Telemetry TelemetryConfig
+	// Pipelines gates the pipelines v1 subsystem (spec §4b T11). Off by default:
+	// when off the daemon starts no engines or CDC trigger bridge and the API
+	// returns 501 on every pipelines route. Toggled by AO_PIPELINES.
+	Pipelines bool
 }
 
 // Addr returns the host:port the HTTP server binds. It uses net.JoinHostPort so
@@ -120,6 +124,7 @@ func (c Config) Addr() string {
 //	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
 //	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
 //	AO_TELEMETRY_POSTHOG_HOST  PostHog host (default DefaultTelemetryPostHogHost)
+//	AO_PIPELINES         pipelines subsystem off|on (default off)
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -212,6 +217,14 @@ func Load() (Config, error) {
 	}
 	if raw := os.Getenv("AO_TELEMETRY_POSTHOG_HOST"); raw != "" {
 		cfg.Telemetry.PostHogHost = raw
+	}
+
+	if raw := os.Getenv("AO_PIPELINES"); raw != "" {
+		v, err := parseToggleEnv("AO_PIPELINES", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Pipelines = v
 	}
 
 	runFile, err := resolveRunFilePath()
