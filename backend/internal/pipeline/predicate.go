@@ -100,6 +100,12 @@ func predicateFieldRules(kind PredicateKind) (allowed map[string]bool, required 
 	}
 }
 
+// predicateFieldNames is the fixed order union fields are reported in, so
+// cross-kind rejection issues come out deterministically.
+var predicateFieldNames = []string{
+	"stages", "stage", "severity", "max", "n", "verdict", "predicates", "predicate",
+}
+
 // presentFields reports which union fields carry a non-zero value on p.
 func (p *Predicate) presentFields() map[string]bool {
 	return map[string]bool{
@@ -142,8 +148,9 @@ func (p *Predicate) Validate(path string) []Issue {
 		return issues
 	}
 
-	for name, isPresent := range p.presentFields() {
-		if isPresent && !allowed[name] {
+	present := p.presentFields()
+	for _, name := range predicateFieldNames {
+		if present[name] && !allowed[name] {
 			addf("field %q is not valid for predicate kind %q", name, p.Kind)
 		}
 	}

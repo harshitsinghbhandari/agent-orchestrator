@@ -358,7 +358,7 @@ func (k ArtifactKind) IsKnown() bool {
 //     stage at the same SHA, destroyed on terminal status. Safe for stages
 //     that write files.
 //
-// The empty string means "unset" — the default is resolved later (by the
+// The empty string means "unset": the default is resolved later (by the
 // scheduler/executor task, not this package) based on the stage's executor
 // kind.
 type WorkspaceMode string

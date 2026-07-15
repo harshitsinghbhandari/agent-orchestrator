@@ -260,6 +260,12 @@ func executorFieldRules(kind ExecutorKind) (allowed map[string]bool, required ma
 	}
 }
 
+// executorFieldNames is the fixed order executor fields are reported in, so
+// cross-kind rejection and missing-required issues come out deterministically.
+var executorFieldNames = []string{
+	"plugin", "mode", "command", "args", "env", "cwd", "name", "config",
+}
+
 func executorPresentFields(e StageExecutor) map[string]bool {
 	return map[string]bool{
 		"plugin":  e.Plugin != "",
@@ -291,13 +297,13 @@ func validateExecutor(e StageExecutor, path string) []Issue {
 	}
 
 	present := executorPresentFields(e)
-	for name, isPresent := range present {
-		if isPresent && !allowed[name] {
+	for _, name := range executorFieldNames {
+		if present[name] && !allowed[name] {
 			add("field %q is not valid for executor kind %q", name, e.Kind)
 		}
 	}
-	for name := range required {
-		if !present[name] {
+	for _, name := range executorFieldNames {
+		if required[name] && !present[name] {
 			add("executor kind %q requires field %q", e.Kind, name)
 		}
 	}
