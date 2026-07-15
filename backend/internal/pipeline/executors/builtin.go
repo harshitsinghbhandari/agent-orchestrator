@@ -117,7 +117,7 @@ func (e *BuiltinExecutor) runRouter(ctx context.Context, in StartInput, inputs m
 		target = in.LinkedSessionID
 	}
 
-	var artifacts []pipeline.ArtifactInput
+	artifacts := make([]pipeline.ArtifactInput, 0, len(inputs))
 	var observations []Observation
 
 	// Single liveness probe — every input stage shares the same target, so one
@@ -213,7 +213,7 @@ func runCompose(inputs map[string][]pipeline.Artifact) Outcome {
 // composeRouterMessage renders one upstream stage's artifacts as a human/agent
 // readable delivery message.
 func composeRouterMessage(stageName string, artifacts []pipeline.Artifact) string {
-	var lines []string
+	lines := make([]string, 0, len(artifacts)*2+2)
 	lines = append(lines, fmt.Sprintf("Findings from upstream pipeline stage %q:", stageName))
 	lines = append(lines, "")
 	for _, a := range artifacts {
