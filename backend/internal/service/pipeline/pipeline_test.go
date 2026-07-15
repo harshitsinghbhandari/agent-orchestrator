@@ -81,6 +81,17 @@ stages:
       mode: review
 `
 
+const guardYAML = `name: guard
+stages:
+  - name: check
+    trigger:
+      on: [manual]
+    executor:
+      kind: agent
+      plugin: claude-code
+      mode: review
+`
+
 func newStore(t *testing.T, projectID string) *sqlite.Store {
 	t.Helper()
 	s, err := sqlite.Open(t.TempDir())
@@ -232,6 +243,39 @@ func TestUpdateDefinitionTerminatesInFlightRun(t *testing.T) {
 	}
 	if run.LoopState != pipeline.LoopTerminated || run.TerminationReason != pipeline.TerminationConfigChange {
 		t.Fatalf("run after config change = %s/%s, want terminated/config_change", run.LoopState, run.TerminationReason)
+	}
+}
+
+// TestUpdateRenameToTakenNameConflicts asserts renaming a definition to a name
+// already used by another definition in the project is a 409 (mirroring create),
+// not a raw 500 from the UNIQUE(project_id, name) constraint. Renaming to a free
+// name still succeeds.
+func TestUpdateRenameToTakenNameConflicts(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, _ := newHarness(t)
+	reviewDef, err := svc.CreateDefinition(ctx, "mer", reviewYAML)
+	if err != nil {
+		t.Fatalf("create review: %v", err)
+	}
+	if _, err := svc.CreateDefinition(ctx, "mer", guardYAML); err != nil {
+		t.Fatalf("create guard: %v", err)
+	}
+
+	// Rename "review" -> "guard": collides with the second definition.
+	_, err = svc.UpdateDefinition(ctx, reviewDef.ID, guardYAML)
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindConflict || apiErr.Code != "PIPELINE_NAME_TAKEN" {
+		t.Fatalf("rename-to-taken err = %v, want 409 PIPELINE_NAME_TAKEN", err)
+	}
+
+	// Renaming to a free name is allowed.
+	freshYAML := "name: review-2\nstages:\n  - name: review\n    trigger:\n      on: [manual]\n    executor:\n      kind: agent\n      plugin: claude-code\n      mode: review\n"
+	updated, err := svc.UpdateDefinition(ctx, reviewDef.ID, freshYAML)
+	if err != nil {
+		t.Fatalf("rename to free name: %v", err)
+	}
+	if updated.Name != "review-2" {
+		t.Fatalf("updated name = %q, want review-2", updated.Name)
 	}
 }
 

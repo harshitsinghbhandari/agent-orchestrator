@@ -198,6 +198,17 @@ func (s *Service) UpdateDefinition(ctx context.Context, id pipeline.ID, yamlSour
 	if err != nil {
 		return pipeline.Definition{}, err
 	}
+	// A rename must not collide with another definition's name in the project;
+	// without this check the UNIQUE(project_id, name) constraint surfaces as a
+	// raw 500 instead of the same 409 CreateDefinition returns.
+	if cfg.Name != existing.Name {
+		if other, ok, err := s.store.GetPipelineDefinitionByName(ctx, domain.ProjectID(existing.ProjectID), cfg.Name); err != nil {
+			return pipeline.Definition{}, err
+		} else if ok && other.ID != id {
+			return pipeline.Definition{}, apierr.Conflict("PIPELINE_NAME_TAKEN",
+				fmt.Sprintf("a pipeline named %q already exists in this project", cfg.Name), nil)
+		}
+	}
 	cfg.ID = id
 	def := pipeline.Definition{
 		ID:         id,
