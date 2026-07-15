@@ -214,12 +214,12 @@ func runCompose(inputs map[string][]pipeline.Artifact) Outcome {
 // readable delivery message.
 func composeRouterMessage(stageName string, artifacts []pipeline.Artifact) string {
 	lines := make([]string, 0, len(artifacts)*2+2)
-	lines = append(lines, fmt.Sprintf("Findings from upstream pipeline stage %q:", stageName))
-	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("Findings from upstream pipeline stage %q:", stageName), "")
 	for _, a := range artifacts {
 		if a.Kind == pipeline.ArtifactKindFinding {
-			lines = append(lines, fmt.Sprintf("- [%s] %s:%d-%d - %s", a.Severity, a.FilePath, a.StartLine, a.EndLine, a.Title))
-			lines = append(lines, "  "+a.Description)
+			lines = append(lines,
+				fmt.Sprintf("- [%s] %s:%d-%d - %s", a.Severity, a.FilePath, a.StartLine, a.EndLine, a.Title),
+				"  "+a.Description)
 		} else {
 			lines = append(lines, "- "+marshalCompact(a.Data))
 		}

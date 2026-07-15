@@ -2,6 +2,7 @@ package executors
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"sync"
@@ -85,10 +86,9 @@ func (r *osRunner) Start(ctx context.Context, spec CommandSpec) (CommandProcess,
 		}
 		// A non-zero exit surfaces via ExitCode, not Err. Only a genuine
 		// spawn/wait failure (not *exec.ExitError) is reported as Err.
-		if waitErr != nil {
-			if _, ok := waitErr.(*exec.ExitError); !ok {
-				res.Err = waitErr
-			}
+		var exitErr *exec.ExitError
+		if waitErr != nil && !errors.As(waitErr, &exitErr) {
+			res.Err = waitErr
 		}
 		p.mu.Lock()
 		p.result = res

@@ -22,9 +22,7 @@ func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int)
 	}
 
 	var lines []string
-	lines = append(lines, "## Pipeline Stage")
-	lines = append(lines, "Pipeline: "+pipelineName)
-	lines = append(lines, "Stage: "+stage.Name)
+	lines = append(lines, "## Pipeline Stage", "Pipeline: "+pipelineName, "Stage: "+stage.Name)
 	if mode != "" {
 		lines = append(lines, "Mode: "+string(mode))
 	}
@@ -40,13 +38,10 @@ func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int)
 	}
 
 	if len(stage.Task.Inputs) > 0 {
-		lines = append(lines, "", "## Inputs", "```json")
-		lines = append(lines, marshalInputs(stage.Task.Inputs))
-		lines = append(lines, "```")
+		lines = append(lines, "", "## Inputs", "```json", marshalInputs(stage.Task.Inputs), "```")
 	}
 
-	lines = append(lines, "", "## Reporting Findings")
-	lines = append(lines, formatFindingsInstructions(mode))
+	lines = append(lines, "", "## Reporting Findings", formatFindingsInstructions(mode))
 
 	return strings.Join(lines, "\n")
 }

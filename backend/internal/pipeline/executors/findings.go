@@ -59,7 +59,7 @@ func parseFindingsFile(path string) (parseResult, error) {
 	if err != nil {
 		return parseResult{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	reader := bufio.NewReader(f)
 	var out []pipeline.ArtifactInput
@@ -167,14 +167,14 @@ func fileExists(path string) bool {
 }
 
 func hasTrailingNewline(s string) bool {
-	return len(s) > 0 && s[len(s)-1] == '\n'
+	return s != "" && s[len(s)-1] == '\n'
 }
 
 // trimLine strips a trailing CR/LF and surrounding ASCII whitespace so blank
 // lines are skipped and CRLF files parse the same as LF.
 func trimLine(s string) string {
 	// Drop trailing newline / carriage return first, then trim spaces/tabs.
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
+	for s != "" && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
 		s = s[:len(s)-1]
 	}
 	start, end := 0, len(s)
