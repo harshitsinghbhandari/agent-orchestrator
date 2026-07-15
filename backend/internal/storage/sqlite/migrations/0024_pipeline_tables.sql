@@ -23,15 +23,24 @@
 -- events are project-level (change_log.session_id is left NULL) because a run's
 -- session_id may be a manual-run placeholder that is not a real sessions row.
 -- Emitting the new event_type values first requires widening the change_log
--- CHECK, which SQLite can only do by rebuilding the table.
+-- CHECK, which SQLite can only do by rebuilding the table. Rebuilding forces the
+-- change_log-referencing CDC triggers to be dropped first (dropping the table
+-- while a trigger references it errors) and recreated after; their bodies are
+-- the current definitions (sessions_cdc_update carries the 0019 form) so this
+-- does not revert 0010/0017/0019.
 
 -- +goose Up
--- Widen the change_log event_type CHECK to admit the pipeline_* event types.
--- Mirrors the table-rebuild dance from 0006; the unrelated CDC triggers on
--- sessions/pr/... reference change_log by name and keep working against the
--- rebuilt table, so they are deliberately left untouched (recreating them from
--- text here would revert the trigger changes made in 0010/0017/0019).
 -- +goose StatementBegin
+DROP TRIGGER IF EXISTS pr_review_threads_cdc_update;
+DROP TRIGGER IF EXISTS pr_review_threads_cdc_insert;
+DROP TRIGGER IF EXISTS sessions_cdc_insert;
+DROP TRIGGER IF EXISTS sessions_cdc_update;
+DROP TRIGGER IF EXISTS pr_cdc_insert;
+DROP TRIGGER IF EXISTS pr_cdc_update;
+DROP TRIGGER IF EXISTS pr_session_cdc_update;
+DROP TRIGGER IF EXISTS pr_checks_cdc_insert;
+DROP TRIGGER IF EXISTS pr_checks_cdc_update;
+
 CREATE TABLE change_log_new (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects (id),
@@ -63,6 +72,151 @@ DROP INDEX IF EXISTS idx_change_log_project;
 DROP TABLE change_log;
 ALTER TABLE change_log_new RENAME TO change_log;
 CREATE INDEX idx_change_log_project ON change_log (project_id, seq);
+-- +goose StatementEnd
+
+-- Recreate the change_log-referencing CDC triggers (current definitions).
+-- +goose StatementBegin
+CREATE TRIGGER sessions_cdc_insert
+AFTER INSERT ON sessions
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (NEW.project_id, NEW.id, 'session_created',
+        json_object('id', NEW.id, 'activity', NEW.activity_state, 'isTerminated', json(CASE WHEN NEW.is_terminated THEN 'true' ELSE 'false' END)),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER sessions_cdc_update
+AFTER UPDATE ON sessions
+WHEN OLD.activity_state <> NEW.activity_state
+    OR OLD.is_terminated <> NEW.is_terminated
+    OR (OLD.first_signal_at IS NULL AND NEW.first_signal_at IS NOT NULL)
+    OR OLD.preview_url <> NEW.preview_url
+    OR OLD.preview_revision <> NEW.preview_revision
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (NEW.project_id, NEW.id, 'session_updated',
+        json_object('id', NEW.id, 'activity', NEW.activity_state, 'isTerminated', json(CASE WHEN NEW.is_terminated THEN 'true' ELSE 'false' END), 'previewUrl', NEW.preview_url, 'previewRevision', NEW.preview_revision),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_cdc_insert
+AFTER INSERT ON pr
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'pr_created',
+        json_object('url', NEW.url, 'session', NEW.session_id, 'state', NEW.pr_state,
+                    'ci', NEW.ci_state, 'review', NEW.review_decision, 'mergeability', NEW.mergeability),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_cdc_update
+AFTER UPDATE ON pr
+WHEN OLD.pr_state <> NEW.pr_state
+    OR OLD.ci_state <> NEW.ci_state
+    OR OLD.review_decision <> NEW.review_decision
+    OR OLD.mergeability <> NEW.mergeability
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'pr_updated',
+        json_object('url', NEW.url, 'session', NEW.session_id, 'state', NEW.pr_state,
+                    'ci', NEW.ci_state, 'review', NEW.review_decision, 'mergeability', NEW.mergeability),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_session_cdc_update
+AFTER UPDATE ON pr
+WHEN OLD.session_id <> NEW.session_id
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT project_id FROM sessions WHERE id = NEW.session_id),
+        NEW.session_id,
+        'pr_session_changed',
+        json_object(
+            'url', NEW.url,
+            'fromSession', OLD.session_id,
+            'toSession', NEW.session_id),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_checks_cdc_insert
+AFTER INSERT ON pr_checks
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_check_recorded',
+        json_object('pr', NEW.pr_url, 'name', NEW.name, 'commit', NEW.commit_hash, 'status', NEW.status),
+        NEW.created_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_checks_cdc_update
+AFTER UPDATE ON pr_checks
+WHEN OLD.status <> NEW.status
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_check_recorded',
+        json_object('pr', NEW.pr_url, 'name', NEW.name, 'commit', NEW.commit_hash, 'status', NEW.status),
+        datetime('now'));
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_review_threads_cdc_insert
+AFTER INSERT ON pr_review_threads
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_review_thread_added',
+        json_object(
+            'pr', NEW.pr_url,
+            'thread', NEW.thread_id,
+            'path', NEW.path,
+            'line', NEW.line,
+            'resolved', json(CASE WHEN NEW.resolved THEN 'true' ELSE 'false' END),
+            'isBot', json(CASE WHEN NEW.is_bot THEN 'true' ELSE 'false' END)
+        ),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_review_threads_cdc_update
+AFTER UPDATE ON pr_review_threads
+WHEN OLD.resolved <> NEW.resolved
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_review_thread_resolved',
+        json_object(
+            'pr', NEW.pr_url,
+            'thread', NEW.thread_id,
+            'path', NEW.path,
+            'line', NEW.line,
+            'resolved', json(CASE WHEN NEW.resolved THEN 'true' ELSE 'false' END)
+        ),
+        NEW.updated_at);
+END;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -126,22 +280,22 @@ CREATE TABLE pipeline_stage_runs (
 
 -- +goose StatementBegin
 CREATE TABLE pipeline_artifacts (
-    id                         TEXT PRIMARY KEY,
-    pipeline_run_id            TEXT NOT NULL REFERENCES pipeline_runs (id) ON DELETE CASCADE,
-    project_id                 TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
-    stage_run_id               TEXT NOT NULL,
-    stage_name                 TEXT NOT NULL,
-    kind                       TEXT NOT NULL,
-    fingerprint                TEXT NOT NULL DEFAULT '',
+    id               TEXT PRIMARY KEY,
+    pipeline_run_id  TEXT NOT NULL REFERENCES pipeline_runs (id) ON DELETE CASCADE,
+    project_id       TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    stage_run_id     TEXT NOT NULL,
+    stage_name       TEXT NOT NULL,
+    kind             TEXT NOT NULL,
+    fingerprint      TEXT NOT NULL DEFAULT '',
     -- status + sent_to_agent_at are the only mutable fields and are
     -- authoritative over anything in payload on read.
-    status                     TEXT NOT NULL DEFAULT 'open',
-    sent_to_agent_at           TIMESTAMP,
+    status           TEXT NOT NULL DEFAULT 'open',
+    sent_to_agent_at TIMESTAMP,
     -- payload is the full artifact envelope minus the mutable fields above,
     -- kept as a JSON blob so the append path never has to touch a wide column
     -- list and reconstruction is one unmarshal.
-    payload                    TEXT NOT NULL CHECK (json_valid(payload)),
-    created_at                 TIMESTAMP NOT NULL
+    payload          TEXT NOT NULL CHECK (json_valid(payload)),
+    created_at       TIMESTAMP NOT NULL
 );
 -- +goose StatementEnd
 
@@ -153,7 +307,7 @@ CREATE INDEX idx_pipeline_artifacts_run ON pipeline_artifacts (pipeline_run_id, 
 CREATE INDEX idx_pipeline_artifacts_stage_run ON pipeline_artifacts (stage_run_id);
 -- +goose StatementEnd
 
--- CDC triggers. All pipeline events are project-level (session_id NULL).
+-- Pipeline CDC triggers. All pipeline events are project-level (session_id NULL).
 
 -- +goose StatementBegin
 CREATE TRIGGER pipeline_definitions_cdc_insert
@@ -311,47 +465,29 @@ END;
 -- +goose Down
 -- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_artifacts_cdc_update;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_artifacts_cdc_insert;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_stage_runs_cdc_update;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_stage_runs_cdc_insert;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_runs_cdc_update;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_runs_cdc_insert;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_definitions_cdc_delete;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_definitions_cdc_update;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TRIGGER IF EXISTS pipeline_definitions_cdc_insert;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TABLE IF EXISTS pipeline_artifacts;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TABLE IF EXISTS pipeline_stage_runs;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TABLE IF EXISTS pipeline_runs;
--- +goose StatementEnd
--- +goose StatementBegin
 DROP TABLE IF EXISTS pipeline_definitions;
--- +goose StatementEnd
 
--- Restore the pre-0024 change_log CHECK, dropping any pipeline_* events that
--- would violate it.
--- +goose StatementBegin
+DROP TRIGGER IF EXISTS pr_review_threads_cdc_update;
+DROP TRIGGER IF EXISTS pr_review_threads_cdc_insert;
+DROP TRIGGER IF EXISTS sessions_cdc_insert;
+DROP TRIGGER IF EXISTS sessions_cdc_update;
+DROP TRIGGER IF EXISTS pr_cdc_insert;
+DROP TRIGGER IF EXISTS pr_cdc_update;
+DROP TRIGGER IF EXISTS pr_session_cdc_update;
+DROP TRIGGER IF EXISTS pr_checks_cdc_insert;
+DROP TRIGGER IF EXISTS pr_checks_cdc_update;
+
 CREATE TABLE change_log_old (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects (id),
@@ -380,4 +516,148 @@ DROP INDEX IF EXISTS idx_change_log_project;
 DROP TABLE change_log;
 ALTER TABLE change_log_old RENAME TO change_log;
 CREATE INDEX idx_change_log_project ON change_log (project_id, seq);
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER sessions_cdc_insert
+AFTER INSERT ON sessions
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (NEW.project_id, NEW.id, 'session_created',
+        json_object('id', NEW.id, 'activity', NEW.activity_state, 'isTerminated', json(CASE WHEN NEW.is_terminated THEN 'true' ELSE 'false' END)),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER sessions_cdc_update
+AFTER UPDATE ON sessions
+WHEN OLD.activity_state <> NEW.activity_state
+    OR OLD.is_terminated <> NEW.is_terminated
+    OR (OLD.first_signal_at IS NULL AND NEW.first_signal_at IS NOT NULL)
+    OR OLD.preview_url <> NEW.preview_url
+    OR OLD.preview_revision <> NEW.preview_revision
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (NEW.project_id, NEW.id, 'session_updated',
+        json_object('id', NEW.id, 'activity', NEW.activity_state, 'isTerminated', json(CASE WHEN NEW.is_terminated THEN 'true' ELSE 'false' END), 'previewUrl', NEW.preview_url, 'previewRevision', NEW.preview_revision),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_cdc_insert
+AFTER INSERT ON pr
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'pr_created',
+        json_object('url', NEW.url, 'session', NEW.session_id, 'state', NEW.pr_state,
+                    'ci', NEW.ci_state, 'review', NEW.review_decision, 'mergeability', NEW.mergeability),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_cdc_update
+AFTER UPDATE ON pr
+WHEN OLD.pr_state <> NEW.pr_state
+    OR OLD.ci_state <> NEW.ci_state
+    OR OLD.review_decision <> NEW.review_decision
+    OR OLD.mergeability <> NEW.mergeability
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'pr_updated',
+        json_object('url', NEW.url, 'session', NEW.session_id, 'state', NEW.pr_state,
+                    'ci', NEW.ci_state, 'review', NEW.review_decision, 'mergeability', NEW.mergeability),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_session_cdc_update
+AFTER UPDATE ON pr
+WHEN OLD.session_id <> NEW.session_id
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT project_id FROM sessions WHERE id = NEW.session_id),
+        NEW.session_id,
+        'pr_session_changed',
+        json_object(
+            'url', NEW.url,
+            'fromSession', OLD.session_id,
+            'toSession', NEW.session_id),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_checks_cdc_insert
+AFTER INSERT ON pr_checks
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_check_recorded',
+        json_object('pr', NEW.pr_url, 'name', NEW.name, 'commit', NEW.commit_hash, 'status', NEW.status),
+        NEW.created_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_checks_cdc_update
+AFTER UPDATE ON pr_checks
+WHEN OLD.status <> NEW.status
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_check_recorded',
+        json_object('pr', NEW.pr_url, 'name', NEW.name, 'commit', NEW.commit_hash, 'status', NEW.status),
+        datetime('now'));
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_review_threads_cdc_insert
+AFTER INSERT ON pr_review_threads
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_review_thread_added',
+        json_object(
+            'pr', NEW.pr_url,
+            'thread', NEW.thread_id,
+            'path', NEW.path,
+            'line', NEW.line,
+            'resolved', json(CASE WHEN NEW.resolved THEN 'true' ELSE 'false' END),
+            'isBot', json(CASE WHEN NEW.is_bot THEN 'true' ELSE 'false' END)
+        ),
+        NEW.updated_at);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER pr_review_threads_cdc_update
+AFTER UPDATE ON pr_review_threads
+WHEN OLD.resolved <> NEW.resolved
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES (
+        (SELECT s.project_id FROM pr p JOIN sessions s ON s.id = p.session_id WHERE p.url = NEW.pr_url),
+        (SELECT session_id FROM pr WHERE url = NEW.pr_url),
+        'pr_review_thread_resolved',
+        json_object(
+            'pr', NEW.pr_url,
+            'thread', NEW.thread_id,
+            'path', NEW.path,
+            'line', NEW.line,
+            'resolved', json(CASE WHEN NEW.resolved THEN 'true' ELSE 'false' END)
+        ),
+        NEW.updated_at);
+END;
 -- +goose StatementEnd
