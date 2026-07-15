@@ -295,7 +295,7 @@ func hydrateRun(ctx context.Context, q *gen.Queries, row gen.PipelineRun) (pipel
 	stages := make(map[string]pipeline.StageState, len(stageRows))
 	for _, sr := range stageRows {
 		st := stageStateFromRow(sr)
-		st.Artifacts = artifactsByStageRun[string(sr.StageRunID)]
+		st.Artifacts = artifactsByStageRun[sr.StageRunID]
 		stages[sr.StageName] = st
 	}
 
