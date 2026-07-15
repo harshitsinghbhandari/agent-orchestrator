@@ -45,13 +45,13 @@ type PullRequest struct {
 	Host     string
 	Repo     string
 
-	SourceBranch   string
-	TargetBranch   string
-	HeadSHA        string
+	SourceBranch string
+	TargetBranch string
+	HeadSHA      string
 	// IsFromFork is fork provenance derived from the head repo vs base repo: nil
 	// = unknown, false = same-repo, true = fork. Persisted to pr.is_from_fork.
-	IsFromFork *bool
-	Title      string
+	IsFromFork     *bool
+	Title          string
 	Additions      int
 	Deletions      int
 	ChangedFiles   int
