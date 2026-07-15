@@ -244,7 +244,7 @@ func validatePipelineConfig(p *Pipeline) []Issue {
 // executorFieldRules returns which StageExecutor fields are allowed at all
 // for kind, and which of those are required. ok is false for an unknown
 // kind.
-func executorFieldRules(kind ExecutorKind) (allowed map[string]bool, required map[string]bool, ok bool) {
+func executorFieldRules(kind ExecutorKind) (allowed, required map[string]bool, ok bool) {
 	switch kind {
 	case ExecutorAgent:
 		return map[string]bool{"plugin": true, "mode": true, "config": true},

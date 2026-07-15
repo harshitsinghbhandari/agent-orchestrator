@@ -74,7 +74,7 @@ type Predicate struct {
 // predicateFieldRules returns which of the union fields are allowed at all
 // for kind, and which of those are required, keyed by the JSON field name.
 // The second return value is false for an unknown kind.
-func predicateFieldRules(kind PredicateKind) (allowed map[string]bool, required map[string]bool, ok bool) {
+func predicateFieldRules(kind PredicateKind) (allowed, required map[string]bool, ok bool) {
 	switch kind {
 	case PredicateAllPass, PredicateAnyPass, PredicateMajorityPass:
 		return map[string]bool{"stages": true}, map[string]bool{"stages": true}, true

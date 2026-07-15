@@ -39,28 +39,28 @@ func (e StageTriggerEvent) IsKnown() bool {
 	return false
 }
 
-// PipelineScope mirrors the pipeline-v3 spec's three scopes. v1 config
+// Scope mirrors the pipeline-v3 spec's three scopes. v1 config
 // validation accepts only the empty string (which defaults to
 // ScopeWorker) or ScopeWorker itself; ScopeOrchestrator and ScopeWorkstream
 // are declared here so the type is future-proof but are rejected at
 // validation time with a "deferred to phase 2" message.
-type PipelineScope string
+type Scope string
 
 // Known pipeline scopes. Only ScopeWorker is accepted by v1 validation.
 const (
-	ScopeWorker       PipelineScope = "worker"
-	ScopeOrchestrator PipelineScope = "orchestrator"
-	ScopeWorkstream   PipelineScope = "workstream"
+	ScopeWorker       Scope = "worker"
+	ScopeOrchestrator Scope = "orchestrator"
+	ScopeWorkstream   Scope = "workstream"
 )
 
-// AllPipelineScopes lists every scope defined by the spec, including the
+// AllScopes lists every scope defined by the spec, including the
 // phase 2 scopes that v1 validation rejects.
-var AllPipelineScopes = []PipelineScope{ScopeWorker, ScopeOrchestrator, ScopeWorkstream}
+var AllScopes = []Scope{ScopeWorker, ScopeOrchestrator, ScopeWorkstream}
 
 // IsKnown reports whether s is one of the scopes defined by the spec
 // (regardless of whether v1 validation currently accepts it).
-func (s PipelineScope) IsKnown() bool {
-	for _, k := range AllPipelineScopes {
+func (s Scope) IsKnown() bool {
+	for _, k := range AllScopes {
 		if s == k {
 			return true
 		}
@@ -513,13 +513,13 @@ type Stage struct {
 type Pipeline struct {
 	// ID is assigned by the store when the definition is saved; it is never
 	// part of the authored YAML document.
-	ID   PipelineID `json:"id" yaml:"-"`
-	Name string     `json:"name" yaml:"name"`
+	ID   ID     `json:"id" yaml:"-"`
+	Name string `json:"name" yaml:"name"`
 
-	// Scope mirrors the pipeline-v3 spec (see PipelineScope). v1 accepts
+	// Scope mirrors the pipeline-v3 spec (see Scope). v1 accepts
 	// only the empty string or ScopeWorker; ScopeOrchestrator and
 	// ScopeWorkstream are deferred to phase 2.
-	Scope PipelineScope `json:"scope,omitempty" yaml:"scope,omitempty"`
+	Scope Scope `json:"scope,omitempty" yaml:"scope,omitempty"`
 
 	Stages []Stage `json:"stages" yaml:"stages"`
 
@@ -561,10 +561,10 @@ type StageState struct {
 
 // RunState is one pipeline run's full runtime state.
 type RunState struct {
-	RunID        RunID      `json:"runId"`
-	PipelineID   PipelineID `json:"pipelineId"`
-	PipelineName string     `json:"pipelineName"`
-	SessionID    string     `json:"sessionId"`
+	RunID        RunID  `json:"runId"`
+	PipelineID   ID     `json:"pipelineId"`
+	PipelineName string `json:"pipelineName"`
+	SessionID    string `json:"sessionId"`
 
 	// PipelineConfigSnapshot is frozen at run-create; config changes during
 	// a run terminate the run rather than mutating it in place.

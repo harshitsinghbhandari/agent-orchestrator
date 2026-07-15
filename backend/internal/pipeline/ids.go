@@ -8,8 +8,8 @@ package pipeline
 // These ID types are distinct string types, mirroring the domain package's
 // convention, so they can't be swapped at a call site by accident.
 type (
-	// PipelineID identifies a pipeline definition.
-	PipelineID string
+	// ID identifies a pipeline definition.
+	ID string
 	// RunID identifies one execution of a pipeline.
 	RunID string
 	// StageRunID identifies one execution attempt of a stage within a run.

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -500,11 +501,7 @@ func TestParseDefinition_Invalid(t *testing.T) {
 // asValidationError is a small errors.As shim kept local to the test so the
 // table above stays readable.
 func asValidationError(err error, target **ValidationError) bool {
-	if ve, ok := err.(*ValidationError); ok {
-		*target = ve
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
 
 func TestParseDefinition_MultipleIssuesSurfaceTogether(t *testing.T) {
@@ -513,8 +510,8 @@ func TestParseDefinition_MultipleIssuesSurfaceTogether(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	verr, ok := err.(*ValidationError)
-	if !ok {
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
 		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 	}
 	if len(verr.Issues) < 2 {
