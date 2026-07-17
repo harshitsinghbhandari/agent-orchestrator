@@ -124,13 +124,14 @@ function useSelection() {
 // scanned without opening the project board.
 function SessionDot({ session }: { session: WorkspaceSession }) {
 	const zone = attentionZone(session);
+	const isIdle = session.status === "idle" || (session.status === "working" && session.activity?.state === "idle");
 	return (
 		<span
 			aria-hidden="true"
 			className={cn(
 				"mt-px h-1.5 w-1.5 shrink-0 rounded-full",
-				zone === "working" && session.status === "idle" && "bg-passive",
-				zone === "working" && session.status !== "idle" && "animate-status-pulse bg-working",
+				zone === "working" && isIdle && "bg-passive",
+				zone === "working" && !isIdle && "animate-status-pulse bg-working",
 				zone === "action" && (session.status === "ci_failed" ? "bg-error" : "bg-warning"),
 				zone === "pending" && "bg-passive",
 				zone === "merge" && "bg-success",
