@@ -7,6 +7,7 @@ import { GlobalSettingsForm } from "./GlobalSettingsForm";
 const {
 	getMock,
 	postMock,
+	putMock,
 	getMigration,
 	setMigration,
 	getUpdate,
@@ -17,9 +18,11 @@ const {
 	updInstall,
 	updOnStatus,
 	getVersion,
+	daemonRestart,
 } = vi.hoisted(() => ({
 	getMock: vi.fn(),
 	postMock: vi.fn(),
+	putMock: vi.fn(),
 	getMigration: vi.fn(),
 	setMigration: vi.fn(),
 	getUpdate: vi.fn(),
@@ -30,10 +33,11 @@ const {
 	updInstall: vi.fn(),
 	updOnStatus: vi.fn(),
 	getVersion: vi.fn(),
+	daemonRestart: vi.fn(),
 }));
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { GET: getMock, POST: postMock },
+	apiClient: { GET: getMock, POST: postMock, PUT: putMock },
 	apiErrorMessage: (e: unknown, fb = "Request failed") =>
 		e instanceof Error ? e.message : ((e as { message?: string })?.message ?? fb),
 }));
@@ -49,6 +53,7 @@ vi.mock("../lib/bridge", () => ({
 			install: updInstall,
 			onStatus: updOnStatus,
 		},
+		daemon: { restart: daemonRestart },
 	},
 }));
 
@@ -63,10 +68,12 @@ function renderForm() {
 }
 
 beforeEach(() => {
-	for (const m of [getMock, postMock, getMigration, setMigration, getUpdate, setUpdate]) m.mockReset();
+	for (const m of [getMock, postMock, putMock, getMigration, setMigration, getUpdate, setUpdate, daemonRestart])
+		m.mockReset();
 	getMigration.mockResolvedValue({ status: "pending" });
 	getMock.mockResolvedValue({ data: { available: true, legacyRoot: "/home/u/.agent-orchestrator" }, error: undefined });
 	postMock.mockResolvedValue({ data: { report: { projectsImported: 2, projectsSkipped: 1 } }, error: undefined });
+	putMock.mockResolvedValue({ data: { enabled: false }, error: undefined });
 	setMigration.mockResolvedValue(undefined);
 	getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false });
 	setUpdate.mockResolvedValue(undefined);
@@ -76,12 +83,14 @@ beforeEach(() => {
 	updInstall.mockResolvedValue(undefined);
 	updOnStatus.mockReturnValue(() => undefined);
 	getVersion.mockResolvedValue("1.4.0");
+	daemonRestart.mockResolvedValue({ state: "ready", port: 3001 });
 });
 
 describe("GlobalSettingsForm", () => {
-	it("renders the Updates and Migration sections", async () => {
+	it("renders the Updates, Pipelines, and Migration sections", async () => {
 		renderForm();
 		expect(await screen.findByText("Updates")).toBeInTheDocument();
+		expect(screen.getByText("Pipelines")).toBeInTheDocument();
 		expect(screen.getByText("Migration")).toBeInTheDocument();
 	});
 
@@ -89,7 +98,9 @@ describe("GlobalSettingsForm", () => {
 		getUpdate.mockResolvedValue({ enabled: true, channel: "nightly", nightlyAck: true });
 		renderForm();
 		expect(await screen.findByText(/Nightly builds are cut every day/i)).toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+		// Both Updates and Pipelines render a "Save changes" button; Updates' is first in the DOM.
+		const [updatesSave] = await screen.findAllByRole("button", { name: "Save changes" });
+		await userEvent.click(updatesSave);
 		await waitFor(() =>
 			expect(setUpdate).toHaveBeenCalledWith(expect.objectContaining({ channel: "nightly", enabled: true })),
 		);

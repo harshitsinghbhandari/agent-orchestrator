@@ -75,6 +75,8 @@ func Build() ([]byte, error) {
 			"Pipeline definitions, runs, manual triggers, and artifacts"),
 		*(&openapi31.Tag{Name: "mobile"}).WithDescription(
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
+		*(&openapi31.Tag{Name: "settings"}).WithDescription(
+			"Global app settings persisted in the daemon store (loopback/desktop only)"),
 	}
 
 	for _, op := range operations() {
@@ -229,6 +231,9 @@ var schemaNames = map[string]string{
 	"PipelineArtifact": "PipelineArtifact",
 	// httpd/controllers: mobile wire envelopes
 	"ControllersMobileStatusResponse": "MobileStatusResponse",
+	// httpd/controllers: settings wire envelopes
+	"ControllersPipelinesSettingResponse":   "PipelinesSettingResponse",
+	"ControllersSetPipelinesSettingRequest": "SetPipelinesSettingRequest",
 	// legacyimport report
 	"LegacyimportReport": "ImportReport",
 	// service/project entities + DTOs
@@ -324,7 +329,36 @@ func operations() []operation {
 	ops = append(ops, importOperations()...)
 	ops = append(ops, pipelineOperations()...)
 	ops = append(ops, mobileOperations()...)
+	ops = append(ops, settingsOperations()...)
 	return ops
+}
+
+// settingsOperations declares the 2 ungated /settings/pipelines operations
+// (read + persist the pipelines feature flag). Deliberately NOT behind the
+// pipelines flag — the toggle must be reachable to turn the flag on. Must stay
+// 1:1 with the routes SettingsController.Register mounts (enforced by the parity
+// test).
+func settingsOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/settings/pipelines", id: "getPipelinesSetting", tag: "settings",
+			summary: "Read the persisted pipelines feature flag",
+			resps: []respUnit{
+				{http.StatusOK, controllers.PipelinesSettingResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPut, path: "/api/v1/settings/pipelines", id: "setPipelinesSetting", tag: "settings",
+			summary: "Persist the pipelines feature flag (takes effect on daemon restart)",
+			reqBody: controllers.SetPipelinesSettingRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.PipelinesSettingResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+	}
 }
 
 // pipelineOperations declares the /pipelines operations (definitions CRUD, JSON

@@ -11,21 +11,45 @@ snapshots the definition it was triggered from.
 
 ## Enabling the feature
 
-Pipelines are off by default. Set `AO_PIPELINES=on` in the daemon's
-environment before `ao start` (or before the daemon boots), following the
-same on/off convention as AO's other `AO_*` toggles: `on`/`true`/`1`/`yes`
-enable it, `off`/`false`/`0`/`no` (or unset) disable it.
+Pipelines are off by default and experimental. There are two ways to turn them
+on; a persisted setting for normal use, and an env override for dev/CI.
 
-When the flag is off:
+**Settings toggle (recommended).** In the desktop app open Global settings and
+flip **Pipelines → Enabled**, then Save. The choice persists in the daemon's own
+store (a `pipelines.enabled` row in the `app_settings` table under `~/.ao`), so
+it survives restarts and applies no matter who launches the daemon (the Electron
+supervisor or a headless `ao start`). Saving restarts the daemon so the change
+takes effect immediately, and the sidebar's Pipelines entry appears once the
+daemon is back.
+
+**`AO_PIPELINES` env override (dev/CI).** Set `AO_PIPELINES` in the daemon's
+environment before it boots, following the same on/off convention as AO's other
+`AO_*` toggles: `on`/`true`/`1`/`yes` enable it, `off`/`false`/`0`/`no` disable
+it.
+
+**Precedence.** When `AO_PIPELINES` is set (to on OR off) it wins and the
+persisted setting is ignored — it is a hard override. When `AO_PIPELINES` is
+unset, the persisted `pipelines.enabled` setting decides. With neither set,
+pipelines stay off.
+
+When pipelines are off (whichever source resolved it):
 
 - The Pipelines entry is hidden from the sidebar nav.
 - Every `/api/v1/pipelines/*` route returns 501.
 - No per-project pipeline engines start, and the CDC trigger bridge does not
   subscribe to PR events.
 
+The settings endpoint itself (`/api/v1/settings/pipelines`) is never gated by
+the flag, so the toggle is always reachable.
+
 ```bash
+# dev/CI override; forces pipelines on regardless of the persisted setting
 AO_PIPELINES=on ao start
 ```
+
+> Note: a headless `ao start` daemon the desktop app merely attached to (rather
+> than spawned) is not restarted by the Settings toggle. The setting is still
+> persisted and applies the next time that daemon boots.
 
 ## Authoring a definition
 
@@ -186,8 +210,8 @@ that record.
 
 ## UI overview
 
-The Pipelines section (hidden entirely when `AO_PIPELINES` is off) has two
-tabs:
+The Pipelines section (hidden entirely when pipelines are off — see Enabling the
+feature) has two tabs:
 
 - **Definitions**: a table of the project's stored pipelines plus a
   CodeMirror YAML editor for create/update. Validation happens

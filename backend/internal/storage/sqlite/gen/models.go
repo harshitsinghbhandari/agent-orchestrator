@@ -12,6 +12,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+type AppSetting struct {
+	Key   string
+	Value string
+}
+
 type ChangeLog struct {
 	Seq       int64
 	ProjectID domain.ProjectID

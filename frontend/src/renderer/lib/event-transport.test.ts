@@ -89,6 +89,16 @@ describe("createEventTransport", () => {
 		expect(EventSourceStub.instances[0].onmessage).toBeTypeOf("function");
 	});
 
+	it("invalidates the pipelines-enabled capability probe on a daemon status change", () => {
+		const queryClient = fakeQueryClient();
+		createEventTransport(queryClient).connect();
+		const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
+
+		onStatusHandler();
+
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["pipelines-enabled"] });
+	});
+
 	it("does not reconnect when a daemon status keeps the same base URL", () => {
 		createEventTransport(fakeQueryClient()).connect();
 		const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
@@ -132,7 +142,10 @@ describe("createEventTransport", () => {
 			const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
 
 			onStatusHandler();
-			expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+			// The pipelines-enabled re-probe fires synchronously (it is a cheap,
+			// one-shot capability check); workspace/SCM invalidation is debounced.
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["pipelines-enabled"] });
+			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] });
 			vi.advanceTimersByTime(200);
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
 			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-scm-summary"] });

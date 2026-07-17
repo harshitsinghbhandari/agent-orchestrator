@@ -78,6 +78,7 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/sessions/{sessionId}/rollback",
 	"/api/v1/sessions/{sessionId}/send",
 	"/api/v1/sessions/cleanup",
+	"/api/v1/settings/pipelines",
 ] as const;
 
 // Resource collections whose next path segment is an identifier. Only used as a
