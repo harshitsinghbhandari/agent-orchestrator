@@ -51,8 +51,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Telemetry.Remote != TelemetryRemoteOff || cfg.Telemetry.PostHogHost != DefaultTelemetryPostHogHost {
 		t.Fatalf("Telemetry defaults = %+v", cfg.Telemetry)
 	}
-	if cfg.Pipelines {
-		t.Error("Pipelines = true, want false by default")
+	if cfg.PipelinesEnv != nil {
+		t.Errorf("PipelinesEnv = %v, want nil (unset) by default", *cfg.PipelinesEnv)
 	}
 }
 
@@ -73,8 +73,8 @@ func TestLoadOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.Pipelines {
-		t.Error("Pipelines = false, want true when AO_PIPELINES=on")
+	if cfg.PipelinesEnv == nil || !*cfg.PipelinesEnv {
+		t.Errorf("PipelinesEnv = %v, want &true when AO_PIPELINES=on", cfg.PipelinesEnv)
 	}
 	if cfg.Addr() != "127.0.0.1:4002" {
 		t.Errorf("Addr() = %q, want 127.0.0.1:4002", cfg.Addr())
@@ -163,6 +163,44 @@ func TestLoadAllowedOrigins(t *testing.T) {
 			if cfg.AllowedOrigins[i] != origin {
 				t.Errorf("AllowedOrigins[%d] = %q, want %q", i, cfg.AllowedOrigins[i], origin)
 			}
+		}
+	})
+}
+
+// TestLoadPipelinesEnvTristate covers the AO_PIPELINES env override's three
+// states: on -> &true, off -> &false, unset -> nil (let the persisted app-setting
+// decide). The daemon combines this with the store; see resolvePipelinesEnabled.
+func TestLoadPipelinesEnvTristate(t *testing.T) {
+	t.Run("on", func(t *testing.T) {
+		t.Setenv("AO_PIPELINES", "on")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.PipelinesEnv == nil || !*cfg.PipelinesEnv {
+			t.Errorf("PipelinesEnv = %v, want &true", cfg.PipelinesEnv)
+		}
+	})
+	t.Run("off", func(t *testing.T) {
+		t.Setenv("AO_PIPELINES", "off")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.PipelinesEnv == nil || *cfg.PipelinesEnv {
+			t.Errorf("PipelinesEnv = %v, want &false", cfg.PipelinesEnv)
+		}
+	})
+	t.Run("unset", func(t *testing.T) {
+		// Empty string is treated as unset by Load (LookupEnv ok but blank),
+		// and neutralises any AO_PIPELINES inherited from the ambient env.
+		t.Setenv("AO_PIPELINES", "")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.PipelinesEnv != nil {
+			t.Errorf("PipelinesEnv = %v, want nil when unset", *cfg.PipelinesEnv)
 		}
 	})
 }

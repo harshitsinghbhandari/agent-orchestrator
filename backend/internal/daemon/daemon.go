@@ -135,14 +135,16 @@ func Run() error {
 	}
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, log)
 
-	// Pipelines v1 (spec §4b T5/T11): one actor-loop engine per project, driving
-	// the pure reducer + executors + store. Gated behind AO_PIPELINES (default
-	// off): when off, no engines and no CDC trigger bridge start, and Pipelines
-	// stays nil below so every API route returns 501. pipelineStk.Stop is
-	// nil-safe, so teardown needs no extra guard.
+	// Pipelines v1 (spec §4b T5/T11/T12): one actor-loop engine per project,
+	// driving the pure reducer + executors + store. Enablement resolves from the
+	// AO_PIPELINES env override (dev/CI) falling through to the persisted
+	// "pipelines.enabled" app-setting the Settings UI writes — see
+	// resolvePipelinesEnabled. When off, no engines and no CDC trigger bridge
+	// start, and Pipelines stays nil below so every API route returns 501.
+	// pipelineStk.Stop is nil-safe, so teardown needs no extra guard.
 	var pipelineStk *pipelineStack
 	var pipelinesSvc pipelinesvc.Manager
-	if cfg.Pipelines {
+	if resolvePipelinesEnabled(ctx, cfg, store, log) {
 		pipelineStk = startPipelineEngine(ctx, store, sessionSvc, cdcPipe.Broadcaster, log)
 		pipelinesSvc = pipelinesvc.New(store, pipelinesvc.SupervisorEngines(pipelineStk.supervisor))
 	}
@@ -176,6 +178,7 @@ func Run() error {
 		NotificationStream: notificationHub,
 		Import:             importsvc.New(importsvc.Deps{Store: store}),
 		Pipelines:          pipelinesSvc,
+		Settings:           store,
 		CDC:                store,
 		Events:             cdcPipe.Broadcaster,
 		Activity:           lcStack.LCM,

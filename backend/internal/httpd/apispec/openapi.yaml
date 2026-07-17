@@ -2214,6 +2214,55 @@ paths:
       summary: Clean up terminated session workspaces
       tags:
       - sessions
+  /api/v1/settings/pipelines:
+    get:
+      operationId: getPipelinesSetting
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelinesSettingResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read the persisted pipelines feature flag
+      tags:
+      - settings
+    put:
+      operationId: setPipelinesSetting
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPipelinesSettingRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelinesSettingResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Persist the pipelines feature flag (takes effect on daemon restart)
+      tags:
+      - settings
 components:
   schemas:
     APIError:
@@ -3015,6 +3064,13 @@ components:
       - attempt
       - artifactIds
       type: object
+    PipelinesSettingResponse:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
+      type: object
     ProbeAgentResponse:
       properties:
         agent:
@@ -3604,6 +3660,13 @@ components:
       - sessionId
       - state
       type: object
+    SetPipelinesSettingRequest:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
+      type: object
     SetProjectConfigInput:
       properties:
         config:
@@ -3800,3 +3863,6 @@ tags:
   name: pipelines
 - description: Connect Mobile LAN bridge control (loopback/desktop only)
   name: mobile
+- description: Global app settings persisted in the daemon store (loopback/desktop
+    only)
+  name: settings
