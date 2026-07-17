@@ -927,28 +927,47 @@ describe("Sidebar", () => {
 		}
 	});
 
-	it("renders a calm non-pulsing dot for an idle session and a pulsing one for a working session", () => {
+	it("renders sidebar dots from attention zones without activity overrides", () => {
 		renderSidebar({
 			workspaces: [
 				{
 					...workspace,
 					sessions: [
 						{ ...session, id: "proj-1-idle", title: "idle task", status: "idle" },
-						{ ...session, id: "proj-1-work", title: "working task", status: "working" },
+						{
+							...session,
+							id: "proj-1-work",
+							title: "working task",
+							status: "working",
+							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
+						},
+						{
+							...session,
+							id: "proj-1-ci",
+							title: "ci failed task",
+							status: "ci_failed",
+							activity: { state: "active", lastActivityAt: "2026-06-30T00:00:00Z" },
+						},
 					],
 				},
 			],
 		});
 
 		const idleDot = screen.getByLabelText("Open idle task").querySelector('span[aria-hidden="true"]');
-		expect(idleDot).toHaveClass("bg-passive");
+		expect(idleDot).toHaveClass("bg-working");
 		expect(idleDot).not.toHaveClass("animate-status-pulse");
 
 		const workingDot = screen.getByLabelText("Open working task").querySelector('span[aria-hidden="true"]');
-		expect(workingDot).toHaveClass("animate-status-pulse", "bg-working");
+		expect(workingDot).toHaveClass("bg-working");
+		expect(workingDot).not.toHaveClass("animate-status-pulse");
+
+		const ciFailedDot = screen.getByLabelText("Open ci failed task").querySelector('span[aria-hidden="true"]');
+		expect(ciFailedDot).toHaveClass("bg-warning");
+		expect(ciFailedDot).not.toHaveClass("bg-error");
+		expect(ciFailedDot).not.toHaveClass("animate-status-pulse");
 	});
 
-	it("renders a calm non-pulsing dot for idle activity even when the session is in the working zone", () => {
+	it("renders idle activity as quiet while preserving PR status color", () => {
 		renderSidebar({
 			workspaces: [
 				{
@@ -961,15 +980,25 @@ describe("Sidebar", () => {
 							status: "working",
 							activity: { state: "idle", lastActivityAt: "2026-06-30T00:00:00Z" },
 						},
+						{
+							...session,
+							id: "proj-1-idle-draft",
+							title: "idle draft task",
+							status: "draft",
+							activity: { state: "idle", lastActivityAt: "2026-06-30T00:00:00Z" },
+						},
 					],
 				},
 			],
 		});
 
 		const idleDot = screen.getByLabelText("Open idle activity task").querySelector('span[aria-hidden="true"]');
-		expect(idleDot).toHaveClass("bg-passive");
+		expect(idleDot).toHaveClass("bg-working");
 		expect(idleDot).not.toHaveClass("animate-status-pulse");
-		expect(idleDot).not.toHaveClass("bg-working");
+
+		const idleDraftDot = screen.getByLabelText("Open idle draft task").querySelector('span[aria-hidden="true"]');
+		expect(idleDraftDot).toHaveClass("bg-accent-dim");
+		expect(idleDraftDot).not.toHaveClass("animate-status-pulse");
 	});
 
 	it("does not render the restart-to-update row unless an update is downloaded", async () => {
