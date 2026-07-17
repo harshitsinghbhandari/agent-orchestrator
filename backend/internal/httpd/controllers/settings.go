@@ -76,7 +76,7 @@ func (c *SettingsController) setPipelines(w http.ResponseWriter, r *http.Request
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, PipelinesSettingResponse{Enabled: in.Enabled})
+	envelope.WriteJSON(w, http.StatusOK, PipelinesSettingResponse(in))
 }
 
 func writeInternalError(w http.ResponseWriter, r *http.Request) {
