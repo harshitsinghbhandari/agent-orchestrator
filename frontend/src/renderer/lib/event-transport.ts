@@ -4,6 +4,7 @@ import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "./api-
 import { setEventsConnectionState } from "./events-connection";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
+import { pipelinesEnabledQueryKey } from "../hooks/usePipelinesEnabled";
 
 export type EventTransport = {
 	connect: () => () => void;
@@ -134,6 +135,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const removeDaemonListener = aoBridge.daemon.onStatus(() => {
 				connectSource();
 				refreshWorkspaces();
+				// A daemon (re)start can flip the AO_PIPELINES flag (T12's
+				// settings/pipelines toggle restarts the daemon to apply it), so
+				// re-probe capability every time instead of trusting the cached
+				// value for the app's whole lifetime.
+				void queryClient.invalidateQueries({ queryKey: pipelinesEnabledQueryKey });
 			});
 			// Rebind when the daemon comes back on a different port, independent of
 			// status-event ordering.
