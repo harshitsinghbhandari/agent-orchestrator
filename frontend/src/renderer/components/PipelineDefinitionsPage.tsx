@@ -177,7 +177,7 @@ function DefinitionEditor({
 	onClose: () => void;
 }) {
 	const { create, update } = usePipelineDefinitionMutations(projectId);
-	const { yamlSource, setYamlSource, draft, validation } = usePipelineDraft(
+	const { yamlSource, setYamlSource, draft, setDraft, validation } = usePipelineDraft(
 		def ? def.yamlSource : DEFAULT_PIPELINE_YAML,
 	);
 	const [view, setView] = useState<ViewMode>("yaml");
@@ -227,11 +227,11 @@ function DefinitionEditor({
 
 			<div className="min-h-0 flex-1 overflow-hidden bg-surface/40">
 				{view === "canvas" ? (
-					<PipelineCanvas draft={draft} />
+					<PipelineCanvas draft={draft} onDraftChange={setDraft} />
 				) : view === "split" ? (
 					<div className="flex h-full min-h-0">
 						<div className="min-w-0 flex-1 border-r border-border">
-							<PipelineCanvas draft={draft} />
+							<PipelineCanvas draft={draft} onDraftChange={setDraft} />
 						</div>
 						<div className="min-h-0 flex-1 overflow-hidden">
 							<YamlEditor
