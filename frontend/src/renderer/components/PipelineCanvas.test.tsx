@@ -150,8 +150,9 @@ describe("PipelineCanvas", () => {
 		fireEvent.keyDown(document.querySelector(".react-flow")!, { key: "Backspace" });
 
 		await screen.findByText("fix");
-		expect(onDraftChange).toHaveBeenCalledTimes(1);
-		const next = onDraftChange.mock.calls[0][0] as PipelineDraft;
+		// react-flow emits a remove for the connected edge too; the last draft
+		// carries the final state (edge scrub folded into the stage removal).
+		const next = onDraftChange.mock.calls.at(-1)![0] as PipelineDraft;
 		expect(next.stages.map((s) => s.name)).toEqual(["fix"]);
 		// The removed stage is scrubbed from the survivor's dependsOn.
 		expect(next.stages[0].dependsOn).toBeUndefined();
