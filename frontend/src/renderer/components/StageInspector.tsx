@@ -53,7 +53,14 @@ const EXECUTOR_SUBTITLE: Record<ExecutorKind, string> = {
 	builtin: "Builtin executor",
 };
 
-export function StageInspector({ stage, stageNames, onChange, onEditCondition, onClose, onDelete }: StageInspectorProps) {
+export function StageInspector({
+	stage,
+	stageNames,
+	onChange,
+	onEditCondition,
+	onClose,
+	onDelete,
+}: StageInspectorProps) {
 	const update = (patch: Partial<StageDraft>) => onChange({ ...stage, ...patch });
 
 	// Merges a task patch and drops the task object entirely once every field is
