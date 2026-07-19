@@ -50,6 +50,10 @@ type Outcome struct {
 	Artifacts    []pipeline.ArtifactInput
 	Observations []Observation
 	ErrorMessage string
+	// Output is a capped tail of the stage's combined stdout+stderr, surfaced in
+	// the run detail. Set by the command executor on both success and failure;
+	// empty for executor kinds that produce no subprocess output.
+	Output string
 }
 
 // Handle is an opaque running-stage token returned by Start and threaded back

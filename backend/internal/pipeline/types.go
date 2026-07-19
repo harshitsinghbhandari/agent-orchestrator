@@ -578,6 +578,10 @@ type StageState struct {
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
 
 	ErrorMessage string `json:"errorMessage,omitempty"`
+	// Output is a capped tail of the stage's combined stdout+stderr (command
+	// stages only), surfaced in the run detail. Empty for stages with no
+	// subprocess output.
+	Output string `json:"output,omitempty"`
 }
 
 // RunState is one pipeline run's full runtime state.

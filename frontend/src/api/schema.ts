@@ -1159,6 +1159,7 @@ export interface components {
             /** Format: date-time */
             completedAt?: null | string;
             errorMessage?: string;
+            output?: string;
             stageName: string;
             stageRunId: string;
             /** Format: date-time */

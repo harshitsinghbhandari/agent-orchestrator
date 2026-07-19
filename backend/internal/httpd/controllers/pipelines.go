@@ -143,7 +143,10 @@ type PipelineStageView struct {
 	StartedAt    *time.Time `json:"startedAt,omitempty"`
 	CompletedAt  *time.Time `json:"completedAt,omitempty"`
 	ErrorMessage string     `json:"errorMessage,omitempty"`
-	ArtifactIDs  []string   `json:"artifactIds"`
+	// Output is a capped tail of the stage's combined stdout+stderr (command
+	// stages only), empty otherwise.
+	Output      string   `json:"output,omitempty"`
+	ArtifactIDs []string `json:"artifactIds"`
 }
 
 // PipelineRunDetail is the full reconstructed run: the summary plus per-stage
@@ -517,6 +520,7 @@ func runDetail(run pipeline.RunState) PipelineRunDetail {
 			StartedAt:    st.StartedAt,
 			CompletedAt:  st.CompletedAt,
 			ErrorMessage: st.ErrorMessage,
+			Output:       st.Output,
 			ArtifactIDs:  ids,
 		})
 	}

@@ -5,9 +5,12 @@ import { formatTimeCompact } from "../lib/format-time";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { loopStateTone, severityBadgeVariant, shortSha, stageStatusDotTone } from "../lib/pipeline-display";
 import { pipelineRunQueryKey, usePipelineRun, type PipelineArtifact } from "../hooks/usePipelineRuns";
+import type { components } from "../../api/schema";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
+
+type PipelineStageView = components["schemas"]["PipelineStageView"];
 
 // Read-only detail for one pipeline run: per-stage state, materialized findings,
 // and cancel/resume actions. No followup thread, no artifact editing — v1 detail
@@ -109,22 +112,7 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 				<h2 className="mb-2 text-micro font-semibold uppercase tracking-wide text-passive">Stages</h2>
 				<div className="flex flex-col gap-2">
 					{stages.map((stage) => (
-						<div
-							key={stage.stageRunId || stage.stageName}
-							data-stage={stage.stageName}
-							className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2"
-						>
-							<span className={cn("h-2 w-2 shrink-0 rounded-full", stageStatusDotTone(stage.status))} />
-							<span className="font-mono text-caption font-medium text-foreground">{stage.stageName}</span>
-							<span className="font-mono text-micro text-passive">{stage.status}</span>
-							{stage.verdict && <Badge variant="outline">{stage.verdict}</Badge>}
-							<span className="ml-auto font-mono text-micro text-passive">
-								attempt {stage.attempt}
-								{stage.artifactIds.length > 0 &&
-									` · ${stage.artifactIds.length} artifact${stage.artifactIds.length === 1 ? "" : "s"}`}
-							</span>
-							{stage.errorMessage && <p className="w-full font-mono text-micro text-error">{stage.errorMessage}</p>}
-						</div>
+						<StageRow key={stage.stageRunId || stage.stageName} stage={stage} />
 					))}
 					{stages.length === 0 && <p className="text-caption text-passive">No stages yet.</p>}
 				</div>
@@ -149,6 +137,46 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 					{findings.length === 0 && <p className="text-caption text-passive">No findings.</p>}
 				</div>
 			</section>
+		</div>
+	);
+}
+
+// One stage row: status/verdict summary plus a collapsible block for the
+// captured command output (last 64 KiB of combined stdout+stderr), when present.
+function StageRow({ stage }: { stage: PipelineStageView }) {
+	const [showOutput, setShowOutput] = useState(false);
+	return (
+		<div
+			data-stage={stage.stageName}
+			className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2"
+		>
+			<span className={cn("h-2 w-2 shrink-0 rounded-full", stageStatusDotTone(stage.status))} />
+			<span className="font-mono text-caption font-medium text-foreground">{stage.stageName}</span>
+			<span className="font-mono text-micro text-passive">{stage.status}</span>
+			{stage.verdict && <Badge variant="outline">{stage.verdict}</Badge>}
+			<span className="ml-auto flex items-center gap-2 font-mono text-micro text-passive">
+				{stage.output && (
+					<button
+						type="button"
+						onClick={() => setShowOutput((v) => !v)}
+						className="rounded px-1 text-passive underline-offset-2 hover:text-foreground hover:underline"
+						aria-expanded={showOutput}
+					>
+						{showOutput ? "Hide output" : "Output"}
+					</button>
+				)}
+				<span>
+					attempt {stage.attempt}
+					{stage.artifactIds.length > 0 &&
+						` · ${stage.artifactIds.length} artifact${stage.artifactIds.length === 1 ? "" : "s"}`}
+				</span>
+			</span>
+			{stage.errorMessage && <p className="w-full font-mono text-micro text-error">{stage.errorMessage}</p>}
+			{stage.output && showOutput && (
+				<pre className="max-h-80 w-full overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-background px-2 py-1.5 font-mono text-micro text-muted-foreground">
+					{stage.output}
+				</pre>
+			)}
 		</div>
 	);
 }
