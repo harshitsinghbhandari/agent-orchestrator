@@ -59,6 +59,15 @@ func (e *BuiltinExecutor) Start(ctx context.Context, in StartInput) (Handle, err
 	}
 	id := stageIdentity{runID: in.RunID, stageRunID: in.StageRunID, stageName: in.Stage.Name}
 
+	// Fork-PR gate via the shared helper: the router delivers findings into a
+	// live worker session, so a builtin stage is fork-sensitive like a command
+	// stage. Resolved from the run context's tri-state (a manual/no-PR run
+	// resolves to ForkNo and flows normally).
+	fork, prNumber := forkFromContext(in.Context)
+	if skip, gated := forkGateDecision(fork, prNumber, in.Stage.Name, in.AllowForkPRs); gated {
+		return &builtinHandle{stageIdentity: id, final: skip}, nil
+	}
+
 	inputs, err := e.store.UpstreamArtifacts(ctx, in.RunID, in.Stage.DependsOn)
 	if err != nil {
 		return &builtinHandle{stageIdentity: id, final: Outcome{

@@ -146,7 +146,13 @@ type PipelineStageView struct {
 	ErrorMessage string     `json:"errorMessage,omitempty"`
 	// Output is a capped tail of the stage's combined stdout+stderr (command
 	// stages only), empty otherwise.
-	Output      string   `json:"output,omitempty"`
+	Output string `json:"output,omitempty"`
+	// SessionID is the AO session the stage ran in (agent stages only), so the UI
+	// can link straight to it. Empty for command and builtin stages.
+	SessionID string `json:"sessionId,omitempty"`
+	// Notes are human-relevant one-line annotations for the stage (fork skip,
+	// findings truncated, exit-mode fallback, unknown status fingerprint).
+	Notes       []string `json:"notes,omitempty"`
 	ArtifactIDs []string `json:"artifactIds"`
 }
 
@@ -560,6 +566,8 @@ func runDetail(run pipeline.RunState) PipelineRunDetail {
 			CompletedAt:  st.CompletedAt,
 			ErrorMessage: st.ErrorMessage,
 			Output:       st.Output,
+			SessionID:    st.SessionID,
+			Notes:        st.Notes,
 			ArtifactIDs:  ids,
 		})
 	}

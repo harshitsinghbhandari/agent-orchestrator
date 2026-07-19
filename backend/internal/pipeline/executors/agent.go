@@ -59,11 +59,14 @@ type SessionSpawner interface {
 	Kill(ctx context.Context, sessionID string) error
 }
 
-// agentHandle is the running-stage token for an agent stage.
+// agentHandle is the running-stage token for an agent stage. final is non-nil
+// when the stage short-circuited before spawn (the fork gate); Poll then returns
+// it immediately and no session was ever created.
 type agentHandle struct {
 	stageIdentity
 	sessionID     string
 	workspacePath string
+	final         *Outcome
 }
 
 // AgentExecutor bridges a pipeline stage to a real, visible AO session: spawn a
@@ -89,6 +92,17 @@ func (e *AgentExecutor) Start(ctx context.Context, in StartInput) (Handle, error
 		return nil, fmt.Errorf("agent executor cannot start stage %q with executor.kind=%s", in.Stage.Name, in.Stage.Executor.Kind)
 	}
 
+	id := stageIdentity{runID: in.RunID, stageRunID: in.StageRunID, stageName: in.Stage.Name}
+
+	// Fork-PR gate, BEFORE spawn, via the shared helper so agent stages honor the
+	// same trust boundary as command stages. Resolved from the run context's
+	// tri-state (a PR run always carries it; a manual/no-PR run resolves to
+	// ForkNo and flows normally). No session is spawned when the gate blocks.
+	fork, prNumber := forkFromContext(in.Context)
+	if skip, gated := forkGateDecision(fork, prNumber, in.Stage.Name, in.AllowForkPRs); gated {
+		return &agentHandle{stageIdentity: id, final: &skip}, nil
+	}
+
 	prompt := buildStagePrompt(in.PipelineName, in.Stage, in.LoopRound, in.Context, in.UpstreamFindings)
 	session, err := e.sessions.Spawn(ctx, SpawnRequest{
 		ProjectID:  in.ProjectID,
@@ -109,7 +123,7 @@ func (e *AgentExecutor) Start(ctx context.Context, in StartInput) (Handle, error
 	}
 
 	return &agentHandle{
-		stageIdentity: stageIdentity{runID: in.RunID, stageRunID: in.StageRunID, stageName: in.Stage.Name},
+		stageIdentity: id,
 		sessionID:     session.SessionID,
 		workspacePath: session.WorkspacePath,
 	}, nil
@@ -125,6 +139,10 @@ func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Outcome, error) {
 	if !ok {
 		return Outcome{}, fmt.Errorf("agent executor: unexpected handle type %T", h)
 	}
+	if handle.final != nil {
+		// Fork-gated (or otherwise pre-decided) stage: no session was spawned.
+		return *handle.final, nil
+	}
 
 	snap, exists, err := e.sessions.Get(ctx, handle.sessionID)
 	if err != nil {
@@ -135,12 +153,14 @@ func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Outcome, error) {
 		// waiting for an idle signal that will never come.
 		return Outcome{
 			Status:       OutcomeFailed,
+			SessionID:    handle.sessionID,
 			ErrorMessage: fmt.Sprintf("stage %q session %s no longer exists", handle.stageName, handle.sessionID),
 		}, nil
 	}
 	if snap.Terminated || snap.Activity == "exited" {
 		return Outcome{
 			Status:       OutcomeFailed,
+			SessionID:    handle.sessionID,
 			ErrorMessage: fmt.Sprintf("stage %q session %s terminated without findings (activity=%s)", handle.stageName, handle.sessionID, snap.Activity),
 		}, nil
 	}
@@ -155,13 +175,14 @@ func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Outcome, error) {
 		// Leave the session up so a human can inspect the bad findings file.
 		return Outcome{
 			Status:       OutcomeFailed,
+			SessionID:    handle.sessionID,
 			ErrorMessage: fmt.Sprintf("stage %q produced unparseable findings at %s: %v", handle.stageName, findingsPath, err),
 		}, nil
 	}
 
 	_ = e.sessions.Kill(ctx, handle.sessionID)
 
-	outcome := Outcome{Status: OutcomeCompleted, Artifacts: result.artifacts, StatusChanges: result.statusChanges}
+	outcome := Outcome{Status: OutcomeCompleted, SessionID: handle.sessionID, Artifacts: result.artifacts, StatusChanges: result.statusChanges}
 	if result.truncated {
 		outcome.Observations = []Observation{{
 			Name: "pipeline.findings.truncated",
@@ -173,6 +194,7 @@ func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Outcome, error) {
 				"capBytes":     findingsFileSizeCapBytes,
 				"bytesRead":    result.bytesRead,
 			},
+			Note: fmt.Sprintf("findings file exceeded %d bytes and was truncated; some findings may be missing", findingsFileSizeCapBytes),
 		}}
 	}
 	return outcome, nil
@@ -183,6 +205,10 @@ func (e *AgentExecutor) Cancel(ctx context.Context, h Handle) error {
 	handle, ok := h.(*agentHandle)
 	if !ok {
 		return fmt.Errorf("agent executor: unexpected handle type %T", h)
+	}
+	if handle.final != nil || handle.sessionID == "" {
+		// Fork-gated stage: no session was ever spawned, nothing to tear down.
+		return nil
 	}
 	if err := e.sessions.Kill(ctx, handle.sessionID); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("agent executor: kill session %s: %w", handle.sessionID, err)

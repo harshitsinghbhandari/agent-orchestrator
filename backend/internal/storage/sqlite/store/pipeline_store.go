@@ -426,6 +426,9 @@ func stageUpsertParams(projectID domain.ProjectID, runID, stageName string, st p
 		StartedAt:    nullTimeFromPtr(st.StartedAt),
 		CompletedAt:  nullTimeFromPtr(st.CompletedAt),
 		ErrorMessage: st.ErrorMessage,
+		SessionID:    st.SessionID,
+		Notes:        marshalStageNotes(st.Notes),
+		Output:       st.Output,
 	}
 }
 
@@ -438,7 +441,37 @@ func stageStateFromRow(r gen.PipelineStageRun) pipeline.StageState {
 		StartedAt:    ptrFromNullTime(r.StartedAt),
 		CompletedAt:  ptrFromNullTime(r.CompletedAt),
 		ErrorMessage: r.ErrorMessage,
+		SessionID:    r.SessionID,
+		Notes:        unmarshalStageNotes(r.Notes),
+		Output:       r.Output,
 	}
+}
+
+// marshalStageNotes encodes a stage's notes as a JSON array for the notes
+// column. An empty list stores "" (not "null") so a legacy default round-trips
+// to a nil slice.
+func marshalStageNotes(notes []string) string {
+	if len(notes) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(notes)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// unmarshalStageNotes decodes the notes column back into a slice. An empty or
+// malformed value yields nil so the run detail simply shows no notes.
+func unmarshalStageNotes(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var notes []string
+	if err := json.Unmarshal([]byte(s), &notes); err != nil {
+		return nil
+	}
+	return notes
 }
 
 func artifactInsertParams(projectID domain.ProjectID, a pipeline.Artifact) (gen.InsertPipelineArtifactParams, error) {

@@ -153,27 +153,16 @@ func (e *CommandExecutor) Start(ctx context.Context, in StartInput) (Handle, err
 			ErrorMessage: fmt.Sprintf("command stage %q references unknown session %s", in.Stage.Name, in.LinkedSessionID)}), nil
 	}
 
-	// Fork-PR gate, BEFORE spawn. ForkUnknown is fail-safe (blocks) so untrusted
-	// code we cannot classify never executes.
-	if session.Fork != ForkNo && !in.AllowForkPRs {
-		reason := fmt.Sprintf("PR #%d is from a fork and pipeline.allowForkPRs is not enabled", session.PRNumber)
-		if session.Fork == ForkUnknown {
-			reason = fmt.Sprintf("SCM plugin could not determine fork status for PR #%d; blocking by default", session.PRNumber)
-		}
-		return shortCircuit(id, Outcome{
-			Status:    OutcomeCompleted,
-			Verdict:   pipeline.VerdictNeutral,
-			Artifacts: nil,
-			Observations: []Observation{{
-				Name: "command_stage_skipped_fork_pr",
-				Data: map[string]any{
-					"stage":      in.Stage.Name,
-					"prNumber":   session.PRNumber,
-					"isFromFork": session.Fork == ForkYes,
-					"reason":     reason,
-				},
-			}},
-		}), nil
+	// Fork-PR gate, BEFORE spawn, via the shared helper so agent/command/builtin
+	// share one trust boundary. Prefer the run context's tri-state (#275); fall
+	// back to the live session lookup this path already resolved when the context
+	// carries no verdict (e.g. runs persisted before RunContext, manual runs).
+	fork, prNumber := session.Fork, session.PRNumber
+	if in.Context.IsFromFork != nil {
+		fork, prNumber = forkFromContext(in.Context)
+	}
+	if skip, gated := forkGateDecision(fork, prNumber, in.Stage.Name, in.AllowForkPRs); gated {
+		return shortCircuit(id, skip), nil
 	}
 
 	if session.WorkspacePath == "" {
@@ -395,7 +384,7 @@ func interpretExitStatus(ex commandExit) Outcome {
 		"stage":    stageName,
 		"mode":     "exit-code",
 		"exitCode": res.ExitCode,
-	}}
+	}, Note: fmt.Sprintf("no JSON result envelope on stdout; verdict taken from exit code %d", res.ExitCode)}
 	if res.ExitCode != 0 {
 		return Outcome{Status: OutcomeFailed, Observations: []Observation{obs},
 			ErrorMessage: fmt.Sprintf("command stage %q exited with code %d%s", stageName, res.ExitCode, stderrSuffix(res.Stderr))}
@@ -469,6 +458,7 @@ func harvestCommandFindings(ex commandExit, out Outcome) Outcome {
 				"capBytes":     findingsFileSizeCapBytes,
 				"bytesRead":    result.bytesRead,
 			},
+			Note: fmt.Sprintf("findings file exceeded %d bytes and was truncated; some findings may be missing", findingsFileSizeCapBytes),
 		})
 	}
 	return out

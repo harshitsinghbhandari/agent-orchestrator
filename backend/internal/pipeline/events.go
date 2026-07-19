@@ -91,6 +91,13 @@ type StageCompleted struct {
 	// Output is a capped tail of the stage's combined stdout+stderr, persisted
 	// onto the stage state for the run detail.
 	Output string
+	// SessionID is the AO session the stage ran in (agent stages only), persisted
+	// onto the stage state so the run detail can link to it.
+	SessionID string
+	// Notes are human-relevant one-line annotations (fork skip, findings
+	// truncated, exit-mode fallback) the driver collected from the outcome's
+	// observations, persisted onto the stage state.
+	Notes []string
 }
 
 // Type implements Event.
@@ -107,6 +114,12 @@ type StageFailed struct {
 	// Output is a capped tail of the stage's combined stdout+stderr, persisted
 	// onto the stage state for the run detail.
 	Output string
+	// SessionID is the AO session the stage ran in (agent stages only), persisted
+	// onto the stage state so the run detail can link to it even on failure.
+	SessionID string
+	// Notes are human-relevant one-line annotations the driver collected from the
+	// outcome's observations, persisted onto the stage state.
+	Notes []string
 }
 
 // Type implements Event.

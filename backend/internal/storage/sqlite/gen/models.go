@@ -181,6 +181,9 @@ type PipelineStageRun struct {
 	StartedAt    sql.NullTime
 	CompletedAt  sql.NullTime
 	ErrorMessage string
+	SessionID    string
+	Notes        string
+	Output       string
 }
 
 type Project struct {
