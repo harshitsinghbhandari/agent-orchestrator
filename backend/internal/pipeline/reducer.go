@@ -1,6 +1,9 @@
 package pipeline
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Pure pipeline reducer.
 //
@@ -46,7 +49,7 @@ func Reduce(state EngineState, event Event) (EngineState, []Effect) {
 
 func reduceTriggerFired(state EngineState, event TriggerFired) (EngineState, []Effect) {
 	now := event.Now
-	key := LoopKey(event.SessionID, event.Pipeline.Name)
+	key := LoopKeyFor(event.Context, event.SessionID, event.Pipeline.Name, event.RunID)
 
 	if runID, ok := state.CurrentRunByLoop[key]; ok {
 		if _, running := state.Runs[runID]; running {
@@ -57,12 +60,41 @@ func reduceTriggerFired(state EngineState, event TriggerFired) (EngineState, []E
 		}
 	}
 
+	// Same-SHA dedup: a non-manual trigger that already ran this exact SHA to a
+	// settled outcome (completed or stalled) must not spawn an identical run.
+	// This absorbs CI flapping (pass -> fail -> pass on one SHA re-firing
+	// merge_ready) and fact-only pr.updated churn. Manual triggers always fire:
+	// a human explicitly asked, even at an already-run SHA.
+	if event.Trigger != TriggerManual && event.HeadSHA != "" {
+		for _, s := range state.HistorySummaries[key] {
+			if s.HeadSHA == event.HeadSHA && isSettledRun(s) {
+				return state, []Effect{EmitObservation{
+					Name: "pipeline.run.trigger_deduped",
+					Data: map[string]any{
+						"pipelineName": event.Pipeline.Name,
+						"sessionId":    event.SessionID,
+						"trigger":      event.Trigger,
+						"headSha":      event.HeadSHA,
+						"priorRunId":   s.RunID,
+					},
+				}}
+			}
+		}
+	}
+
 	stages, ok := buildInitialStageStates(event.Pipeline, event.StageRunIDs)
 	if !ok {
 		return invalidTransition(state, "TRIGGER_FIRED missing stageRunIds for one or more stages")
 	}
 
-	priorRound := len(state.HistorySummaries[key])
+	// Only settled runs (completed or stalled) count as loop rounds; runs cut
+	// short (outdated, cancelled, config change) must not trip loop_rounds_at_least.
+	priorRound := 0
+	for _, s := range state.HistorySummaries[key] {
+		if isSettledRun(s) {
+			priorRound++
+		}
+	}
 	isContinuation := event.Trigger == TriggerPRUpdated || event.Trigger == TriggerManual
 	loopRounds := priorRound
 	if isContinuation {
@@ -340,13 +372,21 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 }
 
 func reduceNewSHADetected(state EngineState, event NewSHADetected) (EngineState, []Effect) {
-	key := LoopKey(event.SessionID, event.PipelineName)
+	// Look up by the PR-scoped loop key so a SHA change on one PR only reaches
+	// that PR's run, never a sibling PR's run on the same session+pipeline.
+	key := LoopKeyFor(RunContext{PRURL: event.PRURL}, event.SessionID, event.PipelineName, "")
 	runID, ok := state.CurrentRunByLoop[key]
 	if !ok {
 		return state, nil
 	}
 	run, ok := state.Runs[runID]
 	if !ok || run.HeadSHA == event.SHA {
+		return state, nil
+	}
+	// Defensive guard: never terminate a run whose PR does not match the one
+	// whose SHA changed. The key already encodes the PR, so this only bites if a
+	// key ever aliased.
+	if event.PRURL != "" && run.Context.PRURL != event.PRURL {
 		return state, nil
 	}
 	// Run becomes outdated; the loop key is freed so the driver can spawn a new
@@ -370,16 +410,33 @@ func reduceRunCancelled(state EngineState, event RunCancelled) (EngineState, []E
 }
 
 func reduceConfigChanged(state EngineState, event ConfigChanged) (EngineState, []Effect) {
-	key := LoopKey(event.SessionID, event.PipelineName)
-	runID, ok := state.CurrentRunByLoop[key]
-	if !ok {
+	// The config changed for a whole session+pipeline, but per-PR loop keys mean
+	// several runs (one per PR, plus any manual) may be in flight for it. Every
+	// run is pinned to the now-stale config snapshot, so terminate them all.
+	// Collect matching non-terminal runs and terminate in RunID order for
+	// deterministic effects.
+	runIDs := make([]RunID, 0, len(state.Runs))
+	for id, run := range state.Runs {
+		if run.SessionID == event.SessionID && run.PipelineName == event.PipelineName && !run.LoopState.IsTerminal() {
+			runIDs = append(runIDs, id)
+		}
+	}
+	if len(runIDs) == 0 {
 		return state, nil
 	}
-	run, ok := state.Runs[runID]
-	if !ok {
-		return state, nil
+	sort.Slice(runIDs, func(i, j int) bool { return runIDs[i] < runIDs[j] })
+
+	var effects []Effect
+	for _, id := range runIDs {
+		run, ok := state.Runs[id]
+		if !ok || run.LoopState.IsTerminal() {
+			continue
+		}
+		var eff []Effect
+		state, eff = terminateRun(state, run, TerminationConfigChange, event.Now, LoopTerminated)
+		effects = append(effects, eff...)
 	}
-	return terminateRun(state, run, TerminationConfigChange, event.Now, LoopTerminated)
+	return state, effects
 }
 
 func reduceArtifactStatusChanged(state EngineState, event ArtifactStatusChanged) (EngineState, []Effect) {
@@ -467,7 +524,7 @@ func decideRunExit(run RunState, state EngineState) exitDecision {
 	exits := run.PipelineConfigSnapshot.ExitPredicates
 	ctx := PredicateCtx{
 		Run:      &run,
-		History:  state.HistorySummaries[LoopKey(run.SessionID, run.PipelineName)],
+		History:  state.HistorySummaries[LoopKeyFor(run.Context, run.SessionID, run.PipelineName, run.RunID)],
 		Findings: run.Findings,
 	}
 
@@ -506,7 +563,7 @@ func isConverged(state EngineState, run RunState) bool {
 		return false
 	}
 
-	history := state.HistorySummaries[LoopKey(run.SessionID, run.PipelineName)]
+	history := state.HistorySummaries[LoopKeyFor(run.Context, run.SessionID, run.PipelineName, run.RunID)]
 	if len(history) < window-1 {
 		return false
 	}

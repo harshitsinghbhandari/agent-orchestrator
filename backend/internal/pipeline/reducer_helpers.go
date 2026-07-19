@@ -75,6 +75,14 @@ func summarizeRun(run RunState) RunSummary {
 	}
 }
 
+// isSettledRun reports whether a run summary reached a real conclusion (loop
+// state done or stalled) rather than being cut short (outdated, cancelled, or
+// config change, all of which land in loop state terminated). Only settled runs
+// count toward the loop round counter and toward same-SHA trigger dedup.
+func isSettledRun(s RunSummary) bool {
+	return s.LoopState == LoopDone || s.LoopState == LoopStalled
+}
+
 // sortedUnique returns the deduped, ascending-sorted copy of in. It always
 // returns a non-nil slice so JSON round-trips as [] rather than null, matching
 // the old TypeScript summaries.
@@ -178,7 +186,7 @@ func terminateRunFromState(state EngineState, run RunState, reason RunTerminatio
 	finalRun.TerminationReason = reason
 	finalRun.UpdatedAt = now
 
-	key := LoopKey(run.SessionID, run.PipelineName)
+	key := LoopKeyFor(run.Context, run.SessionID, run.PipelineName, run.RunID)
 
 	// Append this run's summary to the loop's history (copy-on-write).
 	prior := state.HistorySummaries[key]

@@ -128,7 +128,7 @@ func (q *Queries) GetPipelineDefinitionByName(ctx context.Context, arg GetPipeli
 const getPipelineRun = `-- name: GetPipelineRun :one
 SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
        loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at
+       created_at, updated_at, context_json
 FROM pipeline_runs WHERE id = ?
 `
 
@@ -149,6 +149,7 @@ func (q *Queries) GetPipelineRun(ctx context.Context, id string) (PipelineRun, e
 		&i.Fingerprints,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ContextJson,
 	)
 	return i, err
 }
@@ -273,7 +274,7 @@ func (q *Queries) ListPipelineDefinitions(ctx context.Context, projectID domain.
 const listPipelineRuns = `-- name: ListPipelineRuns :many
 SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
        loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at
+       created_at, updated_at, context_json
 FROM pipeline_runs
 WHERE project_id = ?
   AND (?2 IS NULL OR pipeline_name = ?2)
@@ -317,6 +318,7 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 			&i.Fingerprints,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ContextJson,
 		); err != nil {
 			return nil, err
 		}
@@ -422,8 +424,8 @@ const upsertPipelineRun = `-- name: UpsertPipelineRun :exec
 INSERT INTO pipeline_runs (
     id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
     loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-    created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at, updated_at, context_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     pipeline_name = excluded.pipeline_name,
     session_id = excluded.session_id,
@@ -433,6 +435,7 @@ ON CONFLICT (id) DO UPDATE SET
     loop_rounds = excluded.loop_rounds,
     config_snapshot = excluded.config_snapshot,
     fingerprints = excluded.fingerprints,
+    context_json = excluded.context_json,
     updated_at = excluded.updated_at
 `
 
@@ -450,6 +453,7 @@ type UpsertPipelineRunParams struct {
 	Fingerprints      string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	ContextJson       string
 }
 
 // Pipeline runs --------------------------------------------------------------
@@ -468,6 +472,7 @@ func (q *Queries) UpsertPipelineRun(ctx context.Context, arg UpsertPipelineRunPa
 		arg.Fingerprints,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.ContextJson,
 	)
 	return err
 }

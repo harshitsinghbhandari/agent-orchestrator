@@ -113,8 +113,12 @@ func TestPipelineRunSaveLoadRoundTrip(t *testing.T) {
 		SessionID:              "mer-1",
 		PipelineConfigSnapshot: samplePipeline("review"),
 		HeadSHA:                "abc123",
-		LoopState:              pipeline.LoopRunning,
-		LoopRounds:             2,
+		Context: pipeline.RunContext{
+			PRNumber: 42, PRURL: "https://github.com/o/r/pull/42", SourceBranch: "feat",
+			TargetBranch: "main", HeadSHA: "abc123", SessionID: "mer-1", IssueID: "iss-7",
+		},
+		LoopState:  pipeline.LoopRunning,
+		LoopRounds: 2,
 		Stages: map[string]pipeline.StageState{
 			"lint": {StageRunID: "sr-1", Status: pipeline.StageStatusRunning, Attempt: 1, StartedAt: &started},
 		},
@@ -136,6 +140,10 @@ func TestPipelineRunSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.PipelineConfigSnapshot.Stages[0].Executor.Command != "golangci-lint" {
 		t.Fatalf("config snapshot not round-tripped: %+v", got.PipelineConfigSnapshot)
+	}
+	if got.Context.PRURL != "https://github.com/o/r/pull/42" || got.Context.PRNumber != 42 ||
+		got.Context.IssueID != "iss-7" || got.Context.SourceBranch != "feat" {
+		t.Fatalf("run context not round-tripped: %+v", got.Context)
 	}
 	// Fingerprints keep insertion order (dedup+sort only happens in summaries).
 	if len(got.Fingerprints) != 2 || got.Fingerprints[0] != "fp-b" || got.Fingerprints[1] != "fp-a" {
@@ -295,6 +303,51 @@ func TestPipelineHydrateEngineState(t *testing.T) {
 	// The live run must not appear in history.
 	if _, ok := state.HistorySummaries[pipeline.LoopKey("mer-2", "review")]; ok {
 		t.Fatalf("live-only loop should have no history: %+v", state.HistorySummaries)
+	}
+}
+
+func TestPipelineHydrateRebuildsPerPRKeys(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	base := time.Now().UTC().Truncate(time.Second)
+
+	// Two live runs of one pipeline on one session, one per PR. Persisted Context
+	// carries the PR url; hydrate must key them separately so they don't collapse
+	// onto the shared session+pipeline key and clobber each other.
+	saveRun := func(id, prURL string, createdAt time.Time) {
+		run := pipeline.RunState{
+			RunID: pipeline.RunID(id), PipelineID: "pl-review", PipelineName: "review", SessionID: "mer-1",
+			PipelineConfigSnapshot: samplePipeline("review"), LoopState: pipeline.LoopRunning,
+			Context:   pipeline.RunContext{PRURL: prURL, SessionID: "mer-1"},
+			Stages:    map[string]pipeline.StageState{"lint": {StageRunID: pipeline.StageRunID("sr-" + id), Status: pipeline.StageStatusRunning}},
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}
+		if err := s.SavePipelineRun(ctx, "mer", run); err != nil {
+			t.Fatalf("save %s: %v", id, err)
+		}
+	}
+	saveRun("run-prA", "https://x/pull/1", base)
+	saveRun("run-prB", "https://x/pull/2", base.Add(time.Minute))
+
+	state, err := s.HydratePipelineEngineState(ctx, "mer")
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	keyA := pipeline.LoopKeyFor(pipeline.RunContext{PRURL: "https://x/pull/1"}, "mer-1", "review", "")
+	keyB := pipeline.LoopKeyFor(pipeline.RunContext{PRURL: "https://x/pull/2"}, "mer-1", "review", "")
+	if keyA == keyB {
+		t.Fatal("per-PR keys must differ")
+	}
+	if state.CurrentRunByLoop[keyA] != "run-prA" {
+		t.Fatalf("current run for PR-A = %q, want run-prA", state.CurrentRunByLoop[keyA])
+	}
+	if state.CurrentRunByLoop[keyB] != "run-prB" {
+		t.Fatalf("current run for PR-B = %q, want run-prB", state.CurrentRunByLoop[keyB])
+	}
+	if len(state.CurrentRunByLoop) != 2 {
+		t.Fatalf("want 2 distinct loop keys, got %d: %+v", len(state.CurrentRunByLoop), state.CurrentRunByLoop)
 	}
 }
 

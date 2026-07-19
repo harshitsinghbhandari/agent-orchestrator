@@ -31,7 +31,7 @@ func reduceRunResumed(state EngineState, event RunResumed) (EngineState, []Effec
 	// Refuse to resume when another run already owns the loop key: resuming an
 	// old stalled run after a fresh trigger claimed the loop would silently
 	// dispossess the active run of its loop pointer.
-	key := LoopKey(run.SessionID, run.PipelineName)
+	key := LoopKeyFor(run.Context, run.SessionID, run.PipelineName, run.RunID)
 	if activeRunID, present := state.CurrentRunByLoop[key]; present && activeRunID != event.RunID {
 		return invalidTransition(state, "RUN_RESUMED for "+string(event.RunID)+" but loop \""+key+"\" is already owned by active run "+string(activeRunID)+"; cancel that run before resuming the older one")
 	}

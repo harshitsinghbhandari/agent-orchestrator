@@ -236,7 +236,9 @@ func TestPipelineEndToEndFlagOn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hydrate: %v", err)
 	}
-	key := pipeline.LoopKey(string(sessionID), "review")
+	// The run is PR-backed, so it keys per PR (session:pipeline:prURL), not by the
+	// bare session+pipeline key. Derive the key from the run's persisted Context.
+	key := pipeline.LoopKeyFor(run.Context, run.SessionID, "review", run.RunID)
 	if _, live := hydrated.CurrentRunByLoop[key]; live {
 		t.Fatalf("terminal run must not hold a live loop pointer")
 	}

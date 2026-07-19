@@ -30,8 +30,8 @@ DELETE FROM pipeline_definitions WHERE id = ?;
 INSERT INTO pipeline_runs (
     id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
     loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-    created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at, updated_at, context_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     pipeline_name = excluded.pipeline_name,
     session_id = excluded.session_id,
@@ -41,18 +41,19 @@ ON CONFLICT (id) DO UPDATE SET
     loop_rounds = excluded.loop_rounds,
     config_snapshot = excluded.config_snapshot,
     fingerprints = excluded.fingerprints,
+    context_json = excluded.context_json,
     updated_at = excluded.updated_at;
 
 -- name: GetPipelineRun :one
 SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
        loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at
+       created_at, updated_at, context_json
 FROM pipeline_runs WHERE id = ?;
 
 -- name: ListPipelineRuns :many
 SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
        loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at
+       created_at, updated_at, context_json
 FROM pipeline_runs
 WHERE project_id = ?
   AND (sqlc.narg('pipeline_name') IS NULL OR pipeline_name = sqlc.narg('pipeline_name'))

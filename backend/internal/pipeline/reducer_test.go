@@ -113,25 +113,48 @@ func TestReduceTriggerFired(t *testing.T) {
 		}
 	})
 
-	t.Run("pr.opened after history keeps loopRounds at max(prior,1)", func(t *testing.T) {
+	t.Run("pr.opened after history keeps loopRounds at max(settled prior,1)", func(t *testing.T) {
 		p := pipelineOf("p", 1, stageDef("a"))
 		st := EmptyEngineState()
 		key := LoopKey("sess-1", "p")
-		st.HistorySummaries[key] = []RunSummary{{RunID: "old1"}, {RunID: "old2"}}
+		st.HistorySummaries[key] = []RunSummary{
+			{RunID: "old1", LoopState: LoopDone}, {RunID: "old2", LoopState: LoopStalled},
+		}
 		state, _ := Reduce(st, triggerFor(p, TriggerPROpened, "r1"))
 		if state.Runs["r1"].LoopRounds != 2 {
 			t.Fatalf("loopRounds = %d, want 2", state.Runs["r1"].LoopRounds)
 		}
 	})
 
-	t.Run("manual continuation increments loopRounds past history", func(t *testing.T) {
+	t.Run("manual continuation increments loopRounds past settled history", func(t *testing.T) {
 		p := pipelineOf("p", 1, stageDef("a"))
 		st := EmptyEngineState()
 		key := LoopKey("sess-1", "p")
-		st.HistorySummaries[key] = []RunSummary{{RunID: "old1"}, {RunID: "old2"}}
+		st.HistorySummaries[key] = []RunSummary{
+			{RunID: "old1", LoopState: LoopDone}, {RunID: "old2", LoopState: LoopStalled},
+		}
 		state, _ := Reduce(st, triggerFor(p, TriggerManual, "r1"))
 		if state.Runs["r1"].LoopRounds != 3 {
 			t.Fatalf("loopRounds = %d, want 3", state.Runs["r1"].LoopRounds)
+		}
+	})
+
+	t.Run("loopRounds ignores outdated/cancelled history", func(t *testing.T) {
+		p := pipelineOf("p", 1, stageDef("a"))
+		st := EmptyEngineState()
+		key := LoopKey("sess-1", "p")
+		// Two settled rounds plus three runs cut short (terminated); only the
+		// settled two count toward the round number.
+		st.HistorySummaries[key] = []RunSummary{
+			{RunID: "done1", LoopState: LoopDone},
+			{RunID: "outdated", LoopState: LoopTerminated, TerminationReason: TerminationOutdated},
+			{RunID: "cancelled", LoopState: LoopTerminated, TerminationReason: TerminationManualCancel},
+			{RunID: "stalled1", LoopState: LoopStalled},
+			{RunID: "cfg", LoopState: LoopTerminated, TerminationReason: TerminationConfigChange},
+		}
+		state, _ := Reduce(st, triggerFor(p, TriggerManual, "r1"))
+		if state.Runs["r1"].LoopRounds != 3 {
+			t.Fatalf("loopRounds = %d, want 3 (2 settled prior + 1 continuation)", state.Runs["r1"].LoopRounds)
 		}
 	})
 

@@ -116,6 +116,10 @@ type NewSHADetected struct {
 	SessionID    string
 	PipelineName string
 	SHA          string
+	// PRURL scopes the SHA change to a single PR's run so a sibling PR's run on
+	// the same session+pipeline is never terminated as outdated. Empty for a
+	// non-PR loop (degrades to the session+pipeline key).
+	PRURL string
 }
 
 // Type implements Event.
