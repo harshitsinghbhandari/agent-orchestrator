@@ -9,6 +9,20 @@ import (
 
 func intPtr(i int) *int { return &i }
 
+func int64Ptr(i int64) *int64 { return &i }
+
+// wedgeStage returns a copy of state with runID's stage marked running with a
+// StartedAt and Deadline both set to at, so a Tick at any later Now expires it.
+// Test-only shortcut for building "stuck inflight stage" states.
+func wedgeStage(state EngineState, runID RunID, stageName string, at time.Time) EngineState {
+	run := state.Runs[runID]
+	s := run.Stages[stageName]
+	s.Status = StageStatusRunning
+	s.StartedAt = &at
+	s.Deadline = &at
+	return replaceRun(state, patchRun(run, map[string]StageState{stageName: s}, at))
+}
+
 // testNow is a fixed clock; the reducer is pure so any stable value works.
 var testNow = time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 

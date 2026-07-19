@@ -292,8 +292,20 @@ func (e *Engine) Resume(runID pipeline.RunID) {
 			return
 		}
 		ids := map[string]pipeline.StageRunID{}
+		hasResumable := false
 		for name, st := range run.Stages {
 			if st.Status == pipeline.StageStatusFailed || st.Status == pipeline.StageStatusOutdated {
+				ids[name] = e.newStageRunID()
+				hasResumable = true
+			}
+		}
+		// A stalled run with no failed/outdated stages (every stage
+		// succeeded/skipped, e.g. a loop_rounds_at_least stall or an unmet `done`
+		// predicate) can still be resumed to grant a genuine extra round. The
+		// reducer re-pends ALL stages in that case, so allocate a fresh id per
+		// stage here.
+		if !hasResumable && run.LoopState == pipeline.LoopStalled {
+			for name := range run.Stages {
 				ids[name] = e.newStageRunID()
 			}
 		}
@@ -446,11 +458,24 @@ func (e *Engine) cancelStage(eff pipeline.CancelStage) {
 	}
 }
 
-// tick polls every inflight handle. A terminal outcome is removed from the
-// inflight set and fed back as STAGE_COMPLETED / STAGE_FAILED. Handles are
+// tick advances the engine one heartbeat: it polls every inflight handle for a
+// terminal outcome, then dispatches pipeline.Tick so the reducer can fail any
+// running stage whose deadline has passed (an executor that never reports
+// terminal would otherwise wedge the run in `running` forever). Polling runs
+// first so a stage that completed on its own is finalized normally rather than
+// timed out.
+func (e *Engine) tick() {
+	e.pollInflight()
+	// Deadline enforcement. Cheap no-op when no stage is running past its
+	// deadline; the reducer's Tick arm is pure and only reads event.Now.
+	e.reduceAndExecute(pipeline.Tick{Now: e.now()})
+}
+
+// pollInflight polls every inflight handle. A terminal outcome is removed from
+// the inflight set and fed back as STAGE_COMPLETED / STAGE_FAILED. Handles are
 // snapshotted first because a completing stage can, via the reducer, cancel a
 // sibling (removing it from inflight) or start a new stage (adding one).
-func (e *Engine) tick() {
+func (e *Engine) pollInflight() {
 	if len(e.inflight) == 0 {
 		return
 	}

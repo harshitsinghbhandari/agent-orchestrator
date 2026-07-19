@@ -1,5 +1,7 @@
 package pipeline
 
+import "time"
+
 // reduceRunResumed resumes a stalled/failed run: it resets every failed stage
 // back to pending with a fresh stageRunId (and incremented attempt, capped by
 // stage.Retries when set), revives externally-cancelled outdated stages
@@ -52,8 +54,42 @@ func reduceRunResumed(state EngineState, event RunResumed) (EngineState, []Effec
 		}
 	}
 	if len(failedStageNames) == 0 && len(outdatedStageNames) == 0 {
-		// Nothing to resume; keep state unchanged so the caller can no-op too.
-		return state, nil
+		if run.LoopState != LoopStalled {
+			// Nothing to resume (e.g. a done/terminated run has no failed stages);
+			// keep state unchanged so the caller can no-op too.
+			return state, nil
+		}
+		// Rounds-stalled resume: the run stopped advancing with every stage
+		// succeeded/skipped (e.g. a loop_rounds_at_least stalled predicate fired,
+		// or `done` was unmet). There is nothing to retry, but resuming a stalled
+		// run should grant a genuine extra round, so re-pend ALL stages with fresh
+		// stageRunIds (attempt preserved: these stages did not fail, so they do not
+		// consume the retry budget). LoopRounds and history are left untouched.
+		//
+		// Limitation: LoopRounds is not bumped, so a stage capped by maxLoopRounds
+		// (or a loop_rounds_at_least stalled predicate) that stalled the run will
+		// re-skip/re-stall on the next terminal; resume re-runs the eligible work
+		// without advancing the round counter. Noted in the PR; bumping the counter
+		// is owned by the trigger/loop-key worker (#270).
+		roundResumeDelta := make(map[string]StageState, len(run.Stages))
+		resumedNames := make([]string, 0, len(run.PipelineConfigSnapshot.Stages))
+		for _, def := range run.PipelineConfigSnapshot.Stages {
+			prior, ok := run.Stages[def.Name]
+			if !ok {
+				continue
+			}
+			fresh, ok := event.StageRunIDs[def.Name]
+			if !ok || fresh == "" {
+				return invalidTransition(state, "RUN_RESUMED (rounds) missing stageRunId for stage \""+def.Name+"\"")
+			}
+			roundResumeDelta[def.Name] = StageState{
+				StageRunID: fresh,
+				Status:     StageStatusPending,
+				Attempt:    prior.Attempt,
+			}
+			resumedNames = append(resumedNames, def.Name)
+		}
+		return finishResume(state, run, key, roundResumeDelta, resumedNames, now)
 	}
 
 	retriesByName := make(map[string]*int, len(run.PipelineConfigSnapshot.Stages))
@@ -115,35 +151,56 @@ func reduceRunResumed(state EngineState, event RunResumed) (EngineState, []Effec
 		}
 	}
 
+	resumedNames := append(append([]string{}, failedStageNames...), outdatedStageNames...)
+	return finishResume(state, run, key, stageDelta, resumedNames, now)
+}
+
+// finishResume applies a resume delta (re-pended stages), re-runs the scheduler,
+// and either persists+starts the re-armed stages or, when everything is already
+// terminal again (e.g. every re-pended stage immediately re-skips), terminates
+// the run honestly instead of leaving it running with no inflight stage. The
+// pipeline.run.resumed observation names the stages the caller re-armed.
+func finishResume(state EngineState, run RunState, key string, stageDelta map[string]StageState, resumedNames []string, now time.Time) (EngineState, []Effect) {
 	updatedRun := patchRun(run, stageDelta, now)
 	updatedRun.LoopState = LoopRunning
 	updatedRun.TerminationReason = ""
 
-	// Re-run the DAG scheduler so re-pending stages start in dependsOn order.
-	// Resumes never terminate the run on their own (we just transitioned back
-	// to running), so allTerminal is ignored.
 	sched := scheduleAfterChange(updatedRun, now)
 	finalRun := sched.run
 
-	nextState := replaceRun(state, finalRun)
-	nextState = withCurrentRun(nextState, key, event.RunID)
-
-	effects := make([]Effect, 0, 3+len(sched.startEffects)+len(sched.newlySkipped))
-	effects = append(effects,
-		PersistRun{RunState: finalRun},
-		PersistLoopState{RunID: event.RunID, LoopState: deriveLoopStateFromRun(finalRun, now)},
-	)
-	effects = append(effects, sched.startEffects...)
-	effects = append(effects, skipObservations(event.RunID, sched.newlySkipped, finalRun)...)
-	resumedNames := append(append([]string{}, failedStageNames...), outdatedStageNames...)
-	effects = append(effects, EmitObservation{
+	skipObs := skipObservations(run.RunID, sched.newlySkipped, finalRun)
+	roundObs := roundCappedObservations(run.RunID, sched.roundCappedSkips, finalRun)
+	resumedObs := EmitObservation{
 		Name: "pipeline.run.resumed",
 		Data: map[string]any{
-			"runId":        event.RunID,
+			"runId":        run.RunID,
 			"pipelineName": run.PipelineName,
 			"stageNames":   resumedNames,
 		},
-	})
+	}
 
+	if sched.allTerminal {
+		base := replaceRun(state, finalRun)
+		base = withCurrentRun(base, key, run.RunID)
+		preceding := make([]Effect, 0, len(skipObs)+len(roundObs)+1)
+		preceding = append(preceding, skipObs...)
+		preceding = append(preceding, roundObs...)
+		preceding = append(preceding, resumedObs)
+		decision := decideRunExit(finalRun, base)
+		return terminateRunFromState(base, finalRun, decision.reason, now, decision.loopState, preceding)
+	}
+
+	nextState := replaceRun(state, finalRun)
+	nextState = withCurrentRun(nextState, key, run.RunID)
+
+	effects := make([]Effect, 0, 2+len(sched.startEffects)+len(skipObs)+len(roundObs)+1)
+	effects = append(effects,
+		PersistRun{RunState: finalRun},
+		PersistLoopState{RunID: run.RunID, LoopState: deriveLoopStateFromRun(finalRun, now)},
+	)
+	effects = append(effects, sched.startEffects...)
+	effects = append(effects, skipObs...)
+	effects = append(effects, roundObs...)
+	effects = append(effects, resumedObs)
 	return nextState, effects
 }
