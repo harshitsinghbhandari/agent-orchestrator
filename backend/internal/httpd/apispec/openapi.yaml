@@ -2653,7 +2653,7 @@ components:
     ControllersUpdatePipelineArtifactStatusRequest:
       properties:
         status:
-          description: 'New artifact status: open | dismissed | sent_to_agent | resolved.'
+          description: 'New artifact status: open | resolved | dismissed.'
           type: string
       required:
       - status

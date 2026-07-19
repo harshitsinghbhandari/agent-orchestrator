@@ -188,7 +188,7 @@ func TestParseFindings_StatusRecords(t *testing.T) {
 	if len(res.statusChanges) != 3 {
 		t.Fatalf("want 3 status changes, got %d", len(res.statusChanges))
 	}
-	want := []StatusChange{
+	want := []pipeline.FindingStatusChange{
 		{Fingerprint: "abc123", Status: pipeline.ArtifactStatusResolved},
 		{Fingerprint: "def456", Status: pipeline.ArtifactStatusDismissed},
 		{Fingerprint: "ghi789", Status: pipeline.ArtifactStatusOpen},

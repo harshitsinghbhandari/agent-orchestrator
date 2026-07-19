@@ -102,7 +102,7 @@ func upstreamFindingsBlock(upstream []pipeline.Artifact) []string {
 		if status == "" {
 			status = pipeline.ArtifactStatusOpen
 		}
-		lines = append(lines, fmt.Sprintf("- [%s] fp=%s (%s) %s:%d-%d %s — status: %s",
+		lines = append(lines, fmt.Sprintf("- [%s] fp=%s (%s) %s:%d-%d %s; status: %s",
 			a.Severity, a.Fingerprint, a.StageName, a.FilePath, a.StartLine, a.EndLine, a.Title, status))
 	}
 	if overflow > 0 {
@@ -122,7 +122,7 @@ func formatFindingsInstructions(mode pipeline.TaskMode) string {
 	blocks := []string{
 		"When this stage is complete, write your findings to `" + path + "` (one JSON object per line, JSONL).",
 		"Write the JSONL to `" + tmpPath + "` first, then rename it to `" + path + "` so the orchestrator never observes a partial file (e.g. `mv " + tmpPath + " " + path + "`).",
-		"The orchestrator harvests this file once you go idle — without it the stage cannot complete.",
+		"The orchestrator harvests this file once you go idle; without it the stage cannot complete.",
 	}
 
 	switch mode {

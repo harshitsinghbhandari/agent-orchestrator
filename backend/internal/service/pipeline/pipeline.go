@@ -449,9 +449,13 @@ func (s *Service) GetArtifact(ctx context.Context, id pipeline.ArtifactID) (pipe
 // direct store write) keeps run state owned by the actor loop and mirrors the
 // status onto the in-memory run's findings.
 func (s *Service) UpdateArtifactStatus(ctx context.Context, projectID domain.ProjectID, runID pipeline.RunID, artifactID pipeline.ArtifactID, status pipeline.ArtifactStatus) (pipeline.Artifact, error) {
-	if !status.IsKnown() {
+	// Restrict the human path to the same subset the findings-file status records
+	// allow: sent_to_agent is engine-internal and never set from the outside.
+	switch status {
+	case pipeline.ArtifactStatusOpen, pipeline.ArtifactStatusResolved, pipeline.ArtifactStatusDismissed:
+	default:
 		return pipeline.Artifact{}, apierr.Invalid("PIPELINE_ARTIFACT_STATUS_INVALID",
-			fmt.Sprintf("status must be one of open|dismissed|sent_to_agent|resolved, got %q", status), nil)
+			fmt.Sprintf("status must be one of open|resolved|dismissed, got %q", status), nil)
 	}
 	art, ok, err := s.store.GetPipelineArtifact(ctx, artifactID)
 	if err != nil {

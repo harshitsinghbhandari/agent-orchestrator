@@ -275,7 +275,7 @@ func reduceStageCompleted(state EngineState, event StageCompleted) (EngineState,
 	updatedStage.Output = event.Output
 	updatedStage.Artifacts = append(append([]ArtifactID{}, stage.Artifacts...), newIDs...)
 
-	return finalizeStageCompletion(state, run, event.StageName, updatedStage, newArtifacts, now)
+	return finalizeStageCompletion(state, run, event.StageName, updatedStage, newArtifacts, event.StatusChanges, now)
 }
 
 func reduceStageFailed(state EngineState, event StageFailed) (EngineState, []Effect) {
@@ -326,7 +326,7 @@ func failStage(state EngineState, run RunState, stageName, errorMessage, output 
 	updatedStage.Output = output
 	updatedStage.Deadline = nil
 
-	return finalizeStageCompletion(state, run, stageName, updatedStage, nil, now, preceding...)
+	return finalizeStageCompletion(state, run, stageName, updatedStage, nil, nil, now, preceding...)
 }
 
 // retryStage re-pends a failed stage for another attempt (fresh stageRunId,
@@ -505,7 +505,7 @@ func roundCappedObservations(runID RunID, skippedNames []string, run RunState) [
 // and terminates the run (checking convergence then exit predicates) once every
 // stage is terminal. Shared by STAGE_COMPLETED and STAGE_FAILED. preceding
 // effects (e.g. a CANCEL_STAGE for a timed-out stage) are emitted first.
-func finalizeStageCompletion(state EngineState, run RunState, stageName string, updatedStage StageState, newArtifacts []Artifact, now time.Time, preceding ...Effect) (EngineState, []Effect) {
+func finalizeStageCompletion(state EngineState, run RunState, stageName string, updatedStage StageState, newArtifacts []Artifact, statusChanges []FindingStatusChange, now time.Time, preceding ...Effect) (EngineState, []Effect) {
 	// Accumulate finding fingerprints onto the run so summarizeRun can return
 	// them at termination. Append rather than recompute so the reducer never
 	// re-reads stored artifacts.
@@ -539,6 +539,17 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 			StageRunID: updatedStage.StageRunID,
 			Artifacts:  newArtifacts,
 		})
+	}
+
+	// Apply this stage's {kind:"status"} records BEFORE scheduling and the exit
+	// decision, so a verify stage resolving (or reopening) a finding actually
+	// changes whether no_open_findings holds. Runs after the AppendArtifacts effect
+	// so the UPDATE lands on an already-persisted row when the record targets a
+	// finding this same stage just emitted.
+	if len(statusChanges) > 0 {
+		var statusEffects []Effect
+		updatedRun, statusEffects = applyFindingStatusChanges(updatedRun, statusChanges)
+		effects = append(effects, statusEffects...)
 	}
 
 	effects = append(effects, EmitObservation{
@@ -580,6 +591,44 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 	out = append(out, sched.startEffects...)
 
 	return replaceRun(state, sched.run), out
+}
+
+// applyFindingStatusChanges flips the status of every finding in run.Findings
+// whose fingerprint matches a status change, returning the updated run plus one
+// UpdateArtifactStatus effect per applied flip (so the store stays in sync). A
+// fingerprint that matches no finding is tolerated: it yields a
+// pipeline.status.unknown_fingerprint observation, never a failure. Pure and
+// copy-on-write: run.Findings is not mutated in place.
+func applyFindingStatusChanges(run RunState, changes []FindingStatusChange) (RunState, []Effect) {
+	findings := append([]Artifact{}, run.Findings...)
+	var effects []Effect
+	for _, ch := range changes {
+		matched := false
+		for i := range findings {
+			if findings[i].Fingerprint != "" && findings[i].Fingerprint == ch.Fingerprint {
+				matched = true
+				findings[i].Status = ch.Status
+				effects = append(effects, UpdateArtifactStatus{
+					RunID:      run.RunID,
+					StageRunID: findings[i].StageRunID,
+					ArtifactID: findings[i].ArtifactID,
+					Status:     ch.Status,
+				})
+			}
+		}
+		if !matched {
+			effects = append(effects, EmitObservation{
+				Name: "pipeline.status.unknown_fingerprint",
+				Data: map[string]any{
+					"runId":       run.RunID,
+					"fingerprint": ch.Fingerprint,
+					"status":      ch.Status,
+				},
+			})
+		}
+	}
+	run.Findings = findings
+	return run, effects
 }
 
 func reduceNewSHADetected(state EngineState, event NewSHADetected) (EngineState, []Effect) {

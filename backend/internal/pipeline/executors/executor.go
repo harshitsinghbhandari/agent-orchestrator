@@ -49,10 +49,10 @@ type Outcome struct {
 	Verdict   pipeline.Verdict
 	Artifacts []pipeline.ArtifactInput
 	// StatusChanges are {kind:"status"} records the stage emitted to flip
-	// existing findings' lifecycle status by fingerprint. The engine resolves
-	// each fingerprint against the run's findings and dispatches
-	// ARTIFACT_STATUS_CHANGED. Meaningful on OutcomeCompleted.
-	StatusChanges []StatusChange
+	// existing findings' lifecycle status by fingerprint. They ride the
+	// STAGE_COMPLETED event so the reducer applies them before the exit decision.
+	// Meaningful on OutcomeCompleted.
+	StatusChanges []pipeline.FindingStatusChange
 	Observations  []Observation
 	ErrorMessage  string
 	// Output is a capped tail of the stage's combined stdout+stderr, surfaced in

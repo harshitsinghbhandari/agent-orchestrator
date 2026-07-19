@@ -946,7 +946,7 @@ export interface components {
             updatedAt: string;
         };
         ControllersUpdatePipelineArtifactStatusRequest: {
-            /** @description New artifact status: open | dismissed | sent_to_agent | resolved. */
+            /** @description New artifact status: open | resolved | dismissed. */
             status: string;
         };
         DegradedProject: {

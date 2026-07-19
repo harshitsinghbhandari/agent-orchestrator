@@ -186,7 +186,7 @@ type PipelineArtifactResponse struct {
 // the new lifecycle status for one finding (e.g. "dismissed" to hide a false
 // positive, "open" to reopen it).
 type UpdatePipelineArtifactStatusRequest struct {
-	Status string `json:"status" description:"New artifact status: open | dismissed | sent_to_agent | resolved."`
+	Status string `json:"status" description:"New artifact status: open | resolved | dismissed."`
 }
 
 // ---------------------------------------------------------------------------

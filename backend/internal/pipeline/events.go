@@ -83,6 +83,11 @@ type StageCompleted struct {
 	StageName string
 	Verdict   Verdict
 	Artifacts []ArtifactInput
+	// StatusChanges are {kind:"status"} records the stage emitted to flip existing
+	// findings' status by fingerprint. The reducer applies them (to run.Findings
+	// and the store) after materializing this stage's own artifacts and before the
+	// exit decision, so a last-stage resolve/reopen changes whether the run is done.
+	StatusChanges []FindingStatusChange
 	// Output is a capped tail of the stage's combined stdout+stderr, persisted
 	// onto the stage state for the run detail.
 	Output string

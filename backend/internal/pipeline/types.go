@@ -333,6 +333,17 @@ func (s ArtifactStatus) IsKnown() bool {
 	return false
 }
 
+// FindingStatusChange is a stage-reported request to flip an existing finding's
+// lifecycle status, addressed by its stable fingerprint. It is produced by
+// harvesting {kind:"status"} records from a stage's findings file and carried on
+// the StageCompleted event so the reducer can apply the flip (to run.Findings and
+// the store) BEFORE the run's exit decision, letting a verify stage's resolve or
+// reopen actually decide whether the run is done.
+type FindingStatusChange struct {
+	Fingerprint string         `json:"fingerprint"`
+	Status      ArtifactStatus `json:"status"`
+}
+
 // ArtifactKind distinguishes a finding artifact from a free-form JSON
 // artifact.
 type ArtifactKind string

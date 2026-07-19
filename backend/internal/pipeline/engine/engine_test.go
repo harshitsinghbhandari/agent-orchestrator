@@ -66,7 +66,7 @@ func (f *fakeExecutor) Start(_ context.Context, in executors.StartInput) (execut
 
 // completeStatus scripts a stage to complete emitting only {kind:"status"} status
 // changes (no artifacts): a verify/summarize stage acting on upstream findings.
-func (f *fakeExecutor) completeStatus(stage string, changes ...executors.StatusChange) {
+func (f *fakeExecutor) completeStatus(stage string, changes ...pipeline.FindingStatusChange) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.outcome[stage] = executors.Outcome{Status: executors.OutcomeCompleted, Verdict: pipeline.VerdictNeutral, StatusChanges: changes}
@@ -651,7 +651,7 @@ func TestStatusRecordFlipsFindingStatus(t *testing.T) {
 	}
 
 	// verify dismisses scan's finding by fingerprint.
-	fake.completeStatus("verify", executors.StatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusDismissed})
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusDismissed})
 	e.Tick() // verify completes, status change applied, run terminates
 
 	run := e.State().Runs[runID]
@@ -686,7 +686,7 @@ func TestStatusRecordUnknownFingerprintTolerated(t *testing.T) {
 	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
 	e.Tick()
 
-	fake.completeStatus("verify", executors.StatusChange{Fingerprint: "does-not-exist", Status: pipeline.ArtifactStatusResolved})
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: "does-not-exist", Status: pipeline.ArtifactStatusResolved})
 	e.Tick()
 
 	if n := sink.count("pipeline.status.unknown_fingerprint"); n != 1 {
@@ -699,5 +699,74 @@ func TestStatusRecordUnknownFingerprintTolerated(t *testing.T) {
 	// scan's finding stays open (nothing matched).
 	if run.Findings[0].Status != pipeline.ArtifactStatusOpen {
 		t.Fatalf("finding status = %s, want open (untouched)", run.Findings[0].Status)
+	}
+}
+
+// TestLastStageResolveMakesDoneFire proves the exit decision sees post-flip
+// finding statuses: a verify stage resolving the only open finding must make a
+// no_open_findings `done` predicate fire (LoopDone), not stall. This only holds
+// because status records are applied in the reducer BEFORE decideRunExit.
+func TestLastStageResolveMakesDoneFire(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	p := pipelineOf("verify-loop", 1, agentStage("scan"), agentStage("verify", "scan"))
+	p.ExitPredicates = &pipeline.ExitPredicates{Done: &pipeline.Predicate{Kind: pipeline.PredicateNoOpenFindings}}
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick() // scan done (finding open), verify starts
+
+	fp := e.State().Runs[runID].Findings[0].Fingerprint
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusResolved})
+	e.Tick() // verify done; resolve applied before the exit decision
+
+	run := e.State().Runs[runID]
+	if run.LoopState != pipeline.LoopDone {
+		t.Fatalf("loop state = %s/%s, want done (resolved finding must satisfy no_open_findings)", run.LoopState, run.TerminationReason)
+	}
+	if run.Findings[0].Status != pipeline.ArtifactStatusResolved {
+		t.Fatalf("finding status = %s, want resolved", run.Findings[0].Status)
+	}
+}
+
+// TestLastStageReopenPreventsDone is the mirror: a finding resolved by an earlier
+// stage but reopened by the last stage must leave a no_open_findings `done`
+// predicate unmet, so the run stalls instead of reporting done.
+func TestLastStageReopenPreventsDone(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	p := pipelineOf("verify-loop", 1,
+		agentStage("scan"),
+		agentStage("triage", "scan"),
+		agentStage("verify", "triage"))
+	p.ExitPredicates = &pipeline.ExitPredicates{Done: &pipeline.Predicate{Kind: pipeline.PredicateNoOpenFindings}}
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick() // scan done, triage starts
+	fp := e.State().Runs[runID].Findings[0].Fingerprint
+
+	fake.completeStatus("triage", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusResolved})
+	e.Tick() // triage done (finding resolved), verify starts
+
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusOpen})
+	e.Tick() // verify done; reopen applied before the exit decision
+
+	run := e.State().Runs[runID]
+	if run.LoopState != pipeline.LoopStalled || run.TerminationReason != pipeline.TerminationDonePredicateUnmet {
+		t.Fatalf("loop state = %s/%s, want stalled/done_predicate_unmet (reopened finding blocks done)", run.LoopState, run.TerminationReason)
+	}
+	if run.Findings[0].Status != pipeline.ArtifactStatusOpen {
+		t.Fatalf("finding status = %s, want open (reopened)", run.Findings[0].Status)
 	}
 }
