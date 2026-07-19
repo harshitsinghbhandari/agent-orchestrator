@@ -129,3 +129,51 @@ func TestReduceRunResumed(t *testing.T) {
 		assertInvalid(t, effects)
 	})
 }
+
+func TestReduceRunResumedRoundsStalled(t *testing.T) {
+	t.Run("rounds-stalled run with no failed stages re-pends ALL stages", func(t *testing.T) {
+		p := pipelineOf("p", 1, stageDef("a"), stageDef("b", "a"))
+		st, _ := stalledRun(p, map[string]StageStatus{"a": StageStatusSucceeded, "b": StageStatusSucceeded}, map[string]int{"a": 1, "b": 2})
+		// The engine allocates fresh stageRunIds for every stage in this case.
+		state, effects := Reduce(st, RunResumed{Now: testNow, RunID: "r1", StageRunIDs: resumeIDs("a", "b")})
+
+		final := state.Runs["r1"]
+		if final.LoopState != LoopRunning {
+			t.Fatalf("run should be running again, got %v", final.LoopState)
+		}
+		if final.Stages["a"].Status != StageStatusPending || final.Stages["b"].Status != StageStatusPending {
+			t.Fatalf("both stages should be re-pended, got a=%v b=%v", final.Stages["a"].Status, final.Stages["b"].Status)
+		}
+		if final.Stages["a"].StageRunID != "sr2-a" || final.Stages["b"].StageRunID != "sr2-b" {
+			t.Fatalf("stages should get fresh stageRunIds, got a=%v b=%v", final.Stages["a"].StageRunID, final.Stages["b"].StageRunID)
+		}
+		// Attempts are preserved (these stages succeeded, not failed).
+		if final.Stages["a"].Attempt != 1 || final.Stages["b"].Attempt != 2 {
+			t.Fatalf("attempts should be preserved, got a=%d b=%d", final.Stages["a"].Attempt, final.Stages["b"].Attempt)
+		}
+		// The root re-pended stage starts; b waits on a.
+		if got := startedStageNames(effects); !reflect.DeepEqual(got, []string{"a"}) {
+			t.Fatalf("started = %v, want [a]", got)
+		}
+		if state.CurrentRunByLoop[LoopKey("sess-1", "p")] != "r1" {
+			t.Fatal("loop key should be re-armed")
+		}
+	})
+
+	t.Run("resume of a non-stalled terminal run with no failed stages is a no-op", func(t *testing.T) {
+		p := pipelineOf("p", 1, stageDef("a"))
+		st, _ := stalledRun(p, map[string]StageStatus{"a": StageStatusSucceeded}, nil)
+		r := st.Runs["r1"]
+		r.LoopState = LoopDone // done, not stalled: rounds-resume must not fire.
+		r.TerminationReason = TerminationCompleted
+		st.Runs["r1"] = r
+
+		state, effects := Reduce(st, RunResumed{Now: testNow, RunID: "r1", StageRunIDs: resumeIDs("a")})
+		if len(effects) != 0 {
+			t.Fatalf("done run resume should be a no-op, got %v", effects)
+		}
+		if state.Runs["r1"].LoopState != LoopDone {
+			t.Fatal("done run should be left unchanged")
+		}
+	})
+}

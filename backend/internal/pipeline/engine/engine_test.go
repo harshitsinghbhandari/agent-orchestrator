@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -487,5 +488,83 @@ func TestConcurrentDispatchesSerialize(t *testing.T) {
 		if run.LoopState != pipeline.LoopDone {
 			t.Fatalf("run %d loop state = %s, want done", i, run.LoopState)
 		}
+	}
+}
+
+// TestStageTimeoutViaTick wedges a running stage whose executor never reports a
+// terminal outcome and verifies the engine's tick heartbeat dispatches
+// pipeline.Tick, fails the stage at its deadline, tears the executor handle
+// down, and stalls the run instead of letting it sit running forever.
+func TestStageTimeoutViaTick(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	stage := agentStage("review")
+	ms := int64(1) // 1ms deadline; the monotonic clock advances well past it before the tick.
+	stage.TimeoutMs = &ms
+	p := pipelineOf("review", 1, stage)
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if e.State().Runs[runID].Stages["review"].Status != pipeline.StageStatusRunning {
+		t.Fatal("review must be running before its deadline")
+	}
+
+	// The stage never completes. Tick until the clock advances strictly past the
+	// deadline (the monotonic test clock steps 1ms per read, so the first tick can
+	// land exactly on a 1ms deadline; "past" is strict).
+	e.Tick()
+	e.Tick()
+
+	run := e.State().Runs[runID]
+	if run.LoopState != pipeline.LoopStalled {
+		t.Fatalf("loop state after timeout = %s, want stalled", run.LoopState)
+	}
+	if st := run.Stages["review"]; st.Status != pipeline.StageStatusFailed || !strings.Contains(st.ErrorMessage, "timed out") {
+		t.Fatalf("review stage = %+v, want failed with a timeout message", st)
+	}
+	if fake.cancelCount("review") != 1 {
+		t.Fatalf("timeout must tear the executor down: cancelCount=%d, want 1", fake.cancelCount("review"))
+	}
+}
+
+// TestStageAutoRetryViaEngine drives a failing stage with a retry budget through
+// the real engine: the engine re-starts it automatically and only finalizes the
+// run as stalled once the budget is spent.
+func TestStageAutoRetryViaEngine(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	stage := agentStage("review")
+	r := 1 // 1 retry => 2 attempts total.
+	stage.Retries = &r
+	p := pipelineOf("review", 1, stage)
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	// Attempt 1 fails; the engine auto-retries and starts attempt 2.
+	fake.fail("review", "boom")
+	e.Tick()
+	if fake.startCount("review") != 2 {
+		t.Fatalf("review started %d times, want 2 (auto-retry)", fake.startCount("review"))
+	}
+	if got := e.State().Runs[runID]; got.LoopState != pipeline.LoopRunning {
+		t.Fatalf("run should still be running after the first retry, got %s", got.LoopState)
+	}
+
+	// Attempt 2 also fails (the fake still reports the failed outcome); budget is
+	// now spent, so the run finalizes as stalled.
+	e.Tick()
+	final := e.State().Runs[runID]
+	if final.LoopState != pipeline.LoopStalled {
+		t.Fatalf("loop state after exhausting retries = %s, want stalled", final.LoopState)
+	}
+	if got := final.Stages["review"]; got.Status != pipeline.StageStatusFailed || got.Attempt != 2 {
+		t.Fatalf("review stage = %+v, want failed attempt=2", got)
 	}
 }

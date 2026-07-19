@@ -1,9 +1,17 @@
 package pipeline
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
+
+// DefaultStageTimeout is the wall-clock deadline applied to a running stage when
+// its Stage.TimeoutMs is unset (or non-positive). STAGE_STARTED stamps
+// StartedAt + this onto the stage; the reducer's TICK arm fails any stage past
+// its deadline so a wedged executor cannot leave the run running forever.
+const DefaultStageTimeout = 30 * time.Minute
 
 // Pure pipeline reducer.
 //
@@ -40,8 +48,7 @@ func Reduce(state EngineState, event Event) (EngineState, []Effect) {
 	case ArtifactStatusChanged:
 		return reduceArtifactStatusChanged(state, e)
 	case Tick:
-		// Heartbeat: nothing time-based to re-evaluate in the pure reducer.
-		return state, nil
+		return reduceTick(state, e)
 	default:
 		return invalidTransition(state, "unknown event type")
 	}
@@ -143,6 +150,7 @@ func reduceTriggerFired(state EngineState, event TriggerFired) (EngineState, []E
 		stateWithRun := replaceRun(state, runState)
 		stateWithRun = withCurrentRun(stateWithRun, key, event.RunID)
 		preceding := append([]Effect{createdObs}, skipObservations(runState.RunID, sched.newlySkipped, runState)...)
+		preceding = append(preceding, roundCappedObservations(runState.RunID, sched.roundCappedSkips, runState)...)
 		decision := decideRunExit(runState, stateWithRun)
 		return terminateRunFromState(stateWithRun, runState, decision.reason, now, decision.loopState, preceding)
 	}
@@ -158,6 +166,7 @@ func reduceTriggerFired(state EngineState, event TriggerFired) (EngineState, []E
 	effects = append(effects, sched.startEffects...)
 	effects = append(effects, createdObs)
 	effects = append(effects, skipObservations(runState.RunID, sched.newlySkipped, runState)...)
+	effects = append(effects, roundCappedObservations(runState.RunID, sched.roundCappedSkips, runState)...)
 
 	return nextState, effects
 }
@@ -215,6 +224,8 @@ func reduceStageStarted(state EngineState, event StageStarted) (EngineState, []E
 	updatedStage := stage
 	updatedStage.Status = StageStatusRunning
 	updatedStage.StartedAt = &started
+	deadline := started.Add(stageTimeout(run.PipelineConfigSnapshot, event.StageName))
+	updatedStage.Deadline = &deadline
 	updatedRun := patchRun(run, map[string]StageState{event.StageName: updatedStage}, now)
 
 	return replaceRun(state, updatedRun), []Effect{
@@ -281,21 +292,220 @@ func reduceStageFailed(state EngineState, event StageFailed) (EngineState, []Eff
 		return invalidTransition(state, "STAGE_FAILED requires running|pending; got "+string(stage.Status)+" for "+event.StageName)
 	}
 
+	return failStage(state, run, event.StageName, event.ErrorMessage, event.Output, now, false)
+}
+
+// failStage applies a stage failure with automatic retry. When the stage still
+// has retry budget (its attempt is within Stage.Retries; retries: 2 allows up to
+// 3 attempts total, mirroring reducer_resume's cap), it re-pends the stage with
+// a fresh stageRunId and attempt+1 and lets the scheduler start it again;
+// otherwise it finalizes the stage as failed. cancel emits a CANCEL_STAGE effect
+// first: the TICK timeout path fails a stage whose executor handle is still
+// live, so the engine must tear it down.
+func failStage(state EngineState, run RunState, stageName, errorMessage, output string, now time.Time, cancel bool) (EngineState, []Effect) {
+	stage := run.Stages[stageName]
+
+	var preceding []Effect
+	if cancel {
+		preceding = []Effect{CancelStage{
+			RunID:      run.RunID,
+			StageRunID: stage.StageRunID,
+			StageName:  stageName,
+		}}
+	}
+
+	if retries := stageRetries(run.PipelineConfigSnapshot, stageName); retries != nil && stage.Attempt <= *retries {
+		return retryStage(state, run, stageName, stage, errorMessage, now, preceding)
+	}
+
 	completed := now
 	updatedStage := stage
 	updatedStage.Status = StageStatusFailed
 	updatedStage.CompletedAt = &completed
-	updatedStage.ErrorMessage = event.ErrorMessage
-	updatedStage.Output = event.Output
+	updatedStage.ErrorMessage = errorMessage
+	updatedStage.Output = output
+	updatedStage.Deadline = nil
 
-	return finalizeStageCompletion(state, run, event.StageName, updatedStage, nil, now)
+	return finalizeStageCompletion(state, run, stageName, updatedStage, nil, now, preceding...)
+}
+
+// retryStage re-pends a failed stage for another attempt (fresh stageRunId,
+// attempt+1) and re-runs the scheduler so it starts again. A retry never
+// terminates the run on its own, but if the re-pended stage cannot actually run
+// (e.g. it is now past its maxLoopRounds cap and immediately re-skips, leaving
+// every stage terminal) the run terminates honestly rather than wedging.
+func retryStage(state EngineState, run RunState, stageName string, stage StageState, errorMessage string, now time.Time, preceding []Effect) (EngineState, []Effect) {
+	nextAttempt := stage.Attempt + 1
+	repended := StageState{
+		StageRunID: nextStageRunID(stage.StageRunID, nextAttempt),
+		Status:     StageStatusPending,
+		Attempt:    nextAttempt,
+	}
+	updatedRun := patchRun(run, map[string]StageState{stageName: repended}, now)
+
+	retryObs := EmitObservation{
+		Name: "pipeline.stage.retried",
+		Data: map[string]any{
+			"runId":      run.RunID,
+			"stageName":  stageName,
+			"stageRunId": repended.StageRunID,
+			"attempt":    nextAttempt,
+			"error":      errorMessage,
+		},
+	}
+
+	sched := scheduleAfterChange(updatedRun, now)
+	skipObs := skipObservations(run.RunID, sched.newlySkipped, sched.run)
+	roundObs := roundCappedObservations(run.RunID, sched.roundCappedSkips, sched.run)
+
+	if sched.allTerminal {
+		preceding2 := make([]Effect, 0, len(preceding)+1+len(skipObs)+len(roundObs))
+		preceding2 = append(preceding2, preceding...)
+		preceding2 = append(preceding2, retryObs)
+		preceding2 = append(preceding2, skipObs...)
+		preceding2 = append(preceding2, roundObs...)
+		base := replaceRun(state, sched.run)
+		if isConverged(state, sched.run) {
+			return terminateRunFromState(base, sched.run, TerminationConverged, now, LoopStalled, preceding2)
+		}
+		decision := decideRunExit(sched.run, state)
+		return terminateRunFromState(base, sched.run, decision.reason, now, decision.loopState, preceding2)
+	}
+
+	out := make([]Effect, 0, len(preceding)+2+len(sched.startEffects)+len(skipObs)+len(roundObs))
+	out = append(out, preceding...)
+	out = append(out, PersistRun{RunState: sched.run}, retryObs)
+	out = append(out, sched.startEffects...)
+	out = append(out, skipObs...)
+	out = append(out, roundObs...)
+	return replaceRun(state, sched.run), out
+}
+
+// reduceTick fails every running stage whose deadline has passed as of
+// event.Now, one at a time so each failure's retry/finalize cascade is applied
+// before the next expired stage is chosen. Pure: the deadline comparison uses
+// only event.Now. Bounded: each step turns a running stage into pending (retry)
+// or terminal (finalize), so the past-deadline running set strictly shrinks.
+func reduceTick(state EngineState, event Tick) (EngineState, []Effect) {
+	now := event.Now
+	var effects []Effect
+	for {
+		runID, stageName, ok := nextExpiredStage(state, now)
+		if !ok {
+			break
+		}
+		run := state.Runs[runID]
+		message := timeoutMessage(run.Stages[stageName])
+		var step []Effect
+		state, step = failStage(state, run, stageName, message, "", now, true)
+		effects = append(effects, step...)
+	}
+	return state, effects
+}
+
+// nextExpiredStage returns the first running stage (ordered by runId then stage
+// name) whose deadline has passed as of now, or ok=false when none have. The
+// deterministic ordering keeps tick effects reproducible.
+func nextExpiredStage(state EngineState, now time.Time) (RunID, string, bool) {
+	runIDs := make([]RunID, 0, len(state.Runs))
+	for id := range state.Runs {
+		runIDs = append(runIDs, id)
+	}
+	sort.Slice(runIDs, func(i, j int) bool { return runIDs[i] < runIDs[j] })
+	for _, id := range runIDs {
+		run := state.Runs[id]
+		if run.LoopState.IsTerminal() {
+			continue
+		}
+		names := make([]string, 0, len(run.Stages))
+		for name := range run.Stages {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			s := run.Stages[name]
+			if s.Status == StageStatusRunning && s.Deadline != nil && now.After(*s.Deadline) {
+				return id, name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// timeoutMessage renders the failure message for a deadline-expired stage.
+func timeoutMessage(stage StageState) string {
+	if stage.Deadline != nil && stage.StartedAt != nil {
+		return fmt.Sprintf("stage timed out after %s (deadline exceeded)", stage.Deadline.Sub(*stage.StartedAt))
+	}
+	return "stage timed out (deadline exceeded)"
+}
+
+// stageTimeout returns the running-deadline offset for stage: its configured
+// TimeoutMs when positive, else DefaultStageTimeout.
+func stageTimeout(p Pipeline, stageName string) time.Duration {
+	if def, ok := findStageDef(p, stageName); ok && def.TimeoutMs != nil && *def.TimeoutMs > 0 {
+		return time.Duration(*def.TimeoutMs) * time.Millisecond
+	}
+	return DefaultStageTimeout
+}
+
+// stageRetries returns the configured retry budget for stage (nil when unset).
+func stageRetries(p Pipeline, stageName string) *int {
+	if def, ok := findStageDef(p, stageName); ok {
+		return def.Retries
+	}
+	return nil
+}
+
+// findStageDef looks a stage definition up by name in the run's config snapshot.
+func findStageDef(p Pipeline, stageName string) (Stage, bool) {
+	for i := range p.Stages {
+		if p.Stages[i].Name == stageName {
+			return p.Stages[i], true
+		}
+	}
+	return Stage{}, false
+}
+
+// nextStageRunID derives a fresh, deterministic stageRunId for an automatic
+// retry. The reducer is pure and cannot allocate uuids (manual resume gets
+// driver-allocated ids), so a retry suffixes the base id with the new attempt
+// number. Per-attempt uniqueness is what matters, since artifact ids embed the
+// stageRunId; the base is stripped of any prior "#N" suffix so repeated retries
+// stay "<base>#2", "<base>#3", and so on.
+func nextStageRunID(current StageRunID, attempt int) StageRunID {
+	base := string(current)
+	if i := strings.LastIndex(base, "#"); i >= 0 {
+		base = base[:i]
+	}
+	return StageRunID(fmt.Sprintf("%s#%d", base, attempt))
+}
+
+// roundCappedObservations builds pipeline.stage.skipped_max_rounds observations
+// for stages the scheduler skipped because the run's loop round exceeded their
+// per-stage maxLoopRounds cap.
+func roundCappedObservations(runID RunID, skippedNames []string, run RunState) []Effect {
+	out := make([]Effect, 0, len(skippedNames))
+	for _, name := range skippedNames {
+		data := map[string]any{
+			"runId":      runID,
+			"stageName":  name,
+			"loopRounds": run.LoopRounds,
+		}
+		if def, ok := findStageDef(run.PipelineConfigSnapshot, name); ok && def.MaxLoopRounds != nil {
+			data["maxLoopRounds"] = *def.MaxLoopRounds
+		}
+		out = append(out, EmitObservation{Name: "pipeline.stage.skipped_max_rounds", Data: data})
+	}
+	return out
 }
 
 // finalizeStageCompletion applies a stage's terminal status, materializes its
 // artifacts and fingerprints, re-runs the DAG scheduler for downstream stages,
 // and terminates the run (checking convergence then exit predicates) once every
-// stage is terminal. Shared by STAGE_COMPLETED and STAGE_FAILED.
-func finalizeStageCompletion(state EngineState, run RunState, stageName string, updatedStage StageState, newArtifacts []Artifact, now time.Time) (EngineState, []Effect) {
+// stage is terminal. Shared by STAGE_COMPLETED and STAGE_FAILED. preceding
+// effects (e.g. a CANCEL_STAGE for a timed-out stage) are emitted first.
+func finalizeStageCompletion(state EngineState, run RunState, stageName string, updatedStage StageState, newArtifacts []Artifact, now time.Time, preceding ...Effect) (EngineState, []Effect) {
 	// Accumulate finding fingerprints onto the run so summarizeRun can return
 	// them at termination. Append rather than recompute so the reducer never
 	// re-reads stored artifacts.
@@ -321,7 +531,7 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 		updatedRun.Findings = append(append([]Artifact{}, run.Findings...), newFindings...)
 	}
 
-	var effects []Effect
+	effects := append([]Effect{}, preceding...)
 
 	if len(newArtifacts) > 0 {
 		effects = append(effects, AppendArtifacts{
@@ -349,6 +559,7 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 	// every stage is terminal.
 	sched := scheduleAfterChange(updatedRun, now)
 	effects = append(effects, skipObservations(run.RunID, sched.newlySkipped, sched.run)...)
+	effects = append(effects, roundCappedObservations(run.RunID, sched.roundCappedSkips, sched.run)...)
 
 	if sched.allTerminal {
 		// Convergence detection runs BEFORE the regular exit decision: when the
@@ -513,26 +724,44 @@ type exitDecision struct {
 	loopState LoopStateName
 }
 
-// decideRunExit chooses how a run terminates once every stage is terminal:
-//  1. exitPredicates.done true -> done/completed;
-//  2. exitPredicates.stalled true -> stalled/stage_failure;
-//  3. v0 default: any failed stage -> stalled/stage_failure, else done/completed.
+// decideRunExit chooses how a run terminates once every stage is terminal, and
+// is honest about unmet exit predicates: it never reports a run completed while
+// its configured `done` predicate is false.
+//
+//  1. No exit predicates configured at all -> v0 default (any failed stage ->
+//     stalled/stage_failure, else done/completed).
+//  2. exitPredicates.done true -> done/completed.
+//  3. exitPredicates.stalled true -> stalled/stage_failure.
+//  4. done configured but false (and stalled, if any, did not fire) -> stalled
+//     with a distinct "done predicate unmet" reason, never completed.
+//  5. only stalled configured and it did not fire -> v0 default (no `done` gate,
+//     so there is no unmet-completion condition to guard).
 //
 // The reducer consults state.HistorySummaries for the run's loop key so
 // loop_rounds_at_least and history-aware composites have a real ledger.
 func decideRunExit(run RunState, state EngineState) exitDecision {
 	exits := run.PipelineConfigSnapshot.ExitPredicates
+	if exits == nil || (exits.Done == nil && exits.Stalled == nil) {
+		return v0DefaultExitDecision(run)
+	}
+
 	ctx := PredicateCtx{
 		Run:      &run,
 		History:  state.HistorySummaries[LoopKeyFor(run.Context, run.SessionID, run.PipelineName, run.RunID)],
 		Findings: run.Findings,
 	}
 
-	if exits != nil && exits.Done != nil && Evaluate(*exits.Done, ctx) {
+	if exits.Done != nil && Evaluate(*exits.Done, ctx) {
 		return exitDecision{reason: TerminationCompleted, loopState: LoopDone}
 	}
-	if exits != nil && exits.Stalled != nil && Evaluate(*exits.Stalled, ctx) {
+	if exits.Stalled != nil && Evaluate(*exits.Stalled, ctx) {
 		return exitDecision{reason: TerminationStageFailure, loopState: LoopStalled}
+	}
+	if exits.Done != nil {
+		// `done` was configured and evaluated false: the run did not meet its
+		// success condition (e.g. open findings remain). Terminate as stalled so
+		// the loop can be resumed for another round, never as completed.
+		return exitDecision{reason: TerminationDonePredicateUnmet, loopState: LoopStalled}
 	}
 	return v0DefaultExitDecision(run)
 }

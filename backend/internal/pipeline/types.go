@@ -283,12 +283,18 @@ const (
 	// finding fingerprints, so the loop hit a fixpoint and terminates as
 	// stalled rather than ping-ponging indefinitely.
 	TerminationConverged RunTerminationReason = "converged"
+	// TerminationDonePredicateUnmet marks an honest stall: every stage reached a
+	// terminal state, but the pipeline's configured `done` predicate evaluated
+	// false (e.g. open findings remain) and no `stalled` predicate matched. The
+	// run terminates as stalled rather than being reported completed.
+	TerminationDonePredicateUnmet RunTerminationReason = "done_predicate_unmet"
 )
 
 // AllRunTerminationReasons lists every known run termination reason.
 var AllRunTerminationReasons = []RunTerminationReason{
 	TerminationCompleted, TerminationStageFailure, TerminationManualCancel,
 	TerminationConfigChange, TerminationOutdated, TerminationWorkerDead, TerminationConverged,
+	TerminationDonePredicateUnmet,
 }
 
 // IsKnown reports whether r is a known run termination reason.
@@ -576,6 +582,11 @@ type StageState struct {
 
 	StartedAt   *time.Time `json:"startedAt,omitempty"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	// Deadline is stamped on STAGE_STARTED (StartedAt + the stage's TimeoutMs, or
+	// DefaultStageTimeout when unset). The reducer's TICK arm fails any running
+	// stage whose deadline has passed, so an executor that never reports terminal
+	// cannot wedge the run forever. Cleared when the stage is (re-)pended.
+	Deadline *time.Time `json:"deadline,omitempty"`
 
 	ErrorMessage string `json:"errorMessage,omitempty"`
 	// Output is a capped tail of the stage's combined stdout+stderr (command

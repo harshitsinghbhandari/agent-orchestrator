@@ -29,8 +29,13 @@ type scheduleResult struct {
 	// by concurrency.
 	startEffects []Effect
 	// newlySkipped lists stage names that transitioned pending -> skipped
-	// during this call.
+	// during this call (routes failed / dependency not satisfiable).
 	newlySkipped []string
+	// roundCappedSkips lists stage names skipped because the run's LoopRounds
+	// exceeded the stage's per-stage maxLoopRounds cap. Kept separate from
+	// newlySkipped so the caller can emit a distinct observation; these stages
+	// still cascade-skip downstream like any other skip.
+	roundCappedSkips []string
 	// allTerminal is true iff every stage is in a terminal status.
 	allTerminal bool
 }
@@ -41,7 +46,7 @@ type scheduleResult struct {
 // fixpoint before emitting any START_STAGE effects, so downstream stages whose
 // dependencies were just skipped get marked skipped in the same reducer step.
 func scheduleAfterChange(run RunState, now time.Time) scheduleResult {
-	current, newlySkipped := applyEligibleSkips(run, now)
+	current, newlySkipped, roundCappedSkips := applyEligibleSkips(run, now)
 
 	maxConcurrent := 1
 	if current.PipelineConfigSnapshot.MaxConcurrentStages != nil {
@@ -91,10 +96,11 @@ func scheduleAfterChange(run RunState, now time.Time) scheduleResult {
 		}
 	}
 	return scheduleResult{
-		run:          current,
-		startEffects: startEffects,
-		newlySkipped: newlySkipped,
-		allTerminal:  allTerminal,
+		run:              current,
+		startEffects:     startEffects,
+		newlySkipped:     newlySkipped,
+		roundCappedSkips: roundCappedSkips,
+		allTerminal:      allTerminal,
 	}
 }
 
@@ -109,9 +115,9 @@ func scheduleAfterChange(run RunState, now time.Time) scheduleResult {
 // reference stages outside dependsOn (e.g. a parallel branch the user wants to
 // react to without forcing serialization); the scheduler waits for those
 // references to be terminal too before deciding.
-func applyEligibleSkips(run RunState, now time.Time) (RunState, []string) {
+func applyEligibleSkips(run RunState, now time.Time) (RunState, []string, []string) {
 	current := run
-	var newlySkipped []string
+	var newlySkipped, roundCappedSkips []string
 	changed := true
 	for changed {
 		changed = false
@@ -121,6 +127,18 @@ func applyEligibleSkips(run RunState, now time.Time) (RunState, []string) {
 			if state.Status != StageStatusPending {
 				continue
 			}
+
+			// Per-stage loop cap: a stage whose maxLoopRounds is set and the run's
+			// LoopRounds has exceeded it is skipped immediately, regardless of
+			// upstream, so a capped stage can never run in an over-budget round.
+			// The skip cascades downstream like any other.
+			if stageDef.MaxLoopRounds != nil && current.LoopRounds > *stageDef.MaxLoopRounds {
+				current = markSkipped(current, stageDef.Name, state, now)
+				roundCappedSkips = append(roundCappedSkips, stageDef.Name)
+				changed = true
+				continue
+			}
+
 			if !arePreconditionsTerminal(stageDef, current.Stages) {
 				continue
 			}
@@ -133,17 +151,22 @@ func applyEligibleSkips(run RunState, now time.Time) (RunState, []string) {
 			}
 
 			if shouldSkip {
-				completed := now
-				skipped := state
-				skipped.Status = StageStatusSkipped
-				skipped.CompletedAt = &completed
-				current = patchRun(current, map[string]StageState{stageDef.Name: skipped}, now)
+				current = markSkipped(current, stageDef.Name, state, now)
 				newlySkipped = append(newlySkipped, stageDef.Name)
 				changed = true
 			}
 		}
 	}
-	return current, newlySkipped
+	return current, newlySkipped, roundCappedSkips
+}
+
+// markSkipped returns current with stageName transitioned to skipped at now.
+func markSkipped(current RunState, stageName string, state StageState, now time.Time) RunState {
+	completed := now
+	skipped := state
+	skipped.Status = StageStatusSkipped
+	skipped.CompletedAt = &completed
+	return patchRun(current, map[string]StageState{stageName: skipped}, now)
 }
 
 func arePreconditionsTerminal(stage Stage, stages map[string]StageState) bool {
