@@ -275,10 +275,7 @@ function AgentFields({ stage, update }: FieldsProps) {
 	return (
 		<div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
 			<LabeledControl label="Plugin">
-				<Select
-					value={executor.plugin ?? ""}
-					onValueChange={(plugin) => update({ executor: { ...executor, plugin } })}
-				>
+				<Select value={executor.plugin ?? ""} onValueChange={(plugin) => update({ executor: { ...executor, plugin } })}>
 					<SelectTrigger size="sm" aria-label="Plugin" className="w-full">
 						<SelectValue placeholder="Select plugin" />
 					</SelectTrigger>
@@ -424,7 +421,11 @@ function Segmented<T extends string>({
 	onChange: (next: T) => void;
 }) {
 	return (
-		<div role="radiogroup" aria-label={ariaLabel} className="flex w-fit items-center rounded-md border border-border p-0.5">
+		<div
+			role="radiogroup"
+			aria-label={ariaLabel}
+			className="flex w-fit items-center rounded-md border border-border p-0.5"
+		>
 			{options.map((opt) => (
 				<button
 					key={opt.value}
