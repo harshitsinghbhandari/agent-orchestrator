@@ -544,10 +544,10 @@ type Pipeline struct {
 	// serial execution in that case.
 	MaxConcurrentStages *int `json:"maxConcurrentStages,omitempty" yaml:"maxConcurrentStages,omitempty"`
 
-	// AllowForkPRs opts in to running command-executor stages for pull
-	// requests opened from forks. Defaults to false: fork-PR command stages
-	// are skipped before any subprocess is spawned. Only applies to the
-	// command executor.
+	// AllowForkPRs opts in to running stages for pull requests opened from
+	// forks. Defaults to false: fork-PR stages self-skip before any work
+	// happens. Applies uniformly to every executor kind (agent, command, and
+	// builtin) via the shared fork gate.
 	AllowForkPRs *bool `json:"allowForkPRs,omitempty" yaml:"allowForkPRs,omitempty"`
 
 	// ExitPredicates optionally overrides the v0 hardcoded run-exit rules.
