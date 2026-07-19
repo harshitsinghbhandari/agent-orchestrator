@@ -2,6 +2,7 @@ package executors
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -15,7 +16,7 @@ import (
 //
 // The findings path is documented relative to the workspace root so the agent
 // does not need the absolute path.
-func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int, prCtx pipeline.RunContext) string {
+func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int, prCtx pipeline.RunContext, upstream []pipeline.Artifact) string {
 	var mode pipeline.TaskMode
 	if stage.Executor.Kind == pipeline.ExecutorAgent {
 		mode = stage.Executor.Mode
@@ -34,6 +35,7 @@ func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int,
 	}
 
 	lines = append(lines, prBlock(prCtx)...)
+	lines = append(lines, upstreamFindingsBlock(upstream)...)
 
 	if stage.Task.Prompt != "" {
 		lines = append(lines, "", "## Task", stage.Task.Prompt)
@@ -72,6 +74,43 @@ func prBlock(prCtx pipeline.RunContext) []string {
 	return lines
 }
 
+// upstreamFindingsCap bounds how many upstream findings are rendered into the
+// prompt so a run with thousands of open findings does not blow the context
+// window. Beyond the cap the overflow count is noted.
+const upstreamFindingsCap = 100
+
+// upstreamFindingsBlock renders an "## Upstream findings" section: one line per
+// finding carrying its fingerprint, severity, stage of origin, file:line, title,
+// and current status, so a summarize/verify stage can reference them by
+// fingerprint in {kind:"status"} records. Returns nil when there are none,
+// leaving the prompt unchanged. The section is capped at upstreamFindingsCap with
+// an overflow note.
+func upstreamFindingsBlock(upstream []pipeline.Artifact) []string {
+	if len(upstream) == 0 {
+		return nil
+	}
+	lines := []string{"", "## Upstream findings",
+		"Findings from earlier stages this stage depends on. Reference a fingerprint below in a status record to resolve or dismiss it (see Reporting Findings)."}
+	shown := upstream
+	overflow := 0
+	if len(shown) > upstreamFindingsCap {
+		overflow = len(shown) - upstreamFindingsCap
+		shown = shown[:upstreamFindingsCap]
+	}
+	for _, a := range shown {
+		status := a.Status
+		if status == "" {
+			status = pipeline.ArtifactStatusOpen
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] fp=%s (%s) %s:%d-%d %s — status: %s",
+			a.Severity, a.Fingerprint, a.StageName, a.FilePath, a.StartLine, a.EndLine, a.Title, status))
+	}
+	if overflow > 0 {
+		lines = append(lines, fmt.Sprintf("... and %d more findings not shown (cap %d).", overflow, upstreamFindingsCap))
+	}
+	return lines
+}
+
 // formatFindingsInstructions mirrors the old JSONL write-then-rename contract:
 // the executor polls for the final file and parses it on first sight, so the
 // agent must write a temp file and rename it into place to avoid the executor
@@ -95,7 +134,9 @@ func formatFindingsInstructions(mode pipeline.TaskMode) string {
 		blocks = append(blocks, `Each line must be either a "finding" or a "json" record (see ArtifactInput in the orchestrator types).`)
 	}
 
-	blocks = append(blocks, "If there are no findings, rename an empty file. The file's existence, not its contents, is the completion signal.")
+	blocks = append(blocks,
+		`To update an existing upstream finding (listed above under Upstream findings), emit a status record: { kind: "status", fingerprint: "<fp>", status: "open" | "resolved" | "dismissed" }, using a fingerprint from that list. Use "resolved" for a finding you fixed, "dismissed" for a false positive, "open" to reopen one still broken.`,
+		"If there are no findings, rename an empty file. The file's existence, not its contents, is the completion signal.")
 
 	return strings.Join(blocks, " ")
 }

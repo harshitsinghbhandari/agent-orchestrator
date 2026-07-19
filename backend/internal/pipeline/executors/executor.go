@@ -45,11 +45,16 @@ type Observation struct {
 // ErrorMessage on OutcomeFailed. Observations may accompany any terminal
 // status.
 type Outcome struct {
-	Status       OutcomeStatus
-	Verdict      pipeline.Verdict
-	Artifacts    []pipeline.ArtifactInput
-	Observations []Observation
-	ErrorMessage string
+	Status    OutcomeStatus
+	Verdict   pipeline.Verdict
+	Artifacts []pipeline.ArtifactInput
+	// StatusChanges are {kind:"status"} records the stage emitted to flip
+	// existing findings' lifecycle status by fingerprint. The engine resolves
+	// each fingerprint against the run's findings and dispatches
+	// ARTIFACT_STATUS_CHANGED. Meaningful on OutcomeCompleted.
+	StatusChanges []StatusChange
+	Observations  []Observation
+	ErrorMessage  string
 	// Output is a capped tail of the stage's combined stdout+stderr, surfaced in
 	// the run detail. Set by the command executor on both success and failure;
 	// empty for executor kinds that produce no subprocess output.
@@ -95,6 +100,13 @@ type StartInput struct {
 	// SourceBranch to spawn on the PR branch and render a PR block in the
 	// prompt; command stages surface it as AO_PR_* env vars.
 	Context pipeline.RunContext
+	// UpstreamFindings are the finding artifacts produced by this stage's
+	// dependsOn stages earlier in the run, resolved by the engine from the run's
+	// materialized findings. The agent executor renders them into an "## Upstream
+	// findings" prompt section so a summarize/verify stage can act on them and
+	// emit {kind:"status"} records referencing their fingerprints. Empty when the
+	// stage has no dependsOn or no upstream findings exist.
+	UpstreamFindings []pipeline.Artifact
 }
 
 // StageExecutor is the contract the engine drives. Start begins the work and

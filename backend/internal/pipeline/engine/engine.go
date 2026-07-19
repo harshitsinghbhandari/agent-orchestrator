@@ -431,16 +431,94 @@ func (e *Engine) startInput(run pipeline.RunState, eff pipeline.StartStage) exec
 	loopRound := run.LoopRounds
 	allowFork := run.PipelineConfigSnapshot.AllowForkPRs != nil && *run.PipelineConfigSnapshot.AllowForkPRs
 	return executors.StartInput{
-		PipelineName:    run.PipelineName,
-		ProjectID:       string(e.projectID),
-		RunID:           eff.RunID,
-		StageRunID:      eff.StageRunID,
-		Stage:           eff.Stage,
-		IssueID:         run.Context.IssueID,
-		LoopRound:       &loopRound,
-		LinkedSessionID: run.SessionID,
-		AllowForkPRs:    allowFork,
-		Context:         run.Context,
+		PipelineName:     run.PipelineName,
+		ProjectID:        string(e.projectID),
+		RunID:            eff.RunID,
+		StageRunID:       eff.StageRunID,
+		Stage:            eff.Stage,
+		IssueID:          run.Context.IssueID,
+		LoopRound:        &loopRound,
+		LinkedSessionID:  run.SessionID,
+		AllowForkPRs:     allowFork,
+		Context:          run.Context,
+		UpstreamFindings: upstreamFindings(run, eff.Stage.DependsOn),
+	}
+}
+
+// upstreamFindings resolves the finding artifacts produced by a stage's
+// dependsOn stages, read from the run's in-memory materialized findings (the
+// same set the builtin dispatcher fetches from the store, but already
+// denormalized: finding artifacts are mirrored onto run.Findings by
+// finalizeStageCompletion, so no store round-trip is needed here).
+// The result is a flat slice sorted by stage name then fingerprint so the agent
+// prompt is deterministic. Returns nil when the stage has no dependsOn or no
+// upstream findings exist yet.
+func upstreamFindings(run pipeline.RunState, dependsOn []string) []pipeline.Artifact {
+	if len(dependsOn) == 0 || len(run.Findings) == 0 {
+		return nil
+	}
+	deps := make(map[string]bool, len(dependsOn))
+	for _, d := range dependsOn {
+		deps[d] = true
+	}
+	var out []pipeline.Artifact
+	for _, f := range run.Findings {
+		if f.Kind == pipeline.ArtifactKindFinding && deps[f.StageName] {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StageName != out[j].StageName {
+			return out[i].StageName < out[j].StageName
+		}
+		return out[i].Fingerprint < out[j].Fingerprint
+	})
+	return out
+}
+
+// applyStatusChanges resolves each stage-reported StatusChange (a {kind:"status"}
+// findings record) against the run's materialized findings and dispatches one
+// ARTIFACT_STATUS_CHANGED per matching finding. An unresolvable fingerprint is
+// tolerated: it emits a pipeline.status.unknown_fingerprint observation rather
+// than failing the stage. Runs on the actor goroutine, after the STAGE_COMPLETED
+// reduce has materialized this stage's own findings.
+func (e *Engine) applyStatusChanges(runID pipeline.RunID, changes []executors.StatusChange) {
+	if len(changes) == 0 {
+		return
+	}
+	run, ok := e.state.Runs[runID]
+	if !ok {
+		return
+	}
+	// Snapshot the findings before dispatching: reduceArtifactStatusChanged is
+	// copy-on-write on run.Findings, so this slice stays valid across dispatches,
+	// and fingerprint/id/stageRunId never change.
+	findings := run.Findings
+	for _, ch := range changes {
+		matched := false
+		for _, f := range findings {
+			if f.Fingerprint != "" && f.Fingerprint == ch.Fingerprint {
+				matched = true
+				e.reduceAndExecute(pipeline.ArtifactStatusChanged{
+					Now:        e.now(),
+					RunID:      runID,
+					StageRunID: f.StageRunID,
+					ArtifactID: f.ArtifactID,
+					Status:     ch.Status,
+					Actor:      "stage",
+				})
+			}
+		}
+		if !matched {
+			e.observe("pipeline.status.unknown_fingerprint", map[string]any{
+				"runId":       string(runID),
+				"fingerprint": ch.Fingerprint,
+				"status":      string(ch.Status),
+			})
+		}
 	}
 }
 
@@ -504,6 +582,10 @@ func (e *Engine) pollInflight() {
 		delete(e.inflight, k)
 		if outcome.Status == executors.OutcomeCompleted {
 			e.reduceAndExecute(pipeline.StageCompleted{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), Verdict: outcome.Verdict, Artifacts: outcome.Artifacts, Output: outcome.Output})
+			// Apply status records only after STAGE_COMPLETED has materialized this
+			// stage's own findings, so a stage may reference a fingerprint it just
+			// emitted as well as any upstream one.
+			e.applyStatusChanges(h.RunID(), outcome.StatusChanges)
 		} else {
 			e.reduceAndExecute(pipeline.StageFailed{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), ErrorMessage: outcome.ErrorMessage, Output: outcome.Output})
 		}

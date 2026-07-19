@@ -38,9 +38,11 @@ type fakePipelineService struct {
 	getRunErr, cancelErr, resumeErr error
 	triggerErr, artifactErr         error
 	validateErr                     error
+	statusErr                       error
 
-	lastTrigger pipelinesvc.TriggerInput
-	lastFilter  pipeline.RunFilter
+	lastTrigger      pipelinesvc.TriggerInput
+	lastFilter       pipeline.RunFilter
+	lastStatusChange pipeline.ArtifactStatus
 }
 
 func (f *fakePipelineService) ListDefinitions(context.Context, domain.ProjectID) ([]pipeline.Definition, error) {
@@ -114,6 +116,14 @@ func (f *fakePipelineService) GetArtifact(context.Context, pipeline.ArtifactID) 
 
 func (f *fakePipelineService) PRBlocksMerge(context.Context, domain.ProjectID, string, string) (bool, error) {
 	return false, nil
+}
+
+func (f *fakePipelineService) UpdateArtifactStatus(_ context.Context, _ domain.ProjectID, _ pipeline.RunID, _ pipeline.ArtifactID, status pipeline.ArtifactStatus) (pipeline.Artifact, error) {
+	f.lastStatusChange = status
+	if f.statusErr != nil {
+		return pipeline.Artifact{}, f.statusErr
+	}
+	return f.artifact, nil
 }
 
 func newPipelineTestServer(t *testing.T, svc pipelinesvc.Manager) *httptest.Server {
@@ -368,6 +378,47 @@ func TestPipelinesGetArtifact_HappyAndNotFound(t *testing.T) {
 	assertErrorCode(t, body, status, http.StatusNotFound, "PIPELINE_ARTIFACT_NOT_FOUND")
 }
 
+func TestPipelinesUpdateArtifactStatus_HappyBadAndUnknown(t *testing.T) {
+	art := pipeline.Artifact{
+		ArtifactInput: pipeline.ArtifactInput{Kind: pipeline.ArtifactKindFinding, Title: "leak"},
+		ArtifactID:    "a-7", Status: pipeline.ArtifactStatusDismissed,
+	}
+	fake := &fakePipelineService{artifact: art}
+	srv := newPipelineTestServer(t, fake)
+
+	// Happy path: the new status is passed to the service and the artifact returned.
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/pipelines/runs/run-1/artifacts/a-7/status?project=mer", `{"status":"dismissed"}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK || !contains(body, `"artifact"`) || !contains(body, `"a-7"`) {
+		t.Fatalf("status happy: status=%d body=%s", status, body)
+	}
+	if fake.lastStatusChange != pipeline.ArtifactStatusDismissed {
+		t.Fatalf("service saw status %q, want dismissed", fake.lastStatusChange)
+	}
+
+	// Missing project is a 400.
+	_, status, _ = doRequest(t, srv, "POST", "/api/v1/pipelines/runs/run-1/artifacts/a-7/status", `{"status":"dismissed"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing project = %d, want 400", status)
+	}
+
+	// Malformed body is a 400.
+	_, status, _ = doRequest(t, srv, "POST", "/api/v1/pipelines/runs/run-1/artifacts/a-7/status?project=mer", `{`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("bad json = %d, want 400", status)
+	}
+
+	// A bad status value surfaces the service's validation error.
+	badSrv := newPipelineTestServer(t, &fakePipelineService{statusErr: apierr.Invalid("PIPELINE_ARTIFACT_STATUS_INVALID", "bad", nil)})
+	body, status, _ = doRequest(t, badSrv, "POST", "/api/v1/pipelines/runs/run-1/artifacts/a-7/status?project=mer", `{"status":"nonsense"}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "PIPELINE_ARTIFACT_STATUS_INVALID")
+
+	// An unknown artifact is a 404.
+	nfSrv := newPipelineTestServer(t, &fakePipelineService{statusErr: apierr.NotFound("PIPELINE_ARTIFACT_NOT_FOUND", "gone")})
+	body, status, _ = doRequest(t, nfSrv, "POST", "/api/v1/pipelines/runs/run-1/artifacts/a-x/status?project=mer", `{"status":"open"}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PIPELINE_ARTIFACT_NOT_FOUND")
+}
+
 // TestPipelinesFlagOffReturns501 is the AO_PIPELINES=off contract (T11): the
 // daemon passes a nil Pipelines Manager when the flag is off, and every route
 // stays registered but returns 501 Not Implemented, across all method kinds.
@@ -388,6 +439,7 @@ func TestPipelinesFlagOffReturns501(t *testing.T) {
 		{"POST", "/api/v1/pipelines/runs/run-1/cancel", ""},
 		{"POST", "/api/v1/pipelines/runs/run-1/resume", ""},
 		{"GET", "/api/v1/pipelines/runs/run-1/artifacts/a-1", ""},
+		{"POST", "/api/v1/pipelines/runs/run-1/artifacts/a-1/status?project=mer", `{"status":"dismissed"}`},
 	}
 	for _, tc := range cases {
 		_, status, _ := doRequest(t, srv, tc.method, tc.path, tc.body)
