@@ -318,7 +318,11 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const onCreateProject = vi.fn().mockResolvedValue(undefined) as CreateProjectHandler;
 		window.ao!.app.chooseDirectory = vi.fn().mockResolvedValue("/repo/new-project");
-		getMock.mockResolvedValueOnce({
+		// Route by URL (not mockResolvedValueOnce): the Sidebar fires the agents
+		// fetch AND the pipelines-schema probe on mount, so a single queued
+		// once-value races between them and is consumed out of order. Pin the
+		// agents catalog to its URL so the order of the two GETs is irrelevant.
+		mockGetByUrl({
 			data: {
 				supported: [
 					{ id: "goose", label: "Goose" },
