@@ -26,22 +26,23 @@ import {
 	draftEdges,
 	isEdgeInCycle,
 	layoutPositions,
-	predicateSummary,
 	removeDependency,
 	STAGE_NODE_HEIGHT,
 	STAGE_NODE_WIDTH,
 	stageNodeId,
 	type StagePosition,
 } from "../lib/pipeline-graph";
-import { setSelectedStage, useSelectedStage } from "../hooks/usePipelineSelection";
+import { summarizePredicate } from "../lib/predicate-summary";
+import type { StageSelection } from "../hooks/useStageSelection";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
 // The node-graph canvas (mockup 1a): one card per StageDraft, edges rendered
 // dependency -> dependent (execution order). Every edit routes through the
 // draft via onDraftChange (usePipelineDraft.setDraft), so serialization and
-// validation stay centralized. Selection is published through the shared
-// usePipelineSelection store for V3's inspector.
+// validation stay centralized. Selection flows through the editor shell's
+// useStageSelection instance (V3's shared hook): node clicks call selectStage,
+// and the inspector binds to the same selectedStage name.
 //
 // Cycle handling (mockup 1d): a connect attempt that would close a dependency
 // cycle is blocked and flashed as a red dashed edge; cycles already present in
@@ -51,23 +52,26 @@ export interface PipelineCanvasProps {
 	draft: PipelineDraft;
 	// Absent -> read-only canvas (no connecting, deleting, or adding stages).
 	onDraftChange?: (next: PipelineDraft) => void;
+	// The editor area's useStageSelection instance, shared with the inspector.
+	selection?: StageSelection;
 }
 
 const CYCLE_FLASH_MS = 1800;
 
 type StageNodeType = Node<{ stage: StageDraft; inCycle: boolean }, "stage">;
 
-export function PipelineCanvas({ draft, onDraftChange }: PipelineCanvasProps) {
+export function PipelineCanvas({ draft, onDraftChange, selection }: PipelineCanvasProps) {
 	return (
 		<ReactFlowProvider>
-			<CanvasInner draft={draft} onDraftChange={onDraftChange} />
+			<CanvasInner draft={draft} onDraftChange={onDraftChange} selection={selection} />
 		</ReactFlowProvider>
 	);
 }
 
-function CanvasInner({ draft, onDraftChange }: PipelineCanvasProps) {
+function CanvasInner({ draft, onDraftChange, selection }: PipelineCanvasProps) {
 	const { fitView } = useReactFlow();
-	const selected = useSelectedStage();
+	const selected = selection?.selectedStage ?? null;
+	const selectStage = selection?.selectStage;
 	const [positions, setPositions] = useState<Record<string, StagePosition>>(() => layoutPositions(draft));
 	const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
 	// The blocked connect attempt currently flashing red, if any.
@@ -154,16 +158,19 @@ function CanvasInner({ draft, onDraftChange }: PipelineCanvasProps) {
 		return out;
 	}, [draft, selectedEdgeIds, flash]);
 
-	const onNodesChange = useCallback((changes: NodeChange[]) => {
-		for (const change of changes) {
-			if (change.type === "position" && change.position) {
-				const position = change.position;
-				setPositions((prev) => ({ ...prev, [change.id]: position }));
-			} else if (change.type === "select") {
-				setSelectedStage(change.selected ? change.id : null);
+	const onNodesChange = useCallback(
+		(changes: NodeChange[]) => {
+			for (const change of changes) {
+				if (change.type === "position" && change.position) {
+					const position = change.position;
+					setPositions((prev) => ({ ...prev, [change.id]: position }));
+				} else if (change.type === "select") {
+					selectStage?.(change.selected ? change.id : null);
+				}
 			}
-		}
-	}, []);
+		},
+		[selectStage],
+	);
 
 	const onEdgesChange = useCallback(
 		(changes: EdgeChange[]) => {
@@ -208,8 +215,8 @@ function CanvasInner({ draft, onDraftChange }: PipelineCanvasProps) {
 		if (!onDraftChange) return;
 		const { draft: next, name } = addStage(draftRef.current);
 		onDraftChange(next);
-		setSelectedStage(name);
-	}, [onDraftChange]);
+		selectStage?.(name);
+	}, [onDraftChange, selectStage]);
 
 	const handleAutoLayout = useCallback(() => {
 		setPositions(layoutPositions(draftRef.current));
@@ -225,8 +232,8 @@ function CanvasInner({ draft, onDraftChange }: PipelineCanvasProps) {
 				onNodesChange={onNodesChange}
 				onEdgesChange={onEdgesChange}
 				onConnect={onConnect}
-				onNodeClick={(_, node) => setSelectedStage(node.id)}
-				onPaneClick={() => setSelectedStage(null)}
+				onNodeClick={(_, node) => selectStage?.(node.id)}
+				onPaneClick={() => selectStage?.(null)}
 				nodesConnectable={!!onDraftChange}
 				edgesFocusable={!!onDraftChange}
 				deleteKeyCode={onDraftChange ? ["Backspace", "Delete"] : null}
@@ -346,7 +353,7 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 			{stage.routes?.when && (
 				<p className="mt-1.5">
 					<span className="inline-block max-w-full truncate rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 font-mono text-micro text-warning">
-						when: {predicateSummary(stage.routes.when)}
+						when: {summarizePredicate(stage.routes.when)}
 					</span>
 				</p>
 			)}

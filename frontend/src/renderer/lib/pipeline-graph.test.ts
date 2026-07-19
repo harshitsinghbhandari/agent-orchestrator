@@ -9,7 +9,6 @@ import {
 	findCycle,
 	isEdgeInCycle,
 	layoutPositions,
-	predicateSummary,
 	removeDependency,
 	stageNodeId,
 } from "./pipeline-graph";
@@ -158,18 +157,5 @@ describe("addStage", () => {
 	it("skips names already taken", () => {
 		const { name } = addStage(draftOf(stage("stage-2")));
 		expect(name).toBe("stage-3");
-	});
-});
-
-describe("predicateSummary", () => {
-	it("compacts each predicate kind to chip text", () => {
-		expect(predicateSummary({ kind: "no_open_findings" })).toBe("no_open_findings");
-		expect(predicateSummary({ kind: "finding_count_below", max: 3 })).toBe("findings < 3");
-		expect(predicateSummary({ kind: "loop_rounds_at_least", n: 2 })).toBe("rounds >= 2");
-		expect(predicateSummary({ kind: "stage_verdict", stage: "tests", verdict: "pass" })).toBe("tests is pass");
-		expect(predicateSummary({ kind: "all_pass", stages: ["a", "b"] })).toBe("all_pass(a, b)");
-		expect(predicateSummary({ kind: "not", predicate: { kind: "no_open_findings" } })).toBe(
-			"not(no_open_findings)",
-		);
 	});
 });

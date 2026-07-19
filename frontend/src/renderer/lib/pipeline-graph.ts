@@ -8,7 +8,7 @@
 // serialization/validation stays centralized.
 
 import dagre from "dagre";
-import type { PipelineDraft, PredicateDraft, StageDraft } from "./pipeline-draft";
+import type { PipelineDraft, StageDraft } from "./pipeline-draft";
 
 // Fixed card footprint the layout assumes; the rendered card is w-52 with a
 // content-dependent height this estimate stays close enough to for spacing.
@@ -174,33 +174,4 @@ export function addStage(draft: PipelineDraft): { draft: PipelineDraft; name: st
 		executor: { kind: "agent", plugin: "claude-code", mode: "review" },
 	};
 	return { draft: { ...draft, stages: [...draft.stages, stage] }, name };
-}
-
-// predicateSummary compacts a routes.when predicate into the node card's chip
-// text (mockup 1a: `when: findings > 0`). It stays close to the DSL kinds so
-// the chip reads as the config, not a paraphrase.
-export function predicateSummary(p: PredicateDraft): string {
-	switch (p.kind) {
-		case "no_open_findings":
-			return "no_open_findings";
-		case "finding_count_below":
-			return `findings < ${p.max ?? "?"}`;
-		case "loop_rounds_at_least":
-			return `rounds >= ${p.n ?? "?"}`;
-		case "stage_retried_at_least":
-			return `${p.stage ?? "?"} retried >= ${p.n ?? "?"}`;
-		case "stage_verdict":
-			return `${p.stage ?? "?"} is ${p.verdict ?? "?"}`;
-		case "all_pass":
-		case "any_pass":
-		case "majority_pass":
-			return p.stages?.length ? `${p.kind}(${p.stages.join(", ")})` : p.kind;
-		case "not":
-			return `not(${p.predicate ? predicateSummary(p.predicate) : "?"})`;
-		case "and":
-		case "or":
-			return `${p.kind}(${(p.predicates ?? []).map(predicateSummary).join(", ")})`;
-		default:
-			return p.kind;
-	}
 }

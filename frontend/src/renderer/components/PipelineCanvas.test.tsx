@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PipelineCanvas } from "./PipelineCanvas";
-import { getSelectedStage, setSelectedStage } from "../hooks/usePipelineSelection";
+import type { StageSelection } from "../hooks/useStageSelection";
 import type { PipelineDraft, StageDraft } from "../lib/pipeline-draft";
 
 function stage(name: string, overrides?: Partial<StageDraft>): StageDraft {
@@ -24,7 +24,10 @@ function nodeX(container: HTMLElement, id: string): number {
 	return match ? Number(match[1]) : NaN;
 }
 
-beforeEach(() => setSelectedStage(null));
+// The editor shell's useStageSelection instance, as the canvas receives it.
+function selectionOf(selectedStage: string | null = null) {
+	return { selectedStage, selectStage: vi.fn<StageSelection["selectStage"]>() };
+}
 
 describe("PipelineCanvas", () => {
 	it("renders one card per stage with executor-kind details", () => {
@@ -52,13 +55,14 @@ describe("PipelineCanvas", () => {
 		expect(screen.getByLabelText("Builtin stage")).toHaveTextContent("f");
 
 		// Routes chip + workspace/rounds footer (mockup 1a).
-		expect(screen.getByText("when: not(no_open_findings)")).toBeInTheDocument();
+		expect(screen.getByText("when: not( no_open_findings )")).toBeInTheDocument();
 		expect(screen.getByText("isolated-rw · 5 rounds")).toBeInTheDocument();
 	});
 
 	it("appends a default stage through the draft on Add stage", async () => {
 		const onDraftChange = vi.fn();
-		render(<PipelineCanvas draft={draftOf(stage("review"))} onDraftChange={onDraftChange} />);
+		const selection = selectionOf();
+		render(<PipelineCanvas draft={draftOf(stage("review"))} onDraftChange={onDraftChange} selection={selection} />);
 
 		await userEvent.setup().click(screen.getByRole("button", { name: /Add stage/ }));
 
@@ -67,7 +71,7 @@ describe("PipelineCanvas", () => {
 		expect(next.stages.map((s) => s.name)).toEqual(["review", "stage-2"]);
 		expect(next.stages[1].executor.kind).toBe("agent");
 		// The new stage becomes the selection for the inspector.
-		expect(getSelectedStage()).toBe("stage-2");
+		expect(selection.selectStage).toHaveBeenCalledWith("stage-2");
 	});
 
 	it("disables Add stage when the canvas is read-only", () => {
@@ -75,14 +79,22 @@ describe("PipelineCanvas", () => {
 		expect(screen.getByRole("button", { name: /Add stage/ })).toBeDisabled();
 	});
 
-	it("publishes the clicked node as the shared selected stage", () => {
-		render(<PipelineCanvas draft={draftOf(stage("review"), stage("fix"))} onDraftChange={vi.fn()} />);
+	it("publishes the clicked node through the shared selection", () => {
+		const selection = selectionOf();
+		render(<PipelineCanvas draft={draftOf(stage("review"), stage("fix"))} onDraftChange={vi.fn()} selection={selection} />);
 
 		// fireEvent, not userEvent: a full pointer sequence trips d3-drag's
 		// mousedown handling, which jsdom cannot satisfy.
 		fireEvent.click(screen.getByText("fix"));
 
-		expect(getSelectedStage()).toBe("fix");
+		expect(selection.selectStage).toHaveBeenCalledWith("fix");
+	});
+
+	it("highlights the node the shared selection points at", () => {
+		render(<PipelineCanvas draft={draftOf(stage("review"), stage("fix"))} selection={selectionOf("fix")} />);
+
+		expect(document.querySelector('.react-flow__node[data-id="fix"]')).toHaveClass("selected");
+		expect(document.querySelector('.react-flow__node[data-id="review"]')).not.toHaveClass("selected");
 	});
 
 	it("auto-layouts dependencies left of dependents", () => {
