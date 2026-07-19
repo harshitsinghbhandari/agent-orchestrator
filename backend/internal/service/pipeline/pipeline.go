@@ -361,6 +361,12 @@ func (s *Service) TriggerRun(ctx context.Context, projectID domain.ProjectID, in
 		SessionID: in.SessionID,
 		Trigger:   pipeline.TriggerManual,
 		HeadSHA:   in.HeadSHA,
+		// Manual runs have no PR; fill only what we know so command stages still
+		// get AO_PIPELINE_* env and any linked-session facts are preserved.
+		Context: pipeline.RunContext{
+			SessionID: in.SessionID,
+			HeadSHA:   in.HeadSHA,
+		},
 	})
 	if err != nil {
 		// A structurally invalid snapshot (cycle) is the only TriggerRun error;

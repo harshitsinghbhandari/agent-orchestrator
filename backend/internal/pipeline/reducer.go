@@ -78,6 +78,7 @@ func reduceTriggerFired(state EngineState, event TriggerFired) (EngineState, []E
 		SessionID:              event.SessionID,
 		PipelineConfigSnapshot: event.Pipeline,
 		HeadSHA:                event.HeadSHA,
+		Context:                event.Context,
 		LoopState:              LoopRunning,
 		LoopRounds:             loopRounds,
 		Stages:                 stages,

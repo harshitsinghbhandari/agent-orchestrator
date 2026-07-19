@@ -220,6 +220,19 @@ func (b *Bridge) process(ctx context.Context, e cdc.Event) {
 	prev, seen := b.prev[p.URL]
 	cur := prSnapshot{mergeReady: isMergeReady(facts), merged: facts.Merged, headSHA: facts.HeadSHA}
 
+	// Capture PR identity once so every triggered run carries it to its stage
+	// executors (agent branch + prompt, command env). Manual runs go through the
+	// service path, not the bridge, so this always has real PR facts.
+	runCtx := pipeline.RunContext{
+		PRNumber:     facts.Number,
+		PRURL:        facts.URL,
+		SourceBranch: facts.SourceBranch,
+		TargetBranch: facts.TargetBranch,
+		HeadSHA:      facts.HeadSHA,
+		SessionID:    session,
+		IsFromFork:   facts.IsFromFork,
+	}
+
 	opened := e.Type == cdc.EventPRCreated
 	fireOpened := opened
 	fireUpdated := !opened
@@ -242,26 +255,27 @@ func (b *Bridge) process(ctx context.Context, e cdc.Event) {
 			eng.Dispatch(pipeline.NewSHADetected{Now: b.now(), SessionID: session, PipelineName: cfg.Name, SHA: cur.headSHA})
 		}
 
-		b.fireIf(eng, fireOpened && defSubscribes(cfg, pipeline.TriggerPROpened), cfg, session, pipeline.TriggerPROpened, cur.headSHA)
-		b.fireIf(eng, fireUpdated && subsUpdated, cfg, session, pipeline.TriggerPRUpdated, cur.headSHA)
-		b.fireIf(eng, fireMergeReady && defSubscribes(cfg, pipeline.TriggerPRMergeReady), cfg, session, pipeline.TriggerPRMergeReady, cur.headSHA)
-		b.fireIf(eng, fireMerged && defSubscribes(cfg, pipeline.TriggerPRMerged), cfg, session, pipeline.TriggerPRMerged, cur.headSHA)
+		b.fireIf(eng, fireOpened && defSubscribes(cfg, pipeline.TriggerPROpened), cfg, runCtx, pipeline.TriggerPROpened)
+		b.fireIf(eng, fireUpdated && subsUpdated, cfg, runCtx, pipeline.TriggerPRUpdated)
+		b.fireIf(eng, fireMergeReady && defSubscribes(cfg, pipeline.TriggerPRMergeReady), cfg, runCtx, pipeline.TriggerPRMergeReady)
+		b.fireIf(eng, fireMerged && defSubscribes(cfg, pipeline.TriggerPRMerged), cfg, runCtx, pipeline.TriggerPRMerged)
 	}
 
 	b.prev[p.URL] = cur
 }
 
-func (b *Bridge) fireIf(eng Engine, cond bool, cfg pipeline.Pipeline, session string, ev pipeline.StageTriggerEvent, sha string) {
+func (b *Bridge) fireIf(eng Engine, cond bool, cfg pipeline.Pipeline, runCtx pipeline.RunContext, ev pipeline.StageTriggerEvent) {
 	if !cond {
 		return
 	}
 	if _, err := eng.TriggerRun(engine.TriggerRequest{
 		Pipeline:  cfg,
-		SessionID: session,
+		SessionID: runCtx.SessionID,
 		Trigger:   ev,
-		HeadSHA:   sha,
+		HeadSHA:   runCtx.HeadSHA,
+		Context:   runCtx,
 	}); err != nil {
-		b.log.Warn("pipeline trigger bridge: trigger run", "pipeline", cfg.Name, "trigger", ev, "session", session, "err", err)
+		b.log.Warn("pipeline trigger bridge: trigger run", "pipeline", cfg.Name, "trigger", ev, "session", runCtx.SessionID, "err", err)
 	}
 }
 

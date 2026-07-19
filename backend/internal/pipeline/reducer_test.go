@@ -57,6 +57,36 @@ func TestReduceTriggerFired(t *testing.T) {
 		}
 	})
 
+	t.Run("stores the run context on the new run", func(t *testing.T) {
+		p := pipelineOf("p", 1, stageDef("a"))
+		ev := triggerFor(p, TriggerPROpened, "r1")
+		fork := false
+		ev.Context = RunContext{
+			PRNumber: 9, PRURL: "https://x/pull/9", SourceBranch: "feat",
+			TargetBranch: "main", HeadSHA: "sha-1", SessionID: "sess-1", IsFromFork: &fork,
+		}
+		state, _ := Reduce(EmptyEngineState(), ev)
+		got := state.Runs["r1"].Context
+		if !reflect.DeepEqual(got, ev.Context) {
+			t.Fatalf("run context = %+v, want %+v", got, ev.Context)
+		}
+	})
+
+	t.Run("manual trigger leaves PR fields empty", func(t *testing.T) {
+		p := pipelineOf("p", 1, stageDef("a"))
+		ev := triggerFor(p, TriggerManual, "r1")
+		ev.Context = RunContext{SessionID: "sess-1", HeadSHA: "sha-1"}
+		state, _ := Reduce(EmptyEngineState(), ev)
+		got := state.Runs["r1"].Context
+		if got.PRNumber != 0 || got.PRURL != "" || got.SourceBranch != "" ||
+			got.TargetBranch != "" || got.IsFromFork != nil {
+			t.Fatalf("manual run must have empty PR fields, got %+v", got)
+		}
+		if got.SessionID != "sess-1" || got.HeadSHA != "sha-1" {
+			t.Fatalf("manual run should keep session/head sha, got %+v", got)
+		}
+	})
+
 	t.Run("second trigger for a live loop is a no-op", func(t *testing.T) {
 		p := pipelineOf("p", 1, stageDef("a"))
 		state, _ := Reduce(EmptyEngineState(), triggerFor(p, TriggerManual, "r1"))

@@ -64,6 +64,7 @@ func (a *sessionSpawnerAdapter) Spawn(ctx context.Context, req executors.SpawnRe
 		IssueID:   domain.IssueID(req.IssueID),
 		Kind:      domain.KindWorker,
 		Harness:   domain.AgentHarness(req.Harness),
+		Branch:    req.Branch,
 		Prompt:    req.Prompt,
 	})
 	if err != nil {

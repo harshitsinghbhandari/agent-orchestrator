@@ -17,7 +17,7 @@ func agentStage(mode pipeline.TaskMode) pipeline.Stage {
 
 func TestBuildStagePrompt_CoreShape(t *testing.T) {
 	round := 3
-	got := buildStagePrompt("ci", agentStage(pipeline.ModeReview), &round)
+	got := buildStagePrompt("ci", agentStage(pipeline.ModeReview), &round, pipeline.RunContext{})
 
 	for _, want := range []string{
 		"## Pipeline Stage",
@@ -38,7 +38,7 @@ func TestBuildStagePrompt_CoreShape(t *testing.T) {
 }
 
 func TestBuildStagePrompt_ReviewModeFindingSchema(t *testing.T) {
-	got := buildStagePrompt("ci", agentStage(pipeline.ModeReview), nil)
+	got := buildStagePrompt("ci", agentStage(pipeline.ModeReview), nil, pipeline.RunContext{})
 	if !strings.Contains(got, `"finding"`) || !strings.Contains(got, "severity") {
 		t.Errorf("review mode must document the finding record schema\n%s", got)
 	}
@@ -48,7 +48,7 @@ func TestBuildStagePrompt_ReviewModeFindingSchema(t *testing.T) {
 }
 
 func TestBuildStagePrompt_AnswerModeJSONSchema(t *testing.T) {
-	got := buildStagePrompt("ci", agentStage(pipeline.ModeAnswer), nil)
+	got := buildStagePrompt("ci", agentStage(pipeline.ModeAnswer), nil, pipeline.RunContext{})
 	if !strings.Contains(got, `"json"`) || !strings.Contains(got, "outputSchema") {
 		t.Errorf("answer mode must document the json record schema\n%s", got)
 	}
@@ -58,7 +58,7 @@ func TestBuildStagePrompt_BlocksMergeNotice(t *testing.T) {
 	stage := agentStage(pipeline.ModeReview)
 	blocks := true
 	stage.Policy = &pipeline.StagePolicy{BlocksMerge: &blocks}
-	got := buildStagePrompt("ci", stage, nil)
+	got := buildStagePrompt("ci", stage, nil, pipeline.RunContext{})
 	if !strings.Contains(got, "block merge") {
 		t.Errorf("blocksMerge stage must warn about blocking merge\n%s", got)
 	}
@@ -67,9 +67,38 @@ func TestBuildStagePrompt_BlocksMergeNotice(t *testing.T) {
 func TestBuildStagePrompt_InputsRendered(t *testing.T) {
 	stage := agentStage(pipeline.ModeReview)
 	stage.Task.Inputs = map[string]any{"threshold": 5}
-	got := buildStagePrompt("ci", stage, nil)
+	got := buildStagePrompt("ci", stage, nil, pipeline.RunContext{})
 	if !strings.Contains(got, "## Inputs") || !strings.Contains(got, "threshold") {
 		t.Errorf("inputs must be rendered as a JSON block\n%s", got)
+	}
+}
+
+func TestBuildStagePrompt_PRBlockRendered(t *testing.T) {
+	prCtx := pipeline.RunContext{
+		PRNumber:     42,
+		PRURL:        "https://github.com/o/r/pull/42",
+		SourceBranch: "feature",
+		TargetBranch: "main",
+		HeadSHA:      "abc123",
+	}
+	got := buildStagePrompt("ci", agentStage(pipeline.ModeReview), nil, prCtx)
+	for _, want := range []string{
+		"## Pull request",
+		"Number: #42",
+		"URL: https://github.com/o/r/pull/42",
+		"Branch: feature -> main",
+		"Head SHA: abc123",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("PR block missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestBuildStagePrompt_NoPRContextOmitsBlock(t *testing.T) {
+	got := buildStagePrompt("ci", agentStage(pipeline.ModeReview), nil, pipeline.RunContext{})
+	if strings.Contains(got, "## Pull request") {
+		t.Errorf("empty PR context must not render a PR block\n%s", got)
 	}
 }
 
@@ -78,7 +107,7 @@ func TestBuildStagePrompt_NonAgentStageOmitsMode(t *testing.T) {
 		Name:     "typecheck",
 		Executor: pipeline.StageExecutor{Kind: pipeline.ExecutorCommand, Command: "tsc"},
 	}
-	got := buildStagePrompt("ci", stage, nil)
+	got := buildStagePrompt("ci", stage, nil, pipeline.RunContext{})
 	if strings.Contains(got, "Mode:") {
 		t.Errorf("command stage has no agent mode line\n%s", got)
 	}
