@@ -104,7 +104,7 @@ func TestCommand_ForkGateSkipsWithoutSpawn(t *testing.T) {
 		if out.Status != OutcomeCompleted || out.Verdict != pipeline.VerdictNeutral {
 			t.Fatalf("fork=%v: want completed/neutral skip, got %s/%s", fork, out.Status, out.Verdict)
 		}
-		if len(out.Observations) != 1 || out.Observations[0].Name != "command_stage_skipped_fork_pr" {
+		if len(out.Observations) != 1 || out.Observations[0].Name != forkSkipObservation {
 			t.Fatalf("fork=%v: expected a fork-skip observation, got %+v", fork, out.Observations)
 		}
 	}

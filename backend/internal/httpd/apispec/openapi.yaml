@@ -3258,7 +3258,13 @@ components:
           - string
         errorMessage:
           type: string
+        notes:
+          items:
+            type: string
+          type: array
         output:
+          type: string
+        sessionId:
           type: string
         stageName:
           type: string

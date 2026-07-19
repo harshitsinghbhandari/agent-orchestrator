@@ -610,7 +610,7 @@ func (e *Engine) routeObservations(obs []executors.Observation) {
 // state for the run detail. Observations with no Note (telemetry-only) are
 // skipped; the reducer caps the total.
 func observationNotes(obs []executors.Observation) []string {
-	var notes []string
+	notes := make([]string, 0, len(obs))
 	for _, o := range obs {
 		if o.Note != "" {
 			notes = append(notes, o.Note)

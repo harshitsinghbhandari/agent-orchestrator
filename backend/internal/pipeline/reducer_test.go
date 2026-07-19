@@ -268,6 +268,40 @@ func TestReduceStageCompleted(t *testing.T) {
 		_, effects := Reduce(engineWith(run), StageCompleted{Now: testNow, RunID: "r1", StageName: "a"})
 		assertInvalid(t, effects)
 	})
+
+	t.Run("session id and notes land on the stage state", func(t *testing.T) {
+		p := pipelineOf("p", 1, stageDef("a"))
+		run := runState("r1", p, map[string]StageStatus{"a": StageStatusRunning})
+		state, _ := Reduce(engineWith(run), StageCompleted{
+			Now: testNow, RunID: "r1", StageName: "a", Verdict: VerdictPass,
+			SessionID: "sess-9", Notes: []string{"stage skipped: fork PR"},
+		})
+		stage := state.Runs["r1"].Stages["a"]
+		if stage.SessionID != "sess-9" {
+			t.Fatalf("session id = %q, want sess-9", stage.SessionID)
+		}
+		if len(stage.Notes) != 1 || stage.Notes[0] != "stage skipped: fork PR" {
+			t.Fatalf("notes = %v, want one fork-skip line", stage.Notes)
+		}
+	})
+}
+
+func TestReduceStageNotesCapped(t *testing.T) {
+	p := pipelineOf("p", 1, stageDef("a"))
+	run := runState("r1", p, map[string]StageStatus{"a": StageStatusRunning})
+	notes := make([]string, MaxStageNotes+5)
+	for i := range notes {
+		notes[i] = "note"
+	}
+	state, _ := Reduce(engineWith(run), StageFailed{
+		Now: testNow, RunID: "r1", StageName: "a", ErrorMessage: "boom", SessionID: "sess-9", Notes: notes,
+	})
+	if got := len(state.Runs["r1"].Stages["a"].Notes); got != MaxStageNotes {
+		t.Fatalf("notes len = %d, want capped at %d", got, MaxStageNotes)
+	}
+	if state.Runs["r1"].Stages["a"].SessionID != "sess-9" {
+		t.Fatal("failed stage must still carry its session id")
+	}
 }
 
 func TestReduceStageFailed(t *testing.T) {

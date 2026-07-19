@@ -1182,7 +1182,9 @@ export interface components {
             /** Format: date-time */
             completedAt?: null | string;
             errorMessage?: string;
+            notes?: string[];
             output?: string;
+            sessionId?: string;
             stageName: string;
             stageRunId: string;
             /** Format: date-time */
