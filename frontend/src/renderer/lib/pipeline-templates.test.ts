@@ -171,6 +171,19 @@ describe("PIPELINE_TEMPLATES", () => {
 		expect(PIPELINE_TEMPLATES.map((t) => t.name)).toEqual(Object.keys(EXPECTED_STAGE_COUNTS));
 	});
 
+	it("pr-review-loop gates its fix stage on real findings, not a findingless builtin", () => {
+		const draft = PIPELINE_TEMPLATES.find((t) => t.id === "pr-review-loop")!.draft();
+		const fix = draft.stages.find((s) => s.name === "fix")!;
+		const when = fix.routes?.when;
+		// not(no_open_findings) with no stage scope: scoping it to the compose
+		// builtin (which emits a JSON artifact, never findings) made the predicate
+		// vacuously true, so fix was skipped every run.
+		expect(when?.kind).toBe("not");
+		const inner = when && when.kind === "not" ? when.predicate : undefined;
+		expect(inner?.kind).toBe("no_open_findings");
+		expect((inner as { stage?: string } | undefined)?.stage).toBeUndefined();
+	});
+
 	for (const template of PIPELINE_TEMPLATES) {
 		describe(template.name, () => {
 			it("has the advertised stage count", () => {

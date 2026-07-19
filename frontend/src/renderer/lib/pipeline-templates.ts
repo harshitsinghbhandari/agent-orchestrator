@@ -59,7 +59,11 @@ function prReviewLoop(): PipelineDraft {
 				executor: { kind: "agent", plugin: "claude-code", mode: "code" },
 				task: { prompt: "Fix the open findings, smallest correct change first. Push the fixes to the PR branch." },
 				dependsOn: ["triage"],
-				routes: { when: { kind: "not", predicate: { kind: "no_open_findings", stage: "compose-findings" } } },
+				// Run the fix stage whenever the run has any open findings. Scoping this
+				// to "compose-findings" was vacuously true (that builtin emits a JSON
+				// artifact, never findings), so fix was skipped every run. Unscoped
+				// matches the run's done predicate below.
+				routes: { when: { kind: "not", predicate: { kind: "no_open_findings" } } },
 				workspace: "isolated-rw",
 				maxLoopRounds: 3,
 			},
