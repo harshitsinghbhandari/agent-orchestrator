@@ -184,9 +184,7 @@ export function removeStage(draft: PipelineDraft, index: number): PipelineDraft 
 // cycle (blocked, with the offending path returned for the instant red
 // highlight). Unnamed endpoints stay unconnectable: dependsOn refers by name.
 export type ConnectionResult =
-	| { kind: "added"; draft: PipelineDraft }
-	| { kind: "cycle"; path: string[] }
-	| { kind: "noop" };
+	{ kind: "added"; draft: PipelineDraft } | { kind: "cycle"; path: string[] } | { kind: "noop" };
 
 export function applyConnection(draft: PipelineDraft, sourceId: string, targetId: string): ConnectionResult {
 	const source = draft.stages[stageIndexFromNodeId(sourceId)]?.name;
