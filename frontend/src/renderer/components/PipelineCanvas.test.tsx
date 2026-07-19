@@ -193,6 +193,20 @@ describe("PipelineCanvas", () => {
 		expect(document.querySelector('[data-stage-name="fix"]')).not.toHaveAttribute("data-issue-count");
 	});
 
+	it("shows a blocks-merge badge for a stage whose policy.blocksMerge is true", () => {
+		const draft = draftOf(
+			stage("review", { policy: { blocksMerge: true } }),
+			stage("fix", { policy: { blocksMerge: false } }),
+			stage("triage"),
+		);
+		render(<PipelineCanvas draft={draft} />);
+
+		expect(screen.getAllByText("blocks merge")).toHaveLength(1);
+		expect(document.querySelector('[data-stage-name="review"] span.text-warning')).toHaveTextContent("blocks merge");
+		expect(document.querySelector('[data-stage-name="fix"]')).not.toHaveTextContent("blocks merge");
+		expect(document.querySelector('[data-stage-name="triage"]')).not.toHaveTextContent("blocks merge");
+	});
+
 	it("shows the zoom indicator and view controls", () => {
 		render(<PipelineCanvas draft={draftOf(stage("review"))} />);
 

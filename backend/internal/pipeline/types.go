@@ -544,10 +544,10 @@ type Pipeline struct {
 	// serial execution in that case.
 	MaxConcurrentStages *int `json:"maxConcurrentStages,omitempty" yaml:"maxConcurrentStages,omitempty"`
 
-	// AllowForkPRs opts in to running command-executor stages for pull
-	// requests opened from forks. Defaults to false: fork-PR command stages
-	// are skipped before any subprocess is spawned. Only applies to the
-	// command executor.
+	// AllowForkPRs opts in to running stages for pull requests opened from
+	// forks. Defaults to false: fork-PR stages self-skip before any work
+	// happens. Applies uniformly to every executor kind (agent, command, and
+	// builtin) via the shared fork gate.
 	AllowForkPRs *bool `json:"allowForkPRs,omitempty" yaml:"allowForkPRs,omitempty"`
 
 	// ExitPredicates optionally overrides the v0 hardcoded run-exit rules.
@@ -583,6 +583,11 @@ type RunContext struct {
 	IsFromFork *bool `json:"isFromFork,omitempty"`
 }
 
+// MaxStageNotes bounds StageState.Notes so a pathological run cannot grow the
+// per-stage annotation list without limit. A handful of lines is plenty for the
+// run detail; excess is dropped oldest-first.
+const MaxStageNotes = 8
+
 // StageState is one stage's runtime state within a run.
 type StageState struct {
 	StageRunID StageRunID   `json:"stageRunId"`
@@ -604,6 +609,14 @@ type StageState struct {
 	// stages only), surfaced in the run detail. Empty for stages with no
 	// subprocess output.
 	Output string `json:"output,omitempty"`
+	// SessionID is the AO session this stage ran in, so the run detail can link
+	// straight to it. Set for agent stages (the session they spawned); empty for
+	// command and builtin stages, which own no session.
+	SessionID string `json:"sessionId,omitempty"`
+	// Notes are human-relevant one-line annotations for the stage (fork skip
+	// reason, findings truncated, exit-mode fallback, unknown status fingerprint),
+	// surfaced under the stage row in the run detail. Capped to MaxStageNotes.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // RunState is one pipeline run's full runtime state.

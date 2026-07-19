@@ -381,7 +381,7 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 
 const listPipelineStageRunsByRun = `-- name: ListPipelineStageRunsByRun :many
 SELECT run_id, project_id, stage_name, stage_run_id, status, attempt, verdict,
-       started_at, completed_at, error_message
+       started_at, completed_at, error_message, session_id, notes, output
 FROM pipeline_stage_runs WHERE run_id = ? ORDER BY stage_name ASC
 `
 
@@ -405,6 +405,9 @@ func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) 
 			&i.StartedAt,
 			&i.CompletedAt,
 			&i.ErrorMessage,
+			&i.SessionID,
+			&i.Notes,
+			&i.Output,
 		); err != nil {
 			return nil, err
 		}
@@ -530,8 +533,8 @@ const upsertPipelineStageRun = `-- name: UpsertPipelineStageRun :exec
 
 INSERT INTO pipeline_stage_runs (
     run_id, project_id, stage_name, stage_run_id, status, attempt, verdict,
-    started_at, completed_at, error_message
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    started_at, completed_at, error_message, session_id, notes, output
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (run_id, stage_name) DO UPDATE SET
     stage_run_id = excluded.stage_run_id,
     status = excluded.status,
@@ -539,7 +542,10 @@ ON CONFLICT (run_id, stage_name) DO UPDATE SET
     verdict = excluded.verdict,
     started_at = excluded.started_at,
     completed_at = excluded.completed_at,
-    error_message = excluded.error_message
+    error_message = excluded.error_message,
+    session_id = excluded.session_id,
+    notes = excluded.notes,
+    output = excluded.output
 `
 
 type UpsertPipelineStageRunParams struct {
@@ -553,6 +559,9 @@ type UpsertPipelineStageRunParams struct {
 	StartedAt    sql.NullTime
 	CompletedAt  sql.NullTime
 	ErrorMessage string
+	SessionID    string
+	Notes        string
+	Output       string
 }
 
 // Pipeline stage runs --------------------------------------------------------
@@ -568,6 +577,9 @@ func (q *Queries) UpsertPipelineStageRun(ctx context.Context, arg UpsertPipeline
 		arg.StartedAt,
 		arg.CompletedAt,
 		arg.ErrorMessage,
+		arg.SessionID,
+		arg.Notes,
+		arg.Output,
 	)
 	return err
 }

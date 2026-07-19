@@ -120,7 +120,8 @@ Key fields, by section:
   `args`/`env`/`cwd`), `builtin` (requires `name`, one of `router`/
   `compose`). Fields from another kind are rejected, not silently dropped.
 - **Pipeline-level**: `maxConcurrentStages` (defaults to 1, i.e. serial),
-  `allowForkPRs` (defaults to false; gates `command` stages on fork PRs),
+  `allowForkPRs` (defaults to false; gates every stage, agent, command, and
+  builtin alike, on fork PRs; see Fork-PR gate below),
   `exitPredicates.{done,stalled,blocksMerge}`.
 
 ### Predicates
@@ -236,12 +237,22 @@ ao pipeline resume run_01hz...
 
 ## Where findings land
 
-An agent stage's session is expected to write findings to
-`.ao/pipeline-findings.jsonl` inside the stage's workspace, one JSON object
-per line. The executor harvests this file after the session goes idle,
-streaming it up to a 5MB cap (a torn, unterminated final line is tolerated
-and dropped; a malformed complete line fails the harvest). Each line is
-either a `finding` or a free-form `json` artifact:
+A stage (agent or command) is expected to write findings to
+`.ao/pipeline-findings.jsonl` inside its workspace, one JSON object per
+line, using the write-to-temp-then-rename convention (`pipeline-findings.jsonl.tmp`
+renamed onto the final path) so the executor never observes a torn write.
+For an agent stage the executor polls until the session goes idle AND the
+file exists, then harvests it and kills the session; for a command stage
+the harvest runs once the process exits with a completed outcome (see
+Command result modes below). Harvesting streams the file up to a 5MB cap
+(`findingsFileSizeCapBytes`): a torn, unterminated final line is tolerated
+and dropped, a malformed complete line fails the whole harvest, and file
+existence (not contents) is the completion signal, so an empty renamed
+file means "no findings." Exceeding the cap does not fail the stage; it
+sets a `pipeline.findings.truncated` observation (stage name, path, cap,
+bytes read) and a matching stage note, and stops reading at the cap.
+
+Each JSONL line is one of three kinds:
 
 ```json
 {
@@ -257,14 +268,210 @@ either a `finding` or a free-form `json` artifact:
 }
 ```
 
-Finding fields: `filePath`, `startLine`, `endLine`, `title`, `description`,
-`category` (free-form, e.g. `security`/`correctness`/`style`/`general`),
-`severity` (`error`/`warning`/`info`), `confidence` (a float in `[0, 1]`),
-and an optional `anchorSignature` used to keep the finding's fingerprint
-stable across rounds. A `json`-kind artifact instead carries a `data`
-object. All finding fields except `anchorSignature` are required on a
-`finding`-kind line; a missing field or an out-of-range confidence fails
-that record.
+- **`{kind:"finding"}`**: `filePath`, `startLine`, `endLine`, `title`,
+  `description`, `category` (free-form, e.g.
+  `security`/`correctness`/`style`/`general`), `severity`
+  (`error`/`warning`/`info`), and `confidence` (a float in `[0, 1]`) are all
+  required; `anchorSignature` is optional and keeps the finding's
+  fingerprint stable across rounds. A missing required field or an
+  out-of-range confidence fails that record (and the harvest).
+- **`{kind:"status", fingerprint, status}`**: a stage's request to flip an
+  existing finding's lifecycle status by its stable fingerprint (e.g. a
+  verify stage resolving what an earlier review stage found). `status` must
+  be `open`, `resolved`, or `dismissed` (`sent_to_agent` is engine-internal
+  and never authored here). Both fields are required; a bad status fails
+  the harvest. A fingerprint that matches no finding in the run is
+  _tolerated_, not rejected: it emits a `pipeline.status.unknown_fingerprint`
+  observation and a stage note rather than failing the stage. Status
+  changes are applied before the run's exit decision, so a verify stage
+  resolving a finding can flip `no_open_findings` in the same round.
+- **`{kind:"json", data:{...}}`**: a free-form artifact carrying an object
+  `data`; used by `answer`-mode stages. Not mirrored into `run.findings`
+  (only `finding`-kind artifacts are).
+
+## Command stage result modes
+
+A `command` stage's exit is interpreted one of two ways, chosen by what the
+process wrote to stdout:
+
+- **Envelope mode.** If trimmed stdout parses as a JSON object with an
+  `outcome` field, it is treated as the historical command-task envelope:
+  `{"outcome": "succeeded"|"failed"|"neutral"|"skipped", "verdict"?:
+"pass"|"fail"|"neutral", "artifacts"?: [...], "reason"?: "..."}`. A nonzero
+  exit code still fails the stage even in envelope mode (the shim crashed
+  before or after writing valid JSON). `outcome: "failed"` fails the stage,
+  using `reason` as the error message when present. Otherwise the stage
+  completes; `verdict` is used if set, else defaulted from `outcome`
+  (`succeeded` -> `pass`, `neutral`/`skipped` -> `neutral`). `outcome:
+"skipped"` also adds a `command_stage_self_skipped` observation.
+- **Exit-code fallback.** If stdout is not that envelope (empty, plain text,
+  a JSON array, or an object without `outcome`), the raw process exit code
+  is the verdict: exit 0 completes with `verdict: pass`; nonzero fails with
+  a reason built from the exit code plus a stderr tail. Either way a
+  `command_stage_exit_mode` observation is attached (`mode: "exit-code"`,
+  the exit code), so the run detail always shows which mode decided the
+  outcome.
+
+In both modes: a stage timeout or a kill-by-signal fails the stage before
+either mode is even considered; the combined stdout+stderr tail (last 64
+KiB) is captured onto the stage's `output` field on every terminal outcome;
+and, when the process completed, a `.ao/pipeline-findings.jsonl` drop is
+harvested exactly as described above (a malformed file flips an otherwise
+completed outcome to failed).
+
+## Upstream findings in agent prompts
+
+An agent stage whose `dependsOn` names earlier stages receives their
+materialized findings as an "## Upstream findings" section injected into
+its spawn prompt (built by `buildStagePrompt`), one line per finding:
+severity, fingerprint, originating stage, `file:startLine-endLine`, title,
+and current status. The section is capped at 100 findings with an overflow
+count past the cap. This is how a `summarize`/`verify`-style downstream
+stage can reference a specific finding by fingerprint and emit a
+`{kind:"status"}` record to resolve or dismiss it. The prompt also always
+carries a "## Reporting Findings" block explaining the JSONL contract
+(write-to-temp, rename, the finding/status record shapes for the stage's
+mode) and, when the run has a PR, a "## Pull request" block (see below).
+
+## PR context available to stages
+
+When a run is backed by a PR, its identity flows to every stage:
+
+- **Agent stages** spawn on the PR's source branch (`Branch:
+in.Context.SourceBranch` in the spawn request), so a review/code session
+  sees the PR diff and can push directly to it; a collision with an
+  already-checked-out branch falls back to a stage-run-id-suffixed branch
+  name. The prompt's "## Pull request" block renders whichever of these
+  fields the run context carries: `Number: #<n>`, `URL: <url>`, `Branch:
+<source> -> <target>`, `Head SHA: <sha>`. A manual run with no PR omits
+  the block entirely.
+- **Command stages** get the same facts as environment variables
+  (`pipelineEnv`), always alongside `AO_PIPELINE_RUN_ID` and
+  `AO_PIPELINE_STAGE`:
+
+  | Variable             | Set when           |
+  | -------------------- | ------------------ |
+  | `AO_PIPELINE_RUN_ID` | always             |
+  | `AO_PIPELINE_STAGE`  | always             |
+  | `AO_PR_NUMBER`       | `PRNumber > 0`     |
+  | `AO_PR_URL`          | `PRURL` set        |
+  | `AO_PR_BRANCH`       | `SourceBranch` set |
+  | `AO_PR_BASE_BRANCH`  | `TargetBranch` set |
+  | `AO_PR_HEAD_SHA`     | `HeadSHA` set      |
+
+  Unset PR fields are omitted entirely rather than passed as empty strings.
+  A stage's own `executor.env` is applied last and wins on any key
+  collision.
+
+This context (`RunContext`) is populated once at trigger time, from the CDC
+trigger bridge's `PRFacts` lookup for a PR-driven run, or from the session
+and head SHA a manual run supplies, and is persisted as part of the run so
+every stage attempt sees the same facts.
+
+## Per-PR loop identity and same-SHA dedup
+
+Each pipeline "loop" (the persistent per-session, per-pipeline run
+sequence) is keyed by `LoopKeyFor`, not just session+pipeline name:
+
+- a PR-backed run keys as `sessionID:pipelineName:prURL`, so sibling PRs
+  driven off the same session and pipeline never collide, a new SHA on
+  PR-B cannot cancel or continue PR-A's in-flight run;
+- a manual run scoped to a session keys as `sessionID:pipelineName` (the
+  pre-PR-context shape, which older persisted runs also degrade to);
+- a manual run with no session keys as `run:<runID>` so unscoped manual
+  runs never share a global key and no-op each other.
+
+Within one PR's loop, the reducer also dedups by exact head SHA: a
+non-manual trigger (`pr.opened`/`pr.updated`/`pr.merge_ready`/`pr.merged`)
+whose SHA already produced a _settled_ run (`done` or `stalled`; not
+`outdated`/`cancelled`/`config_change`) is a no-op, emitting a
+`pipeline.run.trigger_deduped` observation instead of spawning a duplicate.
+This absorbs CI flapping and fact-only `pr.updated` churn on an unchanged
+SHA. A manual trigger always fires, even at an already-run SHA, since a
+human explicitly asked. Only settled runs count toward `loop_rounds_at_least`;
+a run cut short by outdated/cancel/config-change is not a round.
+
+## Deadlines, retries, honest exits
+
+- **Stage timeout.** `Stage.TimeoutMs` is a per-stage deadline; when unset
+  (or non-positive) the engine falls back to `DefaultStageTimeout`, which is
+  **30 minutes** (`pipeline.DefaultStageTimeout`, in `reducer.go`). The
+  deadline is stamped at `STAGE_STARTED` (`StartedAt + timeout`) and cleared
+  on retry/re-pend; a periodic `Tick` event fails any running stage whose
+  deadline has passed, so a wedged executor cannot leave a run running
+  forever.
+- **Retries.** `Stage.Retries` (default nil, meaning no automatic retry) is
+  a budget of _additional_ attempts: `retries: 2` allows up to 3 attempts
+  total. A failed stage within budget is silently re-pended with a fresh
+  `stageRunId` and `attempt+1` and re-enters the scheduler; a
+  `pipeline.stage.retried` observation is emitted either way. Retries apply
+  uniformly to timeouts, non-zero exits, and executor errors.
+- **`maxLoopRounds`.** `Stage.MaxLoopRounds` caps how many _loop rounds_ (not
+  attempts) a stage may run for across a PR's whole loop; once the run's
+  `loopRounds` exceeds the cap the stage is skipped instead of started, with
+  a `pipeline.stage.skipped_max_rounds` observation. It is per-stage, not
+  pipeline-global.
+- **Honest exits.** Once every stage in a run reaches a terminal status, the
+  run's exit is decided by `decideRunExit`: with no `exitPredicates`
+  configured, any failed stage means `stalled`/`stage_failure`, otherwise
+  `done`/`completed` (the v0 default). With `exitPredicates.done` configured,
+  the run is _never_ reported `done`/`completed` unless that predicate is
+  actually true. If `done` is configured but evaluates false (and `stalled`,
+  if any, does not fire), the run terminates as `stalled` with the distinct
+  reason `done_predicate_unmet` (`pipeline.TerminationDonePredicateUnmet`) so
+  a stage that finished without satisfying its own success condition (e.g.
+  open findings remain) is never dishonestly reported as completed.
+  Stall-window convergence (`policy.stallWindow`, the same fingerprint set
+  repeating across the window) is checked before exit predicates and, when
+  it fires, terminates as `stalled`/`converged` instead.
+
+## Merge blocking and dismissing findings
+
+- **`blocksMerge` end to end.** At a run's terminal transition (any of
+  `done`, `stalled`, or `terminated` that isn't outdated/manually-cancelled/
+  config-changed), `runBlocksMerge` sets `RunState.BlocksMerge`: true when
+  any finally-failed stage's `policy.blocksMerge` is true, else when
+  `exitPredicates.blocksMerge` (if configured) evaluates true against the
+  run's findings/history. Runs superseded as `outdated`, cancelled by hand,
+  or ended by a config change never block, since they were replaced rather
+  than judged. A true result emits a `pipeline.run.blocks_merge` observation.
+  The lifecycle merge-readiness check (`Service.PRBlocksMerge`, backing the
+  SCM integration's merge gate) looks up the most recent _settled_ run for
+  the PR's URL and only honors its `BlocksMerge` when that run's `HeadSHA`
+  still matches the PR's current head; a stale-SHA or absent run is treated
+  as no opinion (`false`), so pipelines never fabricate a stale block.
+- **Dismiss flow.** `POST /api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status`
+  (`?project=<id>` required) takes `{"status": "open"|"resolved"|"dismissed"}`
+  and drives the same lifecycle a `{kind:"status"}` JSONL record would,
+  dispatched as an `ArtifactStatusChanged` event with `actor: "user"`. The
+  reducer updates the finding's status in `run.Findings`, persists an
+  `UpdateArtifactStatus` effect, and emits a `pipeline.artifact.status_changed`
+  observation; the call is synchronous on the engine actor, so the response
+  reflects the new status immediately. `sent_to_agent` is not a settable
+  target from this route (or from a findings-file status record); it is
+  engine-internal.
+
+## Fork-PR trust gate and per-stage diagnostics
+
+`allowForkPRs` (pipeline-level, default false) gates **every** executor
+kind uniformly, agent, command, and builtin alike, through one shared
+helper (`forkGateDecision` / `forkFromContext` in
+`backend/internal/pipeline/executors/forkgate.go`). Fork status is resolved
+from `RunContext.IsFromFork` (the tri-state the trigger bridge populates
+from `PRFacts`): known-true blocks unless `allowForkPRs` is set,
+known-false always runs, and _unknown_ (the SCM plugin could not classify
+it) is fail-safe: blocked by default, same as a known fork. A gated stage
+never starts a subprocess or spawns a session; it completes immediately as
+`neutral` with a `pipeline.stage.skipped_fork_pr` observation explaining
+why.
+
+Every stage's runtime state also now carries a `sessionId` (the AO session
+it ran in, for agent stages; empty for command/builtin, which own no
+session) and a capped list of human-readable `notes` (fork-PR skip reason,
+findings-file truncation, command exit-mode fallback, an unknown status
+fingerprint, and similar one-line annotations), both surfaced per stage in
+the run detail response so a human can see what happened without digging
+through raw observations.
 
 ## UI overview
 
@@ -283,4 +490,6 @@ feature) has two tabs:
   query invalidation, no separate SSE endpoint.
 
 A run detail view is read-only: pipeline, session, loop state, rounds, head
-SHA, per-stage status/verdict/attempt/artifacts, and the run's findings.
+SHA, whether the run blocks merge, per-stage status/verdict/attempt/output/
+session id/notes/artifacts, and the run's findings (each dismissible via the
+artifact-status route described in Merge blocking and dismissing findings).

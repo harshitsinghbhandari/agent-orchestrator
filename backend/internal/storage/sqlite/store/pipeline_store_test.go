@@ -120,7 +120,8 @@ func TestPipelineRunSaveLoadRoundTrip(t *testing.T) {
 		LoopState:  pipeline.LoopRunning,
 		LoopRounds: 2,
 		Stages: map[string]pipeline.StageState{
-			"lint": {StageRunID: "sr-1", Status: pipeline.StageStatusRunning, Attempt: 1, StartedAt: &started},
+			"lint": {StageRunID: "sr-1", Status: pipeline.StageStatusRunning, Attempt: 1, StartedAt: &started,
+				SessionID: "worker-9", Notes: []string{"ran in exit-code fallback mode", "findings truncated"}, Output: "build ok\n"},
 		},
 		Fingerprints: []string{"fp-b", "fp-a"},
 		CreatedAt:    now,
@@ -155,6 +156,12 @@ func TestPipelineRunSaveLoadRoundTrip(t *testing.T) {
 	}
 	if st.StartedAt == nil || !st.StartedAt.Equal(started) {
 		t.Fatalf("stage startedAt = %v, want %v", st.StartedAt, started)
+	}
+	if st.SessionID != "worker-9" || st.Output != "build ok\n" {
+		t.Fatalf("stage session/output not round-tripped: %+v", st)
+	}
+	if len(st.Notes) != 2 || st.Notes[0] != "ran in exit-code fallback mode" || st.Notes[1] != "findings truncated" {
+		t.Fatalf("stage notes not round-tripped: %v", st.Notes)
 	}
 
 	// Re-saving with a terminal transition updates in place.

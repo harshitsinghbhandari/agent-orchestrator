@@ -38,6 +38,11 @@ const (
 type Observation struct {
 	Name string
 	Data map[string]any
+	// Note is an optional human-readable one-line summary of this observation. When
+	// set, the engine appends it to the stage's Notes so the run detail can explain
+	// an otherwise silent decision (fork skip, findings truncated, exit-mode
+	// fallback). Empty for observations that are telemetry-only.
+	Note string
 }
 
 // Outcome is the result of polling a running stage. Status is the only field
@@ -59,6 +64,11 @@ type Outcome struct {
 	// the run detail. Set by the command executor on both success and failure;
 	// empty for executor kinds that produce no subprocess output.
 	Output string
+	// SessionID is the AO session this stage ran in, so the run detail can link
+	// straight to what the stage did. The agent executor sets it (the session it
+	// spawned) on both completed and failed outcomes; empty for command/builtin
+	// stages, which do not own a session.
+	SessionID string
 }
 
 // Handle is an opaque running-stage token returned by Start and threaded back

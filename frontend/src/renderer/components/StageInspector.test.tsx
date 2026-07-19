@@ -226,4 +226,32 @@ describe("StageInspector", () => {
 		renderInspector(agentStage());
 		expect(screen.queryByRole("button", { name: "Delete stage" })).not.toBeInTheDocument();
 	});
+
+	it("toggles policy.blocksMerge", async () => {
+		const { last } = renderInspector(agentStage());
+		const toggle = screen.getByRole("switch", { name: "Blocks merge" });
+		expect(toggle).not.toBeChecked();
+
+		await userEvent.click(toggle);
+		expect(last().policy).toEqual({ blocksMerge: true });
+
+		await userEvent.click(toggle);
+		expect(last().policy).toBeUndefined();
+	});
+
+	it("binds policy.stallWindow and drops the policy object once it is minimal again", async () => {
+		const { last } = renderInspector(agentStage());
+		await userEvent.type(screen.getByRole("spinbutton", { name: "Stall window (rounds)" }), "3");
+		expect(last().policy).toEqual({ stallWindow: 3 });
+
+		await userEvent.clear(screen.getByRole("spinbutton", { name: "Stall window (rounds)" }));
+		expect(last().policy).toBeUndefined();
+	});
+
+	it("keeps both policy fields together when both are set", async () => {
+		const { last } = renderInspector(agentStage());
+		await userEvent.click(screen.getByRole("switch", { name: "Blocks merge" }));
+		await userEvent.type(screen.getByRole("spinbutton", { name: "Stall window (rounds)" }), "2");
+		expect(last().policy).toEqual({ blocksMerge: true, stallWindow: 2 });
+	});
 });

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { cn } from "../lib/utils";
 import { formatTimeCompact } from "../lib/format-time";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
@@ -78,7 +79,8 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 						{run.blocksMerge && <Badge variant="error">Blocks merge</Badge>}
 					</div>
 					<p className="mt-0.5 truncate font-mono text-micro text-passive">
-						{run.runId} · session {run.sessionId || "—"} · {shortSha(run.headSha)} · {run.loopRounds} round
+						{run.runId} · session {run.sessionId ? <SessionLink sessionId={run.sessionId} /> : "—"} ·{" "}
+						{shortSha(run.headSha)} · {run.loopRounds} round
 						{run.loopRounds === 1 ? "" : "s"} · updated {formatTimeCompact(run.updatedAt)}
 					</p>
 				</div>
@@ -160,6 +162,11 @@ function StageRow({ stage }: { stage: PipelineStageView }) {
 			<span className={cn("h-2 w-2 shrink-0 rounded-full", stageStatusDotTone(stage.status))} />
 			<span className="font-mono text-caption font-medium text-foreground">{stage.stageName}</span>
 			<span className="font-mono text-micro text-passive">{stage.status}</span>
+			{stage.sessionId && (
+				<span className="font-mono text-micro text-passive">
+					· session <SessionLink sessionId={stage.sessionId} />
+				</span>
+			)}
 			{stage.verdict && <Badge variant="outline">{stage.verdict}</Badge>}
 			<span className="ml-auto flex items-center gap-2 font-mono text-micro text-passive">
 				{stage.output && (
@@ -179,12 +186,33 @@ function StageRow({ stage }: { stage: PipelineStageView }) {
 				</span>
 			</span>
 			{stage.errorMessage && <p className="w-full font-mono text-micro text-error">{stage.errorMessage}</p>}
+			{stage.notes?.map((note, i) => (
+				<p key={i} className="w-full font-mono text-micro text-warning">
+					{note}
+				</p>
+			))}
 			{stage.output && showOutput && (
 				<pre className="max-h-80 w-full overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-background px-2 py-1.5 font-mono text-micro text-muted-foreground">
 					{stage.output}
 				</pre>
 			)}
 		</div>
+	);
+}
+
+// SessionLink navigates to a session's page (from the routes shell), reused for
+// both the run-level session and any stage that ran an agent (command/builtin
+// stages leave stage.sessionId empty and stay plain text).
+function SessionLink({ sessionId }: { sessionId: string }) {
+	const navigate = useNavigate();
+	return (
+		<button
+			type="button"
+			onClick={() => void navigate({ to: "/sessions/$sessionId", params: { sessionId } })}
+			className="rounded px-0.5 text-passive underline-offset-2 hover:text-foreground hover:underline"
+		>
+			{sessionId}
+		</button>
 	);
 }
 

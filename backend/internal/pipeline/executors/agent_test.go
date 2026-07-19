@@ -225,7 +225,8 @@ func TestAgent_SpawnSetsBranchFromPRContext(t *testing.T) {
 	m := &mockSpawner{workspace: t.TempDir(), activity: "active"}
 	exec := NewAgentExecutor(m)
 	in := agentStartInput(m.workspace)
-	in.Context = pipeline.RunContext{SourceBranch: "feature", PRNumber: 3}
+	sameRepo := false
+	in.Context = pipeline.RunContext{SourceBranch: "feature", PRNumber: 3, IsFromFork: &sameRepo}
 	if _, err := exec.Start(context.Background(), in); err != nil {
 		t.Fatalf("start: %v", err)
 	}

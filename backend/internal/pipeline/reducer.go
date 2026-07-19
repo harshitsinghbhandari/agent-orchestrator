@@ -273,6 +273,10 @@ func reduceStageCompleted(state EngineState, event StageCompleted) (EngineState,
 	updatedStage.CompletedAt = &completed
 	updatedStage.Verdict = event.Verdict
 	updatedStage.Output = event.Output
+	if event.SessionID != "" {
+		updatedStage.SessionID = event.SessionID
+	}
+	updatedStage.Notes = capStageNotes(append(append([]string{}, stage.Notes...), event.Notes...))
 	updatedStage.Artifacts = append(append([]ArtifactID{}, stage.Artifacts...), newIDs...)
 
 	return finalizeStageCompletion(state, run, event.StageName, updatedStage, newArtifacts, event.StatusChanges, now)
@@ -292,7 +296,7 @@ func reduceStageFailed(state EngineState, event StageFailed) (EngineState, []Eff
 		return invalidTransition(state, "STAGE_FAILED requires running|pending; got "+string(stage.Status)+" for "+event.StageName)
 	}
 
-	return failStage(state, run, event.StageName, event.ErrorMessage, event.Output, now, false)
+	return failStage(state, run, event.StageName, event.ErrorMessage, event.Output, event.SessionID, event.Notes, now, false)
 }
 
 // failStage applies a stage failure with automatic retry. When the stage still
@@ -302,7 +306,7 @@ func reduceStageFailed(state EngineState, event StageFailed) (EngineState, []Eff
 // otherwise it finalizes the stage as failed. cancel emits a CANCEL_STAGE effect
 // first: the TICK timeout path fails a stage whose executor handle is still
 // live, so the engine must tear it down.
-func failStage(state EngineState, run RunState, stageName, errorMessage, output string, now time.Time, cancel bool) (EngineState, []Effect) {
+func failStage(state EngineState, run RunState, stageName, errorMessage, output, sessionID string, notes []string, now time.Time, cancel bool) (EngineState, []Effect) {
 	stage := run.Stages[stageName]
 
 	var preceding []Effect
@@ -324,6 +328,10 @@ func failStage(state EngineState, run RunState, stageName, errorMessage, output 
 	updatedStage.CompletedAt = &completed
 	updatedStage.ErrorMessage = errorMessage
 	updatedStage.Output = output
+	if sessionID != "" {
+		updatedStage.SessionID = sessionID
+	}
+	updatedStage.Notes = capStageNotes(append(append([]string{}, stage.Notes...), notes...))
 	updatedStage.Deadline = nil
 
 	return finalizeStageCompletion(state, run, stageName, updatedStage, nil, nil, now, preceding...)
@@ -397,7 +405,7 @@ func reduceTick(state EngineState, event Tick) (EngineState, []Effect) {
 		run := state.Runs[runID]
 		message := timeoutMessage(run.Stages[stageName])
 		var step []Effect
-		state, step = failStage(state, run, stageName, message, "", now, true)
+		state, step = failStage(state, run, stageName, message, "", "", nil, now, true)
 		effects = append(effects, step...)
 	}
 	return state, effects
@@ -548,8 +556,17 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 	// finding this same stage just emitted.
 	if len(statusChanges) > 0 {
 		var statusEffects []Effect
-		updatedRun, statusEffects = applyFindingStatusChanges(updatedRun, statusChanges)
+		var statusNotes []string
+		updatedRun, statusEffects, statusNotes = applyFindingStatusChanges(updatedRun, statusChanges)
 		effects = append(effects, statusEffects...)
+		// Surface unknown-fingerprint status records as stage notes: a verify stage
+		// referencing a fingerprint no finding in this run carries is otherwise a
+		// silent no-op. Append onto the stage the record belongs to.
+		if len(statusNotes) > 0 {
+			st := updatedRun.Stages[stageName]
+			st.Notes = capStageNotes(append(append([]string{}, st.Notes...), statusNotes...))
+			updatedRun = patchRun(updatedRun, map[string]StageState{stageName: st}, now)
+		}
 	}
 
 	effects = append(effects, EmitObservation{
@@ -599,9 +616,10 @@ func finalizeStageCompletion(state EngineState, run RunState, stageName string, 
 // fingerprint that matches no finding is tolerated: it yields a
 // pipeline.status.unknown_fingerprint observation, never a failure. Pure and
 // copy-on-write: run.Findings is not mutated in place.
-func applyFindingStatusChanges(run RunState, changes []FindingStatusChange) (RunState, []Effect) {
+func applyFindingStatusChanges(run RunState, changes []FindingStatusChange) (RunState, []Effect, []string) {
 	findings := append([]Artifact{}, run.Findings...)
 	var effects []Effect
+	var notes []string
 	for _, ch := range changes {
 		matched := false
 		for i := range findings {
@@ -625,10 +643,29 @@ func applyFindingStatusChanges(run RunState, changes []FindingStatusChange) (Run
 					"status":      ch.Status,
 				},
 			})
+			notes = append(notes, fmt.Sprintf("status record (%s) targeted fingerprint %s, which matches no finding in this run; ignored", ch.Status, shortFingerprint(ch.Fingerprint)))
 		}
 	}
 	run.Findings = findings
-	return run, effects
+	return run, effects, notes
+}
+
+// shortFingerprint trims a finding fingerprint to a readable prefix for a note.
+func shortFingerprint(fp string) string {
+	if len(fp) > 12 {
+		return fp[:12] + "..."
+	}
+	return fp
+}
+
+// capStageNotes bounds a stage's note list to MaxStageNotes, keeping the most
+// recent lines (drop oldest first) so a long-running loop's stage cannot grow it
+// without limit.
+func capStageNotes(notes []string) []string {
+	if len(notes) <= MaxStageNotes {
+		return notes
+	}
+	return notes[len(notes)-MaxStageNotes:]
 }
 
 func reduceNewSHADetected(state EngineState, event NewSHADetected) (EngineState, []Effect) {

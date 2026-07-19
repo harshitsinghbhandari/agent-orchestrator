@@ -537,13 +537,14 @@ func (e *Engine) pollInflight() {
 			continue
 		}
 		delete(e.inflight, k)
+		notes := observationNotes(outcome.Observations)
 		if outcome.Status == executors.OutcomeCompleted {
 			// StatusChanges ride the event so the reducer applies them (to
 			// run.Findings and the store) before the exit decision, letting a
 			// last-stage resolve/reopen change whether the run is done.
-			e.reduceAndExecute(pipeline.StageCompleted{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), Verdict: outcome.Verdict, Artifacts: outcome.Artifacts, StatusChanges: outcome.StatusChanges, Output: outcome.Output})
+			e.reduceAndExecute(pipeline.StageCompleted{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), Verdict: outcome.Verdict, Artifacts: outcome.Artifacts, StatusChanges: outcome.StatusChanges, Output: outcome.Output, SessionID: outcome.SessionID, Notes: notes})
 		} else {
-			e.reduceAndExecute(pipeline.StageFailed{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), ErrorMessage: outcome.ErrorMessage, Output: outcome.Output})
+			e.reduceAndExecute(pipeline.StageFailed{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), ErrorMessage: outcome.ErrorMessage, Output: outcome.Output, SessionID: outcome.SessionID, Notes: notes})
 		}
 		e.routeObservations(outcome.Observations)
 	}
@@ -602,6 +603,20 @@ func (e *Engine) routeObservations(obs []executors.Observation) {
 	for _, o := range obs {
 		e.observe(o.Name, o.Data)
 	}
+}
+
+// observationNotes extracts the human-readable one-line notes an outcome's
+// observations carry, in order, so the reducer can persist them onto the stage
+// state for the run detail. Observations with no Note (telemetry-only) are
+// skipped; the reducer caps the total.
+func observationNotes(obs []executors.Observation) []string {
+	notes := make([]string, 0, len(obs))
+	for _, o := range obs {
+		if o.Note != "" {
+			notes = append(notes, o.Note)
+		}
+	}
+	return notes
 }
 
 // observe forwards an observation to the sink, enriching it with the project id
