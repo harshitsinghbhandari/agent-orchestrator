@@ -196,9 +196,12 @@ func TestCommand_ExitCodeSemantics(t *testing.T) {
 	}{
 		{"nonzero exit fails", CommandResult{ExitCode: 1, Stderr: "tsc blew up"}, OutcomeFailed, "", "exited with code 1"},
 		{"signal fails", CommandResult{Signal: "killed"}, OutcomeFailed, "", "signal killed"},
-		{"empty stdout fails", CommandResult{ExitCode: 0, Stdout: "  "}, OutcomeFailed, "", "no JSON on stdout"},
-		{"bad json fails", CommandResult{ExitCode: 0, Stdout: "{not json"}, OutcomeFailed, "", "unparseable JSON"},
-		{"capped stdout fails", CommandResult{ExitCode: 0, Stdout: "{}", StdoutCapped: true}, OutcomeFailed, "", "exceeded"},
+		// Exit-code fallback: bare commands with no JSON envelope succeed on exit 0.
+		{"empty stdout + exit 0 -> pass", CommandResult{ExitCode: 0, Stdout: "  "}, OutcomeCompleted, pipeline.VerdictPass, ""},
+		{"non-envelope stdout + exit 0 -> pass", CommandResult{ExitCode: 0, Stdout: "All checks passed."}, OutcomeCompleted, pipeline.VerdictPass, ""},
+		{"broken json + exit 0 -> pass", CommandResult{ExitCode: 0, Stdout: "{not json"}, OutcomeCompleted, pipeline.VerdictPass, ""},
+		{"non-envelope object + exit 0 -> pass", CommandResult{ExitCode: 0, Stdout: "{}"}, OutcomeCompleted, pipeline.VerdictPass, ""},
+		{"non-envelope + exit 2 -> fail", CommandResult{ExitCode: 2, Stdout: "3 problems", Stderr: "lint failed"}, OutcomeFailed, "", "exited with code 2"},
 		{"bad outcome enum fails", CommandResult{ExitCode: 0, Stdout: `{"outcome":"weird"}`}, OutcomeFailed, "", "failed validation"},
 		{"outcome=failed fails with reason", CommandResult{ExitCode: 0, Stdout: `{"outcome":"failed","reason":"3 type errors"}`}, OutcomeFailed, "", "3 type errors"},
 		{"succeeded -> pass", CommandResult{ExitCode: 0, Stdout: `{"outcome":"succeeded"}`}, OutcomeCompleted, pipeline.VerdictPass, ""},

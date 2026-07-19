@@ -3,9 +3,12 @@ package executors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
 )
@@ -13,6 +16,14 @@ import (
 // commandOutputCapBytes bounds captured stdout/stderr (1 MiB) so a runaway shim
 // cannot OOM the engine.
 const commandOutputCapBytes = 1 << 20
+
+// stageOutputTailCapBytes bounds the combined stdout+stderr tail persisted onto
+// the stage state (64 KiB) so the run detail can show what ran without the state
+// growing unbounded.
+const stageOutputTailCapBytes = 64 << 10
+
+// stderrTailCapBytes bounds the stderr snippet appended to a failure reason.
+const stderrTailCapBytes = 500
 
 // ForkStatus classifies the linked session's PR provenance for the fork gate.
 // The nil-safe Unknown value is the fail-safe default: a PR whose fork status
@@ -88,6 +99,21 @@ type commandHandle struct {
 	stageIdentity
 	child CommandProcess
 	final *Outcome
+	// workspaceDir is the stage workspace root; a .ao/pipeline-findings.jsonl
+	// dropped here is harvested after the process exits.
+	workspaceDir string
+	// timeoutCtx is non-nil only when the stage set a timeout; its
+	// DeadlineExceeded error distinguishes a timeout kill from a natural exit.
+	timeoutCtx    context.Context
+	cancelTimeout context.CancelFunc
+	timeoutMs     int64
+}
+
+// releaseTimeout frees the timeout context, if any. Idempotent.
+func (h *commandHandle) releaseTimeout() {
+	if h.cancelTimeout != nil {
+		h.cancelTimeout()
+	}
 }
 
 // CommandExecutor shells out a stage's command in the linked session's
@@ -161,7 +187,20 @@ func (e *CommandExecutor) Start(ctx context.Context, in StartInput) (Handle, err
 			ErrorMessage: fmt.Sprintf("command stage %q: %v", in.Stage.Name, err)}), nil
 	}
 
-	child, err := e.runner.Start(ctx, CommandSpec{
+	// Enforce Stage.TimeoutMs by deriving a deadline ctx: on expiry the runner's
+	// Cancel hook fires the SIGTERM->SIGKILL process-tree kill, the child exits,
+	// and Poll maps the DeadlineExceeded into a timeout failure.
+	runCtx := ctx
+	var timeoutCtx context.Context
+	var cancelTimeout context.CancelFunc
+	var timeoutMs int64
+	if in.Stage.TimeoutMs != nil && *in.Stage.TimeoutMs > 0 {
+		timeoutMs = *in.Stage.TimeoutMs
+		runCtx, cancelTimeout = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+		timeoutCtx = runCtx
+	}
+
+	child, err := e.runner.Start(runCtx, CommandSpec{
 		Command:   spec.Command,
 		Args:      spec.Args,
 		Env:       pipelineEnv(in, spec.Env),
@@ -169,11 +208,21 @@ func (e *CommandExecutor) Start(ctx context.Context, in StartInput) (Handle, err
 		OutputCap: commandOutputCapBytes,
 	})
 	if err != nil {
+		if cancelTimeout != nil {
+			cancelTimeout()
+		}
 		return shortCircuit(id, Outcome{Status: OutcomeFailed,
 			ErrorMessage: fmt.Sprintf("failed to spawn command %q: %v", spec.Command, err)}), nil
 	}
 
-	return &commandHandle{stageIdentity: id, child: child}, nil
+	return &commandHandle{
+		stageIdentity: id,
+		child:         child,
+		workspaceDir:  session.WorkspacePath,
+		timeoutCtx:    timeoutCtx,
+		cancelTimeout: cancelTimeout,
+		timeoutMs:     timeoutMs,
+	}, nil
 }
 
 // Poll returns OutcomeRunning until the child exits, then interprets its exit
@@ -189,8 +238,16 @@ func (e *CommandExecutor) Poll(_ context.Context, h Handle) (Outcome, error) {
 	}
 	select {
 	case <-handle.child.Done():
-		out := interpretExit(handle.stageName, handle.child.Result())
+		timedOut := handle.timeoutCtx != nil && errors.Is(handle.timeoutCtx.Err(), context.DeadlineExceeded)
+		out := interpretExit(commandExit{
+			stageName:    handle.stageName,
+			res:          handle.child.Result(),
+			workspaceDir: handle.workspaceDir,
+			timedOut:     timedOut,
+			timeoutMs:    handle.timeoutMs,
+		})
 		handle.final = &out
+		handle.releaseTimeout()
 		return out, nil
 	default:
 		return Outcome{Status: OutcomeRunning}, nil
@@ -205,9 +262,11 @@ func (e *CommandExecutor) Cancel(_ context.Context, h Handle) error {
 		return fmt.Errorf("command executor: unexpected handle type %T", h)
 	}
 	if handle.child == nil || handle.final != nil {
+		handle.releaseTimeout()
 		return nil
 	}
 	handle.child.Kill()
+	handle.releaseTimeout()
 	return nil
 }
 
@@ -278,40 +337,77 @@ type commandTaskResult struct {
 	Reason    string                   `json:"reason,omitempty"`
 }
 
-// interpretExit maps a finished subprocess to a stage outcome per the
-// JSON-over-stdout contract:
+// commandExit bundles everything interpretExit needs to map a finished (or
+// timed-out) subprocess to a stage outcome.
+type commandExit struct {
+	stageName string
+	res       CommandResult
+	// workspaceDir is the stage workspace root; when non-empty a findings file
+	// dropped at .ao/pipeline-findings.jsonl is harvested. Empty disables it.
+	workspaceDir string
+	// timedOut reports that the stage's timeout fired and the process was killed.
+	timedOut bool
+	// timeoutMs is the configured timeout, surfaced in the timeout reason.
+	timeoutMs int64
+}
+
+// interpretExit maps a finished subprocess to a stage outcome. It has two modes:
 //
-//   - non-zero exit / signal / spawn error -> failed (the shim itself crashed;
-//     a partial stdout dump is worse than a clean failure label).
-//   - exit 0 with capped/empty/unparseable/invalid stdout -> failed.
-//   - exit 0 with outcome=failed -> failed (with the shim's reason).
-//   - otherwise -> completed, verdict from the result (or derived from outcome),
-//     with a self-skip observation for outcome=skipped.
-func interpretExit(stageName string, res CommandResult) Outcome {
+//   - Envelope mode (stdout is a JSON object carrying an "outcome" field): the
+//     historical JSON-over-stdout contract, unchanged.
+//   - Exit-code fallback (stdout is not that envelope): exit 0 -> completed/pass,
+//     nonzero -> failed with a reason built from the exit code plus a stderr
+//     tail. A fallback outcome carries a command_stage_exit_mode observation.
+//
+// In BOTH modes a completed stage harvests a .ao/pipeline-findings.jsonl drop
+// (same helper the agent executor uses); a malformed findings file fails the
+// stage. The combined stdout+stderr tail is captured on every terminal outcome.
+func interpretExit(ex commandExit) Outcome {
+	out := interpretExitStatus(ex)
+	out.Output = combinedOutputTail(ex.res.Stdout, ex.res.Stderr)
+	if out.Status != OutcomeCompleted {
+		return out
+	}
+	return harvestCommandFindings(ex, out)
+}
+
+// interpretExitStatus resolves the terminal status/verdict before findings
+// harvest, dispatching between envelope and exit-code-fallback modes.
+func interpretExitStatus(ex commandExit) Outcome {
+	stageName, res := ex.stageName, ex.res
 	if res.Err != nil {
 		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q spawn error: %v", stageName, res.Err)}
 	}
-	if res.Signal != "" || res.ExitCode != 0 {
-		label := fmt.Sprintf("code %d", res.ExitCode)
-		if res.Signal != "" {
-			label = "signal " + res.Signal
-		}
-		suffix := ""
-		if preview := strings.TrimSpace(res.Stderr); preview != "" {
-			if len(preview) > 500 {
-				preview = preview[:500]
-			}
-			suffix = "; stderr: " + preview
-		}
-		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q exited with %s%s", stageName, label, suffix)}
+	if ex.timedOut {
+		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q timed out after %dms%s", stageName, ex.timeoutMs, stderrSuffix(res.Stderr))}
 	}
-	if res.StdoutCapped {
-		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q stdout exceeded %d bytes", stageName, commandOutputCapBytes)}
+	if res.Signal != "" {
+		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q killed by signal %s%s", stageName, res.Signal, stderrSuffix(res.Stderr))}
 	}
 
 	trimmed := strings.TrimSpace(res.Stdout)
-	if trimmed == "" {
-		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q produced no JSON on stdout", stageName)}
+	if looksLikeEnvelope(trimmed) {
+		return interpretEnvelope(stageName, res, trimmed)
+	}
+
+	// Exit-code fallback: no JSON envelope, so the raw exit code is the verdict.
+	obs := Observation{Name: "command_stage_exit_mode", Data: map[string]any{
+		"stage":    stageName,
+		"mode":     "exit-code",
+		"exitCode": res.ExitCode,
+	}}
+	if res.ExitCode != 0 {
+		return Outcome{Status: OutcomeFailed, Observations: []Observation{obs},
+			ErrorMessage: fmt.Sprintf("command stage %q exited with code %d%s", stageName, res.ExitCode, stderrSuffix(res.Stderr))}
+	}
+	return Outcome{Status: OutcomeCompleted, Verdict: pipeline.VerdictPass, Observations: []Observation{obs}}
+}
+
+// interpretEnvelope applies the historical JSON-over-stdout contract to a stdout
+// already known to be an envelope. A nonzero exit still fails: the shim crashed.
+func interpretEnvelope(stageName string, res CommandResult, trimmed string) Outcome {
+	if res.ExitCode != 0 {
+		return Outcome{Status: OutcomeFailed, ErrorMessage: fmt.Sprintf("command stage %q exited with code %d%s", stageName, res.ExitCode, stderrSuffix(res.Stderr))}
 	}
 
 	var result commandTaskResult
@@ -342,6 +438,87 @@ func interpretExit(stageName string, res CommandResult) Outcome {
 		out.Observations = []Observation{{Name: "command_stage_self_skipped", Data: data}}
 	}
 	return out
+}
+
+// harvestCommandFindings merges a command stage's optional findings-file drop
+// into an already-completed outcome. A malformed file flips the stage to failed
+// (matching agent semantics); a truncated file adds a truncation observation.
+func harvestCommandFindings(ex commandExit, out Outcome) Outcome {
+	if ex.workspaceDir == "" {
+		return out
+	}
+	findingsPath := filepath.Join(ex.workspaceDir, stageFindingsRelativePath)
+	if !fileExists(findingsPath) {
+		return out
+	}
+
+	result, err := parseFindingsFile(findingsPath)
+	if err != nil {
+		return Outcome{Status: OutcomeFailed, Output: out.Output,
+			ErrorMessage: fmt.Sprintf("command stage %q produced unparseable findings at %s: %v", ex.stageName, findingsPath, err)}
+	}
+
+	out.Artifacts = append(out.Artifacts, result.artifacts...)
+	if result.truncated {
+		out.Observations = append(out.Observations, Observation{
+			Name: "pipeline.findings.truncated",
+			Data: map[string]any{
+				"stageName":    ex.stageName,
+				"findingsPath": findingsPath,
+				"capBytes":     findingsFileSizeCapBytes,
+				"bytesRead":    result.bytesRead,
+			},
+		})
+	}
+	return out
+}
+
+// looksLikeEnvelope reports whether trimmed stdout is a JSON object carrying an
+// "outcome" field, i.e. an attempt at the command-task envelope. Anything else
+// (plain text, a JSON array, an object without "outcome") routes to the
+// exit-code fallback.
+func looksLikeEnvelope(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
+		return false
+	}
+	_, ok := probe["outcome"]
+	return ok
+}
+
+// stderrSuffix returns a "; stderr: <tail>" snippet for a failure reason, or ""
+// when stderr is blank. The tail (last stderrTailCapBytes) is kept because the
+// end of a build log is usually where the error is.
+func stderrSuffix(stderr string) string {
+	preview := strings.TrimSpace(stderr)
+	if preview == "" {
+		return ""
+	}
+	if len(preview) > stderrTailCapBytes {
+		preview = preview[len(preview)-stderrTailCapBytes:]
+	}
+	return "; stderr: " + preview
+}
+
+// combinedOutputTail joins stdout and stderr and keeps the last
+// stageOutputTailCapBytes for the run detail. Captured on success and failure.
+func combinedOutputTail(stdout, stderr string) string {
+	var combined string
+	switch {
+	case stdout != "" && stderr != "":
+		combined = stdout + "\n" + stderr
+	case stdout != "":
+		combined = stdout
+	default:
+		combined = stderr
+	}
+	if len(combined) > stageOutputTailCapBytes {
+		combined = combined[len(combined)-stageOutputTailCapBytes:]
+	}
+	return combined
 }
 
 func defaultVerdictFor(outcome string) pipeline.Verdict {

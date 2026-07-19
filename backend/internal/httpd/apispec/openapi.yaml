@@ -3180,6 +3180,8 @@ components:
           - string
         errorMessage:
           type: string
+        output:
+          type: string
         stageName:
           type: string
         stageRunId:

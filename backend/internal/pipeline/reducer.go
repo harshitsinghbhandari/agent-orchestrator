@@ -229,6 +229,7 @@ func reduceStageCompleted(state EngineState, event StageCompleted) (EngineState,
 	updatedStage.Status = StageStatusSucceeded
 	updatedStage.CompletedAt = &completed
 	updatedStage.Verdict = event.Verdict
+	updatedStage.Output = event.Output
 	updatedStage.Artifacts = append(append([]ArtifactID{}, stage.Artifacts...), newIDs...)
 
 	return finalizeStageCompletion(state, run, event.StageName, updatedStage, newArtifacts, now)
@@ -253,6 +254,7 @@ func reduceStageFailed(state EngineState, event StageFailed) (EngineState, []Eff
 	updatedStage.Status = StageStatusFailed
 	updatedStage.CompletedAt = &completed
 	updatedStage.ErrorMessage = event.ErrorMessage
+	updatedStage.Output = event.Output
 
 	return finalizeStageCompletion(state, run, event.StageName, updatedStage, nil, now)
 }

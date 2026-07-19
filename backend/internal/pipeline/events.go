@@ -83,6 +83,9 @@ type StageCompleted struct {
 	StageName string
 	Verdict   Verdict
 	Artifacts []ArtifactInput
+	// Output is a capped tail of the stage's combined stdout+stderr, persisted
+	// onto the stage state for the run detail.
+	Output string
 }
 
 // Type implements Event.
@@ -96,6 +99,9 @@ type StageFailed struct {
 	RunID        RunID
 	StageName    string
 	ErrorMessage string
+	// Output is a capped tail of the stage's combined stdout+stderr, persisted
+	// onto the stage state for the run detail.
+	Output string
 }
 
 // Type implements Event.

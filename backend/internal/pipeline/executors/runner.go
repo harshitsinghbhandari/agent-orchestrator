@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // LogSink receives streamed subprocess output for logging. stream is "stdout"
@@ -57,6 +58,15 @@ func (r *osRunner) Start(ctx context.Context, spec CommandSpec) (CommandProcess,
 	cmd.Dir = spec.Dir
 	cmd.Env = mergeEnv(spec.Env)
 	configureProcAttr(cmd)
+	// On ctx expiry (a stage timeout) tear down the whole process group via the
+	// same SIGTERM->SIGKILL path Cancel uses, not just the direct child, so a
+	// shell's descendants die too. WaitDelay bounds the post-signal wait so a
+	// lingering grandchild holding a pipe cannot hang cmd.Wait forever.
+	cmd.Cancel = func() error {
+		killProcessTree(cmd)
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
 
 	capBytes := spec.OutputCap
 	if capBytes <= 0 {
