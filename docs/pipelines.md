@@ -281,7 +281,7 @@ Each JSONL line is one of three kinds:
   be `open`, `resolved`, or `dismissed` (`sent_to_agent` is engine-internal
   and never authored here). Both fields are required; a bad status fails
   the harvest. A fingerprint that matches no finding in the run is
-  *tolerated*, not rejected: it emits a `pipeline.status.unknown_fingerprint`
+  _tolerated_, not rejected: it emits a `pipeline.status.unknown_fingerprint`
   observation and a stage note rather than failing the stage. Status
   changes are applied before the run's exit decision, so a verify stage
   resolving a finding can flip `no_open_findings` in the same round.
@@ -297,13 +297,13 @@ process wrote to stdout:
 - **Envelope mode.** If trimmed stdout parses as a JSON object with an
   `outcome` field, it is treated as the historical command-task envelope:
   `{"outcome": "succeeded"|"failed"|"neutral"|"skipped", "verdict"?:
-  "pass"|"fail"|"neutral", "artifacts"?: [...], "reason"?: "..."}`. A nonzero
+"pass"|"fail"|"neutral", "artifacts"?: [...], "reason"?: "..."}`. A nonzero
   exit code still fails the stage even in envelope mode (the shim crashed
   before or after writing valid JSON). `outcome: "failed"` fails the stage,
   using `reason` as the error message when present. Otherwise the stage
   completes; `verdict` is used if set, else defaulted from `outcome`
   (`succeeded` -> `pass`, `neutral`/`skipped` -> `neutral`). `outcome:
-  "skipped"` also adds a `command_stage_self_skipped` observation.
+"skipped"` also adds a `command_stage_self_skipped` observation.
 - **Exit-code fallback.** If stdout is not that envelope (empty, plain text,
   a JSON array, or an object without `outcome`), the raw process exit code
   is the verdict: exit 0 completes with `verdict: pass`; nonzero fails with
@@ -338,26 +338,26 @@ mode) and, when the run has a PR, a "## Pull request" block (see below).
 When a run is backed by a PR, its identity flows to every stage:
 
 - **Agent stages** spawn on the PR's source branch (`Branch:
-  in.Context.SourceBranch` in the spawn request), so a review/code session
+in.Context.SourceBranch` in the spawn request), so a review/code session
   sees the PR diff and can push directly to it; a collision with an
   already-checked-out branch falls back to a stage-run-id-suffixed branch
   name. The prompt's "## Pull request" block renders whichever of these
   fields the run context carries: `Number: #<n>`, `URL: <url>`, `Branch:
-  <source> -> <target>`, `Head SHA: <sha>`. A manual run with no PR omits
+<source> -> <target>`, `Head SHA: <sha>`. A manual run with no PR omits
   the block entirely.
 - **Command stages** get the same facts as environment variables
   (`pipelineEnv`), always alongside `AO_PIPELINE_RUN_ID` and
   `AO_PIPELINE_STAGE`:
 
-  | Variable | Set when |
-  |---|---|
-  | `AO_PIPELINE_RUN_ID` | always |
-  | `AO_PIPELINE_STAGE` | always |
-  | `AO_PR_NUMBER` | `PRNumber > 0` |
-  | `AO_PR_URL` | `PRURL` set |
-  | `AO_PR_BRANCH` | `SourceBranch` set |
-  | `AO_PR_BASE_BRANCH` | `TargetBranch` set |
-  | `AO_PR_HEAD_SHA` | `HeadSHA` set |
+  | Variable             | Set when           |
+  | -------------------- | ------------------ |
+  | `AO_PIPELINE_RUN_ID` | always             |
+  | `AO_PIPELINE_STAGE`  | always             |
+  | `AO_PR_NUMBER`       | `PRNumber > 0`     |
+  | `AO_PR_URL`          | `PRURL` set        |
+  | `AO_PR_BRANCH`       | `SourceBranch` set |
+  | `AO_PR_BASE_BRANCH`  | `TargetBranch` set |
+  | `AO_PR_HEAD_SHA`     | `HeadSHA` set      |
 
   Unset PR fields are omitted entirely rather than passed as empty strings.
   A stage's own `executor.env` is applied last and wins on any key
@@ -383,7 +383,7 @@ sequence) is keyed by `LoopKeyFor`, not just session+pipeline name:
 
 Within one PR's loop, the reducer also dedups by exact head SHA: a
 non-manual trigger (`pr.opened`/`pr.updated`/`pr.merge_ready`/`pr.merged`)
-whose SHA already produced a *settled* run (`done` or `stalled`; not
+whose SHA already produced a _settled_ run (`done` or `stalled`; not
 `outdated`/`cancelled`/`config_change`) is a no-op, emitting a
 `pipeline.run.trigger_deduped` observation instead of spawning a duplicate.
 This absorbs CI flapping and fact-only `pr.updated` churn on an unchanged
@@ -401,12 +401,12 @@ a run cut short by outdated/cancel/config-change is not a round.
   deadline has passed, so a wedged executor cannot leave a run running
   forever.
 - **Retries.** `Stage.Retries` (default nil, meaning no automatic retry) is
-  a budget of *additional* attempts: `retries: 2` allows up to 3 attempts
+  a budget of _additional_ attempts: `retries: 2` allows up to 3 attempts
   total. A failed stage within budget is silently re-pended with a fresh
   `stageRunId` and `attempt+1` and re-enters the scheduler; a
   `pipeline.stage.retried` observation is emitted either way. Retries apply
   uniformly to timeouts, non-zero exits, and executor errors.
-- **`maxLoopRounds`.** `Stage.MaxLoopRounds` caps how many *loop rounds* (not
+- **`maxLoopRounds`.** `Stage.MaxLoopRounds` caps how many _loop rounds_ (not
   attempts) a stage may run for across a PR's whole loop; once the run's
   `loopRounds` exceeds the cap the stage is skipped instead of started, with
   a `pipeline.stage.skipped_max_rounds` observation. It is per-stage, not
@@ -415,7 +415,7 @@ a run cut short by outdated/cancel/config-change is not a round.
   run's exit is decided by `decideRunExit`: with no `exitPredicates`
   configured, any failed stage means `stalled`/`stage_failure`, otherwise
   `done`/`completed` (the v0 default). With `exitPredicates.done` configured,
-  the run is *never* reported `done`/`completed` unless that predicate is
+  the run is _never_ reported `done`/`completed` unless that predicate is
   actually true. If `done` is configured but evaluates false (and `stalled`,
   if any, does not fire), the run terminates as `stalled` with the distinct
   reason `done_predicate_unmet` (`pipeline.TerminationDonePredicateUnmet`) so
@@ -436,7 +436,7 @@ a run cut short by outdated/cancel/config-change is not a round.
   or ended by a config change never block, since they were replaced rather
   than judged. A true result emits a `pipeline.run.blocks_merge` observation.
   The lifecycle merge-readiness check (`Service.PRBlocksMerge`, backing the
-  SCM integration's merge gate) looks up the most recent *settled* run for
+  SCM integration's merge gate) looks up the most recent _settled_ run for
   the PR's URL and only honors its `BlocksMerge` when that run's `HeadSHA`
   still matches the PR's current head; a stale-SHA or absent run is treated
   as no opinion (`false`), so pipelines never fabricate a stale block.
@@ -459,7 +459,7 @@ helper (`forkGateDecision` / `forkFromContext` in
 `backend/internal/pipeline/executors/forkgate.go`). Fork status is resolved
 from `RunContext.IsFromFork` (the tri-state the trigger bridge populates
 from `PRFacts`): known-true blocks unless `allowForkPRs` is set,
-known-false always runs, and *unknown* (the SCM plugin could not classify
+known-false always runs, and _unknown_ (the SCM plugin could not classify
 it) is fail-safe: blocked by default, same as a known fork. A gated stage
 never starts a subprocess or spawns a session; it completes immediately as
 `neutral` with a `pipeline.stage.skipped_fork_pr` observation explaining
