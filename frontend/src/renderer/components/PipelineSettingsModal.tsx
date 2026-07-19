@@ -108,9 +108,7 @@ export function PipelineSettingsModal({ open, value, onCancel, onDone }: Pipelin
 									aria-label="Max concurrent"
 									className="h-full flex-1 border-0 bg-transparent px-2 shadow-none focus-visible:ring-0"
 									value={maxConcurrent ?? ""}
-									onChange={(e) =>
-										setMaxConcurrent(e.target.value === "" ? undefined : Number(e.target.value))
-									}
+									onChange={(e) => setMaxConcurrent(e.target.value === "" ? undefined : Number(e.target.value))}
 								/>
 								<Button
 									variant="ghost"
@@ -157,9 +155,7 @@ export function PipelineSettingsModal({ open, value, onCancel, onDone }: Pipelin
 										</TabsTrigger>
 									))}
 								</TabsList>
-								<span className="text-caption text-passive">
-									{EXIT_TABS.find((t) => t.key === tab)?.caption}
-								</span>
+								<span className="text-caption text-passive">{EXIT_TABS.find((t) => t.key === tab)?.caption}</span>
 							</div>
 							{EXIT_TABS.map(({ key }) => (
 								<TabsContent key={key} value={key} className="mt-2 flex flex-col gap-3">
@@ -180,7 +176,5 @@ export function PipelineSettingsModal({ open, value, onCancel, onDone }: Pipelin
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
-	return (
-		<span className="font-mono text-micro font-medium uppercase tracking-wide text-passive">{children}</span>
-	);
+	return <span className="font-mono text-micro font-medium uppercase tracking-wide text-passive">{children}</span>;
 }
