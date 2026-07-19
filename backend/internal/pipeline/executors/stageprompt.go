@@ -15,7 +15,7 @@ import (
 //
 // The findings path is documented relative to the workspace root so the agent
 // does not need the absolute path.
-func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int) string {
+func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int, prCtx pipeline.RunContext) string {
 	var mode pipeline.TaskMode
 	if stage.Executor.Kind == pipeline.ExecutorAgent {
 		mode = stage.Executor.Mode
@@ -33,6 +33,8 @@ func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int)
 		lines = append(lines, "This stage's findings will block merge until they are resolved.")
 	}
 
+	lines = append(lines, prBlock(prCtx)...)
+
 	if stage.Task.Prompt != "" {
 		lines = append(lines, "", "## Task", stage.Task.Prompt)
 	}
@@ -44,6 +46,30 @@ func buildStagePrompt(pipelineName string, stage pipeline.Stage, loopRound *int)
 	lines = append(lines, "", "## Reporting Findings", formatFindingsInstructions(mode))
 
 	return strings.Join(lines, "\n")
+}
+
+// prBlock renders a "## Pull request" section describing the run's PR when the
+// context carries one, so the agent knows it is working on a specific PR branch.
+// It returns nil for runs with no PR (e.g. manual triggers), leaving the prompt
+// unchanged. Only the fields that are set are rendered.
+func prBlock(prCtx pipeline.RunContext) []string {
+	if prCtx.PRNumber == 0 && prCtx.PRURL == "" {
+		return nil
+	}
+	lines := []string{"", "## Pull request"}
+	if prCtx.PRNumber > 0 {
+		lines = append(lines, "Number: #"+strconv.Itoa(prCtx.PRNumber))
+	}
+	if prCtx.PRURL != "" {
+		lines = append(lines, "URL: "+prCtx.PRURL)
+	}
+	if prCtx.SourceBranch != "" || prCtx.TargetBranch != "" {
+		lines = append(lines, "Branch: "+prCtx.SourceBranch+" -> "+prCtx.TargetBranch)
+	}
+	if prCtx.HeadSHA != "" {
+		lines = append(lines, "Head SHA: "+prCtx.HeadSHA)
+	}
+	return lines
 }
 
 // formatFindingsInstructions mirrors the old JSONL write-then-rename contract:

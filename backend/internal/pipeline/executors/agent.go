@@ -20,6 +20,10 @@ type SpawnRequest struct {
 	// Harness is the agent plugin the stage requested (stage.executor.plugin).
 	// Empty lets the project default pick the harness.
 	Harness string
+	// Branch is the PR source branch to check the spawned session out onto, so
+	// review sessions see the PR diff and can push to it. Empty spawns a fresh
+	// worktree off the project default branch.
+	Branch string
 }
 
 // SpawnedSession is what the session manager returns for a fresh spawn.
@@ -81,12 +85,13 @@ func (e *AgentExecutor) Start(ctx context.Context, in StartInput) (Handle, error
 		return nil, fmt.Errorf("agent executor cannot start stage %q with executor.kind=%s", in.Stage.Name, in.Stage.Executor.Kind)
 	}
 
-	prompt := buildStagePrompt(in.PipelineName, in.Stage, in.LoopRound)
+	prompt := buildStagePrompt(in.PipelineName, in.Stage, in.LoopRound, in.Context)
 	session, err := e.sessions.Spawn(ctx, SpawnRequest{
 		ProjectID: in.ProjectID,
 		IssueID:   in.IssueID,
 		Prompt:    prompt,
 		Harness:   in.Stage.Executor.Plugin,
+		Branch:    in.Context.SourceBranch,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent executor: spawn session for stage %q: %w", in.Stage.Name, err)

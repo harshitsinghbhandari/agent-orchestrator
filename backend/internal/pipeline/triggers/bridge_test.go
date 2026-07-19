@@ -162,6 +162,31 @@ func TestPROpenedTriggersMatchingDefinition(t *testing.T) {
 	}
 }
 
+func TestTriggerForwardsPRContext(t *testing.T) {
+	ctx := context.Background()
+	fork := true
+	facts := domain.PRFacts{
+		URL: testURL, Number: 7, CI: domain.CIPassing, Review: domain.ReviewApproved,
+		Mergeability: domain.MergeMergeable, HeadSHA: "sha1",
+		SourceBranch: "feature", TargetBranch: "main", IsFromFork: &fork,
+	}
+	b, eng := newBridge([]pipeline.Definition{defOn("opener", pipeline.TriggerPROpened)}, map[string]domain.PRFacts{testURL: facts})
+
+	b.process(ctx, prEvent(cdc.EventPRCreated))
+
+	if len(eng.triggers) != 1 {
+		t.Fatalf("triggers = %d, want 1", len(eng.triggers))
+	}
+	c := eng.triggers[0].Context
+	if c.PRNumber != 7 || c.PRURL != testURL || c.SourceBranch != "feature" ||
+		c.TargetBranch != "main" || c.HeadSHA != "sha1" || c.SessionID != testSession {
+		t.Fatalf("forwarded PR context = %+v", c)
+	}
+	if c.IsFromFork == nil || !*c.IsFromFork {
+		t.Fatalf("fork tri-state not forwarded: %+v", c.IsFromFork)
+	}
+}
+
 func TestNonMatchingDefinitionDoesNotTrigger(t *testing.T) {
 	ctx := context.Background()
 	facts := map[string]domain.PRFacts{testURL: readyFacts("sha1")}

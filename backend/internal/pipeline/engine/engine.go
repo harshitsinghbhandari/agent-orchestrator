@@ -99,9 +99,6 @@ type Engine struct {
 	// lock: only the mailbox closures (which run on that goroutine) touch them.
 	state    pipeline.EngineState
 	inflight map[pipeline.StageRunID]executors.Handle
-	// issueByRun threads the trigger's issue id to START_STAGE, out-of-band from
-	// RunState (which does not carry it). Pruned when a run goes terminal.
-	issueByRun map[pipeline.RunID]string
 }
 
 // New builds an Engine. It does not touch the store or start any goroutine;
@@ -121,7 +118,6 @@ func New(cfg Config) *Engine {
 		quit:          make(chan struct{}),
 		state:         pipeline.EmptyEngineState(),
 		inflight:      map[pipeline.StageRunID]executors.Handle{},
-		issueByRun:    map[pipeline.RunID]string{},
 	}
 	if e.log == nil {
 		e.log = slog.Default()
@@ -186,8 +182,8 @@ func (e *Engine) Stop(ctx context.Context) error {
 	return nil
 }
 
-// runLoop is the single actor goroutine: the only place e.state, e.inflight, and
-// e.issueByRun are read or written after Start.
+// runLoop is the single actor goroutine: the only place e.state and e.inflight
+// are read or written after Start.
 func (e *Engine) runLoop() {
 	defer e.wg.Done()
 	ticker := time.NewTicker(e.tickInterval)
@@ -226,8 +222,9 @@ type TriggerRequest struct {
 	// Trigger defaults to pipeline.TriggerManual when empty.
 	Trigger pipeline.StageTriggerEvent
 	HeadSHA string
-	// IssueID is forwarded into spawned agent-stage sessions.
-	IssueID string
+	// Context carries PR identity, issue id, and session facts threaded into
+	// the run and its stage executors. PR fields are empty for manual triggers.
+	Context pipeline.RunContext
 }
 
 // TriggerRun allocates a RunID plus one StageRunID per stage, then dispatches
@@ -250,15 +247,13 @@ func (e *Engine) TriggerRun(req TriggerRequest) (pipeline.RunID, error) {
 	}
 
 	e.do(func() {
-		if req.IssueID != "" {
-			e.issueByRun[runID] = req.IssueID
-		}
 		e.reduceAndExecute(pipeline.TriggerFired{
 			Now:         e.now(),
 			Trigger:     trigger,
 			SessionID:   req.SessionID,
 			Pipeline:    req.Pipeline,
 			HeadSHA:     req.HeadSHA,
+			Context:     req.Context,
 			RunID:       runID,
 			StageRunIDs: stageRunIDs,
 		})
@@ -365,7 +360,6 @@ func (e *Engine) reduceAndExecute(event pipeline.Event) {
 	for _, eff := range effects {
 		e.executeEffect(eff)
 	}
-	e.pruneRunMeta()
 }
 
 func (e *Engine) executeEffect(eff pipeline.Effect) {
@@ -430,10 +424,11 @@ func (e *Engine) startInput(run pipeline.RunState, eff pipeline.StartStage) exec
 		RunID:           eff.RunID,
 		StageRunID:      eff.StageRunID,
 		Stage:           eff.Stage,
-		IssueID:         e.issueByRun[eff.RunID],
+		IssueID:         run.Context.IssueID,
 		LoopRound:       &loopRound,
 		LinkedSessionID: run.SessionID,
 		AllowForkPRs:    allowFork,
+		Context:         run.Context,
 	}
 }
 
@@ -558,17 +553,6 @@ func (e *Engine) observe(name string, data map[string]any) {
 		data = enriched
 	}
 	e.sink.Observe(name, data)
-}
-
-// pruneRunMeta drops issue-id side-table entries for runs the reducer has moved
-// to a terminal loop state, so the map does not grow unbounded.
-func (e *Engine) pruneRunMeta() {
-	for id := range e.issueByRun {
-		run, ok := e.state.Runs[id]
-		if !ok || run.LoopState.IsTerminal() {
-			delete(e.issueByRun, id)
-		}
-	}
 }
 
 // slogSink is the default ObservationSink: structured logging that never drops.

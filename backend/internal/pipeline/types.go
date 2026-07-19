@@ -545,6 +545,27 @@ type Pipeline struct {
 // They are JSON-serialized for persistence but are never parsed from YAML
 // config, so they carry only json tags.
 
+// RunContext carries the pull-request identity and session facts for a run. It
+// is populated once at trigger time (from PRFacts in the trigger bridge, or the
+// session/head SHA a manual trigger has) and threaded to every stage executor,
+// so agent stages spawn on the PR branch with PR facts in their prompt and
+// command stages receive AO_PR_* env vars. PR fields are empty for manual
+// triggers with no PR. It is JSON-serializable because it is persisted as part
+// of RunState.
+type RunContext struct {
+	PRNumber     int    `json:"prNumber,omitempty"`
+	PRURL        string `json:"prUrl,omitempty"`
+	SourceBranch string `json:"sourceBranch,omitempty"`
+	TargetBranch string `json:"targetBranch,omitempty"`
+	HeadSHA      string `json:"headSha,omitempty"`
+	SessionID    string `json:"sessionId,omitempty"`
+	IssueID      string `json:"issueId,omitempty"`
+	// IsFromFork mirrors domain.PRFacts fork provenance tri-state: nil =
+	// unknown, false = same-repo PR (or no PR), true = the PR head lives in a
+	// fork.
+	IsFromFork *bool `json:"isFromFork,omitempty"`
+}
+
 // StageState is one stage's runtime state within a run.
 type StageState struct {
 	StageRunID StageRunID   `json:"stageRunId"`
@@ -571,6 +592,10 @@ type RunState struct {
 	PipelineConfigSnapshot Pipeline `json:"pipelineConfigSnapshot"`
 
 	HeadSHA string `json:"headSha"`
+
+	// Context carries per-run PR identity, issue id, and session facts,
+	// populated once at trigger time and threaded to every stage executor.
+	Context RunContext `json:"context,omitempty"`
 
 	LoopState         LoopStateName        `json:"loopState"`
 	TerminationReason RunTerminationReason `json:"terminationReason,omitempty"`

@@ -137,6 +137,54 @@ func TestCommand_NonForkRuns(t *testing.T) {
 	}
 }
 
+func TestCommand_EnvIncludesPipelineAndPRBlock(t *testing.T) {
+	runner := &fakeRunner{res: CommandResult{ExitCode: 0, Stdout: `{"outcome":"succeeded"}`}}
+	sessions := &fakeCommandSessions{exists: true, session: CommandSession{WorkspacePath: "/ws", Fork: ForkNo}}
+	in := baseCommandInput()
+	in.Context = pipeline.RunContext{
+		PRNumber: 12, PRURL: "https://x/pull/12", SourceBranch: "feat",
+		TargetBranch: "main", HeadSHA: "deadbeef",
+	}
+	// Stage env must win on collision, and its own keys survive the merge.
+	in.Stage.Executor.Env = map[string]string{"AO_PR_NUMBER": "override", "CUSTOM": "1"}
+
+	runCommand(t, runner, sessions, in)
+
+	env := runner.lastSpec.Env
+	want := map[string]string{
+		"AO_PIPELINE_RUN_ID": "run-1",
+		"AO_PIPELINE_STAGE":  "typecheck",
+		"AO_PR_URL":          "https://x/pull/12",
+		"AO_PR_BRANCH":       "feat",
+		"AO_PR_BASE_BRANCH":  "main",
+		"AO_PR_HEAD_SHA":     "deadbeef",
+		"AO_PR_NUMBER":       "override", // stage env wins
+		"CUSTOM":             "1",
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("env[%q] = %q, want %q", k, env[k], v)
+		}
+	}
+}
+
+func TestCommand_EnvOmitsUnsetPRValues(t *testing.T) {
+	runner := &fakeRunner{res: CommandResult{ExitCode: 0, Stdout: `{"outcome":"succeeded"}`}}
+	sessions := &fakeCommandSessions{exists: true, session: CommandSession{WorkspacePath: "/ws", Fork: ForkNo}}
+	// A manual run: no PR context, so no AO_PR_* keys, but the pipeline keys stay.
+	runCommand(t, runner, sessions, baseCommandInput())
+
+	env := runner.lastSpec.Env
+	if env["AO_PIPELINE_RUN_ID"] != "run-1" || env["AO_PIPELINE_STAGE"] != "typecheck" {
+		t.Fatalf("pipeline env keys must always be present, got %+v", env)
+	}
+	for _, k := range []string{"AO_PR_NUMBER", "AO_PR_URL", "AO_PR_BRANCH", "AO_PR_BASE_BRANCH", "AO_PR_HEAD_SHA"} {
+		if _, ok := env[k]; ok {
+			t.Errorf("unset PR value must be omitted, but %q is present", k)
+		}
+	}
+}
+
 func TestCommand_ExitCodeSemantics(t *testing.T) {
 	sessions := &fakeCommandSessions{exists: true, session: CommandSession{WorkspacePath: "/ws", Fork: ForkNo}}
 	cases := []struct {

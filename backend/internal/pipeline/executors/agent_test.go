@@ -18,6 +18,7 @@ type mockSpawner struct {
 	spawnErr   error
 	spawnCalls int
 	killCalls  int
+	lastReq    SpawnRequest
 
 	// snapshot state, mutated by tests between polls.
 	activity   string
@@ -25,8 +26,9 @@ type mockSpawner struct {
 	exists     bool
 }
 
-func (m *mockSpawner) Spawn(_ context.Context, _ SpawnRequest) (SpawnedSession, error) {
+func (m *mockSpawner) Spawn(_ context.Context, req SpawnRequest) (SpawnedSession, error) {
 	m.spawnCalls++
+	m.lastReq = req
 	if m.spawnErr != nil {
 		return SpawnedSession{}, m.spawnErr
 	}
@@ -216,6 +218,30 @@ func TestAgent_NoWorkspaceKillsAndFails(t *testing.T) {
 	}
 	if m.killCalls != 1 {
 		t.Errorf("want the workspace-less orphan killed, got %d", m.killCalls)
+	}
+}
+
+func TestAgent_SpawnSetsBranchFromPRContext(t *testing.T) {
+	m := &mockSpawner{workspace: t.TempDir(), activity: "active"}
+	exec := NewAgentExecutor(m)
+	in := agentStartInput(m.workspace)
+	in.Context = pipeline.RunContext{SourceBranch: "feature", PRNumber: 3}
+	if _, err := exec.Start(context.Background(), in); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if m.lastReq.Branch != "feature" {
+		t.Fatalf("spawn branch = %q, want %q", m.lastReq.Branch, "feature")
+	}
+}
+
+func TestAgent_SpawnNoBranchWithoutPRContext(t *testing.T) {
+	m := &mockSpawner{workspace: t.TempDir(), activity: "active"}
+	exec := NewAgentExecutor(m)
+	if _, err := exec.Start(context.Background(), agentStartInput(m.workspace)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if m.lastReq.Branch != "" {
+		t.Fatalf("spawn branch = %q, want empty for a run with no PR", m.lastReq.Branch)
 	}
 }
 

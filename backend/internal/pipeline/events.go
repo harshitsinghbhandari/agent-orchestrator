@@ -49,6 +49,10 @@ type TriggerFired struct {
 	Pipeline  Pipeline
 	HeadSHA   string
 
+	// Context carries PR identity, issue id, and session facts for the run.
+	// PR fields are empty for manual triggers with no PR.
+	Context RunContext
+
 	RunID       RunID
 	StageRunIDs map[string]StageRunID
 }

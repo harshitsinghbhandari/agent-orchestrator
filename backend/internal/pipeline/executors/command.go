@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
@@ -163,7 +164,7 @@ func (e *CommandExecutor) Start(ctx context.Context, in StartInput) (Handle, err
 	child, err := e.runner.Start(ctx, CommandSpec{
 		Command:   spec.Command,
 		Args:      spec.Args,
-		Env:       spec.Env,
+		Env:       pipelineEnv(in, spec.Env),
 		Dir:       dir,
 		OutputCap: commandOutputCapBytes,
 	})
@@ -237,6 +238,36 @@ func resolveCwd(base, rel string) (string, error) {
 func isWindowsAbs(rel string) bool {
 	return len(rel) >= 2 && rel[1] == ':' &&
 		((rel[0] >= 'a' && rel[0] <= 'z') || (rel[0] >= 'A' && rel[0] <= 'Z'))
+}
+
+// pipelineEnv merges a fixed pipeline/PR context env block under the stage's own
+// env map. The stage's YAML env wins on any key collision (it is applied last).
+// Unset PR values are omitted so the subprocess never sees an empty AO_PR_* key.
+func pipelineEnv(in StartInput, stageEnv map[string]string) map[string]string {
+	c := in.Context
+	env := make(map[string]string, len(stageEnv)+7)
+	env["AO_PIPELINE_RUN_ID"] = string(in.RunID)
+	env["AO_PIPELINE_STAGE"] = in.Stage.Name
+	if c.PRNumber > 0 {
+		env["AO_PR_NUMBER"] = strconv.Itoa(c.PRNumber)
+	}
+	if c.PRURL != "" {
+		env["AO_PR_URL"] = c.PRURL
+	}
+	if c.SourceBranch != "" {
+		env["AO_PR_BRANCH"] = c.SourceBranch
+	}
+	if c.TargetBranch != "" {
+		env["AO_PR_BASE_BRANCH"] = c.TargetBranch
+	}
+	if c.HeadSHA != "" {
+		env["AO_PR_HEAD_SHA"] = c.HeadSHA
+	}
+	// Stage env applied last so an author's explicit value overrides the block.
+	for k, v := range stageEnv {
+		env[k] = v
+	}
+	return env
 }
 
 // commandTaskResult is the single JSON object a command shim writes to stdout.

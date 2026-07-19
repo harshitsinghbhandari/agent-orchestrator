@@ -87,6 +87,10 @@ type StartInput struct {
 	// AllowForkPRs opts command stages into running for fork PRs. Default false
 	// skips them before any subprocess spawns.
 	AllowForkPRs bool
+	// Context carries the run's PR identity and session facts. Agent stages use
+	// SourceBranch to spawn on the PR branch and render a PR block in the
+	// prompt; command stages surface it as AO_PR_* env vars.
+	Context pipeline.RunContext
 }
 
 // StageExecutor is the contract the engine drives. Start begins the work and
