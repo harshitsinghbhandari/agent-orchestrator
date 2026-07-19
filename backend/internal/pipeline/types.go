@@ -661,10 +661,35 @@ type EngineState struct {
 	HistorySummaries map[string][]RunSummary `json:"historySummaries"`
 }
 
-// LoopKey returns the key used to index a session+pipeline loop in
-// EngineState.CurrentRunByLoop and EngineState.HistorySummaries.
+// LoopKey returns the session+pipeline key. It is used only to deduplicate
+// per-session+pipeline dispatches (e.g. CONFIG_CHANGED fan-out); the per-run
+// loop-identity index uses LoopKeyFor, which isolates runs by PR.
 func LoopKey(sessionID, pipelineName string) string {
 	return sessionID + ":" + pipelineName
+}
+
+// LoopKeyFor composes the per-run loop-identity key that indexes
+// EngineState.CurrentRunByLoop and EngineState.HistorySummaries. The key is
+// derived from what the run actually is, so runs stay isolated per PR:
+//
+//   - a run backed by a PR (ctx.PRURL set) keys per PR as
+//     "sessionID:pipelineName:prURL", so sibling PRs on one session+pipeline
+//     never collide (a NEW_SHA on PR-B cannot terminate PR-A's run);
+//   - a manual run scoped to a session keys "sessionID:pipelineName";
+//   - a manual run with no session keys "run:runID", so unscoped manual runs
+//     never share the global ":pipelineName" key and no-op each other.
+//
+// Runs persisted before RunContext existed have an empty ctx but a non-empty
+// sessionID, so they degrade to the historical "sessionID:pipelineName" shape,
+// which is acceptable.
+func LoopKeyFor(ctx RunContext, sessionID, pipelineName string, runID RunID) string {
+	if ctx.PRURL != "" {
+		return sessionID + ":" + pipelineName + ":" + ctx.PRURL
+	}
+	if sessionID != "" {
+		return sessionID + ":" + pipelineName
+	}
+	return "run:" + string(runID)
 }
 
 // EmptyEngineState returns a zero-value EngineState with initialized maps.

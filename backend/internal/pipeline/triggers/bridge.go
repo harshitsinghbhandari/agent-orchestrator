@@ -252,7 +252,7 @@ func (b *Bridge) process(ctx context.Context, e cdc.Event) {
 		// new SHA. Scoped to pr.updated subscribers because the rearm is the
 		// pr.updated trigger; the reducer no-ops when no run is in flight.
 		if fireUpdated && shaChanged && subsUpdated {
-			eng.Dispatch(pipeline.NewSHADetected{Now: b.now(), SessionID: session, PipelineName: cfg.Name, SHA: cur.headSHA})
+			eng.Dispatch(pipeline.NewSHADetected{Now: b.now(), SessionID: session, PipelineName: cfg.Name, SHA: cur.headSHA, PRURL: runCtx.PRURL})
 		}
 
 		b.fireIf(eng, fireOpened && defSubscribes(cfg, pipeline.TriggerPROpened), cfg, runCtx, pipeline.TriggerPROpened)

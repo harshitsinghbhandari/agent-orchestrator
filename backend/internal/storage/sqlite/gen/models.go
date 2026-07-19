@@ -166,6 +166,7 @@ type PipelineRun struct {
 	Fingerprints      string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	ContextJson       string
 }
 
 type PipelineStageRun struct {

@@ -270,6 +270,14 @@ func hydrateRun(ctx context.Context, q *gen.Queries, row gen.PipelineRun) (pipel
 	if err := json.Unmarshal([]byte(row.Fingerprints), &fingerprints); err != nil {
 		return pipeline.RunState{}, fmt.Errorf("unmarshal fingerprints for run %s: %w", row.ID, err)
 	}
+	var runCtx pipeline.RunContext
+	// Legacy rows predate the column and default to '{}', which unmarshals to the
+	// zero RunContext (empty PRURL), degrading to the old session+pipeline key.
+	if row.ContextJson != "" {
+		if err := json.Unmarshal([]byte(row.ContextJson), &runCtx); err != nil {
+			return pipeline.RunState{}, fmt.Errorf("unmarshal context for run %s: %w", row.ID, err)
+		}
+	}
 
 	artRows, err := q.ListPipelineArtifactsByRun(ctx, row.ID)
 	if err != nil {
@@ -306,6 +314,7 @@ func hydrateRun(ctx context.Context, q *gen.Queries, row gen.PipelineRun) (pipel
 		SessionID:              row.SessionID,
 		PipelineConfigSnapshot: cfg,
 		HeadSHA:                row.HeadSha,
+		Context:                runCtx,
 		LoopState:              pipeline.LoopStateName(row.LoopState),
 		TerminationReason:      pipeline.RunTerminationReason(row.TerminationReason),
 		LoopRounds:             int(row.LoopRounds),
@@ -350,6 +359,10 @@ func runUpsertParams(projectID domain.ProjectID, run pipeline.RunState) (gen.Ups
 	if err != nil {
 		return gen.UpsertPipelineRunParams{}, fmt.Errorf("marshal fingerprints for run %s: %w", run.RunID, err)
 	}
+	ctxJSON, err := json.Marshal(run.Context)
+	if err != nil {
+		return gen.UpsertPipelineRunParams{}, fmt.Errorf("marshal context for run %s: %w", run.RunID, err)
+	}
 	return gen.UpsertPipelineRunParams{
 		ID:                string(run.RunID),
 		ProjectID:         projectID,
@@ -362,6 +375,7 @@ func runUpsertParams(projectID domain.ProjectID, run pipeline.RunState) (gen.Ups
 		LoopRounds:        int64(run.LoopRounds),
 		ConfigSnapshot:    string(cfg),
 		Fingerprints:      string(fpJSON),
+		ContextJson:       string(ctxJSON),
 		CreatedAt:         run.CreatedAt,
 		UpdatedAt:         run.UpdatedAt,
 	}, nil

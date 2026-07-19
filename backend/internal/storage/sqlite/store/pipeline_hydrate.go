@@ -30,7 +30,7 @@ func (s *Store) HydratePipelineEngineState(ctx context.Context, projectID domain
 			return pipeline.EmptyEngineState(), err
 		}
 		state.Runs[run.RunID] = run
-		key := pipeline.LoopKey(run.SessionID, run.PipelineName)
+		key := pipeline.LoopKeyFor(run.Context, run.SessionID, run.PipelineName, run.RunID)
 		if run.LoopState.IsTerminal() {
 			state.HistorySummaries[key] = append(state.HistorySummaries[key], summarizeRun(run))
 		} else {
