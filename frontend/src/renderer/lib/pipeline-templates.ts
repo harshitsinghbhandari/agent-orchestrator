@@ -94,7 +94,9 @@ function nightlyTriageSweep(): PipelineDraft {
 				name: "scan",
 				trigger: { on: ["manual"] },
 				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: { prompt: "Scan the open pull requests and collect actionable findings: stale PRs, red CI, unanswered reviews." },
+				task: {
+					prompt: "Scan the open pull requests and collect actionable findings: stale PRs, red CI, unanswered reviews.",
+				},
 			},
 			{
 				name: "triage",
