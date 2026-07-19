@@ -8,6 +8,7 @@ import {
 	type BuiltinName,
 	type ExecutorKind,
 	type StageDraft,
+	type StagePolicyDraft,
 	type StageTriggerEvent,
 	type TaskDraft,
 	type TaskMode,
@@ -17,6 +18,7 @@ import { summarizePredicate } from "../lib/predicate-summary";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { Switch } from "./ui/switch";
 
 // The stage inspector (mockup 1a, right panel): a form two-way bound to the
 // selected StageDraft. Every edit calls onChange with the next stage; the
@@ -75,6 +77,12 @@ export function StageInspector({
 		const budget = { ...stage.budget, ...patch };
 		const empty = budget.maxUsd === undefined && budget.maxDurationMs === undefined;
 		update({ budget: empty ? undefined : budget });
+	};
+
+	const updatePolicy = (patch: Partial<StagePolicyDraft>) => {
+		const policy = { ...stage.policy, ...patch };
+		const empty = !policy.blocksMerge && policy.stallWindow === undefined;
+		update({ policy: empty ? undefined : policy });
 	};
 
 	// Swapping executor kind rewrites the sub-object from scratch so no other
@@ -261,6 +269,28 @@ export function StageInspector({
 						value={stage.workspace ?? "default"}
 						onChange={(value) => update({ workspace: value === "default" ? undefined : value })}
 					/>
+				</Section>
+
+				<Section label="Policy">
+					<div className="flex flex-col gap-2.5">
+						<div className="flex items-center justify-between gap-2">
+							<span className="text-caption text-muted-foreground">Blocks merge</span>
+							<Switch
+								aria-label="Blocks merge"
+								checked={!!stage.policy?.blocksMerge}
+								onCheckedChange={(blocksMerge) => updatePolicy({ blocksMerge })}
+							/>
+						</div>
+						<NumberField
+							label="Stall window (rounds)"
+							value={stage.policy?.stallWindow}
+							onCommit={(stallWindow) => updatePolicy({ stallWindow })}
+						/>
+						<p className="text-caption text-passive">
+							Number of consecutive loop rounds with the same finding fingerprint set before the run is treated as
+							converged (stalled).
+						</p>
+					</div>
 				</Section>
 
 				<Section label="Advanced knobs">

@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelineRunDetail } from "./PipelineRunDetail";
 import type { PipelineArtifact, PipelineRunDetail as RunDetail } from "../hooks/usePipelineRuns";
 
-const { usePipelineRunMock, postMock } = vi.hoisted(() => ({
+const { usePipelineRunMock, postMock, navigateMock } = vi.hoisted(() => ({
 	usePipelineRunMock: vi.fn(),
 	postMock: vi.fn(),
+	navigateMock: vi.fn(),
 }));
 
 vi.mock("../hooks/usePipelineRuns", () => ({
@@ -17,6 +18,9 @@ vi.mock("../hooks/usePipelineRuns", () => ({
 vi.mock("../lib/api-client", () => ({
 	apiClient: { POST: (...args: unknown[]) => postMock(...args) },
 	apiErrorMessage: (e: unknown) => (e instanceof Error ? e.message : "error"),
+}));
+vi.mock("@tanstack/react-router", () => ({
+	useNavigate: () => navigateMock,
 }));
 
 type StageView = RunDetail["stages"][number];
@@ -79,6 +83,7 @@ function renderDetail(project?: string) {
 beforeEach(() => {
 	usePipelineRunMock.mockReset();
 	postMock.mockReset().mockResolvedValue({ error: undefined });
+	navigateMock.mockReset();
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -181,5 +186,60 @@ describe("PipelineRunDetail", () => {
 
 		const row = screen.getByText("Open bug").closest("[data-finding]") as HTMLElement;
 		expect(within(row).getByRole("button", { name: "Dismiss" })).toBeDisabled();
+	});
+
+	it("links the run-level session id to the session page", async () => {
+		setRun(detail({ sessionId: "sess-42" }));
+		renderDetail("proj-1");
+
+		await userEvent.setup().click(screen.getByRole("button", { name: "sess-42" }));
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/sessions/$sessionId", params: { sessionId: "sess-42" } });
+	});
+
+	it("renders a dash instead of a link when the run has no session", () => {
+		setRun(detail({ sessionId: "" }));
+		renderDetail("proj-1");
+
+		expect(screen.getByText("—", { exact: false })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "sess-42" })).not.toBeInTheDocument();
+	});
+
+	it("links a stage's session id to the session page", async () => {
+		setRun(
+			detail({
+				stages: [stage({ stageName: "fix", sessionId: "sess-fix-1" })],
+			}),
+		);
+		renderDetail("proj-1");
+
+		const row = screen.getByText("fix").closest("[data-stage]") as HTMLElement;
+		await userEvent.setup().click(within(row).getByRole("button", { name: "sess-fix-1" }));
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/sessions/$sessionId", params: { sessionId: "sess-fix-1" } });
+	});
+
+	it("does not render a stage session link when the stage has no sessionId (command/builtin stages)", () => {
+		setRun(detail({ stages: [stage({ stageName: "lint" })] }));
+		renderDetail("proj-1");
+
+		const row = screen.getByText("lint").closest("[data-stage]") as HTMLElement;
+		expect(within(row).queryAllByRole("button")).toHaveLength(0);
+	});
+
+	it("renders stage notes as read-only annotations", () => {
+		setRun(
+			detail({
+				stages: [
+					stage({
+						stageName: "triage",
+						notes: ["fork PR: findings skipped", "exit mode fell back to timeout"],
+					}),
+				],
+			}),
+		);
+		renderDetail("proj-1");
+
+		const row = screen.getByText("triage").closest("[data-stage]") as HTMLElement;
+		expect(within(row).getByText("fork PR: findings skipped")).toBeInTheDocument();
+		expect(within(row).getByText("exit mode fell back to timeout")).toBeInTheDocument();
 	});
 });

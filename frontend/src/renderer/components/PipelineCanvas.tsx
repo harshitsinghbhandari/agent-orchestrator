@@ -418,7 +418,16 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 				</p>
 			)}
 			{inCycle && <p className="mt-1.5 text-micro text-error">in dependency cycle</p>}
-			{footer && <p className="mt-1.5 truncate text-micro text-passive">{footer}</p>}
+			{(footer || stage.policy?.blocksMerge) && (
+				<p className="mt-1.5 flex items-center gap-1.5">
+					{footer && <span className="truncate text-micro text-passive">{footer}</span>}
+					{stage.policy?.blocksMerge && (
+						<span className="shrink-0 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 font-mono text-micro text-warning">
+							blocks merge
+						</span>
+					)}
+				</p>
+			)}
 			<Handle type="source" position={Position.Right} className="!size-2 !border-border-strong !bg-raised" />
 		</div>
 	);
