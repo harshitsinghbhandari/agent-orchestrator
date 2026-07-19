@@ -23,7 +23,10 @@ export function compilePredicateToText(value: PredicateDraft | undefined, opts: 
 	if (!value) return "always";
 	const children = value.predicates ?? [];
 	if (opts.pretty && (value.kind === "and" || value.kind === "or") && children.length > 0) {
-		return `${value.kind}(\n${children.map((c) => `  ${compile(c)},`).join("\n").replace(/,$/, "")}\n)`;
+		return `${value.kind}(\n${children
+			.map((c) => `  ${compile(c)},`)
+			.join("\n")
+			.replace(/,$/, "")}\n)`;
 	}
 	return compile(value);
 }
