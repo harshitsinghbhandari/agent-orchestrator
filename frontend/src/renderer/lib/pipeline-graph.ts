@@ -147,9 +147,7 @@ function mapStage(draft: PipelineDraft, name: string, fn: (stage: StageDraft) =>
 // self-edge or would close a dependency cycle (blocked, with the offending
 // path returned for the instant red highlight).
 export type ConnectionResult =
-	| { kind: "added"; draft: PipelineDraft }
-	| { kind: "cycle"; path: string[] }
-	| { kind: "noop" };
+	{ kind: "added"; draft: PipelineDraft } | { kind: "cycle"; path: string[] } | { kind: "noop" };
 
 export function applyConnection(draft: PipelineDraft, source: string, target: string): ConnectionResult {
 	const names = new Set(draft.stages.map((s) => s.name).filter(Boolean));

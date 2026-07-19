@@ -81,7 +81,9 @@ describe("PipelineCanvas", () => {
 
 	it("publishes the clicked node through the shared selection", () => {
 		const selection = selectionOf();
-		render(<PipelineCanvas draft={draftOf(stage("review"), stage("fix"))} onDraftChange={vi.fn()} selection={selection} />);
+		render(
+			<PipelineCanvas draft={draftOf(stage("review"), stage("fix"))} onDraftChange={vi.fn()} selection={selection} />,
+		);
 
 		// fireEvent, not userEvent: a full pointer sequence trips d3-drag's
 		// mousedown handling, which jsdom cannot satisfy.
@@ -98,7 +100,11 @@ describe("PipelineCanvas", () => {
 	});
 
 	it("auto-layouts dependencies left of dependents", () => {
-		const draft = draftOf(stage("intake"), stage("review", { dependsOn: ["intake"] }), stage("fix", { dependsOn: ["review"] }));
+		const draft = draftOf(
+			stage("intake"),
+			stage("review", { dependsOn: ["intake"] }),
+			stage("fix", { dependsOn: ["review"] }),
+		);
 		const { container } = render(<PipelineCanvas draft={draft} />);
 
 		expect(nodeX(container, "intake")).toBeLessThan(nodeX(container, "review"));
