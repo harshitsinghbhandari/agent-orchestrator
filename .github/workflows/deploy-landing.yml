@@ -34,6 +34,10 @@ jobs:
         working-directory: frontend/src/landing
         run: npm run build
       - uses: actions/configure-pages@v5
+        with:
+          # Creates the Pages site (source: GitHub Actions) on first run, so no
+          # repo-admin visit to Settings > Pages is needed.
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/src/landing/out
