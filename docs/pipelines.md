@@ -28,7 +28,7 @@ environment before it boots, following the same on/off convention as AO's other
 it.
 
 **Precedence.** When `AO_PIPELINES` is set (to on OR off) it wins and the
-persisted setting is ignored — it is a hard override. When `AO_PIPELINES` is
+persisted setting is ignored: it is a hard override. When `AO_PIPELINES` is
 unset, the persisted `pipelines.enabled` setting decides. With neither set,
 pipelines stay off.
 
@@ -136,6 +136,64 @@ definition; unknown kinds and cross-kind fields fail validation with a
 path-scoped issue (e.g. `stages[1].routes.when: field "max" is not valid
 for predicate kind "all_pass"`).
 
+## Authoring in the visual editor
+
+YAML and the CRUD API stay first-class: everything the visual editor saves
+goes through the same create/update endpoints as a hand-written document,
+and the daemon's `/validate` route remains the single source of semantic
+truth. The visual editor is an additive front end over that same document,
+for authors who would rather draw the DAG than write it by hand.
+
+**View toggle.** The definition editor opens with a Canvas / Split / YAML
+segmented control. Canvas shows only the node graph, YAML shows only the raw
+document, and Split shows both side by side. All three edit the same
+in-memory draft: an edit made on the canvas reserializes into the YAML buffer
+immediately, and a YAML edit reparses into the draft after a short debounce.
+The YAML buffer is the bridge back to the canonical document, so switching
+views never loses information a mode does not itself display.
+
+**The canvas.** Each stage renders as one node, styled distinctly by
+executor kind (agent, command, builtin) so the shape of the pipeline is
+readable at a glance. Edges are `dependsOn`: drawing an edge between two
+nodes adds the dependency, deleting an edge removes it. A dependency cycle
+is blocked before it lands in the draft and the offending edges are
+highlighted in place so the author can see exactly what would have looped.
+An auto-layout pass keeps the graph readable as stages and dependencies are
+added, rather than requiring authors to place nodes by hand.
+
+**The stage inspector.** Selecting a node opens an inspector for that
+stage: name, trigger events, the executor's kind-specific fields (agent's
+`plugin`/`mode`, command's `command`/`args`/`env`/`cwd`, builtin's `name`),
+the task prompt, depends-on, the run condition (`routes.when`), workspace
+mode, and an advanced-knobs group for retries, timeout, max loop rounds, and
+budget (max USD, max duration).
+
+**The predicate builder.** `routes.when` and each of the three exit
+conditions (`done`, `stalled`, `blocksMerge`) are authored through the same
+predicate builder: nested ALL/ANY groups, one row per predicate kind with
+its kind-specific fields, a not-wrap toggle for negating a predicate or
+group, and a live readout of the compiled predicate DSL so the author can
+confirm what will actually be saved.
+
+**Pipeline settings.** A settings modal covers the pipeline-level fields
+that do not belong to any one stage: name, max concurrent stages, allow
+fork PRs, and the three exit conditions (each edited with the same
+predicate builder described above).
+
+**Live validation.** As the draft changes, the editor debounces a call to
+`POST /api/v1/pipelines/validate` and surfaces the result two ways: a
+problems panel listing every issue with a Reveal action that selects the
+offending stage, and a badge on the affected node in the canvas. Save stays
+disabled while any problem, a YAML parse error or a validation issue, is
+outstanding.
+
+**The New pipeline modal.** Creating a definition starts with a choice of
+three paths: Blank canvas (an empty draft, canvas view), From template (one
+of three built-in starting points: PR review loop, 8 stages; Nightly triage
+sweep, 4 stages; Release gate, 5 stages, each opened in canvas view), or
+Paste YAML (import an existing document verbatim, opened in YAML view). All
+three land in the same editor described above.
+
 ## Triggers
 
 A stage fires on `manual` or on PR lifecycle events delivered through the
@@ -210,13 +268,14 @@ that record.
 
 ## UI overview
 
-The Pipelines section (hidden entirely when pipelines are off — see Enabling the
+The Pipelines section (hidden entirely when pipelines are off, see Enabling the
 feature) has two tabs:
 
 - **Definitions**: a table of the project's stored pipelines plus a
-  CodeMirror YAML editor for create/update. Validation happens
-  server-side; the editor surfaces every returned issue inline rather than
-  stopping at the first one.
+  definition editor that offers a visual canvas alongside the raw
+  CodeMirror YAML editor for create/update (see Authoring in the visual
+  editor below). Validation happens server-side; the editor surfaces every
+  returned issue inline rather than stopping at the first one.
 - **Runs**: a 5-column Kanban workbench (Running, Awaiting context, Done,
   Stalled, Terminated) grouped by loop state, filterable by pipeline name,
   spanning every project. Runs update live over the existing CDC-backed

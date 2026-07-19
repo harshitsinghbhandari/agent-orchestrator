@@ -1,15 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Pencil, Plus, Settings2, Trash2, Workflow } from "lucide-react";
 import { apiErrorMessage } from "../lib/api-client";
 import { formatTimeCompact } from "../lib/format-time";
-import type { StageDraft } from "../lib/pipeline-draft";
+import { serializeToYaml, type StageDraft } from "../lib/pipeline-draft";
 import { issueStageName, stageIssueMessages, stageYamlLine } from "../lib/pipeline-problems";
-import {
-	countStagesFromYaml,
-	DEFAULT_PIPELINE_YAML,
-	parsePipelineValidationIssues,
-	type PipelineValidationIssue,
-} from "../lib/pipeline-yaml";
+import { countStagesFromYaml, parsePipelineValidationIssues, type PipelineValidationIssue } from "../lib/pipeline-yaml";
 import {
 	type PipelineDefinitionSummary,
 	usePipelineDefinitionMutations,
@@ -18,6 +13,7 @@ import {
 import { usePipelineDraft, type PipelineDraftValidation } from "../hooks/usePipelineDraft";
 import { useStageSelection } from "../hooks/useStageSelection";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { NewPipelineModal, type NewPipelineChoice } from "./NewPipelineModal";
 import { PipelineCanvas } from "./PipelineCanvas";
 import { PipelineProblemsPanel, type PipelineProblem } from "./PipelineProblemsPanel";
 import { PipelineSettingsModal } from "./PipelineSettingsModal";
@@ -34,9 +30,14 @@ import { cn } from "../lib/utils";
 type ViewMode = "canvas" | "split" | "yaml";
 
 // One of: browsing the list, editing an existing definition, or drafting a new
-// one. The editor buffer lives in EditorView while a draft is open, so switching
-// modes here is what mounts/unmounts the CodeMirror instance.
-type Mode = { kind: "list" } | { kind: "edit"; def: PipelineDefinitionSummary } | { kind: "create" };
+// one from the New pipeline modal's choice (blank/template/YAML, each resolved
+// to a starting buffer + view before the editor mounts). The editor buffer
+// lives in EditorView while a draft is open, so switching modes here is what
+// mounts/unmounts the CodeMirror instance.
+type Mode =
+	| { kind: "list" }
+	| { kind: "edit"; def: PipelineDefinitionSummary }
+	| { kind: "create"; initialYaml: string; initialView: ViewMode };
 
 // The Definitions tab: a list of the project's stored pipelines plus a CodeMirror
 // YAML editor for create/update. Server-side validation is authoritative; on
@@ -44,12 +45,34 @@ type Mode = { kind: "list" } | { kind: "edit"; def: PipelineDefinitionSummary } 
 export function PipelineDefinitionsPage({ projectId }: { projectId?: string }) {
 	const definitionsQuery = usePipelineDefinitionsQuery(projectId);
 	const [mode, setMode] = useState<Mode>({ kind: "list" });
+	const [newOpen, setNewOpen] = useState(false);
+
+	// The modal only decides how the draft starts; every path resolves to a
+	// starting YAML buffer + view before the (shared) visual editor mounts.
+	const handleCreate = (choice: NewPipelineChoice) => {
+		let initialYaml: string;
+		let initialView: ViewMode;
+		if (choice.kind === "blank") {
+			initialYaml = serializeToYaml({ name: "my-pipeline", stages: [] });
+			initialView = "canvas";
+		} else if (choice.kind === "template") {
+			initialYaml = serializeToYaml(choice.template.draft());
+			initialView = "canvas";
+		} else {
+			initialYaml = choice.yamlSource;
+			initialView = "yaml";
+		}
+		setNewOpen(false);
+		setMode({ kind: "create", initialYaml, initialView });
+	};
 
 	if (mode.kind !== "list" && projectId) {
 		return (
 			<DefinitionEditor
 				projectId={projectId}
 				def={mode.kind === "edit" ? mode.def : null}
+				initialYaml={mode.kind === "create" ? mode.initialYaml : ""}
+				initialView={mode.kind === "create" ? mode.initialView : "yaml"}
 				onClose={() => setMode({ kind: "list" })}
 			/>
 		);
@@ -63,7 +86,7 @@ export function PipelineDefinitionsPage({ projectId }: { projectId?: string }) {
 				<p className="text-md-sm text-passive">
 					Pipeline definitions authored as YAML. A run snapshots its definition at trigger time.
 				</p>
-				<Button size="sm" variant="primary" disabled={!projectId} onClick={() => setMode({ kind: "create" })}>
+				<Button size="sm" variant="primary" disabled={!projectId} onClick={() => setNewOpen(true)}>
 					<Plus className="size-icon-md" aria-hidden="true" />
 					New pipeline
 				</Button>
@@ -79,9 +102,19 @@ export function PipelineDefinitionsPage({ projectId }: { projectId?: string }) {
 						Could not load pipelines. {apiErrorMessage(definitionsQuery.error)}
 					</p>
 				) : definitions.length === 0 ? (
-					<p className="py-10 text-center text-xs text-passive">
-						No pipelines yet. Click <span className="text-foreground">New pipeline</span> to author one.
-					</p>
+					<div data-testid="pipelines-empty-state" className="flex h-full min-h-0 items-center justify-center">
+						<div className="flex max-w-sm flex-col items-center pb-10 text-center">
+							<Workflow className="size-icon-lg text-passive" aria-hidden="true" />
+							<h2 className="mt-3 text-control font-semibold text-foreground">No pipelines yet</h2>
+							<p className="mt-1.5 text-caption text-passive">
+								Author your first pipeline visually, start from a template, or import YAML.
+							</p>
+							<Button size="sm" variant="primary" className="mt-4" onClick={() => setNewOpen(true)}>
+								<Plus className="size-icon-md" aria-hidden="true" />
+								New pipeline
+							</Button>
+						</div>
+					</div>
 				) : (
 					<Table>
 						<TableHeader>
@@ -105,6 +138,8 @@ export function PipelineDefinitionsPage({ projectId }: { projectId?: string }) {
 					</Table>
 				)}
 			</div>
+
+			<NewPipelineModal open={newOpen} onCancel={() => setNewOpen(false)} onCreate={handleCreate} />
 		</div>
 	);
 }
@@ -177,20 +212,27 @@ function DefinitionRow({
 function DefinitionEditor({
 	projectId,
 	def,
+	initialYaml,
+	initialView,
 	onClose,
 }: {
 	projectId: string;
 	def: PipelineDefinitionSummary | null;
+	// Only consulted when def is null (a fresh draft): the New pipeline modal's
+	// resolved starting buffer + view. Editing an existing definition always
+	// starts from its stored YAML, in YAML view, regardless of these.
+	initialYaml: string;
+	initialView: ViewMode;
 	onClose: () => void;
 }) {
 	const { create, update } = usePipelineDefinitionMutations(projectId);
 	const { yamlSource, setYamlSource, draft, parseError, setDraft, validation } = usePipelineDraft(
-		def ? def.yamlSource : DEFAULT_PIPELINE_YAML,
+		def ? def.yamlSource : initialYaml,
 	);
 	// One selection instance for the editor area: the canvas writes on node
 	// click, the stage inspector (V3) binds to the same stage name.
 	const selection = useStageSelection();
-	const [view, setView] = useState<ViewMode>("yaml");
+	const [view, setView] = useState<ViewMode>(def ? "yaml" : initialView);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	// Issues a rejected save reported; live validation covers the same ground,
 	// so these only matter in the race where a save beat the debounce. Cleared
