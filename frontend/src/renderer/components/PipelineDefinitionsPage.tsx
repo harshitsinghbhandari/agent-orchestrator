@@ -28,9 +28,9 @@ import { Button } from "./ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { cn } from "../lib/utils";
 
-// The definition editor's view modes (mockups 1a/1c): the node-graph canvas, a
-// side-by-side canvas+YAML split, and the raw YAML editor. V1 fills in YAML mode
-// end to end; Canvas/Split mount placeholders that V2/V6 flesh out.
+// The definition editor's view modes (mockups 1a/1c): the node-graph canvas
+// (with the stage inspector on selection), a side-by-side canvas+YAML split
+// with two-way sync, and the raw YAML editor.
 type ViewMode = "canvas" | "split" | "yaml";
 
 // One of: browsing the list, editing an existing definition, or drafting a new

@@ -16,10 +16,7 @@ export function issueStageName(draft: PipelineDraft, issue: PipelineValidationIs
 }
 
 // Groups issue messages by the stage they resolve to, for the canvas badges.
-export function stageIssueMessages(
-	draft: PipelineDraft,
-	issues: PipelineValidationIssue[],
-): Record<string, string[]> {
+export function stageIssueMessages(draft: PipelineDraft, issues: PipelineValidationIssue[]): Record<string, string[]> {
 	const out: Record<string, string[]> = {};
 	for (const issue of issues) {
 		const name = issueStageName(draft, issue);

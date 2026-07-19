@@ -23,7 +23,10 @@ export function PipelineProblemsPanel({
 }) {
 	if (problems.length === 0) return null;
 	return (
-		<div data-testid="problems-panel" className="max-h-48 shrink-0 overflow-y-auto border-t border-border bg-surface/60">
+		<div
+			data-testid="problems-panel"
+			className="max-h-48 shrink-0 overflow-y-auto border-t border-border bg-surface/60"
+		>
 			<div className="flex items-center justify-between px-4.5 pt-2.5 pb-1.5">
 				<p className="flex items-center gap-1.5 text-caption font-semibold text-foreground">
 					Problems
