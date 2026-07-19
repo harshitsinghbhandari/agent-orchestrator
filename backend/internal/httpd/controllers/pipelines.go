@@ -176,9 +176,17 @@ type TriggerPipelineRunResponse struct {
 	RunID string `json:"runId"`
 }
 
-// PipelineArtifactResponse is the body of the artifact-fetch route.
+// PipelineArtifactResponse is the body of the artifact-fetch and
+// artifact-status routes.
 type PipelineArtifactResponse struct {
 	Artifact pipeline.Artifact `json:"artifact"`
+}
+
+// UpdatePipelineArtifactStatusRequest is the body of the artifact-status route:
+// the new lifecycle status for one finding (e.g. "dismissed" to hide a false
+// positive, "open" to reopen it).
+type UpdatePipelineArtifactStatusRequest struct {
+	Status string `json:"status" description:"New artifact status: open | resolved | dismissed."`
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +213,7 @@ func (c *PipelinesController) Register(r chi.Router) {
 	r.Post("/pipelines/runs/{runId}/cancel", c.cancelRun)
 	r.Post("/pipelines/runs/{runId}/resume", c.resumeRun)
 	r.Get("/pipelines/runs/{runId}/artifacts/{artifactId}", c.getArtifact)
+	r.Post("/pipelines/runs/{runId}/artifacts/{artifactId}/status", c.updateArtifactStatus)
 
 	r.Put("/pipelines/{id}", c.updateDefinition)
 	r.Delete("/pipelines/{id}", c.deleteDefinition)
@@ -432,6 +441,34 @@ func (c *PipelinesController) getArtifact(w http.ResponseWriter, r *http.Request
 		return
 	}
 	art, err := c.Svc.GetArtifact(r.Context(), pipeline.ArtifactID(chi.URLParam(r, "artifactId")))
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, PipelineArtifactResponse{Artifact: art})
+}
+
+// updateArtifactStatus changes one finding's lifecycle status (dismiss / reopen /
+// resolve) on a run. Project-scoped like the other lifecycle routes so the
+// service can reach the project engine. A nil Svc returns 501.
+func (c *PipelinesController) updateArtifactStatus(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status")
+		return
+	}
+	projectID, ok := requireProject(w, r)
+	if !ok {
+		return
+	}
+	var in UpdatePipelineArtifactStatusRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	art, err := c.Svc.UpdateArtifactStatus(r.Context(), projectID,
+		pipeline.RunID(chi.URLParam(r, "runId")),
+		pipeline.ArtifactID(chi.URLParam(r, "artifactId")),
+		pipeline.ArtifactStatus(in.Status))
 	if err != nil {
 		writePipelineError(w, r, err)
 		return

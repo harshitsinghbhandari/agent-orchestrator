@@ -459,6 +459,7 @@ func harvestCommandFindings(ex commandExit, out Outcome) Outcome {
 	}
 
 	out.Artifacts = append(out.Artifacts, result.artifacts...)
+	out.StatusChanges = append(out.StatusChanges, result.statusChanges...)
 	if result.truncated {
 		out.Observations = append(out.Observations, Observation{
 			Name: "pipeline.findings.truncated",

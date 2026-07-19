@@ -49,6 +49,7 @@ type Engine interface {
 	TriggerRun(req engine.TriggerRequest) (pipeline.RunID, error)
 	Cancel(runID pipeline.RunID, reason pipeline.RunTerminationReason)
 	Resume(runID pipeline.RunID)
+	ChangeArtifactStatus(req engine.ArtifactStatusRequest)
 	Dispatch(event pipeline.Event)
 	State() pipeline.EngineState
 }
@@ -107,6 +108,8 @@ type Manager interface {
 	// settled run, the latest settled run's head SHA is stale relative to the
 	// PR's current head, or either argument is empty.
 	PRBlocksMerge(ctx context.Context, projectID domain.ProjectID, prURL, headSHA string) (bool, error)
+
+	UpdateArtifactStatus(ctx context.Context, projectID domain.ProjectID, runID pipeline.RunID, artifactID pipeline.ArtifactID, status pipeline.ArtifactStatus) (pipeline.Artifact, error)
 }
 
 // Service is the concrete Manager over a Store + Engines.
@@ -436,6 +439,47 @@ func (s *Service) GetArtifact(ctx context.Context, id pipeline.ArtifactID) (pipe
 			fmt.Sprintf("no artifact %q", id))
 	}
 	return art, nil
+}
+
+// UpdateArtifactStatus changes one finding's lifecycle status (e.g. a human
+// dismissing a false positive, or reopening a dismissed finding) through the
+// project engine, then returns the artifact read back from the store. The status
+// is validated against the artifact status enum; an unknown artifact, or one that
+// does not belong to the named run, is a 404. Routing through the engine (not a
+// direct store write) keeps run state owned by the actor loop and mirrors the
+// status onto the in-memory run's findings.
+func (s *Service) UpdateArtifactStatus(ctx context.Context, projectID domain.ProjectID, runID pipeline.RunID, artifactID pipeline.ArtifactID, status pipeline.ArtifactStatus) (pipeline.Artifact, error) {
+	// Restrict the human path to the same subset the findings-file status records
+	// allow: sent_to_agent is engine-internal and never set from the outside.
+	switch status {
+	case pipeline.ArtifactStatusOpen, pipeline.ArtifactStatusResolved, pipeline.ArtifactStatusDismissed:
+	default:
+		return pipeline.Artifact{}, apierr.Invalid("PIPELINE_ARTIFACT_STATUS_INVALID",
+			fmt.Sprintf("status must be one of open|resolved|dismissed, got %q", status), nil)
+	}
+	art, ok, err := s.store.GetPipelineArtifact(ctx, artifactID)
+	if err != nil {
+		return pipeline.Artifact{}, err
+	}
+	if !ok || art.PipelineRunID != runID {
+		return pipeline.Artifact{}, apierr.NotFound("PIPELINE_ARTIFACT_NOT_FOUND",
+			fmt.Sprintf("no artifact %q on run %q", artifactID, runID))
+	}
+
+	eng, err := s.engines.For(ctx, projectID)
+	if err != nil {
+		return pipeline.Artifact{}, err
+	}
+	eng.ChangeArtifactStatus(engine.ArtifactStatusRequest{
+		RunID:      runID,
+		StageRunID: art.StageRunID,
+		ArtifactID: artifactID,
+		Status:     status,
+		Actor:      "user",
+	})
+	// ChangeArtifactStatus is synchronous on the engine actor (the UPDATE effect
+	// runs before it returns), so the read-back reflects the new status.
+	return s.GetArtifact(ctx, artifactID)
 }
 
 // parse validates raw YAML, passing a *pipeline.ValidationError (the full issue

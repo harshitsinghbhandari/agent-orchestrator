@@ -349,6 +349,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change a pipeline finding's lifecycle status (dismiss, reopen, resolve) */
+        post: operations["updatePipelineArtifactStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pipelines/runs/{runId}/cancel": {
         parameters: {
             query?: never;
@@ -927,6 +944,10 @@ export interface components {
             terminalHandleId?: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        ControllersUpdatePipelineArtifactStatusRequest: {
+            /** @description New artifact status: open | resolved | dismissed. */
+            status: string;
         };
         DegradedProject: {
             id: string;
@@ -2707,6 +2728,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PipelineArtifactResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updatePipelineArtifactStatus: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+                /** @description Artifact identifier. */
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersUpdatePipelineArtifactStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineArtifactResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

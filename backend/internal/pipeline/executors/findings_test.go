@@ -171,6 +171,53 @@ func TestParseFindings_CapTriggersTruncation(t *testing.T) {
 	}
 }
 
+func TestParseFindings_StatusRecords(t *testing.T) {
+	path := writeFindings(t,
+		findingLine(t, 0.9, "error"),
+		`{"kind":"status","fingerprint":"abc123","status":"resolved"}`,
+		`{"kind":"status","fingerprint":"def456","status":"dismissed"}`,
+		`{"kind":"status","fingerprint":"ghi789","status":"open"}`,
+	)
+	res, err := parseFindingsFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.artifacts) != 1 {
+		t.Fatalf("want 1 artifact (status records are not artifacts), got %d", len(res.artifacts))
+	}
+	if len(res.statusChanges) != 3 {
+		t.Fatalf("want 3 status changes, got %d", len(res.statusChanges))
+	}
+	want := []pipeline.FindingStatusChange{
+		{Fingerprint: "abc123", Status: pipeline.ArtifactStatusResolved},
+		{Fingerprint: "def456", Status: pipeline.ArtifactStatusDismissed},
+		{Fingerprint: "ghi789", Status: pipeline.ArtifactStatusOpen},
+	}
+	for i, w := range want {
+		if res.statusChanges[i] != w {
+			t.Errorf("statusChanges[%d] = %+v, want %+v", i, res.statusChanges[i], w)
+		}
+	}
+}
+
+func TestParseFindings_StatusRecordBadShapeFails(t *testing.T) {
+	cases := map[string]string{
+		"bad status value":     `{"kind":"status","fingerprint":"abc","status":"nonsense"}`,
+		"sent_to_agent barred": `{"kind":"status","fingerprint":"abc","status":"sent_to_agent"}`,
+		"missing fingerprint":  `{"kind":"status","status":"resolved"}`,
+		"empty fingerprint":    `{"kind":"status","fingerprint":"   ","status":"resolved"}`,
+		"missing status":       `{"kind":"status","fingerprint":"abc"}`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeFindings(t, line)
+			if _, err := parseFindingsFile(path); err == nil {
+				t.Fatalf("%s: expected a hard parse error", name)
+			}
+		})
+	}
+}
+
 func TestParseFindings_MissingFile(t *testing.T) {
 	_, err := parseFindingsFile(filepath.Join(t.TempDir(), "nope.jsonl"))
 	if err == nil {

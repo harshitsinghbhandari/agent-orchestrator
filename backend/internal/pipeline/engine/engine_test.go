@@ -39,6 +39,7 @@ type fakeExecutor struct {
 	ready     map[string]bool
 	started   map[string]int
 	cancelled map[string]int
+	lastInput map[string]executors.StartInput
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -48,6 +49,7 @@ func newFakeExecutor() *fakeExecutor {
 		ready:     map[string]bool{},
 		started:   map[string]int{},
 		cancelled: map[string]int{},
+		lastInput: map[string]executors.StartInput{},
 	}
 }
 
@@ -58,7 +60,25 @@ func (f *fakeExecutor) Start(_ context.Context, in executors.StartInput) (execut
 		return nil, err
 	}
 	f.started[in.Stage.Name]++
+	f.lastInput[in.Stage.Name] = in
 	return fakeHandle{runID: in.RunID, stageRunID: in.StageRunID, stageName: in.Stage.Name}, nil
+}
+
+// completeStatus scripts a stage to complete emitting only {kind:"status"} status
+// changes (no artifacts): a verify/summarize stage acting on upstream findings.
+func (f *fakeExecutor) completeStatus(stage string, changes ...pipeline.FindingStatusChange) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outcome[stage] = executors.Outcome{Status: executors.OutcomeCompleted, Verdict: pipeline.VerdictNeutral, StatusChanges: changes}
+	f.ready[stage] = true
+}
+
+// upstreamInput returns the StartInput the stage was last started with, for
+// asserting resolved upstream findings.
+func (f *fakeExecutor) upstreamInput(stage string) executors.StartInput {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastInput[stage]
 }
 
 func (f *fakeExecutor) Poll(_ context.Context, h executors.Handle) (executors.Outcome, error) {
@@ -566,5 +586,187 @@ func TestStageAutoRetryViaEngine(t *testing.T) {
 	}
 	if got := final.Stages["review"]; got.Status != pipeline.StageStatusFailed || got.Attempt != 2 {
 		t.Fatalf("review stage = %+v, want failed attempt=2", got)
+	}
+}
+
+// TestUpstreamFindingsThreadedToDownstreamStage drives scan -> verify (dependsOn
+// scan) and asserts the engine resolves scan's finding onto verify's StartInput,
+// while scan itself (no dependsOn) receives none.
+func TestUpstreamFindingsThreadedToDownstreamStage(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	p := pipelineOf("verify-loop", 1, agentStage("scan"), agentStage("verify", "scan"))
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	// scan gets no upstream (no dependsOn).
+	if up := fake.upstreamInput("scan").UpstreamFindings; len(up) != 0 {
+		t.Fatalf("scan should have no upstream findings, got %d", len(up))
+	}
+
+	// Complete scan with a finding; the tick starts verify with that finding
+	// resolved onto its input.
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick()
+
+	if fake.startCount("verify") != 1 {
+		t.Fatalf("verify started %d times, want 1", fake.startCount("verify"))
+	}
+	up := fake.upstreamInput("verify").UpstreamFindings
+	if len(up) != 1 {
+		t.Fatalf("verify upstream findings = %d, want 1", len(up))
+	}
+	if up[0].StageName != "scan" || up[0].Title != "bug" || up[0].Fingerprint == "" {
+		t.Fatalf("verify upstream finding = %+v, want scan's fingerprinted bug", up[0])
+	}
+	_ = runID
+}
+
+// TestStatusRecordFlipsFindingStatus drives scan -> verify where verify emits a
+// {kind:"status"} record dismissing scan's finding, then asserts the finding's
+// status flips both in engine state and in the persisted store.
+func TestStatusRecordFlipsFindingStatus(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	p := pipelineOf("verify-loop", 1, agentStage("scan"), agentStage("verify", "scan"))
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick() // scan completes, verify starts
+
+	fp := e.State().Runs[runID].Findings[0].Fingerprint
+	artifactID := e.State().Runs[runID].Findings[0].ArtifactID
+	if fp == "" {
+		t.Fatal("scan finding has no fingerprint")
+	}
+
+	// verify dismisses scan's finding by fingerprint.
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusDismissed})
+	e.Tick() // verify completes, status change applied, run terminates
+
+	run := e.State().Runs[runID]
+	if run.Findings[0].Status != pipeline.ArtifactStatusDismissed {
+		t.Fatalf("in-memory finding status = %s, want dismissed", run.Findings[0].Status)
+	}
+
+	art, ok, err := store.GetPipelineArtifact(ctx, artifactID)
+	if err != nil || !ok {
+		t.Fatalf("get persisted artifact: ok=%v err=%v", ok, err)
+	}
+	if art.Status != pipeline.ArtifactStatusDismissed {
+		t.Fatalf("persisted artifact status = %s, want dismissed", art.Status)
+	}
+}
+
+// TestStatusRecordUnknownFingerprintTolerated asserts a status record naming a
+// fingerprint that matches no finding emits an observation and does NOT fail the
+// stage or run.
+func TestStatusRecordUnknownFingerprintTolerated(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	sink := &captureSink{}
+	e := newTestEngine(t, "mer", store, fake, sink)
+
+	p := pipelineOf("verify-loop", 1, agentStage("scan"), agentStage("verify", "scan"))
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick()
+
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: "does-not-exist", Status: pipeline.ArtifactStatusResolved})
+	e.Tick()
+
+	if n := sink.count("pipeline.status.unknown_fingerprint"); n != 1 {
+		t.Fatalf("unknown_fingerprint observation count = %d, want 1", n)
+	}
+	run := e.State().Runs[runID]
+	if run.Stages["verify"].Status != pipeline.StageStatusSucceeded {
+		t.Fatalf("verify stage = %s, want succeeded (unknown fp must not fail it)", run.Stages["verify"].Status)
+	}
+	// scan's finding stays open (nothing matched).
+	if run.Findings[0].Status != pipeline.ArtifactStatusOpen {
+		t.Fatalf("finding status = %s, want open (untouched)", run.Findings[0].Status)
+	}
+}
+
+// TestLastStageResolveMakesDoneFire proves the exit decision sees post-flip
+// finding statuses: a verify stage resolving the only open finding must make a
+// no_open_findings `done` predicate fire (LoopDone), not stall. This only holds
+// because status records are applied in the reducer BEFORE decideRunExit.
+func TestLastStageResolveMakesDoneFire(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	p := pipelineOf("verify-loop", 1, agentStage("scan"), agentStage("verify", "scan"))
+	p.ExitPredicates = &pipeline.ExitPredicates{Done: &pipeline.Predicate{Kind: pipeline.PredicateNoOpenFindings}}
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick() // scan done (finding open), verify starts
+
+	fp := e.State().Runs[runID].Findings[0].Fingerprint
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusResolved})
+	e.Tick() // verify done; resolve applied before the exit decision
+
+	run := e.State().Runs[runID]
+	if run.LoopState != pipeline.LoopDone {
+		t.Fatalf("loop state = %s/%s, want done (resolved finding must satisfy no_open_findings)", run.LoopState, run.TerminationReason)
+	}
+	if run.Findings[0].Status != pipeline.ArtifactStatusResolved {
+		t.Fatalf("finding status = %s, want resolved", run.Findings[0].Status)
+	}
+}
+
+// TestLastStageReopenPreventsDone is the mirror: a finding resolved by an earlier
+// stage but reopened by the last stage must leave a no_open_findings `done`
+// predicate unmet, so the run stalls instead of reporting done.
+func TestLastStageReopenPreventsDone(t *testing.T) {
+	store := newTestStore(t, "mer")
+	fake := newFakeExecutor()
+	e := newTestEngine(t, "mer", store, fake, nil)
+
+	p := pipelineOf("verify-loop", 1,
+		agentStage("scan"),
+		agentStage("triage", "scan"),
+		agentStage("verify", "triage"))
+	p.ExitPredicates = &pipeline.ExitPredicates{Done: &pipeline.Predicate{Kind: pipeline.PredicateNoOpenFindings}}
+	runID, err := e.TriggerRun(TriggerRequest{Pipeline: p, SessionID: "mer-1", HeadSHA: "sha1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("scan", pipeline.VerdictPass, finding("bug"))
+	e.Tick() // scan done, triage starts
+	fp := e.State().Runs[runID].Findings[0].Fingerprint
+
+	fake.completeStatus("triage", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusResolved})
+	e.Tick() // triage done (finding resolved), verify starts
+
+	fake.completeStatus("verify", pipeline.FindingStatusChange{Fingerprint: fp, Status: pipeline.ArtifactStatusOpen})
+	e.Tick() // verify done; reopen applied before the exit decision
+
+	run := e.State().Runs[runID]
+	if run.LoopState != pipeline.LoopStalled || run.TerminationReason != pipeline.TerminationDonePredicateUnmet {
+		t.Fatalf("loop state = %s/%s, want stalled/done_predicate_unmet (reopened finding blocks done)", run.LoopState, run.TerminationReason)
+	}
+	if run.Findings[0].Status != pipeline.ArtifactStatusOpen {
+		t.Fatalf("finding status = %s, want open (reopened)", run.Findings[0].Status)
 	}
 }

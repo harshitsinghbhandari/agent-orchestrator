@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
 )
@@ -26,10 +27,26 @@ var stageFindingsRelativePath = filepath.Join(".ao", pipeline.FindingsFilename)
 // parseResult is the outcome of harvesting a findings file.
 type parseResult struct {
 	artifacts []pipeline.ArtifactInput
+	// statusChanges are {kind:"status"} records: a stage asking to flip an
+	// existing finding's lifecycle status by fingerprint. Unknown fingerprints
+	// are resolved (and tolerated) by the reducer, not here.
+	statusChanges []pipeline.FindingStatusChange
 	// truncated is true when the cap fired and trailing lines were dropped.
 	truncated bool
 	// bytesRead is how many bytes were consumed before stopping.
 	bytesRead int64
+}
+
+// statusRecordKind is the JSONL "kind" value marking a status record.
+const statusRecordKind = "status"
+
+// validRecordStatuses are the statuses a {kind:"status"} record may set. It is
+// the human/agent-settable subset of the artifact status enum: sent_to_agent is
+// engine-internal and never authored in a findings file.
+var validRecordStatuses = map[pipeline.ArtifactStatus]bool{
+	pipeline.ArtifactStatusOpen:      true,
+	pipeline.ArtifactStatusResolved:  true,
+	pipeline.ArtifactStatusDismissed: true,
 }
 
 // validSeverities are the finding severities the coercion accepts.
@@ -63,6 +80,7 @@ func parseFindingsFile(path string) (parseResult, error) {
 
 	reader := bufio.NewReader(f)
 	var out []pipeline.ArtifactInput
+	var statusChanges []pipeline.FindingStatusChange
 	var bytesRead int64
 	lineNo := 0
 	truncated := false
@@ -84,7 +102,7 @@ func parseFindingsFile(path string) (parseResult, error) {
 		trimmed := trimLine(line)
 		if trimmed != "" {
 			lineNo++
-			artifact, perr := coerceArtifactInput([]byte(trimmed))
+			artifact, status, perr := parseRecord([]byte(trimmed))
 			if perr != nil {
 				if torn {
 					// Tolerate a torn final line: drop it rather than failing an
@@ -93,7 +111,11 @@ func parseFindingsFile(path string) (parseResult, error) {
 				}
 				return parseResult{}, fmt.Errorf("line %d: %w", lineNo, perr)
 			}
-			out = append(out, artifact)
+			if status != nil {
+				statusChanges = append(statusChanges, *status)
+			} else {
+				out = append(out, artifact)
+			}
 		}
 
 		if readErr != nil {
@@ -106,7 +128,55 @@ func parseFindingsFile(path string) (parseResult, error) {
 		}
 	}
 
-	return parseResult{artifacts: out, truncated: truncated, bytesRead: bytesRead}, nil
+	return parseResult{artifacts: out, statusChanges: statusChanges, truncated: truncated, bytesRead: bytesRead}, nil
+}
+
+// parseRecord classifies one JSONL record. A {kind:"status"} record yields a
+// non-nil FindingStatusChange (and a zero ArtifactInput); every other kind is
+// coerced into an ArtifactInput. Exactly one of the two returns is meaningful.
+func parseRecord(raw []byte) (pipeline.ArtifactInput, *pipeline.FindingStatusChange, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return pipeline.ArtifactInput{}, nil, err
+	}
+	var kind string
+	if k, ok := probe["kind"]; ok {
+		_ = json.Unmarshal(k, &kind)
+	}
+	if kind == statusRecordKind {
+		sc, err := coerceStatusChange(probe, raw)
+		if err != nil {
+			return pipeline.ArtifactInput{}, nil, err
+		}
+		return pipeline.ArtifactInput{}, &sc, nil
+	}
+	art, err := coerceArtifactInput(raw)
+	return art, nil, err
+}
+
+// coerceStatusChange validates one {kind:"status"} record: it needs a non-empty
+// fingerprint and a status in the settable subset (open|resolved|dismissed). A
+// bad status or missing field fails the harvest so a human inspects a genuinely
+// malformed file; an unknown fingerprint is NOT rejected here (the parser cannot
+// know the run's fingerprints; the engine tolerates it with an observation).
+func coerceStatusChange(probe map[string]json.RawMessage, raw []byte) (pipeline.FindingStatusChange, error) {
+	if err := requireFields(probe, "fingerprint", "status"); err != nil {
+		return pipeline.FindingStatusChange{}, err
+	}
+	var rec struct {
+		Fingerprint string                  `json:"fingerprint"`
+		Status      pipeline.ArtifactStatus `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return pipeline.FindingStatusChange{}, err
+	}
+	if strings.TrimSpace(rec.Fingerprint) == "" {
+		return pipeline.FindingStatusChange{}, errors.New(`"status" record requires a non-empty "fingerprint"`)
+	}
+	if !validRecordStatuses[rec.Status] {
+		return pipeline.FindingStatusChange{}, fmt.Errorf(`field "status" must be one of "open", "resolved", "dismissed", got %q`, rec.Status)
+	}
+	return pipeline.FindingStatusChange{Fingerprint: rec.Fingerprint, Status: rec.Status}, nil
 }
 
 // coerceArtifactInput validates one JSONL record into an ArtifactInput,

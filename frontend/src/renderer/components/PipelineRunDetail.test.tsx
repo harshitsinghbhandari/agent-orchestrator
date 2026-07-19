@@ -144,4 +144,42 @@ describe("PipelineRunDetail", () => {
 
 		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
 	});
+
+	it("dismisses an open finding via the artifact-status endpoint", async () => {
+		setRun(detail({ findings: [finding({ artifactId: "f1", title: "Open bug" })] }));
+		renderDetail("proj-9");
+
+		const row = screen.getByText("Open bug").closest("[data-finding]") as HTMLElement;
+		await userEvent.setup().click(within(row).getByRole("button", { name: "Dismiss" }));
+
+		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+		expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", {
+			params: { path: { runId: "run-1", artifactId: "f1" }, query: { project: "proj-9" } },
+			body: { status: "dismissed" },
+		});
+	});
+
+	it("reopens a dismissed finding with status open", async () => {
+		setRun(detail({ findings: [finding({ artifactId: "f2", title: "Nit", status: "dismissed" })] }));
+		renderDetail("proj-9");
+
+		// Reveal the dismissed row first.
+		await userEvent.setup().click(screen.getByRole("switch"));
+		const row = screen.getByText("Nit").closest("[data-finding]") as HTMLElement;
+		await userEvent.setup().click(within(row).getByRole("button", { name: "Undo" }));
+
+		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+		expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", {
+			params: { path: { runId: "run-1", artifactId: "f2" }, query: { project: "proj-9" } },
+			body: { status: "open" },
+		});
+	});
+
+	it("disables the dismiss button when the run's project is unknown", () => {
+		setRun(detail({ findings: [finding({ artifactId: "f1", title: "Open bug" })] }));
+		renderDetail(undefined);
+
+		const row = screen.getByText("Open bug").closest("[data-finding]") as HTMLElement;
+		expect(within(row).getByRole("button", { name: "Dismiss" })).toBeDisabled();
+	});
 });

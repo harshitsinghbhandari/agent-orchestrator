@@ -431,17 +431,52 @@ func (e *Engine) startInput(run pipeline.RunState, eff pipeline.StartStage) exec
 	loopRound := run.LoopRounds
 	allowFork := run.PipelineConfigSnapshot.AllowForkPRs != nil && *run.PipelineConfigSnapshot.AllowForkPRs
 	return executors.StartInput{
-		PipelineName:    run.PipelineName,
-		ProjectID:       string(e.projectID),
-		RunID:           eff.RunID,
-		StageRunID:      eff.StageRunID,
-		Stage:           eff.Stage,
-		IssueID:         run.Context.IssueID,
-		LoopRound:       &loopRound,
-		LinkedSessionID: run.SessionID,
-		AllowForkPRs:    allowFork,
-		Context:         run.Context,
+		PipelineName:     run.PipelineName,
+		ProjectID:        string(e.projectID),
+		RunID:            eff.RunID,
+		StageRunID:       eff.StageRunID,
+		Stage:            eff.Stage,
+		IssueID:          run.Context.IssueID,
+		LoopRound:        &loopRound,
+		LinkedSessionID:  run.SessionID,
+		AllowForkPRs:     allowFork,
+		Context:          run.Context,
+		UpstreamFindings: upstreamFindings(run, eff.Stage.DependsOn),
 	}
+}
+
+// upstreamFindings resolves the finding artifacts produced by a stage's
+// dependsOn stages, read from the run's in-memory materialized findings (the
+// same set the builtin dispatcher fetches from the store, but already
+// denormalized: finding artifacts are mirrored onto run.Findings by
+// finalizeStageCompletion, so no store round-trip is needed here).
+// The result is a flat slice sorted by stage name then fingerprint so the agent
+// prompt is deterministic. Returns nil when the stage has no dependsOn or no
+// upstream findings exist yet.
+func upstreamFindings(run pipeline.RunState, dependsOn []string) []pipeline.Artifact {
+	if len(dependsOn) == 0 || len(run.Findings) == 0 {
+		return nil
+	}
+	deps := make(map[string]bool, len(dependsOn))
+	for _, d := range dependsOn {
+		deps[d] = true
+	}
+	var out []pipeline.Artifact
+	for _, f := range run.Findings {
+		if f.Kind == pipeline.ArtifactKindFinding && deps[f.StageName] {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StageName != out[j].StageName {
+			return out[i].StageName < out[j].StageName
+		}
+		return out[i].Fingerprint < out[j].Fingerprint
+	})
+	return out
 }
 
 func (e *Engine) cancelStage(eff pipeline.CancelStage) {
@@ -503,7 +538,10 @@ func (e *Engine) pollInflight() {
 		}
 		delete(e.inflight, k)
 		if outcome.Status == executors.OutcomeCompleted {
-			e.reduceAndExecute(pipeline.StageCompleted{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), Verdict: outcome.Verdict, Artifacts: outcome.Artifacts, Output: outcome.Output})
+			// StatusChanges ride the event so the reducer applies them (to
+			// run.Findings and the store) before the exit decision, letting a
+			// last-stage resolve/reopen change whether the run is done.
+			e.reduceAndExecute(pipeline.StageCompleted{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), Verdict: outcome.Verdict, Artifacts: outcome.Artifacts, StatusChanges: outcome.StatusChanges, Output: outcome.Output})
 		} else {
 			e.reduceAndExecute(pipeline.StageFailed{Now: e.now(), RunID: h.RunID(), StageName: h.StageName(), ErrorMessage: outcome.ErrorMessage, Output: outcome.Output})
 		}

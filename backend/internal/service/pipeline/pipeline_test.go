@@ -65,6 +65,13 @@ func (f *fakeExecutor) fail(stage, msg string) {
 	f.ready[stage] = true
 }
 
+func (f *fakeExecutor) complete(stage string, arts ...pipeline.ArtifactInput) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outcome[stage] = executors.Outcome{Status: executors.OutcomeCompleted, Verdict: pipeline.VerdictPass, Artifacts: arts}
+	f.ready[stage] = true
+}
+
 // staticEngines hands the same engine back for any project.
 type staticEngines struct{ eng Engine }
 
@@ -399,5 +406,72 @@ func TestPRBlocksMerge(t *testing.T) {
 	check("", false)
 	if got, _ := svc.PRBlocksMerge(ctx, "mer", "", "sha1"); got {
 		t.Fatal("empty prURL should be no opinion")
+	}
+}
+
+// TestUpdateArtifactStatusDismissAndReopen drives a run that emits a finding,
+// then dismisses it through the service and reopens it, asserting the status
+// flips durably each time and that bad inputs are rejected.
+func TestUpdateArtifactStatusDismissAndReopen(t *testing.T) {
+	ctx := context.Background()
+	svc, eng, store, fake := newHarness(t)
+	if _, err := svc.CreateDefinition(ctx, "mer", reviewYAML); err != nil {
+		t.Fatalf("create definition: %v", err)
+	}
+	runID, err := svc.TriggerRun(ctx, "mer", TriggerInput{Ref: "review", SessionID: "mer-1"})
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+
+	fake.complete("review", pipeline.ArtifactInput{
+		Kind: pipeline.ArtifactKindFinding, FilePath: "main.go", StartLine: 1, EndLine: 2,
+		Title: "bug", Category: "correctness", Severity: pipeline.SeverityError,
+	})
+	eng.Tick()
+
+	run, err := svc.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if len(run.Findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(run.Findings))
+	}
+	artID := run.Findings[0].ArtifactID
+
+	// Dismiss.
+	got, err := svc.UpdateArtifactStatus(ctx, "mer", runID, artID, pipeline.ArtifactStatusDismissed)
+	if err != nil {
+		t.Fatalf("dismiss: %v", err)
+	}
+	if got.Status != pipeline.ArtifactStatusDismissed {
+		t.Fatalf("returned status = %s, want dismissed", got.Status)
+	}
+	persisted, _, _ := store.GetPipelineArtifact(ctx, artID)
+	if persisted.Status != pipeline.ArtifactStatusDismissed {
+		t.Fatalf("persisted status = %s, want dismissed", persisted.Status)
+	}
+
+	// Reopen.
+	got, err = svc.UpdateArtifactStatus(ctx, "mer", runID, artID, pipeline.ArtifactStatusOpen)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got.Status != pipeline.ArtifactStatusOpen {
+		t.Fatalf("returned status = %s, want open", got.Status)
+	}
+
+	// Bad status is rejected before touching the engine.
+	if _, err := svc.UpdateArtifactStatus(ctx, "mer", runID, artID, pipeline.ArtifactStatus("nonsense")); err == nil {
+		t.Fatal("bad status must error")
+	}
+
+	// Unknown artifact is a 404-style error.
+	if _, err := svc.UpdateArtifactStatus(ctx, "mer", runID, "no-such-artifact", pipeline.ArtifactStatusDismissed); err == nil {
+		t.Fatal("unknown artifact must error")
+	}
+
+	// An artifact that belongs to a different run is not found on this run.
+	if _, err := svc.UpdateArtifactStatus(ctx, "mer", "run-other", artID, pipeline.ArtifactStatusDismissed); err == nil {
+		t.Fatal("artifact on a mismatched run must error")
 	}
 }

@@ -85,7 +85,7 @@ func (e *AgentExecutor) Start(ctx context.Context, in StartInput) (Handle, error
 		return nil, fmt.Errorf("agent executor cannot start stage %q with executor.kind=%s", in.Stage.Name, in.Stage.Executor.Kind)
 	}
 
-	prompt := buildStagePrompt(in.PipelineName, in.Stage, in.LoopRound, in.Context)
+	prompt := buildStagePrompt(in.PipelineName, in.Stage, in.LoopRound, in.Context, in.UpstreamFindings)
 	session, err := e.sessions.Spawn(ctx, SpawnRequest{
 		ProjectID: in.ProjectID,
 		IssueID:   in.IssueID,
@@ -156,7 +156,7 @@ func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Outcome, error) {
 
 	_ = e.sessions.Kill(ctx, handle.sessionID)
 
-	outcome := Outcome{Status: OutcomeCompleted, Artifacts: result.artifacts}
+	outcome := Outcome{Status: OutcomeCompleted, Artifacts: result.artifacts, StatusChanges: result.statusChanges}
 	if result.truncated {
 		outcome.Observations = []Observation{{
 			Name: "pipeline.findings.truncated",

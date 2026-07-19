@@ -490,6 +490,19 @@ func pipelineOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", id: "updatePipelineArtifactStatus", tag: "pipelines",
+			summary:    "Change a pipeline finding's lifecycle status (dismiss, reopen, resolve)",
+			pathParams: []any{controllers.PipelineArtifactIDParam{}, controllers.PipelineProjectQuery{}},
+			reqBody:    controllers.UpdatePipelineArtifactStatusRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.PipelineArtifactResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodPut, path: "/api/v1/pipelines/{id}", id: "updatePipelineDefinition", tag: "pipelines",
 			summary:    "Update a pipeline definition's YAML",
 			pathParams: []any{controllers.PipelineIDParam{}},

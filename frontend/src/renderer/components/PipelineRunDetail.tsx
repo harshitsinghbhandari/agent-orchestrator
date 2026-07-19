@@ -133,7 +133,13 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 				</div>
 				<div className="flex flex-col gap-2">
 					{findings.map((finding) => (
-						<FindingRow key={finding.artifactId} finding={finding} />
+						<FindingRow
+							key={finding.artifactId}
+							finding={finding}
+							runId={runId}
+							project={project}
+							onChanged={refresh}
+						/>
 					))}
 					{findings.length === 0 && <p className="text-caption text-passive">No findings.</p>}
 				</div>
@@ -182,17 +188,45 @@ function StageRow({ stage }: { stage: PipelineStageView }) {
 	);
 }
 
-function FindingRow({ finding }: { finding: PipelineArtifact }) {
+function FindingRow({
+	finding,
+	runId,
+	project,
+	onChanged,
+}: {
+	finding: PipelineArtifact;
+	runId: string;
+	project?: string;
+	onChanged: () => void;
+}) {
+	const [error, setError] = useState<string | null>(null);
 	const location = finding.filePath
 		? `${finding.filePath}${finding.startLine ? `:${finding.startLine}` : ""}`
 		: undefined;
+	const isDismissed = finding.status === "dismissed";
+
+	// Dismiss hides a false-positive finding so it stops blocking no_open_findings
+	// gates; Undo reopens it. Both POST the new status, then invalidate on success.
+	const setStatus = useMutation({
+		mutationFn: async (status: "open" | "dismissed") => {
+			if (!project) throw new Error("Project is unknown for this run");
+			const { error: apiError } = await apiClient.POST("/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", {
+				params: { path: { runId, artifactId: finding.artifactId }, query: { project } },
+				body: { status },
+			});
+			if (apiError) throw new Error(apiErrorMessage(apiError));
+		},
+		onSuccess: () => {
+			setError(null);
+			onChanged();
+		},
+		onError: (e: unknown) => setError(e instanceof Error ? e.message : "Action failed"),
+	});
+
 	return (
 		<div
 			data-finding={finding.artifactId}
-			className={cn(
-				"rounded-md border border-border bg-card px-3 py-2",
-				finding.status === "dismissed" && "opacity-60",
-			)}
+			className={cn("rounded-md border border-border bg-card px-3 py-2", isDismissed && "opacity-60")}
 		>
 			<div className="flex flex-wrap items-center gap-2">
 				<span className="truncate text-caption font-medium text-foreground">{finding.title || "(untitled)"}</span>
@@ -202,9 +236,22 @@ function FindingRow({ finding }: { finding: PipelineArtifact }) {
 					<span className="font-mono text-micro text-passive">· {Math.round(finding.confidence * 100)}%</span>
 				)}
 				<span className="ml-auto font-mono text-micro text-passive">{finding.stageName}</span>
+				{finding.kind === "finding" && (
+					<Button
+						size="sm"
+						variant="ghost"
+						className="h-6 px-2 text-micro"
+						disabled={setStatus.isPending || !project}
+						title={project ? undefined : "Open this run from the board to change findings"}
+						onClick={() => setStatus.mutate(isDismissed ? "open" : "dismissed")}
+					>
+						{setStatus.isPending ? "…" : isDismissed ? "Undo" : "Dismiss"}
+					</Button>
+				)}
 			</div>
 			{location && <p className="mt-0.5 font-mono text-micro text-passive">{location}</p>}
 			{finding.description && <p className="mt-1 text-micro text-muted-foreground">{finding.description}</p>}
+			{error && <p className="mt-1 font-mono text-micro text-error">{error}</p>}
 		</div>
 	);
 }

@@ -933,6 +933,70 @@ paths:
       summary: Fetch one pipeline run artifact by id
       tags:
       - pipelines
+  /api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status:
+    post:
+      operationId: updatePipelineArtifactStatus
+      parameters:
+      - description: Pipeline run identifier.
+        in: path
+        name: runId
+        required: true
+        schema:
+          description: Pipeline run identifier.
+          type: string
+      - description: Artifact identifier.
+        in: path
+        name: artifactId
+        required: true
+        schema:
+          description: Artifact identifier.
+          type: string
+      - description: Project id the pipeline belongs to (required).
+        in: query
+        name: project
+        schema:
+          description: Project id the pipeline belongs to (required).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersUpdatePipelineArtifactStatusRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineArtifactResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Change a pipeline finding's lifecycle status (dismiss, reopen, resolve)
+      tags:
+      - pipelines
   /api/v1/pipelines/runs/{runId}/cancel:
     post:
       operationId: cancelPipelineRun
@@ -2585,6 +2649,14 @@ components:
       - updatedAt
       - status
       - prs
+      type: object
+    ControllersUpdatePipelineArtifactStatusRequest:
+      properties:
+        status:
+          description: 'New artifact status: open | resolved | dismissed.'
+          type: string
+      required:
+      - status
       type: object
     DegradedProject:
       properties:
