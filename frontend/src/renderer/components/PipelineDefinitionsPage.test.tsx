@@ -147,6 +147,13 @@ describe("PipelineDefinitionsPage", () => {
 		const user = userEvent.setup();
 
 		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
+		await user.click(screen.getByRole("radio", { name: /Blank canvas/ }));
+		await user.click(screen.getByRole("button", { name: "Create" }));
+
+		// Blank canvas opens the editor in canvas view.
+		expect(screen.getByTestId("pipeline-canvas")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("radio", { name: "YAML" }));
 		const editor = screen.getByLabelText("Pipeline YAML");
 		await user.clear(editor);
 		await user.type(editor, "name: created");
@@ -164,10 +171,9 @@ describe("PipelineDefinitionsPage", () => {
 
 	it("toggles between YAML and Canvas views and defaults to YAML", async () => {
 		renderPage();
-		await screen.findByText("review");
 		const user = userEvent.setup();
 
-		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
+		await user.click(await screen.findByRole("button", { name: "Edit" }));
 		// YAML mode by default: the editor is mounted, the canvas is not.
 		expect(screen.getByLabelText("Pipeline YAML")).toBeInTheDocument();
 		expect(screen.queryByTestId("pipeline-canvas")).not.toBeInTheDocument();
@@ -180,6 +186,83 @@ describe("PipelineDefinitionsPage", () => {
 		await user.click(screen.getByRole("radio", { name: "Split" }));
 		expect(screen.getByTestId("pipeline-canvas")).toBeInTheDocument();
 		expect(screen.getByLabelText("Pipeline YAML")).toBeInTheDocument();
+	});
+
+	it("creates from a blank canvas with an empty graph", async () => {
+		renderPage();
+		await screen.findByText("review");
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
+		await user.click(screen.getByRole("radio", { name: /Blank canvas/ }));
+		await user.click(screen.getByRole("button", { name: "Create" }));
+
+		expect(screen.getByTestId("pipeline-canvas")).toBeInTheDocument();
+		expect(screen.getByTestId("canvas-stages")).toHaveTextContent("");
+		expect(screen.queryByLabelText("Pipeline YAML")).not.toBeInTheDocument();
+	});
+
+	it("creates from a template, edits, saves, and returns to the list", async () => {
+		renderPage();
+		await screen.findByText("review");
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
+		await user.click(screen.getByRole("radio", { name: /From template/ }));
+		await user.click(screen.getByRole("radio", { name: "PR review loop" }));
+		await user.click(screen.getByRole("button", { name: "Create" }));
+
+		expect(screen.getByTestId("canvas-stages")).toHaveTextContent(
+			"review-correctness,review-security,review-style,compose-findings,triage,fix,verify,route",
+		);
+
+		await user.click(screen.getByRole("button", { name: "mock-add-stage" }));
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() => {
+			const call = postMock.mock.calls.find(([url]) => url === "/api/v1/pipelines");
+			expect(call).toBeDefined();
+			const body = (call as [string, { body: { yamlSource: string } }])[1].body;
+			expect(body.yamlSource).toContain("review-correctness");
+			expect(body.yamlSource).toContain("added");
+		});
+
+		// Back to the list view.
+		await screen.findByRole("button", { name: /New pipeline/ });
+	});
+
+	it("imports pasted YAML through the modal", async () => {
+		renderPage();
+		await screen.findByText("review");
+		const user = userEvent.setup();
+		const pasted = "name: imported\nstages:\n  - name: one\n";
+
+		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
+		await user.click(screen.getByRole("radio", { name: /Paste YAML/ }));
+		fireEvent.change(screen.getByLabelText("Paste YAML"), { target: { value: pasted } });
+		await user.click(screen.getByRole("button", { name: "Create" }));
+
+		expect(screen.getByLabelText("Pipeline YAML")).toHaveValue(pasted);
+
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines", {
+				params: { query: { project: "proj-1" } },
+				body: { yamlSource: pasted },
+			}),
+		);
+	});
+
+	it("renders the empty state with a create call to action", async () => {
+		getMock.mockReset().mockResolvedValue({ data: { definitions: [] }, error: undefined });
+		renderPage();
+		const user = userEvent.setup();
+
+		const empty = await screen.findByTestId("pipelines-empty-state");
+		expect(within(empty).getByText("No pipelines yet")).toBeInTheDocument();
+
+		await user.click(within(empty).getByRole("button", { name: /New pipeline/ }));
+		expect(screen.getByRole("dialog", { name: "New pipeline" })).toBeInTheDocument();
 	});
 
 	it("opens the settings modal from the top bar and commits edits into the draft", async () => {
@@ -255,6 +338,9 @@ describe("PipelineDefinitionsPage", () => {
 		const user = userEvent.setup();
 
 		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
+		await user.click(screen.getByRole("radio", { name: /Blank canvas/ }));
+		await user.click(screen.getByRole("button", { name: "Create" }));
+		await user.click(screen.getByRole("radio", { name: "YAML" }));
 		await user.click(screen.getByRole("button", { name: "Save" }));
 
 		const panel = await screen.findByTestId("problems-panel");
