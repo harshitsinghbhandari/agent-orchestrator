@@ -138,7 +138,7 @@ func Run() error {
 	// Pipelines v1 (spec §4b T5/T11/T12): one actor-loop engine per project,
 	// driving the pure reducer + executors + store. Enablement resolves from the
 	// AO_PIPELINES env override (dev/CI) falling through to the persisted
-	// "pipelines.enabled" app-setting the Settings UI writes — see
+	// "pipelines.enabled" app-setting the Settings UI writes: see
 	// resolvePipelinesEnabled. When off, no engines and no CDC trigger bridge
 	// start, and Pipelines stays nil below so every API route returns 501.
 	// pipelineStk.Stop is nil-safe, so teardown needs no extra guard.
@@ -153,7 +153,6 @@ func Run() error {
 		lcStack.LCM.SetPipelineMergeGate(pipelinesSvc)
 	}
 
-	previewDone := preview.NewPoller(store, sessionSvc, "http://"+cfg.Addr(), preview.PollerConfig{Logger: log}).Start(ctx)
 	agentSvc := agentsvc.New()
 	go func() {
 		if _, err := agentSvc.Refresh(ctx); err != nil {
@@ -191,7 +190,6 @@ func Run() error {
 	})
 	if err != nil {
 		stop()
-		<-previewDone
 		pipelineStk.Stop(context.Background())
 		lcStack.Stop()
 		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
@@ -199,6 +197,7 @@ func Run() error {
 		}
 		return err
 	}
+	previewDone := preview.NewPoller(store, sessionSvc, "http://"+srv.Addr().String(), preview.PollerConfig{Logger: log}).Start(ctx)
 
 	// Late-bind: the LAN listener shares the exact loopback router instance so
 	// the LAN surface and loopback surface never drift apart.

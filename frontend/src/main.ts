@@ -21,7 +21,9 @@ import {
 	downloadUpdateNow,
 	quitAndInstallUpdate,
 	getUpdateStatus,
+	configureFeed,
 } from "./main/auto-updater";
+import { listFeatureBuilds, getActiveFeatureBuild } from "./main/feature-builds";
 import {
 	readUpdateSettings,
 	writeUpdateSettings,
@@ -1271,14 +1273,24 @@ ipcMain.handle("appState:setMigration", async (_event, migration: MigrationState
 
 ipcMain.handle("updateSettings:get", async (): Promise<UpdateSettings> => {
 	const runFile = runFilePath();
-	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false };
+	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
 	return readUpdateSettings(path.dirname(runFile));
 });
 ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) => {
 	const runFile = runFilePath();
 	if (!runFile) return;
 	await writeUpdateSettings(path.dirname(runFile), settings);
+	// Re-apply the feed immediately so pinning/unpinning a feature build takes
+	// effect without an app restart. Only meaningful in packaged builds (where
+	// electron-updater has a real feed), but safe to call in dev.
+	// Pinning flow: renderer calls updateSettings.set({...feature:{pr}}) then
+	// updates.check()->download()->install() to land on the feature build.
+	// Returning home: updateSettings.set({...feature:null}) then same sequence.
+	configureFeed(settings);
 });
+
+ipcMain.handle("featureBuilds:list", () => listFeatureBuilds());
+ipcMain.handle("featureBuilds:getActive", () => getActiveFeatureBuild());
 
 ipcMain.handle("updates:getStatus", (): UpdateStatus => getUpdateStatus());
 ipcMain.handle("updates:check", async () => {
