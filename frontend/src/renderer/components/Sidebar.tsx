@@ -15,6 +15,7 @@ import {
 	Smartphone,
 	Sun,
 	Trash2,
+	Workflow,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { UpdateStatus } from "../../main/update-settings";
@@ -31,6 +32,7 @@ import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { renameSession } from "../lib/rename-session";
 import { useEventsConnection } from "../hooks/useEventsConnection";
+import { usePipelinesEnabled } from "../hooks/usePipelinesEnabled";
 import { useResizable } from "../hooks/useResizable";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import { ConnectMobileModal } from "./ConnectMobileModal";
@@ -112,6 +114,7 @@ function useSelection() {
 		activeSessionId: params.sessionId,
 		goHome: () => void navigate({ to: "/" }),
 		goPrs: () => void navigate({ to: "/prs" }),
+		goPipelines: () => void navigate({ to: "/pipelines" }),
 		goGlobalSettings: () => void navigate({ to: "/settings" }),
 		goSettings: (projectId: string) => void navigate({ to: "/projects/$projectId/settings", params: { projectId } }),
 		goProject: (projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
@@ -142,6 +145,7 @@ export function Sidebar({
 }: SidebarProps) {
 	const selection = useSelection();
 	const eventsConnection = useEventsConnection();
+	const { enabled: pipelinesEnabled } = usePipelinesEnabled();
 	const { state, setOpen } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	const [expandedChromeVisible, setExpandedChromeVisible] = useState(!isCollapsed);
@@ -364,6 +368,12 @@ export function Sidebar({
 								<GitPullRequest aria-hidden="true" />
 								Pull requests
 							</DropdownMenuItem>
+							{pipelinesEnabled === true && (
+								<DropdownMenuItem onSelect={selection.goPipelines}>
+									<Workflow aria-hidden="true" />
+									Pipelines
+								</DropdownMenuItem>
+							)}
 							<DropdownMenuItem disabled>
 								<Search aria-hidden="true" />
 								Search
@@ -434,6 +444,12 @@ export function Sidebar({
 								<GitPullRequest aria-hidden="true" />
 								Pull requests
 							</DropdownMenuItem>
+							{pipelinesEnabled === true && (
+								<DropdownMenuItem onSelect={selection.goPipelines}>
+									<Workflow aria-hidden="true" />
+									Pipelines
+								</DropdownMenuItem>
+							)}
 							<DropdownMenuItem disabled>
 								<Search aria-hidden="true" />
 								Search
