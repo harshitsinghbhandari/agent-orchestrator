@@ -35,7 +35,8 @@ function resolveRepo(): { owner: string; repo: string } {
 // Marker embedded in feature-build release bodies by the CI workflow.
 const FEATURE_BUILD_MARKER = "<!-- ao-feature-build:";
 
-// Feature builds older than this are dropped from the list.
+// Feature builds older than this are dropped from the list, matching the
+// cleanup workflow's 7-day expiry sweep so the app and CI agree on liveness.
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface FeatureBuild {
