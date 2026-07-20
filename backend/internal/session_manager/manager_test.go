@@ -2083,7 +2083,7 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 	systemPrompt := agent.lastLaunch.SystemPrompt
 	for _, want := range []string{
 		"You are the human-facing orchestrator for project mer",
-		`ao spawn --project mer --prompt "<clear worker task>"`,
+		`ao spawn --project mer --name "<label>" --prompt "<clear worker task>"`,
 		"Before running `ao spawn`, count the `--name` label yourself",
 		"coordination-only by default",
 		"always spawn or redirect a worker session",
