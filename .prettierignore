@@ -16,6 +16,3 @@ frontend/package-lock.json
 
 # Go uses gofmt, not Prettier
 backend/
-
-# Fork-only artifact, removed before the final upstream PR (never hand-formatted).
-PIPELINES_REIMPL_SPEC.md
