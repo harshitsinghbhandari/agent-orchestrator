@@ -12,7 +12,9 @@ const DEFAULT_REPO = { owner: "AgentWrapper", repo: "agent-orchestrator" } as co
 // Resolve the GitHub repo the app updates from by reading the same bundled
 // app-update.yml that electron-updater uses. Both are baked from AO_RELEASE_REPO
 // at build time, so this keeps the feature list and the updater on the SAME repo
-// (a fork build lists that fork's feature releases, not AgentWrapper's).
+// (a fork build lists that fork's feature releases, not AgentWrapper's). The
+// list and the updater must never diverge, or the picker would offer builds
+// the updater cannot install.
 let cachedRepo: { owner: string; repo: string } | undefined;
 function resolveRepo(): { owner: string; repo: string } {
 	if (cachedRepo) return cachedRepo;
