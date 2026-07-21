@@ -1,5 +1,5 @@
 -- New-SHA cancel-and-rearm (spec decision 9) rides the CDC pr_updated event, but
--- the pr_cdc_update trigger (migration 0024) fired only when pr_state, ci_state,
+-- the pr_cdc_update trigger (migration 0040) fired only when pr_state, ci_state,
 -- review_decision, or mergeability changed. A push that changes ONLY pr.head_sha
 -- (no CI reporting yet, or a repo without CI) emitted no event, so the pipeline
 -- trigger bridge never saw the new SHA: the stale run kept running and no fresh

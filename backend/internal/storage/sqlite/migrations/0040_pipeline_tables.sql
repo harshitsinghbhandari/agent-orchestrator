@@ -94,6 +94,7 @@ WHEN OLD.activity_state <> NEW.activity_state
     OR (OLD.first_signal_at IS NULL AND NEW.first_signal_at IS NOT NULL)
     OR OLD.preview_url <> NEW.preview_url
     OR OLD.preview_revision <> NEW.preview_revision
+    OR OLD.display_name <> NEW.display_name
 BEGIN
     INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
     VALUES (NEW.project_id, NEW.id, 'session_updated',
@@ -537,6 +538,7 @@ WHEN OLD.activity_state <> NEW.activity_state
     OR (OLD.first_signal_at IS NULL AND NEW.first_signal_at IS NOT NULL)
     OR OLD.preview_url <> NEW.preview_url
     OR OLD.preview_revision <> NEW.preview_revision
+    OR OLD.display_name <> NEW.display_name
 BEGIN
     INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
     VALUES (NEW.project_id, NEW.id, 'session_updated',

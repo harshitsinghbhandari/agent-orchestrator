@@ -215,7 +215,7 @@ func (a *commandSessionsAdapter) Get(ctx context.Context, sessionID string) (exe
 		return executors.CommandSession{}, false, nil
 	}
 
-	// Fork provenance rides the pr.is_from_fork tri-state (migration 0025),
+	// Fork provenance rides the pr.is_from_fork tri-state (migration 0041),
 	// populated from the SCM observer's head-repo vs base-repo comparison. A
 	// session with no PR is ForkNo and runs normally. An attributed PR maps its
 	// stored tri-state: known-fork -> ForkYes, known-same-repo -> ForkNo, and
