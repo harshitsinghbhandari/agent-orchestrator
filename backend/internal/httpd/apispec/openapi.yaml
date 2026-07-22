@@ -97,6 +97,43 @@ paths:
       summary: Refresh the cached local agent adapter catalog
       tags:
       - agents
+  /api/v1/dev/import-projects:
+    post:
+      operationId: runDevImportProjects
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DevImportProjectsRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevImportProjectsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Run the developer project-registry import through the daemon store
+      tags:
+      - dev
   /api/v1/events:
     get:
       operationId: streamEvents
@@ -1442,6 +1479,76 @@ paths:
       summary: Resolve review threads on a pull request
       tags:
       - prs
+  /api/v1/push/devices:
+    post:
+      operationId: registerPushDevice
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterPushDeviceRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushDeviceEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Register (upsert) a phone's Expo push token
+      tags:
+      - push
+  /api/v1/push/devices/{token}:
+    delete:
+      operationId: unregisterPushDevice
+      parameters:
+      - description: Expo push token (URL-encoded) identifying the device.
+        in: path
+        name: token
+        required: true
+        schema:
+          description: Expo push token (URL-encoded) identifying the device.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnregisterPushDeviceResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Unregister a phone's Expo push token
+      tags:
+      - push
   /api/v1/sessions:
     get:
       operationId: listSessions
@@ -2448,6 +2555,114 @@ paths:
       summary: Persist the pipelines feature flag (takes effect on daemon restart)
       tags:
       - settings
+  /api/v1/shell-terminals:
+    get:
+      operationId: listShellTerminals
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListShellTerminalsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List the standalone shell terminals owned by the current app run
+      tags:
+      - shellTerminals
+    post:
+      operationId: openShellTerminal
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenShellTerminalRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellTerminalEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Open a standalone shell terminal
+      tags:
+      - shellTerminals
+  /api/v1/shell-terminals/{handleId}:
+    delete:
+      operationId: closeShellTerminal
+      parameters:
+      - description: Shell terminal runtime handle identifier.
+        in: path
+        name: handleId
+        required: true
+        schema:
+          description: Shell terminal runtime handle identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Close a standalone shell terminal and destroy its PTY
+      tags:
+      - shellTerminals
 components:
   schemas:
     APIError:
@@ -2687,6 +2902,67 @@ components:
       - id
       - deleted
       type: object
+    DevImportProjectsConflict:
+      properties:
+        path:
+          type: string
+        projectId:
+          type: string
+        reason:
+          type: string
+        targetId:
+          type: string
+        targetPath:
+          type: string
+      required:
+      - projectId
+      - path
+      - reason
+      type: object
+    DevImportProjectsReport:
+      properties:
+        conflicts:
+          items:
+            $ref: '#/components/schemas/DevImportProjectsConflict'
+          type: array
+        dryRun:
+          type: boolean
+        inserted:
+          type: integer
+        skipped:
+          type: integer
+        sourceDataDir:
+          type: string
+        targetDataDir:
+          type: string
+        updated:
+          type: integer
+      required:
+      - sourceDataDir
+      - targetDataDir
+      - dryRun
+      - inserted
+      - updated
+      - skipped
+      type: object
+    DevImportProjectsRequest:
+      properties:
+        dryRun:
+          type: boolean
+        sourceDataDir:
+          minLength: 1
+          type: string
+      required:
+      - sourceDataDir
+      - dryRun
+      type: object
+    DevImportProjectsResponse:
+      properties:
+        report:
+          $ref: '#/components/schemas/DevImportProjectsReport'
+      required:
+      - report
+      type: object
     DomainActivity:
       properties:
         lastActivityAt:
@@ -2859,6 +3135,15 @@ components:
       required:
       - sessions
       type: object
+    ListShellTerminalsResponse:
+      properties:
+        shellTerminals:
+          items:
+            $ref: '#/components/schemas/ShellTerminalResponse'
+          type: array
+      required:
+      - shellTerminals
+      type: object
     ListWorkspaceFilesResponse:
       properties:
         files:
@@ -2989,6 +3274,13 @@ components:
       required:
       - kind
       - sessionId
+      type: object
+    OpenShellTerminalRequest:
+      properties:
+        projectId:
+          description: Project whose root the shell starts in. Omitted opens the shell
+            in the daemon data dir.
+          type: string
       type: object
     OrchestratorResponse:
       properties:
@@ -3432,6 +3724,49 @@ components:
       - path
       - kind
       - sessionPrefix
+      type: object
+    PushDeviceEnvelope:
+      properties:
+        device:
+          $ref: '#/components/schemas/PushDeviceResponse'
+      required:
+      - device
+      type: object
+    PushDeviceResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        deviceName:
+          type: string
+        lastSeenAt:
+          format: date-time
+          type: string
+        platform:
+          type: string
+        token:
+          type: string
+      required:
+      - token
+      - createdAt
+      - lastSeenAt
+      type: object
+    RegisterPushDeviceRequest:
+      properties:
+        deviceName:
+          description: Human-friendly device label.
+          type: string
+        platform:
+          description: Device platform.
+          enum:
+          - ios
+          - android
+          type: string
+        token:
+          description: Expo push token, e.g. ExponentPushToken[...].
+          type: string
+      required:
+      - token
       type: object
     RemoveProjectResult:
       properties:
@@ -3924,6 +4259,32 @@ components:
             entry point in the session workspace.
           type: string
       type: object
+    ShellTerminalEnvelope:
+      properties:
+        shellTerminal:
+          $ref: '#/components/schemas/ShellTerminalResponse'
+      required:
+      - shellTerminal
+      type: object
+    ShellTerminalResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        handleId:
+          type: string
+        projectId:
+          type: string
+        title:
+          type: string
+        workingDir:
+          type: string
+      required:
+      - handleId
+      - workingDir
+      - title
+      - createdAt
+      type: object
     SpawnOrchestratorRequest:
       properties:
         clean:
@@ -3972,6 +4333,7 @@ components:
           - vibe
           - pi
           - autohand
+          - fake
           type: string
         issueId:
           type: string
@@ -4071,6 +4433,16 @@ components:
       required:
       - reviewerHandleId
       - reviews
+      type: object
+    UnregisterPushDeviceResponse:
+      properties:
+        deleted:
+          type: boolean
+        token:
+          type: string
+      required:
+      - token
+      - deleted
       type: object
     ValidatePipelineDefinitionRequest:
       properties:
@@ -4194,14 +4566,15 @@ tags:
   name: reviews
 - description: Durable dashboard notifications
   name: notifications
+- description: Mobile push-device registration for OS push notifications
+  name: push
 - description: Server-sent CDC event stream with durable replay
   name: events
 - description: Legacy AO project import (availability probe and run)
   name: import
+- description: Developer-only maintenance operations
+  name: dev
 - description: Pipeline definitions, runs, manual triggers, and artifacts
   name: pipelines
 - description: Connect Mobile LAN bridge control (loopback/desktop only)
   name: mobile
-- description: Global app settings persisted in the daemon store (loopback/desktop
-    only)
-  name: settings

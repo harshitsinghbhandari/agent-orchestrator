@@ -67,16 +67,18 @@ func Build() ([]byte, error) {
 			"Code-review runs and findings"),
 		*(&openapi31.Tag{Name: "notifications"}).WithDescription(
 			"Durable dashboard notifications"),
+		*(&openapi31.Tag{Name: "push"}).WithDescription(
+			"Mobile push-device registration for OS push notifications"),
 		*(&openapi31.Tag{Name: "events"}).WithDescription(
 			"Server-sent CDC event stream with durable replay"),
 		*(&openapi31.Tag{Name: "import"}).WithDescription(
 			"Legacy AO project import (availability probe and run)"),
+		*(&openapi31.Tag{Name: "dev"}).WithDescription(
+			"Developer-only maintenance operations"),
 		*(&openapi31.Tag{Name: "pipelines"}).WithDescription(
 			"Pipeline definitions, runs, manual triggers, and artifacts"),
 		*(&openapi31.Tag{Name: "mobile"}).WithDescription(
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
-		*(&openapi31.Tag{Name: "settings"}).WithDescription(
-			"Global app settings persisted in the daemon store (loopback/desktop only)"),
 	}
 
 	for _, op := range operations() {
@@ -195,6 +197,12 @@ var schemaNames = map[string]string{
 	"ControllersMarkNotificationReadRequest":      "MarkNotificationReadRequest",
 	"ControllersNotificationEnvelope":             "NotificationEnvelope",
 	"ControllersMarkAllNotificationsReadResponse": "MarkAllNotificationsReadResponse",
+	// httpd/controllers — standalone shell terminal wire envelopes
+	"ControllersShellTerminalHandleIDParam": "ShellTerminalHandleIDParam",
+	"ControllersOpenShellTerminalRequest":   "OpenShellTerminalRequest",
+	"ControllersShellTerminalResponse":      "ShellTerminalResponse",
+	"ControllersListShellTerminalsResponse": "ListShellTerminalsResponse",
+	"ControllersShellTerminalEnvelope":      "ShellTerminalEnvelope",
 	// httpd/controllers — PR wire envelopes
 	"ControllersMergePRResponse":         "MergePRResponse",
 	"ControllersResolveCommentsRequest":  "ResolveCommentsRequest",
@@ -236,11 +244,22 @@ var schemaNames = map[string]string{
 	"ControllersPipelineArtifactResponse":           "PipelineArtifactResponse",
 	// internal/pipeline domain artifact (embedded in run detail + artifact fetch)
 	"PipelineArtifact": "PipelineArtifact",
-	// httpd/controllers: mobile wire envelopes
-	"ControllersMobileStatusResponse": "MobileStatusResponse",
 	// httpd/controllers: settings wire envelopes
 	"ControllersPipelinesSettingResponse":   "PipelinesSettingResponse",
 	"ControllersSetPipelinesSettingRequest": "SetPipelinesSettingRequest",
+	// httpd/controllers: dev wire envelopes
+	"ControllersDevImportProjectsRequest":  "DevImportProjectsRequest",
+	"ControllersDevImportProjectsResponse": "DevImportProjectsResponse",
+	// httpd/controllers: mobile wire envelopes
+	"ControllersMobileStatusResponse": "MobileStatusResponse",
+	// devimport report
+	"DevimportReport":   "DevImportProjectsReport",
+	"DevimportConflict": "DevImportProjectsConflict",
+	// httpd/controllers: push-device wire envelopes
+	"ControllersRegisterPushDeviceRequest":    "RegisterPushDeviceRequest",
+	"ControllersPushDeviceEnvelope":           "PushDeviceEnvelope",
+	"ControllersPushDeviceResponse":           "PushDeviceResponse",
+	"ControllersUnregisterPushDeviceResponse": "UnregisterPushDeviceResponse",
 	// legacyimport report
 	"LegacyimportReport": "ImportReport",
 	// service/project entities + DTOs
@@ -334,16 +353,59 @@ func operations() []operation {
 	ops = append(ops, prOperations()...)
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
+	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
-	ops = append(ops, pipelineOperations()...)
+	ops = append(ops, devOperations()...)
 	ops = append(ops, mobileOperations()...)
+	ops = append(ops, pipelineOperations()...)
 	ops = append(ops, settingsOperations()...)
+	ops = append(ops, shellTerminalOperations()...)
 	return ops
+}
+
+// shellTerminalOperations describes the standalone shell terminal surface:
+// shells the user opens by hand, with no agent session behind them.
+func shellTerminalOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodGet, path: "/api/v1/shell-terminals", id: "listShellTerminals", tag: "shellTerminals",
+			summary: "List the standalone shell terminals owned by the current app run",
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListShellTerminalsResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/shell-terminals", id: "openShellTerminal", tag: "shellTerminals",
+			summary: "Open a standalone shell terminal",
+			reqBody: controllers.OpenShellTerminalRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.ShellTerminalEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/shell-terminals/{handleId}", id: "closeShellTerminal", tag: "shellTerminals",
+			summary:    "Close a standalone shell terminal and destroy its PTY",
+			pathParams: []any{controllers.ShellTerminalHandleIDParam{}},
+			resps: []respUnit{
+				{http.StatusNoContent, nil},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
 }
 
 // settingsOperations declares the 2 ungated /settings/pipelines operations
 // (read + persist the pipelines feature flag). Deliberately NOT behind the
-// pipelines flag — the toggle must be reachable to turn the flag on. Must stay
+// pipelines flag: the toggle must be reachable to turn the flag on. Must stay
 // 1:1 with the routes SettingsController.Register mounts (enforced by the parity
 // test).
 func settingsOperations() []operation {
@@ -368,6 +430,11 @@ func settingsOperations() []operation {
 		},
 	}
 }
+
+// pipelineOperations declares the /pipelines operations (definitions CRUD, JSON
+// schema, runs list/detail, manual trigger, cancel/resume, artifact fetch).
+// Must stay 1:1 with the routes PipelinesController.Register mounts (enforced by
+// the parity test). A nil PipelinesController.Svc returns 501 on every route.
 
 // pipelineOperations declares the /pipelines operations (definitions CRUD, JSON
 // schema, runs list/detail, manual trigger, cancel/resume, artifact fetch).
@@ -634,6 +701,24 @@ func importOperations() []operation {
 	}
 }
 
+// devOperations declares developer-only API operations. Must stay 1:1 with
+// the routes DevController.Register mounts (enforced by the parity test).
+func devOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/dev/import-projects", id: "runDevImportProjects", tag: "dev",
+			summary: "Run the developer project-registry import through the daemon store",
+			reqBody: controllers.DevImportProjectsRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.DevImportProjectsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
 func notificationOperations() []operation {
 	return []operation{
 		{
@@ -686,6 +771,34 @@ func notificationOperations() []operation {
 // reviewOperations declares the session-scoped /reviews operations. Must stay
 // 1:1 with the routes ReviewsController.Register mounts (enforced by the parity
 // test).
+// pushOperations declares the /push/devices operations. Must stay 1:1 with the
+// routes PushController.Register mounts (enforced by the parity test).
+func pushOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/push/devices", id: "registerPushDevice", tag: "push",
+			summary: "Register (upsert) a phone's Expo push token",
+			reqBody: controllers.RegisterPushDeviceRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.PushDeviceEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/push/devices/{token}", id: "unregisterPushDevice", tag: "push",
+			summary:    "Unregister a phone's Expo push token",
+			pathParams: []any{controllers.PushDeviceTokenParam{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.UnregisterPushDeviceResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
 func reviewOperations() []operation {
 	return []operation{
 		{

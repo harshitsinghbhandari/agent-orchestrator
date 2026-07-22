@@ -11,8 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
+import { Route as ShellTerminalsRouteImport } from './routes/_shell.terminals'
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
-import { Route as ShellPrsRouteImport } from './routes/_shell.prs'
 import { Route as ShellPipelinesRouteImport } from './routes/_shell.pipelines'
 import { Route as ShellPipelinesIndexRouteImport } from './routes/_shell.pipelines.index'
 import { Route as ShellSessionsSessionIdRouteImport } from './routes/_shell.sessions.$sessionId'
@@ -31,14 +31,14 @@ const ShellIndexRoute = ShellIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellTerminalsRoute = ShellTerminalsRouteImport.update({
+  id: '/terminals',
+  path: '/terminals',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellSettingsRoute = ShellSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
-  getParentRoute: () => ShellRoute,
-} as any)
-const ShellPrsRoute = ShellPrsRouteImport.update({
-  id: '/prs',
-  path: '/prs',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellPipelinesRoute = ShellPipelinesRouteImport.update({
@@ -87,8 +87,8 @@ const ShellProjectsProjectIdSessionsSessionIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/pipelines': typeof ShellPipelinesRouteWithChildren
-  '/prs': typeof ShellPrsRoute
   '/settings': typeof ShellSettingsRoute
+  '/terminals': typeof ShellTerminalsRoute
   '/pipelines/runs': typeof ShellPipelinesRunsRoute
   '/projects/$projectId': typeof ShellProjectsProjectIdRoute
   '/sessions/$sessionId': typeof ShellSessionsSessionIdRoute
@@ -98,8 +98,8 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId/sessions/$sessionId': typeof ShellProjectsProjectIdSessionsSessionIdRoute
 }
 export interface FileRoutesByTo {
-  '/prs': typeof ShellPrsRoute
   '/settings': typeof ShellSettingsRoute
+  '/terminals': typeof ShellTerminalsRoute
   '/': typeof ShellIndexRoute
   '/pipelines/runs': typeof ShellPipelinesRunsRoute
   '/projects/$projectId': typeof ShellProjectsProjectIdRoute
@@ -113,8 +113,8 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
   '/_shell/pipelines': typeof ShellPipelinesRouteWithChildren
-  '/_shell/prs': typeof ShellPrsRoute
   '/_shell/settings': typeof ShellSettingsRoute
+  '/_shell/terminals': typeof ShellTerminalsRoute
   '/_shell/': typeof ShellIndexRoute
   '/_shell/pipelines/runs': typeof ShellPipelinesRunsRoute
   '/_shell/projects/$projectId': typeof ShellProjectsProjectIdRoute
@@ -129,8 +129,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/pipelines'
-    | '/prs'
     | '/settings'
+    | '/terminals'
     | '/pipelines/runs'
     | '/projects/$projectId'
     | '/sessions/$sessionId'
@@ -140,8 +140,8 @@ export interface FileRouteTypes {
     | '/projects/$projectId/sessions/$sessionId'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/prs'
     | '/settings'
+    | '/terminals'
     | '/'
     | '/pipelines/runs'
     | '/projects/$projectId'
@@ -154,8 +154,8 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_shell'
     | '/_shell/pipelines'
-    | '/_shell/prs'
     | '/_shell/settings'
+    | '/_shell/terminals'
     | '/_shell/'
     | '/_shell/pipelines/runs'
     | '/_shell/projects/$projectId'
@@ -186,18 +186,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellIndexRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/terminals': {
+      id: '/_shell/terminals'
+      path: '/terminals'
+      fullPath: '/terminals'
+      preLoaderRoute: typeof ShellTerminalsRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/settings': {
       id: '/_shell/settings'
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof ShellSettingsRouteImport
-      parentRoute: typeof ShellRoute
-    }
-    '/_shell/prs': {
-      id: '/_shell/prs'
-      path: '/prs'
-      fullPath: '/prs'
-      preLoaderRoute: typeof ShellPrsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/pipelines': {
@@ -277,8 +277,8 @@ const ShellPipelinesRouteWithChildren = ShellPipelinesRoute._addFileChildren(
 
 interface ShellRouteChildren {
   ShellPipelinesRoute: typeof ShellPipelinesRouteWithChildren
-  ShellPrsRoute: typeof ShellPrsRoute
   ShellSettingsRoute: typeof ShellSettingsRoute
+  ShellTerminalsRoute: typeof ShellTerminalsRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellProjectsProjectIdRoute: typeof ShellProjectsProjectIdRoute
   ShellSessionsSessionIdRoute: typeof ShellSessionsSessionIdRoute
@@ -288,8 +288,8 @@ interface ShellRouteChildren {
 
 const ShellRouteChildren: ShellRouteChildren = {
   ShellPipelinesRoute: ShellPipelinesRouteWithChildren,
-  ShellPrsRoute: ShellPrsRoute,
   ShellSettingsRoute: ShellSettingsRoute,
+  ShellTerminalsRoute: ShellTerminalsRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellProjectsProjectIdRoute: ShellProjectsProjectIdRoute,
   ShellSessionsSessionIdRoute: ShellSessionsSessionIdRoute,

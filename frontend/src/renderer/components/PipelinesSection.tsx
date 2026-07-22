@@ -67,7 +67,7 @@ export function PipelinesSection() {
 
 				<div className="flex items-center gap-3">
 					<Button type="button" variant="primary" onClick={handleSave} disabled={save.isPending}>
-						{save.isPending ? "Saving…" : "Save changes"}
+						{save.isPending ? "Applying…" : "Apply and restart daemon"}
 					</Button>
 					{save.isError && (
 						<span className="text-xs text-error">
