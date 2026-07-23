@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
+import { useUiStore } from "../stores/ui-store";
 
 const {
 	getUpdate,
@@ -103,6 +104,8 @@ beforeEach(() => {
 	openExternal.mockResolvedValue(undefined);
 	featListBuilds.mockResolvedValue([]);
 	featGetActive.mockResolvedValue(null);
+	// Feature Releases lives behind Developer Mode; reset to the default (off).
+	useUiStore.getState().setDeveloperMode(false);
 });
 
 describe("GlobalSettingsForm", () => {
@@ -112,6 +115,7 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
 		expect(screen.getByText("General")).toBeInTheDocument();
 		expect(screen.getByText("Updates")).toBeInTheDocument();
+		expect(screen.getByRole("switch", { name: "Developer Mode" })).toBeInTheDocument();
 		expect(screen.getByText("Get help")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Report a problem" })).toBeInTheDocument();
 	});
@@ -174,6 +178,7 @@ describe("GlobalSettingsForm", () => {
 	});
 
 	it("hides the nightly warning when Feature Releases is selected", async () => {
+		useUiStore.getState().setDeveloperMode(true);
 		getUpdate.mockResolvedValue({ enabled: true, channel: "nightly", nightlyAck: true, feature: null });
 		renderForm();
 		expect(await screen.findByText(/Nightly builds are cut every day/i)).toBeInTheDocument();
@@ -342,7 +347,24 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.queryByLabelText("Report preview")).not.toBeInTheDocument();
 	});
 
+	it("hides the Feature Releases channel option when Developer Mode is off", async () => {
+		renderForm();
+		await screen.findByText("Updates");
+		await userEvent.click(screen.getByLabelText("Updates channel"));
+		expect(await screen.findByRole("menuitem", { name: "Stable (Latest)" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Feature Releases" })).not.toBeInTheDocument();
+	});
+
+	it("reveals the Feature Releases channel option when Developer Mode is turned on", async () => {
+		renderForm();
+		await screen.findByText("Updates");
+		await userEvent.click(screen.getByRole("switch", { name: "Developer Mode" }));
+		await userEvent.click(screen.getByLabelText("Updates channel"));
+		expect(await screen.findByRole("menuitem", { name: "Feature Releases" })).toBeInTheDocument();
+	});
+
 	it("reveals the feature-build picker when Feature Releases is selected", async () => {
+		useUiStore.getState().setDeveloperMode(true);
 		renderForm();
 		await screen.findByText("Updates");
 		// The picker must be reachable from a clean state (no pin seeded).
@@ -354,6 +376,7 @@ describe("GlobalSettingsForm", () => {
 	});
 
 	it("pins a feature build after confirming and ignores unowned updater events", async () => {
+		useUiStore.getState().setDeveloperMode(true);
 		featListBuilds.mockResolvedValue([
 			{
 				pr: 2270,

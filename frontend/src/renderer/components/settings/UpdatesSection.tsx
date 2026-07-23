@@ -4,6 +4,7 @@ import { AlertTriangle, Check, GitPullRequest, HardDriveDownload, History, Loade
 import { aoBridge } from "../../lib/bridge";
 import { formatTimeCompact } from "../../lib/format-time";
 import { useUpdateStatus } from "../../hooks/useUpdateStatus";
+import { useUiStore } from "../../stores/ui-store";
 import type { UpdateChannel, UpdateSettings, UpdateState, UpdateStatus } from "../../../main/update-settings";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Badge } from "../ui/badge";
@@ -26,6 +27,9 @@ const CHANNEL_OPTIONS: { value: PrimaryValue; label: string }[] = [
 	{ value: "nightly", label: "Nightly (Pre-release)" },
 	{ value: "feature", label: "Feature Releases" },
 ];
+
+// Feature Releases is developer-only; hide it entirely unless Developer Mode is on.
+const STABLE_CHANNEL_OPTIONS = CHANNEL_OPTIONS.filter((option) => option.value !== "feature");
 
 const DEFAULT_SETTINGS: UpdateSettings = { enabled: false, channel: "latest", nightlyAck: false, feature: null };
 
@@ -52,6 +56,8 @@ export function UpdatesSection() {
 	// but has not pinned a build yet (form.feature is still null).
 	const [showFeature, setShowFeature] = useState(false);
 	const [pendingPin, setPendingPin] = useState<{ pr: number; title: string } | null>(null);
+
+	const developerMode = useUiStore((state) => state.developerMode);
 
 	const status = useUpdateStatus();
 	// Set only for the owned pin/home transition request, so unrelated hourly
@@ -93,7 +99,9 @@ export function UpdatesSection() {
 		},
 	});
 
-	const primaryValue: PrimaryValue = form.feature != null || showFeature ? "feature" : form.channel;
+	// With Developer Mode off the "feature" value has no matching option, so fall
+	// back to the home channel to keep the dropdown showing a valid selection.
+	const primaryValue: PrimaryValue = developerMode && (form.feature != null || showFeature) ? "feature" : form.channel;
 
 	const setEnabled = (enabled: boolean) => {
 		const next = { ...formRef.current, enabled };
@@ -194,7 +202,7 @@ export function UpdatesSection() {
 					<SettingsOptionMenu
 						aria-label="Updates channel"
 						value={primaryValue}
-						options={CHANNEL_OPTIONS}
+						options={developerMode ? CHANNEL_OPTIONS : STABLE_CHANNEL_OPTIONS}
 						onChange={handlePrimaryChannel}
 						disabled={!form.enabled || save.isPending}
 					/>
