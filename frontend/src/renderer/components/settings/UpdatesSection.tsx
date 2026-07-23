@@ -29,7 +29,7 @@ const CHANNEL_OPTIONS: { value: PrimaryValue; label: string }[] = [
 ];
 
 // Feature Releases is developer-only; hide it entirely unless Developer Mode is on.
-const STABLE_CHANNEL_OPTIONS = CHANNEL_OPTIONS.filter((option) => option.value !== "feature");
+const NON_FEATURE_CHANNEL_OPTIONS = CHANNEL_OPTIONS.filter((option) => option.value !== "feature");
 
 const DEFAULT_SETTINGS: UpdateSettings = { enabled: false, channel: "latest", nightlyAck: false, feature: null };
 
@@ -167,18 +167,30 @@ export function UpdatesSection() {
 		queryFn: () => aoBridge.featureBuilds.getActive(),
 	});
 	const activeBuild = activeQuery.data ?? null;
+	// Show the escape hatch whenever a feature build is running OR merely pinned in
+	// persisted settings. A pin stays effective in the main-process updater even
+	// when Developer Mode is off and hides the picker, so it must never be silent.
+	const pinnedPr = activeBuild?.pr ?? form.feature?.pr ?? null;
 
 	return (
 		<>
 			<SettingsSection title="Updates" sectionId="updates">
-				{activeBuild && (
+				{pinnedPr != null && (
 					<div className="flex flex-col gap-2">
 						<div className="settings-row-bar h-auto min-h-(--size-settings-row) flex-wrap gap-2">
-							<Badge variant="accent">PR #{activeBuild.pr}</Badge>
+							<Badge variant="accent">PR #{pinnedPr}</Badge>
 							<span className="min-w-0 flex-1 text-sm leading-5 text-settings-label">
-								You are on PR #{activeBuild.pr}'s build.
+								{activeBuild
+									? `You are on PR #${pinnedPr}'s build.`
+									: `PR #${pinnedPr} is pinned but not yet installed.`}
 							</span>
-							<Button type="button" variant="outline" size="sm" onClick={() => void handleReturnToHome()}>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={!query.isSuccess}
+								onClick={() => void handleReturnToHome()}
+							>
 								Return to {form.channel === "nightly" ? "Nightly" : "Stable"}
 							</Button>
 						</div>
@@ -202,7 +214,7 @@ export function UpdatesSection() {
 					<SettingsOptionMenu
 						aria-label="Updates channel"
 						value={primaryValue}
-						options={developerMode ? CHANNEL_OPTIONS : STABLE_CHANNEL_OPTIONS}
+						options={developerMode ? CHANNEL_OPTIONS : NON_FEATURE_CHANNEL_OPTIONS}
 						onChange={handlePrimaryChannel}
 						disabled={!form.enabled || save.isPending}
 					/>

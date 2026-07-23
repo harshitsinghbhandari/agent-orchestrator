@@ -363,6 +363,48 @@ describe("GlobalSettingsForm", () => {
 		expect(await screen.findByRole("menuitem", { name: "Feature Releases" })).toBeInTheDocument();
 	});
 
+	it("persists Developer Mode to localStorage and defaults off", async () => {
+		expect(useUiStore.getState().developerMode).toBe(false);
+		renderForm();
+		const toggle = await screen.findByRole("switch", { name: "Developer Mode" });
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+		await userEvent.click(toggle);
+		expect(useUiStore.getState().developerMode).toBe(true);
+		expect(window.localStorage.getItem("ao.developerMode")).toBe("true");
+	});
+
+	it("hides the feature-build picker when Developer Mode is turned off after selecting it", async () => {
+		useUiStore.getState().setDeveloperMode(true);
+		renderForm();
+		await screen.findByText("Updates");
+		await userEvent.click(screen.getByLabelText("Updates channel"));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Feature Releases" }));
+		expect(await screen.findByText("No live feature releases.")).toBeInTheDocument();
+		// Toggling Developer Mode off must drop the transient picker (primaryValue guard).
+		await userEvent.click(screen.getByRole("switch", { name: "Developer Mode" }));
+		await waitFor(() => expect(screen.queryByText("No live feature releases.")).not.toBeInTheDocument());
+	});
+
+	it("surfaces a Return action for a persisted feature pin even when Developer Mode is off", async () => {
+		// A pin persists in settings but is not yet running; Developer Mode is off (default).
+		getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: { pr: 2270 } });
+		featGetActive.mockResolvedValue(null);
+		renderForm();
+		// The concealed pin is announced even though the channel option/picker are hidden.
+		expect(await screen.findByText("PR #2270 is pinned but not yet installed.")).toBeInTheDocument();
+		await userEvent.click(screen.getByLabelText("Updates channel"));
+		expect(screen.queryByRole("menuitem", { name: "Feature Releases" })).not.toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
+		// Return clears the pin so the main-process updater stops tracking the feature feed.
+		await userEvent.click(screen.getByRole("button", { name: "Return to Stable" }));
+		await waitFor(() =>
+			expect(updCheck).toHaveBeenCalledWith({
+				settings: expect.objectContaining({ feature: null }),
+				requestId: expect.any(String),
+			}),
+		);
+	});
+
 	it("reveals the feature-build picker when Feature Releases is selected", async () => {
 		useUiStore.getState().setDeveloperMode(true);
 		renderForm();
