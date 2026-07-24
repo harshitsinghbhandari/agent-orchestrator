@@ -144,23 +144,27 @@ export function UpdatesSection() {
 			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
 		} catch {
 			if (autoProgressRef.current === requestId) autoProgressRef.current = null;
+			// The optimistic form update may now disagree with disk; re-sync to truth.
+			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
 		}
 	};
 
 	const handleReturnToHome = async () => {
 		setShowFeature(false);
+		// Optimistic; the main process clears the pin against persisted state.
+		setForm({ ...formRef.current, feature: null });
 		const requestId = nextUpdateRequestId();
 		autoProgressRef.current = requestId;
 		handledStatusRef.current = null;
 		try {
-			// Clear the pin atomically against persisted main-process state (preserves
-			// the home channel) so Return works regardless of renderer form hydration.
-			const next = await aoBridge.updateSettings.clearFeature();
-			setForm(next);
-			await aoBridge.updates.check({ requestId });
+			// Single updater-serialized op: clears the pin and checks the home channel
+			// atomically, so a concurrent settings-write cannot restore the pin.
+			await aoBridge.updates.returnHome(requestId);
 			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
 		} catch {
 			if (autoProgressRef.current === requestId) autoProgressRef.current = null;
+			// The optimistic form update may now disagree with disk; re-sync to truth.
+			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
 		}
 	};
 

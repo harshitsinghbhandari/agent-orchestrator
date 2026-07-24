@@ -8,9 +8,9 @@ import { useUiStore } from "../stores/ui-store";
 const {
 	getUpdate,
 	setUpdate,
-	clearFeature,
 	updGetStatus,
 	updCheck,
+	updReturnHome,
 	updDownload,
 	updInstall,
 	updOnStatus,
@@ -24,8 +24,8 @@ const {
 } = vi.hoisted(() => ({
 	getUpdate: vi.fn(),
 	setUpdate: vi.fn(),
-	clearFeature: vi.fn(),
 	updGetStatus: vi.fn(),
+	updReturnHome: vi.fn(),
 	updCheck: vi.fn(),
 	updDownload: vi.fn(),
 	updInstall: vi.fn(),
@@ -52,10 +52,11 @@ vi.mock("../lib/bridge", () => ({
 		app: { getVersion, openExternal },
 		clipboard: { writeText },
 		daemon: { getStatus: getDaemonStatus },
-		updateSettings: { get: getUpdate, set: setUpdate, clearFeature },
+		updateSettings: { get: getUpdate, set: setUpdate },
 		updates: {
 			getStatus: updGetStatus,
 			check: updCheck,
+			returnHome: updReturnHome,
 			download: updDownload,
 			install: updInstall,
 			onStatus: updOnStatus,
@@ -78,9 +79,9 @@ beforeEach(() => {
 	for (const m of [
 		getUpdate,
 		setUpdate,
-		clearFeature,
 		updGetStatus,
 		updCheck,
+		updReturnHome,
 		updDownload,
 		updInstall,
 		updOnStatus,
@@ -96,9 +97,9 @@ beforeEach(() => {
 	}
 	getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 	setUpdate.mockResolvedValue(undefined);
-	clearFeature.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 	updGetStatus.mockResolvedValue({ state: "idle" });
 	updCheck.mockResolvedValue(undefined);
+	updReturnHome.mockResolvedValue(undefined);
 	updDownload.mockResolvedValue(undefined);
 	updInstall.mockResolvedValue(undefined);
 	updOnStatus.mockReturnValue(() => undefined);
@@ -401,10 +402,10 @@ describe("GlobalSettingsForm", () => {
 		await userEvent.click(screen.getByLabelText("Updates channel"));
 		expect(screen.queryByRole("menuitem", { name: "Feature Releases" })).not.toBeInTheDocument();
 		await userEvent.keyboard("{Escape}");
-		// Return clears the pin atomically against main-process state, then checks home.
+		// Return delegates to the single updater-serialized returnHome operation.
 		await userEvent.click(screen.getByRole("button", { name: "Return to Stable" }));
-		await waitFor(() => expect(clearFeature).toHaveBeenCalled());
-		expect(updCheck).toHaveBeenCalledWith({ requestId: expect.any(String) });
+		await waitFor(() => expect(updReturnHome).toHaveBeenCalledWith(expect.any(String)));
+		expect(updCheck).not.toHaveBeenCalled();
 	});
 
 	it("keeps Updates unchanged with Developer Mode on for a pinned-but-not-running build", async () => {
@@ -481,7 +482,6 @@ describe("GlobalSettingsForm", () => {
 
 	it("returns to Stable, then auto-progresses check -> download -> install", async () => {
 		getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: { pr: 2270 } });
-		clearFeature.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 		featGetActive.mockResolvedValue({ pr: 2270 });
 		let emit: (s: { state: string; version?: string; requestId?: string }) => void = () => undefined;
 		updOnStatus.mockImplementation((cb: (s: unknown) => void) => {
@@ -493,9 +493,8 @@ describe("GlobalSettingsForm", () => {
 		const returnBtn = await screen.findByRole("button", { name: "Return to Stable" });
 		await userEvent.click(returnBtn);
 
-		await waitFor(() => expect(clearFeature).toHaveBeenCalled());
-		await waitFor(() => expect(updCheck).toHaveBeenCalledWith({ requestId: expect.any(String) }));
-		const requestId = updCheck.mock.calls[0]?.[0]?.requestId as string;
+		await waitFor(() => expect(updReturnHome).toHaveBeenCalledWith(expect.any(String)));
+		const requestId = updReturnHome.mock.calls[0]?.[0] as string;
 
 		act(() => emit({ state: "available", version: "1.3.0", requestId }));
 		await waitFor(() => expect(updDownload).toHaveBeenCalledWith(requestId));
