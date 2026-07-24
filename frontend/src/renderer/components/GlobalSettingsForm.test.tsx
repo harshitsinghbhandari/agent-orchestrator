@@ -8,6 +8,7 @@ import { useUiStore } from "../stores/ui-store";
 const {
 	getUpdate,
 	setUpdate,
+	clearFeature,
 	updGetStatus,
 	updCheck,
 	updDownload,
@@ -23,6 +24,7 @@ const {
 } = vi.hoisted(() => ({
 	getUpdate: vi.fn(),
 	setUpdate: vi.fn(),
+	clearFeature: vi.fn(),
 	updGetStatus: vi.fn(),
 	updCheck: vi.fn(),
 	updDownload: vi.fn(),
@@ -50,7 +52,7 @@ vi.mock("../lib/bridge", () => ({
 		app: { getVersion, openExternal },
 		clipboard: { writeText },
 		daemon: { getStatus: getDaemonStatus },
-		updateSettings: { get: getUpdate, set: setUpdate },
+		updateSettings: { get: getUpdate, set: setUpdate, clearFeature },
 		updates: {
 			getStatus: updGetStatus,
 			check: updCheck,
@@ -76,6 +78,7 @@ beforeEach(() => {
 	for (const m of [
 		getUpdate,
 		setUpdate,
+		clearFeature,
 		updGetStatus,
 		updCheck,
 		updDownload,
@@ -93,6 +96,7 @@ beforeEach(() => {
 	}
 	getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 	setUpdate.mockResolvedValue(undefined);
+	clearFeature.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 	updGetStatus.mockResolvedValue({ state: "idle" });
 	updCheck.mockResolvedValue(undefined);
 	updDownload.mockResolvedValue(undefined);
@@ -392,17 +396,25 @@ describe("GlobalSettingsForm", () => {
 		renderForm();
 		// The concealed pin is announced even though the channel option/picker are hidden.
 		expect(await screen.findByText("PR #2270 is pinned but not yet installed.")).toBeInTheDocument();
+		// The Feature Releases channel option and its build picker stay hidden.
+		expect(screen.queryByLabelText("Feature build")).not.toBeInTheDocument();
 		await userEvent.click(screen.getByLabelText("Updates channel"));
 		expect(screen.queryByRole("menuitem", { name: "Feature Releases" })).not.toBeInTheDocument();
 		await userEvent.keyboard("{Escape}");
-		// Return clears the pin so the main-process updater stops tracking the feature feed.
+		// Return clears the pin atomically against main-process state, then checks home.
 		await userEvent.click(screen.getByRole("button", { name: "Return to Stable" }));
-		await waitFor(() =>
-			expect(updCheck).toHaveBeenCalledWith({
-				settings: expect.objectContaining({ feature: null }),
-				requestId: expect.any(String),
-			}),
-		);
+		await waitFor(() => expect(clearFeature).toHaveBeenCalled());
+		expect(updCheck).toHaveBeenCalledWith({ requestId: expect.any(String) });
+	});
+
+	it("keeps Updates unchanged with Developer Mode on for a pinned-but-not-running build", async () => {
+		// With Developer Mode on the visible picker shows the pin, so no extra banner.
+		useUiStore.getState().setDeveloperMode(true);
+		getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: { pr: 2270 } });
+		featGetActive.mockResolvedValue(null);
+		renderForm();
+		expect(await screen.findByLabelText("Feature build")).toBeInTheDocument();
+		expect(screen.queryByText("PR #2270 is pinned but not yet installed.")).not.toBeInTheDocument();
 	});
 
 	it("reveals the feature-build picker when Feature Releases is selected", async () => {
@@ -469,6 +481,7 @@ describe("GlobalSettingsForm", () => {
 
 	it("returns to Stable, then auto-progresses check -> download -> install", async () => {
 		getUpdate.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: { pr: 2270 } });
+		clearFeature.mockResolvedValue({ enabled: true, channel: "latest", nightlyAck: false, feature: null });
 		featGetActive.mockResolvedValue({ pr: 2270 });
 		let emit: (s: { state: string; version?: string; requestId?: string }) => void = () => undefined;
 		updOnStatus.mockImplementation((cb: (s: unknown) => void) => {
@@ -480,12 +493,8 @@ describe("GlobalSettingsForm", () => {
 		const returnBtn = await screen.findByRole("button", { name: "Return to Stable" });
 		await userEvent.click(returnBtn);
 
-		await waitFor(() =>
-			expect(updCheck).toHaveBeenCalledWith({
-				settings: expect.objectContaining({ feature: null }),
-				requestId: expect.any(String),
-			}),
-		);
+		await waitFor(() => expect(clearFeature).toHaveBeenCalled());
+		await waitFor(() => expect(updCheck).toHaveBeenCalledWith({ requestId: expect.any(String) }));
 		const requestId = updCheck.mock.calls[0]?.[0]?.requestId as string;
 
 		act(() => emit({ state: "available", version: "1.3.0", requestId }));

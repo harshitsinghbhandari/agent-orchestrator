@@ -149,13 +149,15 @@ export function UpdatesSection() {
 
 	const handleReturnToHome = async () => {
 		setShowFeature(false);
-		const next = { ...formRef.current, feature: null };
-		setForm(next);
 		const requestId = nextUpdateRequestId();
 		autoProgressRef.current = requestId;
 		handledStatusRef.current = null;
 		try {
-			await aoBridge.updates.check({ settings: next, requestId });
+			// Clear the pin atomically against persisted main-process state (preserves
+			// the home channel) so Return works regardless of renderer form hydration.
+			const next = await aoBridge.updateSettings.clearFeature();
+			setForm(next);
+			await aoBridge.updates.check({ requestId });
 			void queryClient.invalidateQueries({ queryKey: updateSettingsQueryKey });
 		} catch {
 			if (autoProgressRef.current === requestId) autoProgressRef.current = null;
@@ -167,30 +169,26 @@ export function UpdatesSection() {
 		queryFn: () => aoBridge.featureBuilds.getActive(),
 	});
 	const activeBuild = activeQuery.data ?? null;
-	// Show the escape hatch whenever a feature build is running OR merely pinned in
-	// persisted settings. A pin stays effective in the main-process updater even
-	// when Developer Mode is off and hides the picker, so it must never be silent.
-	const pinnedPr = activeBuild?.pr ?? form.feature?.pr ?? null;
+	// Show the escape hatch whenever a feature build is running. When Developer Mode
+	// is off, also surface a merely-pinned build: the pin stays effective in the
+	// main-process updater while the picker is hidden, so it must never be silent.
+	// With Developer Mode on the visible picker already shows the pin, so Updates
+	// behaves exactly as before (banner only for a running build).
+	const featurePr = activeBuild?.pr ?? (developerMode ? null : (form.feature?.pr ?? null));
 
 	return (
 		<>
 			<SettingsSection title="Updates" sectionId="updates">
-				{pinnedPr != null && (
+				{featurePr != null && (
 					<div className="flex flex-col gap-2">
 						<div className="settings-row-bar h-auto min-h-(--size-settings-row) flex-wrap gap-2">
-							<Badge variant="accent">PR #{pinnedPr}</Badge>
+							<Badge variant="accent">PR #{featurePr}</Badge>
 							<span className="min-w-0 flex-1 text-sm leading-5 text-settings-label">
 								{activeBuild
-									? `You are on PR #${pinnedPr}'s build.`
-									: `PR #${pinnedPr} is pinned but not yet installed.`}
+									? `You are on PR #${featurePr}'s build.`
+									: `PR #${featurePr} is pinned but not yet installed.`}
 							</span>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={!query.isSuccess}
-								onClick={() => void handleReturnToHome()}
-							>
+							<Button type="button" variant="outline" size="sm" onClick={() => void handleReturnToHome()}>
 								Return to {form.channel === "nightly" ? "Nightly" : "Stable"}
 							</Button>
 						</div>

@@ -26,7 +26,7 @@ import {
 	type UpdateCheckOptions,
 } from "./main/auto-updater";
 import { listFeatureBuilds, getActiveFeatureBuild } from "./main/feature-builds";
-import { readUpdateSettings, type UpdateSettings, type UpdateStatus } from "./main/update-settings";
+import { readUpdateSettings, updateUpdateSettings, type UpdateSettings, type UpdateStatus } from "./main/update-settings";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync } from "node:fs";
@@ -1387,6 +1387,16 @@ ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) =>
 	const runFile = runFilePath();
 	if (!runFile) return;
 	await setUpdateSettings(path.dirname(runFile), settings);
+});
+// Atomically clear only the feature pin against persisted state, preserving the
+// user's home channel/enabled prefs, so Return-home never depends on renderer form
+// hydration. Returns the resulting settings for the renderer to sync.
+ipcMain.handle("updateSettings:clearFeature", async (): Promise<UpdateSettings> => {
+	const runFile = runFilePath();
+	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
+	return updateUpdateSettings(path.dirname(runFile), (current) =>
+		current.feature ? { ...current, feature: null } : current,
+	);
 });
 
 ipcMain.handle("featureBuilds:list", () => listFeatureBuilds());

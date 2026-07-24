@@ -198,6 +198,7 @@ const api = {
 	updateSettings: {
 		get: () => ipcRenderer.invoke("updateSettings:get") as Promise<UpdateSettings>,
 		set: (settings: UpdateSettings) => ipcRenderer.invoke("updateSettings:set", settings) as Promise<void>,
+		clearFeature: () => ipcRenderer.invoke("updateSettings:clearFeature") as Promise<UpdateSettings>,
 	},
 	updates: {
 		getStatus: () => ipcRenderer.invoke("updates:getStatus") as Promise<UpdateStatus>,
