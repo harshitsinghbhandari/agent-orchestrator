@@ -62,12 +62,16 @@ if (typeof window !== "undefined") {
 			scanImportFolder: async ({ path }: { path: string }) => ({ path, repos: [] }),
 			onNewSessionShortcut: () => () => undefined,
 			onKeyboardShortcutsHelp: () => () => undefined,
+			onNewShellTerminalShortcut: () => () => undefined,
 		},
 		terminal: {
 			saveDroppedFile: async () => "",
 		},
 		window: {
 			setOverlay: async () => undefined,
+		},
+		theme: {
+			set: async () => undefined,
 		},
 		menu: {
 			action: async () => undefined,
@@ -81,6 +85,7 @@ if (typeof window !== "undefined") {
 			getStatus: async () => ({ state: "stopped" }),
 			start: async () => ({ state: "starting" }),
 			stop: async () => ({ state: "stopped" }),
+			restart: async () => ({ state: "starting" }),
 			onStatus: () => () => undefined,
 		},
 		telemetry: {
@@ -161,7 +166,7 @@ if (typeof window !== "undefined") {
 			setMigration: async () => undefined,
 		},
 		updateSettings: {
-			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false }),
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
 			set: async () => undefined,
 		},
 		updates: {
@@ -170,6 +175,10 @@ if (typeof window !== "undefined") {
 			download: async () => undefined,
 			install: async () => undefined,
 			onStatus: () => () => undefined,
+		},
+		featureBuilds: {
+			list: async () => [],
+			getActive: async () => null,
 		},
 	};
 } // end if (typeof window !== "undefined")

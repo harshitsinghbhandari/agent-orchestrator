@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	pipelinesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pipeline"
 	prsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pr"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	reviewsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/review"
@@ -27,7 +28,12 @@ type APIDeps struct {
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
 	NotificationStream controllers.NotificationStream
+	Push               controllers.PushRegistry
 	Import             controllers.ImportService
+	Pipelines          pipelinesvc.Manager
+	Settings           controllers.SettingsStore
+	ShellTerminals     controllers.ShellTerminalService
+	DevImport          controllers.DevImportService
 	CDC                cdc.Source
 	Events             cdcSubscriber
 	Telemetry          ports.EventSink
@@ -44,7 +50,12 @@ type API struct {
 	prs           *controllers.PRsController
 	reviews       *controllers.ReviewsController
 	notifications *controllers.NotificationsController
+	push          *controllers.PushController
 	imports       *controllers.ImportController
+	pipelines     *controllers.PipelinesController
+	settings      *controllers.SettingsController
+	shellTerms    *controllers.ShellTerminalsController
+	dev           *controllers.DevController
 	events        *EventsController
 }
 
@@ -67,7 +78,12 @@ func NewAPI(cfg config.Config, deps APIDeps) *API {
 		prs:           &controllers.PRsController{Svc: deps.PRs},
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
+		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
+		pipelines:     &controllers.PipelinesController{Svc: deps.Pipelines},
+		settings:      &controllers.SettingsController{Store: deps.Settings},
+		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
+		dev:           &controllers.DevController{Import: deps.DevImport},
 		events:        &EventsController{Source: deps.CDC, Live: deps.Events},
 	}
 }
@@ -92,7 +108,12 @@ func (a *API) Register(root chi.Router) {
 			a.prs.Register(r)
 			a.reviews.Register(r)
 			a.notifications.Register(r)
+			a.push.Register(r)
 			a.imports.Register(r)
+			a.pipelines.Register(r)
+			a.settings.Register(r)
+			a.shellTerms.Register(r)
+			a.dev.Register(r)
 			// Sibling REST controllers plug in here.
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.

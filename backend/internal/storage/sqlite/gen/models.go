@@ -12,6 +12,11 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+type AppSetting struct {
+	Key   string
+	Value string
+}
+
 type ChangeLog struct {
 	Seq       int64
 	ProjectID domain.ProjectID
@@ -73,6 +78,7 @@ type PR struct {
 	CIObservedAt             sql.NullTime
 	ReviewObservedAt         sql.NullTime
 	LastNudgeSignature       string
+	IsFromFork               sql.NullInt64
 }
 
 type PRCheck struct {
@@ -120,6 +126,64 @@ type PRReviewThread struct {
 	IsBot        int64
 	SemanticHash string
 	UpdatedAt    time.Time
+}
+
+type PipelineArtifact struct {
+	ID            string
+	PipelineRunID string
+	ProjectID     domain.ProjectID
+	StageRunID    string
+	StageName     string
+	Kind          string
+	Fingerprint   string
+	Status        string
+	SentToAgentAt sql.NullTime
+	Payload       string
+	CreatedAt     time.Time
+}
+
+type PipelineDefinition struct {
+	ID         string
+	ProjectID  domain.ProjectID
+	Name       string
+	YamlSource string
+	ConfigJson string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type PipelineRun struct {
+	ID                string
+	ProjectID         domain.ProjectID
+	PipelineID        string
+	PipelineName      string
+	SessionID         string
+	HeadSha           string
+	LoopState         string
+	TerminationReason string
+	LoopRounds        int64
+	ConfigSnapshot    string
+	Fingerprints      string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	ContextJson       string
+	BlocksMerge       int64
+}
+
+type PipelineStageRun struct {
+	RunID        string
+	ProjectID    domain.ProjectID
+	StageName    string
+	StageRunID   string
+	Status       string
+	Attempt      int64
+	Verdict      string
+	StartedAt    sql.NullTime
+	CompletedAt  sql.NullTime
+	ErrorMessage string
+	SessionID    string
+	Notes        string
+	Output       string
 }
 
 type Project struct {
@@ -193,6 +257,15 @@ type SessionWorktree struct {
 	State        string
 }
 
+type ShellTerminal struct {
+	HandleID   string
+	ProjectID  *domain.ProjectID
+	WorkingDir string
+	Title      string
+	AppRunID   string
+	CreatedAt  time.Time
+}
+
 type TelemetryEvent struct {
 	ID          string
 	OccurredAt  time.Time
@@ -203,6 +276,16 @@ type TelemetryEvent struct {
 	SessionID   sql.NullString
 	RequestID   string
 	PayloadJson string
+}
+
+type WorkerIdleEvent struct {
+	ID            string
+	ProjectID     domain.ProjectID
+	WorkerID      domain.SessionID
+	TransitionAt  time.Time
+	DeliveryState string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type WorkspaceRepo struct {

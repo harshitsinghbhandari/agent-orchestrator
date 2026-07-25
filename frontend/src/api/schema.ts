@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dev/import-projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run the developer project-registry import through the daemon store */
+        post: operations["runDevImportProjects"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -261,6 +278,179 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipelines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a project's pipeline definitions */
+        get: operations["listPipelineDefinitions"];
+        put?: never;
+        /** Create a pipeline definition from raw YAML */
+        post: operations["createPipelineDefinition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update a pipeline definition's YAML */
+        put: operations["updatePipelineDefinition"];
+        post?: never;
+        /** Delete a pipeline definition */
+        delete: operations["deletePipelineDefinition"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a project's pipeline runs, newest first */
+        get: operations["listPipelineRuns"];
+        put?: never;
+        /** Trigger a manual pipeline run */
+        post: operations["triggerPipelineRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch one pipeline run with its stages and findings */
+        get: operations["getPipelineRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch one pipeline run artifact by id */
+        get: operations["getPipelineArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change a pipeline finding's lifecycle status (dismiss, reopen, resolve) */
+        post: operations["updatePipelineArtifactStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs/{runId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel an in-flight pipeline run */
+        post: operations["cancelPipelineRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs/{runId}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume a stalled or failed pipeline run */
+        post: operations["resumePipelineRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch the JSON schema for the pipeline YAML definition format */
+        get: operations["getPipelineConfigSchema"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate a pipeline definition without persisting it */
+        post: operations["validatePipelineDefinition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects": {
         parameters: {
             query?: never;
@@ -360,6 +550,40 @@ export interface paths {
         /** Resolve review threads on a pull request */
         post: operations["resolveComments"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/push/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register (upsert) a phone's Expo push token */
+        post: operations["registerPushDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/push/devices/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Unregister a phone's Expo push token */
+        delete: operations["unregisterPushDevice"];
         options?: never;
         head?: never;
         patch?: never;
@@ -675,6 +899,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/pipelines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the persisted pipelines feature flag */
+        get: operations["getPipelinesSetting"];
+        /** Persist the pipelines feature flag (takes effect on daemon restart) */
+        put: operations["setPipelinesSetting"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shell-terminals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the standalone shell terminals owned by the current app run */
+        get: operations["listShellTerminals"];
+        put?: never;
+        /** Open a standalone shell terminal */
+        post: operations["openShellTerminal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shell-terminals/{handleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Close a standalone shell terminal and destroy its PTY */
+        delete: operations["closeShellTerminal"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -754,12 +1031,43 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
+        ControllersUpdatePipelineArtifactStatusRequest: {
+            /** @description New artifact status: open | resolved | dismissed. */
+            status: string;
+        };
         DegradedProject: {
             id: string;
             kind: string;
             name: string;
             path: string;
             resolveError: string;
+        };
+        DeletePipelineDefinitionResponse: {
+            deleted: boolean;
+            id: string;
+        };
+        DevImportProjectsConflict: {
+            path: string;
+            projectId: string;
+            reason: string;
+            targetId?: string;
+            targetPath?: string;
+        };
+        DevImportProjectsReport: {
+            conflicts?: components["schemas"]["DevImportProjectsConflict"][];
+            dryRun: boolean;
+            inserted: number;
+            skipped: number;
+            sourceDataDir: string;
+            targetDataDir: string;
+            updated: number;
+        };
+        DevImportProjectsRequest: {
+            dryRun: boolean;
+            sourceDataDir: string;
+        };
+        DevImportProjectsResponse: {
+            report: components["schemas"]["DevImportProjectsReport"];
         };
         DomainActivity: {
             /** Format: date-time */
@@ -804,6 +1112,12 @@ export interface components {
         ListNotificationsResponse: {
             notifications: components["schemas"]["NotificationResponse"][];
         };
+        ListPipelineDefinitionsResponse: {
+            definitions: components["schemas"]["PipelineDefinitionSummary"][];
+        };
+        ListPipelineRunsResponse: {
+            runs: components["schemas"]["PipelineRunSummary"][];
+        };
         ListProjectsResponse: {
             projects: components["schemas"]["ProjectSummary"][];
         };
@@ -817,6 +1131,9 @@ export interface components {
         };
         ListSessionsResponse: {
             sessions: components["schemas"]["ControllersSessionView"][];
+        };
+        ListShellTerminalsResponse: {
+            shellTerminals: components["schemas"]["ShellTerminalResponse"][];
         };
         ListWorkspaceFilesResponse: {
             files: components["schemas"]["WorkspaceFileSummary"][];
@@ -869,6 +1186,10 @@ export interface components {
             prUrl?: string;
             sessionId: string;
         };
+        OpenShellTerminalRequest: {
+            /** @description Project whose root the shell starts in. Omitted opens the shell in the daemon data dir. */
+            projectId?: string;
+        };
         OrchestratorResponse: {
             id: string;
             projectId: string;
@@ -882,6 +1203,119 @@ export interface components {
             status: "needs_review" | "running" | "up_to_date" | "changes_requested" | "ineligible";
             targetSha: string;
             title: string;
+        };
+        PipelineArtifact: {
+            anchorSignature?: string;
+            artifactId: string;
+            belowConfidenceThreshold?: boolean;
+            category?: string;
+            /** Format: double */
+            confidence?: number;
+            /** Format: date-time */
+            createdAt: string;
+            data?: {
+                [key: string]: unknown;
+            };
+            description?: string;
+            endLine?: number;
+            filePath?: string;
+            fingerprint?: string;
+            kind: string;
+            pipelineRunId: string;
+            /** Format: date-time */
+            sentToAgentAt?: null | string;
+            severity?: string;
+            stageName: string;
+            stageRunId: string;
+            startLine?: number;
+            status: string;
+            title?: string;
+        };
+        PipelineArtifactResponse: {
+            artifact: components["schemas"]["PipelineArtifact"];
+        };
+        PipelineDefinitionResponse: {
+            definition: components["schemas"]["PipelineDefinitionSummary"];
+        };
+        PipelineDefinitionSummary: {
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            name: string;
+            projectId: string;
+            /** Format: date-time */
+            updatedAt: string;
+            yamlSource: string;
+        };
+        PipelineRunDetail: {
+            blocksMerge: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            findings: components["schemas"]["PipelineArtifact"][];
+            hasOpenFindings: boolean;
+            headSha: string;
+            loopRounds: number;
+            loopState: string;
+            pipelineId: string;
+            pipelineName: string;
+            runId: string;
+            sessionId: string;
+            stageCount: number;
+            stageStatuses: {
+                [key: string]: string;
+            } | null;
+            stages: components["schemas"]["PipelineStageView"][];
+            terminationReason?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PipelineRunDetailResponse: {
+            run: components["schemas"]["PipelineRunDetail"];
+        };
+        PipelineRunSummary: {
+            blocksMerge: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            hasOpenFindings: boolean;
+            headSha: string;
+            loopRounds: number;
+            loopState: string;
+            pipelineId: string;
+            pipelineName: string;
+            runId: string;
+            sessionId: string;
+            stageCount: number;
+            stageStatuses: {
+                [key: string]: string;
+            } | null;
+            terminationReason?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PipelineStageView: {
+            artifactIds: string[];
+            attempt: number;
+            /** Format: date-time */
+            completedAt?: null | string;
+            errorMessage?: string;
+            notes?: string[];
+            output?: string;
+            sessionId?: string;
+            stageName: string;
+            stageRunId: string;
+            /** Format: date-time */
+            startedAt?: null | string;
+            status: string;
+            verdict?: string;
+        };
+        PipelineValidationIssue: {
+            /** @description Human-readable description of the problem. */
+            message: string;
+            /** @description Dotted path to the offending location, e.g. stages[2].dependsOn. */
+            path: string;
+        };
+        PipelinesSettingResponse: {
+            enabled: boolean;
         };
         ProbeAgentResponse: {
             agent: components["schemas"]["AgentInfo"];
@@ -934,6 +1368,29 @@ export interface components {
             resolveError?: string;
             sessionPrefix: string;
         };
+        PushDeviceEnvelope: {
+            device: components["schemas"]["PushDeviceResponse"];
+        };
+        PushDeviceResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            deviceName?: string;
+            /** Format: date-time */
+            lastSeenAt: string;
+            platform?: string;
+            token: string;
+        };
+        RegisterPushDeviceRequest: {
+            /** @description Human-friendly device label. */
+            deviceName?: string;
+            /**
+             * @description Device platform.
+             * @enum {string}
+             */
+            platform?: "ios" | "android";
+            /** @description Expo push token, e.g. ExponentPushToken[...]. */
+            token: string;
+        };
         RemoveProjectResult: {
             projectId: string;
             removedStorageDir: boolean;
@@ -952,6 +1409,8 @@ export interface components {
         };
         RestoreSessionResponse: {
             ok: boolean;
+            /** @enum {string} */
+            restoreMode: "native" | "saved_prompt" | "fresh";
             session: components["schemas"]["ControllersSessionView"];
             sessionId: string;
         };
@@ -986,6 +1445,10 @@ export interface components {
             killed?: boolean;
             ok: boolean;
             sessionId: string;
+        };
+        SavePipelineDefinitionRequest: {
+            /** @description Raw YAML pipeline definition document. */
+            yamlSource: string;
         };
         SendSessionMessageRequest: {
             message: string;
@@ -1108,12 +1571,26 @@ export interface components {
             sessionId: string;
             state: string;
         };
+        SetPipelinesSettingRequest: {
+            enabled: boolean;
+        };
         SetProjectConfigInput: {
             config: components["schemas"]["ProjectConfig"];
         };
         SetSessionPreviewRequest: {
             /** @description Preview target URL. When empty, the daemon autodetects a static entry point in the session workspace. */
             url?: string;
+        };
+        ShellTerminalEnvelope: {
+            shellTerminal: components["schemas"]["ShellTerminalResponse"];
+        };
+        ShellTerminalResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            handleId: string;
+            projectId?: string;
+            title: string;
+            workingDir: string;
         };
         SpawnOrchestratorRequest: {
             clean?: boolean;
@@ -1126,7 +1603,7 @@ export interface components {
             branch?: string;
             displayName?: string;
             /** @enum {string} */
-            harness?: "claude-code" | "codex" | "aider" | "opencode" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "kiro" | "kilocode" | "vibe" | "pi" | "autohand";
+            harness?: "claude-code" | "codex" | "aider" | "opencode" | "grok" | "droid" | "amp" | "agy" | "crush" | "cursor" | "qwen" | "copilot" | "goose" | "auggie" | "continue" | "devin" | "cline" | "kimi" | "kiro" | "kilocode" | "vibe" | "pi" | "autohand" | "fake";
             issueId?: string;
             /** @enum {string} */
             kind?: "worker" | "orchestrator";
@@ -1162,9 +1639,32 @@ export interface components {
             provider?: "github";
             repo?: string;
         };
+        TriggerPipelineRunRequest: {
+            /** @description Head commit SHA to pin the run to. */
+            headSha?: string;
+            /** @description Definition reference to run: its id or name. */
+            pipeline: string;
+            /** @description Session id to scope the run's loop key. */
+            sessionId?: string;
+        };
+        TriggerPipelineRunResponse: {
+            runId: string;
+        };
         TriggerReviewResponse: {
             reviewerHandleId: string;
             reviews: components["schemas"]["PRReviewState"][];
+        };
+        UnregisterPushDeviceResponse: {
+            deleted: boolean;
+            token: string;
+        };
+        ValidatePipelineDefinitionRequest: {
+            /** @description Raw YAML pipeline definition document to validate. */
+            yamlSource: string;
+        };
+        ValidatePipelineDefinitionResponse: {
+            issues: components["schemas"]["PipelineValidationIssue"][];
+            valid: boolean;
         };
         WorkspaceFileResponse: {
             additions: number;
@@ -1310,6 +1810,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListAgentsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    runDevImportProjects: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DevImportProjectsRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DevImportProjectsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Internal Server Error */
@@ -1943,6 +2494,745 @@ export interface operations {
             };
         };
     };
+    listPipelineDefinitions: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPipelineDefinitionsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createPipelineDefinition: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePipelineDefinitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineDefinitionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updatePipelineDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline definition identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePipelineDefinitionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineDefinitionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    deletePipelineDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline definition identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletePipelineDefinitionResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listPipelineRuns: {
+        parameters: {
+            query?: {
+                /** @description Project id (required). */
+                project?: string;
+                /** @description Filter runs to one pipeline name. */
+                pipeline?: string;
+                /** @description Filter runs by loop state (running|awaiting_context|done|stalled|terminated). */
+                status?: string;
+                /** @description Cap the number of runs returned (newest first). */
+                limit?: null | number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPipelineRunsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    triggerPipelineRun: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerPipelineRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriggerPipelineRunResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getPipelineRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunDetailResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getPipelineArtifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+                /** @description Artifact identifier. */
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineArtifactResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updatePipelineArtifactStatus: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+                /** @description Artifact identifier. */
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersUpdatePipelineArtifactStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineArtifactResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelPipelineRun: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunDetailResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resumePipelineRun: {
+        parameters: {
+            query?: {
+                /** @description Project id the pipeline belongs to (required). */
+                project?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunDetailResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getPipelineConfigSchema: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    validatePipelineDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidatePipelineDefinitionRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidatePipelineDefinitionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     listProjects: {
         parameters: {
             query?: never;
@@ -2310,6 +3600,98 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    registerPushDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterPushDeviceRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushDeviceEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    unregisterPushDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Expo push token (URL-encoded) identifying the device. */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnregisterPushDeviceResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3494,6 +4876,232 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CleanupSessionsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getPipelinesSetting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelinesSettingResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    setPipelinesSetting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPipelinesSettingRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelinesSettingResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listShellTerminals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListShellTerminalsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    openShellTerminal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenShellTerminalRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShellTerminalEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    closeShellTerminal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Shell terminal runtime handle identifier. */
+                handleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Internal Server Error */

@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -89,11 +91,28 @@ type Config struct {
 	// Agent is the compatibility agent adapter id selected by AO_AGENT;
 	// startSession fails fast if no adapter with this id is registered.
 	Agent string
+	// AppRunID identifies one desktop-app launch. The Electron supervisor mints
+	// it and passes it down (AO_APP_RUN_ID), holding it constant across daemon
+	// restarts it performs, so standalone shell terminals can survive a daemon
+	// restart while still being reaped when the APP itself goes away.
+	//
+	// Empty means no supervising app (a bare `ao daemon`): the daemon mints a
+	// fresh id per boot, which correctly makes any surviving shell terminals
+	// from an earlier run look like orphans and get cleaned up.
+	AppRunID string
 	// AllowedOrigins are the browser origins granted CORS read access (see
 	// DefaultAllowedOrigins). Overridden by AO_ALLOWED_ORIGINS.
 	AllowedOrigins []string
 	// Telemetry controls local/remote telemetry sinks.
 	Telemetry TelemetryConfig
+	// PipelinesEnv is the explicit AO_PIPELINES override and is non-nil only when
+	// that env var is set. It is a dev/CI escape hatch that wins over the persisted
+	// setting: when non-nil its value is authoritative. When nil (env unset), the
+	// daemon falls through to the "pipelines.enabled" row in its own app_settings
+	// store (see backend/internal/daemon.resolvePipelinesEnabled); absent both, the
+	// pipelines v1 subsystem stays off — no engines, no CDC trigger bridge, and the
+	// API returns 501 on every pipelines route. See docs/pipelines.md.
+	PipelinesEnv *bool
 }
 
 // Addr returns the host:port the HTTP server binds. It uses net.JoinHostPort so
@@ -114,12 +133,17 @@ func (c Config) Addr() string {
 //	AO_RUN_FILE          running.json path   (default ~/.ao/running.json)
 //	AO_DATA_DIR          durable state dir   (default ~/.ao/data)
 //	AO_AGENT             compatibility agent id (default claude-code)
+//	AO_APP_RUN_ID        desktop-app launch id, set by the Electron supervisor
+//	                     (default: a fresh id minted per daemon boot)
 //	AO_ALLOWED_ORIGINS   CORS origins, comma-separated (default DefaultAllowedOrigins)
 //	AO_TELEMETRY_EVENTS  local event capture off|on (default off)
 //	AO_TELEMETRY_METRICS local metric capture off|on (default off)
 //	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
 //	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
 //	AO_TELEMETRY_POSTHOG_HOST  PostHog host (default DefaultTelemetryPostHogHost)
+//	AO_PIPELINES         pipelines subsystem off|on — dev/CI override. When set it
+//	                     wins over the persisted "pipelines.enabled" app-setting;
+//	                     when unset that setting decides (default off).
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -167,6 +191,15 @@ func Load() (Config, error) {
 		cfg.Agent = raw
 	}
 
+	// A missing AO_APP_RUN_ID means nothing is supervising this daemon, so this
+	// boot IS the run: mint an id rather than leaving it empty, which would make
+	// every boot share one run id and defeat orphan detection entirely.
+	if raw := os.Getenv("AO_APP_RUN_ID"); raw != "" {
+		cfg.AppRunID = raw
+	} else {
+		cfg.AppRunID = newAppRunID()
+	}
+
 	if raw, ok := os.LookupEnv("AO_ALLOWED_ORIGINS"); ok && raw != "" {
 		// Explicit override replaces the defaults entirely so a deployment can
 		// also narrow the list. The "null" origin is rejected, never silently
@@ -212,6 +245,14 @@ func Load() (Config, error) {
 	}
 	if raw := os.Getenv("AO_TELEMETRY_POSTHOG_HOST"); raw != "" {
 		cfg.Telemetry.PostHogHost = raw
+	}
+
+	if raw, ok := os.LookupEnv("AO_PIPELINES"); ok && raw != "" {
+		v, err := parseToggleEnv("AO_PIPELINES", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.PipelinesEnv = &v
 	}
 
 	runFile, err := resolveRunFilePath()
@@ -263,6 +304,19 @@ func parsePositiveDuration(name, raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s %q: must be > 0", name, raw)
 	}
 	return d, nil
+}
+
+// newAppRunID mints the fallback launch id used when no supervising app
+// supplied one. Randomness (not a timestamp or PID) is what guarantees two
+// boots never collide, which is what orphan detection relies on. A failure to
+// read entropy falls back to the boot time — worse, but still monotonic enough
+// to distinguish runs, and never worth refusing to start the daemon over.
+func newAppRunID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "apprun-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "apprun-" + hex.EncodeToString(buf)
 }
 
 // resolveRunFilePath picks where running.json lives. An explicit AO_RUN_FILE
