@@ -791,6 +791,49 @@ func TestRestartSettlesLostCommandStageAsFailed(t *testing.T) {
 	}
 }
 
+// TestAmbientEnvAlwaysPresent pins the seven variables the spec's section 12.2
+// table marks "always". Anything a `run:` block or a prompt can rely on
+// unconditionally has to actually be there: the starter templates interpolate
+// $AO_RUN_DIR, and AO_RUN_ID plus AO_STAGE are what `ao pipeline done` resolves
+// itself from.
+func TestAmbientEnvAlwaysPresent(t *testing.T) {
+	h := newHarness(t)
+	// A project subject: no session, no PR, so only the always-present set and
+	// the workspace can resolve.
+	runID := h.trigger(t, joinYAML, pipeline.Subject{Kind: pipeline.SubjectProject, ProjectID: "proj-1"})
+
+	in := h.execs.handle(t, "prepare").in
+	runDir := filepath.Join(h.base, "proj-1", string(runID))
+	want := map[string]string{
+		"AO_PROJECT":   "proj-1",
+		"AO_RUN_ID":    string(runID),
+		"AO_RUN_DIR":   runDir,
+		"AO_STAGE":     "prepare",
+		"AO_ATTEMPT":   "1",
+		"AO_CONTEXT":   filepath.Join(runDir, "Context.md"),
+		"AO_WORKSPACE": in.WorkspacePath,
+	}
+	for key, value := range want {
+		got, ok := in.Env[key]
+		if !ok {
+			t.Errorf("%s is unset, but the spec table marks it always present", key)
+			continue
+		}
+		if got != value {
+			t.Errorf("%s = %q, want %q", key, got, value)
+		}
+	}
+	if in.Env["AO_WORKSPACE"] == "" {
+		t.Error("AO_WORKSPACE is empty, want the resolved tree")
+	}
+	// Nothing that cannot resolve for this subject leaked in.
+	for _, key := range []string{"AO_SESSION_ID", "AO_PR_NUMBER", "AO_PR_REPO", "AO_PR_HEAD", "AO_OUTPUT", "AO_PREV_STAGE", "AO_FAILED_STAGE"} {
+		if got, ok := in.Env[key]; ok {
+			t.Errorf("%s = %q, want unset for a project subject at the entry stage", key, got)
+		}
+	}
+}
+
 // TestAmbientEnvOnFailureEntry covers the failure-entry half of the spec's
 // ambient table, including the inherited tree.
 func TestAmbientEnvOnFailureEntry(t *testing.T) {
