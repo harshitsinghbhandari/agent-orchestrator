@@ -1037,6 +1037,7 @@ export interface components {
             isTerminated: boolean;
             issueId?: string;
             kind: string;
+            pipelineOrphan?: components["schemas"]["DomainPipelineOrphanInfo"];
             /** Format: int64 */
             previewRevision?: number;
             previewUrl?: string;
@@ -1102,6 +1103,14 @@ export interface components {
             /** Format: date-time */
             lastActivityAt: string;
             state: string;
+        };
+        DomainPipelineOrphanInfo: {
+            /** Format: date-time */
+            keptAt: string;
+            outcome: string;
+            pipeline: string;
+            runId: string;
+            stage: string;
         };
         DomainReviewerConfig: {
             harness: string;

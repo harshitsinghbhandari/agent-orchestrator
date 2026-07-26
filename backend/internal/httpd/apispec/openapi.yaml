@@ -2887,6 +2887,8 @@ components:
           type: string
         kind:
           type: string
+        pipelineOrphan:
+          $ref: '#/components/schemas/DomainPipelineOrphanInfo'
         previewRevision:
           format: int64
           type: integer
@@ -3060,6 +3062,26 @@ components:
       required:
       - state
       - lastActivityAt
+      type: object
+    DomainPipelineOrphanInfo:
+      properties:
+        keptAt:
+          format: date-time
+          type: string
+        outcome:
+          type: string
+        pipeline:
+          type: string
+        runId:
+          type: string
+        stage:
+          type: string
+      required:
+      - runId
+      - stage
+      - outcome
+      - keptAt
+      - pipeline
       type: object
     DomainReviewerConfig:
       properties:
