@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
 	GitBranch,
@@ -18,8 +18,8 @@ import {
 	sessionIsActive,
 	type WorkspaceSession,
 } from "../types/workspace";
+import { useKillSession } from "../hooks/useKillSession";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
 import { useUiStore } from "../stores/ui-store";
@@ -323,28 +323,15 @@ export function TopbarKillButton({
 	orchestratorId?: string;
 	onKilled: (workspaceId: string, orchestratorId?: string) => void;
 }) {
-	const queryClient = useQueryClient();
 	const [confirming, setConfirming] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const kill = useMutation({
-		mutationFn: async () => {
-			void captureRendererEvent("ao.renderer.session_kill_requested", { project_id: session.workspaceId });
-			const { error: apiError } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
-				params: { path: { sessionId: session.id } },
-			});
-			if (apiError) throw new Error(apiErrorMessage(apiError));
-		},
-		onSuccess: () => {
-			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
+	const kill = useKillSession(session, {
+		onKilled: () => {
 			setConfirming(false);
-			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 			onKilled(session.workspaceId, orchestratorId);
 		},
-		onError: (e) => {
-			void captureRendererEvent("ao.renderer.session_kill_failed", { project_id: session.workspaceId });
-			setError(e instanceof Error ? e.message : "Kill failed");
-		},
+		onError: setError,
 	});
 
 	if (confirming) {
