@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelineRunDetail } from "./PipelineRunDetail";
@@ -39,8 +39,24 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 }));
 
 type StageView = RunDetail["stages"][number];
+type DefinitionSummary = components["schemas"]["PipelineDefinitionSummary"];
 
 const LOG_URL = "/api/v1/pipelines/runs/{runId}/stages/{stageId}/log";
+// The stage graph reads routing and triggers off the project's definitions: the
+// run DTO names its pipeline but carries neither.
+const DEFINITIONS_URL = "/api/v1/pipelines";
+
+// The definition run-1 came from, as the definitions endpoint returns it.
+function definition(yamlSource: string, id = "def-1"): DefinitionSummary {
+	return {
+		id,
+		name: "review",
+		projectId: "proj-1",
+		yamlSource,
+		createdAt: "2026-07-15T00:00:00Z",
+		updatedAt: "2026-07-15T00:00:00Z",
+	};
+}
 
 function stage(overrides: Partial<StageView> & { stageId: string }): StageView {
 	return {
@@ -104,11 +120,14 @@ function setRun(run: RunDetail) {
 function setApi({
 	log,
 	logError,
+	definitions = [],
 }: {
 	log?: components["schemas"]["PipelineStageLogResponse"];
 	logError?: { code?: string; message: string };
+	definitions?: DefinitionSummary[];
 } = {}) {
 	getMock.mockImplementation((url: string) => {
+		if (url === DEFINITIONS_URL) return Promise.resolve({ data: { definitions }, error: undefined });
 		if (url === LOG_URL) {
 			if (logError) return Promise.resolve({ data: undefined, error: logError });
 			return Promise.resolve(log ? { data: log, error: undefined } : { data: undefined, error: { message: "no log" } });
@@ -130,6 +149,41 @@ function row(stageId: string): HTMLElement {
 	if (!found) throw new Error(`no row for stage ${stageId}`);
 	return found as HTMLElement;
 }
+
+// One stage's node in the read-only graph, which carries the same stage id as
+// its detail card but only the glyph and the duration.
+function graphNode(stageId: string): HTMLElement {
+	const found = document.querySelector(`[data-graph-stage="${stageId}"]`);
+	if (!found) throw new Error(`no graph node for stage ${stageId}`);
+	return found as HTMLElement;
+}
+
+// Where dagre put a node. react-flow writes the layout into a transform, so this
+// is how a test sees that the definition's edges reached the layout at all.
+function graphNodeX(index: number): number {
+	const el = document.querySelector(`[data-testid="pipeline-run-graph"] .react-flow__node[data-id="${index}"]`);
+	if (!el) throw new Error(`no graph node at index ${index}`);
+	const match = /translate\((-?[\d.]+)px/.exec((el as HTMLElement).style.transform);
+	return match ? Number(match[1]) : NaN;
+}
+
+// A two-stage definition whose first stage routes into its second, so the graph
+// has both a trigger list and one real edge to lay out.
+const CHAIN_YAML = `name: review
+on:
+  pr:
+    - created
+    - updated
+stages:
+  - id: build
+    executor: command
+    run: make
+    on_success:
+      - test
+  - id: test
+    executor: command
+    run: make test
+`;
 
 beforeEach(() => {
 	usePipelineRunMock.mockReset();
@@ -528,7 +582,7 @@ describe("PipelineRunDetail actions", () => {
 		setRun(detail({ status: "running" }));
 		renderDetail("proj-7");
 
-		await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
+		await userEvent.setup().click(screen.getByRole("button", { name: "Cancel workflow" }));
 
 		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
 		expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines/runs/{runId}/cancel", {
@@ -542,7 +596,7 @@ describe("PipelineRunDetail actions", () => {
 		setRun(detail({ status: "failed" }));
 		renderDetail("proj-1");
 
-		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Cancel workflow" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
 		expect(screen.queryByText(/finding/i)).not.toBeInTheDocument();
 	});
@@ -551,6 +605,173 @@ describe("PipelineRunDetail actions", () => {
 		setRun(detail({ status: "running" }));
 		renderDetail(undefined);
 
-		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Cancel workflow" })).toBeDisabled();
+	});
+});
+
+describe("PipelineRunDetail summary card", () => {
+	it("reports what triggered the run, how it settled, how long it took and what it left behind", () => {
+		setRun(
+			detail({
+				status: "succeeded",
+				subjectKind: "pr",
+				prNumber: 7,
+				sessionId: "",
+				createdAt: "2026-07-15T00:00:00Z",
+				settledAt: "2026-07-15T00:05:00Z",
+				stages: [
+					stage({ stageId: "audit", producedArtifact: { name: "audit.md", exists: true } }),
+					stage({ stageId: "assess", producedArtifact: { name: "assess.md", exists: false } }),
+				],
+			}),
+		);
+		renderDetail("proj-1");
+
+		const summary = screen.getByRole("region", { name: "Run summary" });
+		expect(within(summary).getByText("Triggered via pull request")).toBeInTheDocument();
+		expect(within(summary).getByText("succeeded")).toBeInTheDocument();
+		expect(within(summary).getByText("5m 0s")).toBeInTheDocument();
+		// Only the artifact that is actually in the run folder counts.
+		expect(within(summary).getByText("1")).toBeInTheDocument();
+	});
+
+	it("says a run left no artifacts rather than showing a bare zero", () => {
+		setRun(detail({ status: "succeeded", stages: [stage({ stageId: "lint" })] }));
+		renderDetail("proj-1");
+
+		expect(within(screen.getByRole("region", { name: "Run summary" })).getByText("None")).toBeInTheDocument();
+	});
+});
+
+describe("PipelineRunDetail job rail", () => {
+	it("lists Summary, every stage of the run, and the run's own details", () => {
+		setRun(
+			detail({
+				runDir: "/tmp/ao/run-1",
+				stages: [stage({ stageId: "build" }), stage({ stageId: "test", outcome: "failed" })],
+			}),
+		);
+		renderDetail("proj-1");
+
+		const rail = screen.getByRole("navigation", { name: "Run navigation" });
+		expect(within(rail).getByRole("button", { name: "Summary" })).toBeInTheDocument();
+		expect(within(rail).getByText("All jobs")).toBeInTheDocument();
+		expect(within(rail).getByRole("button", { name: "build" })).toBeInTheDocument();
+		expect(within(rail).getByRole("button", { name: "test" })).toBeInTheDocument();
+		expect(within(rail).getByText("Run details")).toBeInTheDocument();
+		expect(within(rail).getByText("/tmp/ao/run-1")).toBeInTheDocument();
+	});
+
+	// Selecting a job on GitHub scrolls its output into view; ours does the same
+	// to the stage's detail card, which is where everything about it lives.
+	it("focuses a stage's detail card when its rail entry is picked", async () => {
+		const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
+		setRun(detail({ stages: [stage({ stageId: "build" }), stage({ stageId: "test" })] }));
+		renderDetail("proj-1");
+
+		const rail = screen.getByRole("navigation", { name: "Run navigation" });
+		expect(within(rail).getByRole("button", { name: "Summary" })).toHaveAttribute("aria-current", "true");
+
+		await userEvent.setup().click(within(rail).getByRole("button", { name: "test" }));
+
+		expect(within(rail).getByRole("button", { name: "test" })).toHaveAttribute("aria-current", "true");
+		expect(within(rail).getByRole("button", { name: "Summary" })).not.toHaveAttribute("aria-current");
+		expect(scrollIntoView).toHaveBeenCalled();
+	});
+
+	it("takes the back link to the runs board and the definition entry to the pipelines page", async () => {
+		setRun(detail({ stages: [] }));
+		renderDetail("proj-1");
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("button", { name: "Runs" }));
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/pipelines/runs" });
+
+		await user.click(screen.getByRole("button", { name: "Pipeline definition" }));
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/pipelines" });
+	});
+});
+
+describe("PipelineRunDetail stage graph", () => {
+	it("draws a node per stage of the run with its duration", async () => {
+		setRun(
+			detail({
+				stages: [
+					stage({ stageId: "build", startedAt: "2026-07-15T00:00:00Z", settledAt: "2026-07-15T00:00:26Z" }),
+					stage({ stageId: "test", outcome: "skipped", startedAt: null, settledAt: null }),
+				],
+			}),
+		);
+		setApi({ definitions: [definition(CHAIN_YAML)] });
+		renderDetail("proj-1");
+
+		await waitFor(() => expect(graphNode("build")).toBeInTheDocument());
+		expect(within(graphNode("build")).getByText("26s")).toBeInTheDocument();
+		// A stage that never ran has no duration to show, in the graph as in its card.
+		expect(within(graphNode("test")).queryByText(/\d+s/)).not.toBeInTheDocument();
+	});
+
+	// The run DTO has no edges, so a stage placed to the right of the one that
+	// routes into it is the proof that the definition's routing reached dagre.
+	it("ranks a stage after the stage that routes into it", async () => {
+		setRun(detail({ stages: [stage({ stageId: "build" }), stage({ stageId: "test" })] }));
+		setApi({ definitions: [definition(CHAIN_YAML)] });
+		renderDetail("proj-1");
+
+		await waitFor(() => expect(graphNodeX(1)).toBeGreaterThan(graphNodeX(0)));
+	});
+
+	it("names the pipeline and the triggers it runs on above the graph", async () => {
+		setRun(detail({ stages: [stage({ stageId: "build" })] }));
+		setApi({ definitions: [definition(CHAIN_YAML)] });
+		renderDetail("proj-1");
+
+		expect(await screen.findByText("on: pr.created, pr.updated")).toBeInTheDocument();
+	});
+
+	it("says a definition with no triggers only runs when asked", async () => {
+		setRun(detail({ stages: [stage({ stageId: "build" })] }));
+		setApi({ definitions: [definition("name: review\nstages:\n  - id: build\n    executor: command\n    run: make\n")] });
+		renderDetail("proj-1");
+
+		expect(await screen.findByText("on: manual")).toBeInTheDocument();
+	});
+
+	// A definition can be edited or deleted after the run it produced. The nodes
+	// are the run's own, so they still render; only the routing is gone.
+	it("still graphs the stages when the run's definition cannot be loaded", async () => {
+		setRun(detail({ stages: [stage({ stageId: "build" })] }));
+		setApi({ definitions: [] });
+		renderDetail("proj-1");
+
+		await waitFor(() => expect(graphNode("build")).toBeInTheDocument());
+		expect(
+			screen.getByText("routing unavailable: this run's pipeline definition could not be loaded"),
+		).toBeInTheDocument();
+	});
+
+	it("offers no editing affordances on the run's graph", async () => {
+		setRun(detail({ stages: [stage({ stageId: "build" })] }));
+		setApi({ definitions: [definition(CHAIN_YAML)] });
+		renderDetail("proj-1");
+
+		await waitFor(() => expect(graphNode("build")).toBeInTheDocument());
+		expect(screen.queryByRole("button", { name: "Add stage" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Auto-layout" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Fit graph" })).toBeInTheDocument();
+	});
+
+	it("focuses a stage when its graph node is clicked", async () => {
+		setRun(detail({ stages: [stage({ stageId: "build" }), stage({ stageId: "test" })] }));
+		setApi({ definitions: [definition(CHAIN_YAML)] });
+		renderDetail("proj-1");
+
+		await waitFor(() => expect(graphNode("test")).toBeInTheDocument());
+		// fireEvent, not userEvent: a full pointer sequence trips d3-drag's
+		// window access on the zoom pane under jsdom (same as PipelineCanvas).
+		fireEvent.click(graphNode("test"));
+
+		const rail = screen.getByRole("navigation", { name: "Run navigation" });
+		expect(within(rail).getByRole("button", { name: "test" })).toHaveAttribute("aria-current", "true");
 	});
 });
