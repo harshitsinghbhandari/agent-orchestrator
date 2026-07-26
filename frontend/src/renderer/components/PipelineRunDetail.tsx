@@ -378,9 +378,10 @@ function RunSubject({ run }: { run: RunDetail }) {
 		);
 	}
 	if (run.sessionId) return <SessionLink sessionId={run.sessionId} />;
-	// A project subject (a manual trigger) has neither a PR nor a session to
-	// point at, and saying so is the whole of it.
-	return <span>{run.subjectKind}</span>;
+	// A project subject has neither a PR nor a session to point at: nothing but
+	// a person asked for it, and the card's "Triggered via project" line has
+	// already said the rest.
+	return <span>{run.subjectKind === "project" ? "manual trigger" : run.subjectKind}</span>;
 }
 
 // One stage's detail card: how it settled, how long it took, why it was entered,
