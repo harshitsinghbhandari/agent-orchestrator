@@ -30,4 +30,11 @@ type SpawnConfig struct {
 	// DisplayName is the user-facing sidebar label. Empty falls back to the
 	// session id in the read model (e.g. orchestrator sessions).
 	DisplayName string
+
+	// Env is extra environment for the spawned session, merged over the
+	// project's env vars (an entry here wins on collision, so a caller's
+	// ambient identity cannot be masked by project config). AO-internal vars
+	// (AO_SESSION_ID and friends) still win over everything. Nil means no
+	// extra env.
+	Env map[string]string
 }
