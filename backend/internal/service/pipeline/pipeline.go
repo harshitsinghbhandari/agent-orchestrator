@@ -10,14 +10,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
-// TriggerInput is the manual-trigger request: a definition reference (id or
-// name) plus optional session and head SHA.
-type TriggerInput struct {
-	Ref       string
-	SessionID string
-	HeadSHA   string
-}
-
 // Manager is the pipelines service the HTTP controller and the lifecycle merge
 // gate depend on.
 type Manager interface {
