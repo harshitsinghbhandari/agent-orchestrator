@@ -13,6 +13,10 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline/triggers"
 )
 
+// defaultSweepInterval is how often the reaper looks for kept sessions past the
+// 24h TTL. Hourly: the bound is a day, so nothing is gained by looking sooner.
+const defaultSweepInterval = time.Hour
+
 // Supervisor owns one Engine per project. It is the single wiring seam the
 // daemon constructs, so the whole subsystem stays behind AO_PIPELINES at one
 // call site, and it is the lookup the trigger bridges and the HTTP service use
@@ -29,6 +33,10 @@ type Supervisor struct {
 	mu      sync.Mutex
 	engines map[domain.ProjectID]*Engine
 	started bool
+	reaping bool
+
+	sweepQuit chan struct{}
+	sweepWG   sync.WaitGroup
 }
 
 // ProjectLister enumerates the projects to instantiate engines for. Satisfied
@@ -47,11 +55,18 @@ type SupervisorConfig struct {
 	Messenger   executors.SessionMessenger
 	Credentials Credentials
 	Projects    ProjectLister
+	// Orphans is the reaper the supervisor owns: every engine hands it the
+	// sessions their kill-on rules spared, and the supervisor's sweep ticker
+	// enforces the 24h TTL. Nil means no reaper, which is a test wiring.
+	Orphans *OrphanRegistry
 	// BaseDir is the run-folder root, <AO_DATA_DIR>/pipelines.
 	BaseDir      string
 	Logger       *slog.Logger
 	Clock        func() time.Time
 	TickInterval time.Duration
+	// SweepInterval is how often the reaper runs. Defaults to
+	// defaultSweepInterval; tests shorten it.
+	SweepInterval time.Duration
 }
 
 // NewSupervisor builds a Supervisor. It starts no engines; call Start.
@@ -59,10 +74,14 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.SweepInterval <= 0 {
+		cfg.SweepInterval = defaultSweepInterval
+	}
 	return &Supervisor{
 		cfg:         cfg,
 		concurrency: &ConcurrencyTable{},
 		engines:     map[domain.ProjectID]*Engine{},
+		sweepQuit:   make(chan struct{}),
 	}
 }
 
@@ -90,7 +109,43 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		}
 		s.engines[pid] = eng
 	}
+	s.startReaper()
 	return nil
+}
+
+// startReaper launches the sweep ticker. Called with s.mu held.
+func (s *Supervisor) startReaper() {
+	if s.cfg.Orphans == nil || s.reaping {
+		return
+	}
+	s.reaping = true
+	s.sweepWG.Add(1)
+	go s.reap()
+}
+
+// reap sweeps past-TTL kept sessions until Stop. It is a slow loop on purpose:
+// the bound is 24h, so hourly granularity is plenty and a busy daemon never
+// notices it.
+func (s *Supervisor) reap() {
+	defer s.sweepWG.Done()
+	ticker := time.NewTicker(s.cfg.SweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.sweepQuit:
+			return
+		case <-ticker.C:
+			s.cfg.Orphans.Sweep(context.Background(), s.now())
+		}
+	}
+}
+
+// now is the supervisor's clock, the same seam the engines take.
+func (s *Supervisor) now() time.Time {
+	if s.cfg.Clock != nil {
+		return s.cfg.Clock()
+	}
+	return time.Now().UTC()
 }
 
 // Stop stops every engine. Safe to call once; later lookups error.
@@ -99,7 +154,14 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	engines := s.engines
 	s.engines = map[domain.ProjectID]*Engine{}
 	s.started = false
+	stopReaper := s.reaping
+	s.reaping = false
 	s.mu.Unlock()
+
+	if stopReaper {
+		close(s.sweepQuit)
+		s.sweepWG.Wait()
+	}
 
 	for _, eng := range engines {
 		_ = eng.Stop(ctx)
@@ -134,6 +196,7 @@ func (s *Supervisor) newEngine(pid domain.ProjectID) *Engine {
 		Executors:    s.cfg.Executors,
 		Workspaces:   s.cfg.Workspaces,
 		Sessions:     s.cfg.Sessions,
+		Orphans:      s.cfg.Orphans,
 		Messenger:    s.cfg.Messenger,
 		Credentials:  s.cfg.Credentials,
 		BaseDir:      s.cfg.BaseDir,

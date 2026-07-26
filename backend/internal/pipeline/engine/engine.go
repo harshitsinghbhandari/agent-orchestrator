@@ -73,6 +73,10 @@ type Config struct {
 	// Sessions applies the kill half of the kill-on rule. Optional: without it
 	// a session is always kept.
 	Sessions SessionDisposer
+	// Orphans marks and bounds the sessions the kill-on rule spares. Optional:
+	// a nil registry keeps every spared session forever and unmarked, which is
+	// what a test engine wants and what production must never be.
+	Orphans *OrphanRegistry
 	// Messenger delivers the one nudge a stage may get. Optional: without it a
 	// nudge cannot be delivered and the stage settles on its next poll.
 	Messenger executors.SessionMessenger
@@ -113,6 +117,7 @@ type Engine struct {
 	execs       executors.StageExecutor
 	workspaces  executors.WorkspaceProvisioner
 	sessions    SessionDisposer
+	orphans     *OrphanRegistry
 	messenger   executors.SessionMessenger
 	creds       Credentials
 	baseDir     string
@@ -151,6 +156,7 @@ func New(cfg Config) *Engine {
 		execs:        cfg.Executors,
 		workspaces:   cfg.Workspaces,
 		sessions:     cfg.Sessions,
+		orphans:      cfg.Orphans,
 		messenger:    cfg.Messenger,
 		creds:        cfg.Credentials,
 		baseDir:      cfg.BaseDir,
@@ -711,12 +717,9 @@ func (e *Engine) teardownStage(runID pipeline.RunID, stage string, kill bool) {
 // settleSession applies the stage's kill-on rule. An outcome in the list kills
 // the session; anything else keeps it, because no_output, no_signal and
 // timed_out are precisely the cases where a human needs to see what the agent
-// was doing (spec section 7.2).
-//
-// ponytail: a kept session is only logged today. Task 16 adds the orphan
-// registry that marks it pipeline-orphaned in the session list and bounds the
-// leak (cap 3 per pipeline, 24h TTL); until then a kept session is visible in
-// the sidebar like any other and has to be killed by hand.
+// was doing (spec section 7.2). A kept session is handed to the orphan registry,
+// which marks it pipeline-orphaned in the session list and bounds the leak (cap
+// 3 per pipeline, 24h TTL).
 func (e *Engine) settleSession(runID pipeline.RunID, eff pipeline.SettleSession) {
 	if eff.SessionID == "" {
 		return
@@ -742,8 +745,17 @@ func (e *Engine) settleSession(runID pipeline.RunID, eff pipeline.SettleSession)
 		}
 		return
 	}
-	e.log.Info("pipeline session kept alive",
-		"run", runID, "stage", eff.Stage, "session", eff.SessionID, "outcome", eff.Outcome)
+
+	// Kept: the outcomes that get here (no_output, no_signal, timed_out) are
+	// exactly the ones a human may want to inspect, which is the whole point of
+	// the feature, so the session survives and gets a badge instead.
+	e.orphans.Keep(e.baseCtx, orphanKey(string(e.projectID), run.PipelineName), domain.PipelineOrphanInfo{
+		RunID:    string(runID),
+		Stage:    eff.Stage,
+		Outcome:  string(eff.Outcome),
+		KeptAt:   e.now(),
+		Pipeline: run.PipelineName,
+	}, eff.SessionID)
 }
 
 // runSettled tears down what the run owns and hands its concurrency key on.

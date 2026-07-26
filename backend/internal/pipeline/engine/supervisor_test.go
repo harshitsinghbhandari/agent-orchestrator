@@ -89,6 +89,46 @@ func TestSupervisorStoppedRefusesLookups(t *testing.T) {
 	}
 }
 
+// The supervisor owns the reaper: its ticker sweeps past-TTL kept sessions, so
+// the 24h bound holds without anything else having to run.
+func TestSupervisorSweepsOrphansOnItsTicker(t *testing.T) {
+	base := t.TempDir()
+	rows := newFakeOrphanSessions("proj-1", "stale")
+	orphans := NewOrphanRegistry(rows, rows, nil)
+	orphans.Keep(context.Background(), orphanKey("proj-1", "pr-review"),
+		orphanInfo("run-a", "review", "no_signal", orphanBase), "stale")
+
+	now := orphanBase.Add(OrphanTTL + time.Hour)
+	sup := NewSupervisor(SupervisorConfig{
+		Store:         newFakeStore(),
+		Executors:     newFakeExecutor(),
+		Workspaces:    newFakeProvisioner(filepath.Join(base, "trees")),
+		Sessions:      rows,
+		Messenger:     &fakeMessenger{},
+		Orphans:       orphans,
+		Projects:      fakeProjectLister{ids: []string{"proj-1"}},
+		BaseDir:       filepath.Join(base, "pipelines"),
+		Clock:         func() time.Time { return now },
+		TickInterval:  time.Hour,
+		SweepInterval: time.Millisecond,
+	})
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("start supervisor: %v", err)
+	}
+	t.Cleanup(func() { _ = sup.Stop(context.Background()) })
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if killed := rows.killedIDs(); len(killed) == 1 && killed[0] == "stale" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("killed %v, want the past-TTL session swept by the supervisor ticker", rows.killedIDs())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestSupervisorProviderDrivesRuns is the bridges' path end to end: resolve the
 // project's engine through the EngineProvider port and start a run on it.
 func TestSupervisorProviderDrivesRuns(t *testing.T) {

@@ -226,7 +226,9 @@ func (m *fakeMessenger) messages() []string {
 	return append([]string(nil), m.sent...)
 }
 
-// fakeSessions records the kill-on decisions the driver made.
+// fakeSessions is a bare session disposer, for the wirings that only need the
+// kill seam to exist. The harness uses fakeOrphanSessions instead, which also
+// keeps the rows the orphan marker lands on.
 type fakeSessions struct {
 	mu     sync.Mutex
 	killed []string
@@ -237,12 +239,6 @@ func (s *fakeSessions) Kill(_ context.Context, sessionID string) error {
 	defer s.mu.Unlock()
 	s.killed = append(s.killed, sessionID)
 	return nil
-}
-
-func (s *fakeSessions) killedIDs() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.killed...)
 }
 
 // fakeCredentials serves engine-held credentials from a map.
@@ -282,7 +278,7 @@ type harness struct {
 	ws     *fakeProvisioner
 	store  *fakeStore
 	msgr   *fakeMessenger
-	sess   *fakeSessions
+	sess   *fakeOrphanSessions
 	base   string
 
 	mu  sync.Mutex
@@ -299,7 +295,7 @@ func newHarness(t *testing.T, opts ...func(*Config)) *harness {
 		ws:    newFakeProvisioner(filepath.Join(base, "trees")),
 		store: newFakeStore(),
 		msgr:  &fakeMessenger{},
-		sess:  &fakeSessions{},
+		sess:  newAutoOrphanSessions("proj-1"),
 		base:  filepath.Join(base, "pipelines"),
 		now:   time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC),
 	}
@@ -310,6 +306,7 @@ func newHarness(t *testing.T, opts ...func(*Config)) *harness {
 		Executors:  h.execs,
 		Workspaces: h.ws,
 		Sessions:   h.sess,
+		Orphans:    NewOrphanRegistry(h.sess, h.sess, nil),
 		Messenger:  h.msgr,
 		BaseDir:    h.base,
 		Clock:      h.clock,
@@ -1017,6 +1014,51 @@ stages:
 	h2.engine.Tick()
 	if killed := h2.sess.killedIDs(); len(killed) != 0 {
 		t.Fatalf("killed %v, want kill-on: [] to never kill", killed)
+	}
+}
+
+// TestKeptSessionIsMarkedPipelineOrphaned: the kept half of the kill-on rule.
+// The session survives no_output and carries the run, the stage and the outcome
+// that spared it, because a kept session nobody can find is the leak this
+// feature exists to stop.
+func TestKeptSessionIsMarkedPipelineOrphaned(t *testing.T) {
+	h := newHarness(t)
+	runID := h.trigger(t, twoStageYAML, userSessionSubject())
+
+	h.execs.script(t, "review",
+		executors.Poll{State: executors.PollSignaledDone},
+		executors.Poll{State: executors.PollSignaledDone},
+	)
+	h.engine.Tick()
+	h.engine.Tick()
+
+	if got := h.outcome(t, runID, "review"); got != pipeline.OutcomeNoOutput {
+		t.Fatalf("review outcome = %q, want no_output", got)
+	}
+	marker := h.sess.marker("sess-review")
+	if marker == nil {
+		t.Fatal("kept session was not marked pipeline-orphaned")
+	}
+	want := domain.PipelineOrphanInfo{
+		RunID:    string(runID),
+		Stage:    "review",
+		Outcome:  string(pipeline.OutcomeNoOutput),
+		KeptAt:   h.clock(),
+		Pipeline: h.run(t, runID).PipelineName,
+	}
+	if *marker != want {
+		t.Fatalf("orphan marker = %+v, want %+v", *marker, want)
+	}
+
+	// A killed session is not an orphan: the marker exists to explain a session
+	// that is still there.
+	h2 := newHarness(t)
+	killed := h2.trigger(t, twoStageYAML, userSessionSubject())
+	h2.writeOutput(t, killed, "review.md", "content")
+	h2.execs.script(t, "review", executors.Poll{State: executors.PollSignaledDone})
+	h2.engine.Tick()
+	if got := h2.sess.marker("sess-review"); got != nil {
+		t.Fatalf("killed session marked pipeline-orphaned: %+v", got)
 	}
 }
 
