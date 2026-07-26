@@ -1,6 +1,6 @@
-// Shared presentation vocabulary for the pipelines Runs UI: the fixed five-column
-// Kanban keyed on the v2 `RunStatus` (decision D11), plus the tone maps for run
-// statuses and the eight settled stage outcomes (spec §7).
+// Shared presentation vocabulary for the pipelines Runs UI: the tone maps for
+// the v2 run statuses (decision D11) and the eight settled stage outcomes
+// (spec §7).
 //
 // The palette's job is to keep the eight outcomes distinguishable at a glance
 // rather than collapsing them into pass/fail. Two pairs share a tone because
@@ -12,33 +12,27 @@
 
 import type { RunStatus, StageOutcome } from "./pipeline-draft";
 
-export type KanbanColumn = {
-	status: RunStatus;
-	title: string;
-	description: string;
-	// Tailwind class for the column's 2px left accent border.
-	borderClass: string;
-};
+// The five D11 run statuses in lifecycle order. The runs list uses this as the
+// order of its status filter, and `runStatusOf` as the set it recognises.
+export const RUN_STATUSES: readonly RunStatus[] = ["pending", "running", "succeeded", "failed", "cancelled"] as const;
 
-// Column order and copy are fixed; the board renders exactly these five in this
-// order regardless of which statuses currently have runs.
-export const KANBAN_COLUMNS: readonly KanbanColumn[] = [
-	{ status: "pending", title: "Queued", description: "Waiting to start", borderClass: "border-l-border" },
-	{ status: "running", title: "Running", description: "Stages executing", borderClass: "border-l-accent" },
-	{
-		status: "succeeded",
-		title: "Succeeded",
-		description: "Every stage settled successfully",
-		borderClass: "border-l-success",
-	},
-	{
-		status: "failed",
-		title: "Failed",
-		description: "A stage failed, timed out, or produced nothing",
-		borderClass: "border-l-error",
-	},
-	{ status: "cancelled", title: "Cancelled", description: "Superseded or killed", borderClass: "border-l-passive" },
-] as const;
+// Human copy for a run status, matching the wording GitHub Actions uses for the
+// equivalent states so the list reads the same way.
+export function runStatusLabel(status: RunStatus): string {
+	switch (status) {
+		case "pending":
+			return "Queued";
+		case "running":
+			return "In progress";
+		case "succeeded":
+			return "Success";
+		case "failed":
+			return "Failure";
+		case "cancelled":
+		default:
+			return "Cancelled";
+	}
+}
 
 // A run's status → the text tone used for it on a card or in the run detail.
 export function runStatusTone(status: RunStatus): string {
@@ -94,12 +88,10 @@ export type RunDisplayFields = {
 	stageOutcomes?: { [key: string]: string } | null;
 };
 
-const RUN_STATUSES: readonly string[] = KANBAN_COLUMNS.map((col) => col.status);
-
-// An unknown status reads as "pending" so an unrecognised run still lands in a
-// column instead of vanishing off the board.
+// An unknown status reads as "pending" so an unrecognised run still renders in
+// the list instead of vanishing out of it.
 export function runStatusOf(run: RunDisplayFields): RunStatus {
-	if (run.status && RUN_STATUSES.includes(run.status)) return run.status as RunStatus;
+	if (run.status && (RUN_STATUSES as readonly string[]).includes(run.status)) return run.status as RunStatus;
 	return "pending";
 }
 
