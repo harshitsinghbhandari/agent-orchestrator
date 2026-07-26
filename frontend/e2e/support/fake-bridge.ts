@@ -69,6 +69,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				},
 				terminal: { saveDroppedFile: async () => "" },
 				window: { setOverlay: async () => undefined },
+				theme: { set: async () => undefined },
 				menu: { action: async () => undefined, notifyShellFocus: () => undefined },
 				clipboard: {
 					writeText: async () => undefined,
@@ -77,7 +78,8 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 				daemon: {
 					getStatus: async () => status,
 					start: async () => status,
-					stop: async () => ({ state: "stopped" }),
+					stop: async () => ({ state: "stopped" }) as typeof status,
+					restart: async () => status,
 					onStatus: (listener: (s: typeof status) => void) => {
 						listener(status);
 						return unsubscribe();
@@ -418,12 +420,14 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				},
 				terminal: { saveDroppedFile: async () => "" },
 				window: { setOverlay: async () => undefined },
+				theme: { set: async () => undefined },
 				menu: { action: async () => undefined, notifyShellFocus: () => undefined },
 				clipboard: { writeText: async () => undefined, readText: async () => "" },
 				daemon: {
 					getStatus: async () => status,
 					start: async () => status,
-					stop: async () => ({ state: "stopped" }),
+					stop: async () => ({ state: "stopped" }) as typeof status,
+					restart: async () => status,
 					onStatus: (listener: (s: typeof status) => void) => {
 						listener(status);
 						return unsubscribe();
