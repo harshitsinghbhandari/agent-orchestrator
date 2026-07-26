@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
 )
 
 // Manager is the pipelines service the HTTP controller and the lifecycle merge
@@ -16,13 +17,20 @@ type Manager interface {
 	// PRBlocksMerge reports whether the most recent settled pipeline run for a
 	// PR blocks it from merging.
 	PRBlocksMerge(ctx context.Context, projectID domain.ProjectID, prURL, headSHA string) (bool, error)
+	// SignalStage records one `ao pipeline done|fail` against a running stage.
+	SignalStage(ctx context.Context, runID pipeline.RunID, stageID string, kind pipeline.SignalKind, reason string) error
+	// LatestStageSignal returns the newest signal for a (run, stage), which is
+	// what the agent executor polls to decide whether a stage settled itself.
+	LatestStageSignal(ctx context.Context, runID pipeline.RunID, stageID string) (pipeline.StageSignal, bool, error)
 }
 
 // Service is the concrete Manager.
-type Service struct{}
+type Service struct {
+	store SignalStore
+}
 
-// New builds a Service.
-func New() *Service { return &Service{} }
+// New builds a Service over the run and signal store.
+func New(store SignalStore) *Service { return &Service{store: store} }
 
 var _ Manager = (*Service)(nil)
 

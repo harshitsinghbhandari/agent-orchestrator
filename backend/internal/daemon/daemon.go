@@ -162,7 +162,7 @@ func Run() error {
 	var pipelinesSvc pipelinesvc.Manager
 	if resolvePipelinesEnabled(ctx, cfg, store, log) {
 		pipelineStk = startPipelineEngine(ctx, log)
-		pipelinesSvc = pipelinesvc.New()
+		pipelinesSvc = pipelinesvc.New(store)
 		// Let the lifecycle merge-readiness path veto a ready-to-merge PR whose
 		// latest settled pipeline run blocks merge. Only wired when pipelines are
 		// enabled, so the gate stays a no-op otherwise.
