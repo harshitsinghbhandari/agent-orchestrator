@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, ChevronRight, Plus, RotateCw } from "lucide-react";
 import {
+	type PipelineOrphanInfo,
 	type WorkspaceSession,
 	canonicalTrackerIssueId,
 	newestActiveOrchestrator,
@@ -19,12 +20,19 @@ import {
 	type AttentionZoneView,
 } from "../lib/session-presentation";
 import { useSessionScmSummary, type SessionPRSummary } from "../hooks/useSessionScmSummary";
+import { useKillSession } from "../hooks/useKillSession";
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { NotificationCenter } from "./NotificationCenter";
 import { BoardWelcome, ProjectBoardEmpty } from "./BoardEmptyStates";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { OrchestratorIcon } from "./icons";
+import { Badge } from "./ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { TopbarButton, TopbarKillError } from "./TopbarButton";
+import { formatTimeCompact } from "../lib/format-time";
+import { stageOutcomeLabel } from "../lib/pipeline-display";
+import type { StageOutcome } from "../lib/pipeline-draft";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { prBrowserUrl, sessionPRDisplaySummaries } from "../lib/pr-display";
@@ -461,6 +469,10 @@ function SessionCard({
 }) {
 	const badge = getSessionStatusView(session.status);
 	const issueId = canonicalTrackerIssueId(session.issueId);
+	const orphan = session.pipelineOrphan;
+	// A killed orphan keeps the badge (it still explains where the session came
+	// from) but loses the kill action: there is nothing left to stop.
+	const showOrphanKill = orphan !== undefined && session.status !== "terminated";
 	const branch = session.branch || "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
 	const prSummaries = sessionPRDisplaySummaries(session, useSessionScmSummary(session.id).data);
@@ -502,6 +514,7 @@ function SessionCard({
 							{issueId}
 						</span>
 					)}
+					{orphan && <PipelineOrphanBadge orphan={orphan} />}
 					<span className="ml-auto shrink-0 font-mono text-2xs tracking-wide-xs text-passive">
 						{agentLabel(session.provider)}
 					</span>
@@ -521,7 +534,10 @@ function SessionCard({
 				<div className="border-t border-border px-3.25 py-1.5 text-2xs text-destructive">{restoreError}</div>
 			)}
 			<div
-				className={cn("border-t border-border px-3.25 py-2 font-mono text-2xs text-passive", restoreAction && "pr-20")}
+				className={cn(
+					"border-t border-border px-3.25 py-2 font-mono text-2xs text-passive",
+					(restoreAction || showOrphanKill) && "pr-20",
+				)}
 				onClick={(event) => event.stopPropagation()}
 			>
 				{prSummaries.length === 0 ? (
@@ -551,7 +567,89 @@ function SessionCard({
 					{isRestoring ? "Restoring" : "Restore"}
 				</button>
 			)}
+			{orphan && showOrphanKill && <PipelineOrphanKillButton orphan={orphan} session={session} />}
 		</div>
+	);
+}
+
+// The "pipeline" badge on a session the pipeline engine deliberately spared.
+// Deliberately neutral: this is not an error state. The tooltip leads with the
+// outcome, because the outcome is the reason the session is still here at all
+// (a stage that ended no_output / no_signal / timed_out is worth a human look
+// before its workspace goes away), and the reaper will not keep it forever.
+function PipelineOrphanBadge({ orphan }: { orphan: PipelineOrphanInfo }) {
+	return (
+		<TooltipProvider delayDuration={0}>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Badge className="cursor-help" data-testid="pipeline-orphan-badge" tabIndex={0}>
+						pipeline
+					</Badge>
+				</TooltipTrigger>
+				<TooltipContent className="max-w-72 space-y-1 px-2.5 py-2 text-left" side="bottom">
+					<p className="text-2xs leading-relaxed text-popover-foreground">
+						Stage <span className="font-mono">{orphan.stage}</span> ended{" "}
+						<span className="font-medium text-warning">{stageOutcomeLabel(orphan.outcome as StageOutcome)}</span>, so
+						this session was kept for you to inspect instead of being cleaned up.
+					</p>
+					<p className="font-mono text-micro text-muted-foreground">
+						{orphan.pipeline} · run {orphan.runId}
+					</p>
+					<p className="text-micro text-muted-foreground">kept {formatTimeCompact(orphan.keptAt)}</p>
+				</TooltipContent>
+			</Tooltip>
+		</TooltipProvider>
+	);
+}
+
+// Hover-revealed kill for a spared stage session, mirroring the Done column's
+// restore affordance so the card gains no permanent clutter. Kill tears down the
+// runtime and the kept workspace, so it goes through the shared confirm dialog.
+function PipelineOrphanKillButton({ orphan, session }: { orphan: PipelineOrphanInfo; session: WorkspaceSession }) {
+	const [confirming, setConfirming] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const kill = useKillSession(session, {
+		onKilled: () => setConfirming(false),
+		onError: setError,
+	});
+	const label = `Kill orphaned ${orphan.stage} stage`;
+	return (
+		<>
+			<button
+				aria-label={label}
+				className="absolute bottom-1.5 right-2 z-10 inline-flex h-control-xs items-center justify-center rounded-sm border border-error/40 bg-surface px-2.5 text-2xs font-semibold text-error opacity-0 shadow-sm transition-opacity duration-normal ease-out hover:opacity-90 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+				onClick={(event) => {
+					event.stopPropagation();
+					setError(null);
+					setConfirming(true);
+				}}
+				title={label}
+				type="button"
+			>
+				Kill
+			</button>
+			<ConfirmDialog
+				busy={kill.isPending}
+				confirmLabel="Kill session"
+				description={
+					<p className="text-xs leading-5 text-muted-foreground">
+						Stage <span className="font-mono text-foreground">{orphan.stage}</span> of run{" "}
+						<span className="font-mono text-foreground">{orphan.runId}</span> ({orphan.pipeline}) ended{" "}
+						{stageOutcomeLabel(orphan.outcome as StageOutcome)}, which is why this session is still here. Killing it
+						tears down the agent and its kept workspace. This cannot be undone.
+					</p>
+				}
+				destructive
+				error={error}
+				onConfirm={() => kill.mutate()}
+				onOpenChange={(open) => {
+					if (!open) setConfirming(false);
+				}}
+				open={confirming}
+				size="sm"
+				title="Kill this pipeline stage session?"
+			/>
+		</>
 	);
 }
 
