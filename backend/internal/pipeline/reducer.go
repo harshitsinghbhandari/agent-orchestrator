@@ -32,11 +32,21 @@ func Reduce(run RunState, ev Event) (RunState, []Effect) {
 	switch e := ev.(type) {
 	case StageLaunched:
 		return reduceStageLaunched(run, e)
+	case StageLaunchFailed:
+		// The stage never got to run at all, so it settles failed with the
+		// driver's reason and routes like any other failure.
+		return settleFailure(run, e.Stage, OutcomeFailed, e.Reason, e.Now, nil)
 	case AgentSignaled:
-		if !e.Done || !e.ArtifactOK {
-			// An explicit fail, and a done whose artifact is missing, are
-			// failure routing and the nudge: the next task owns both.
-			return run, nil
+		if !e.Done {
+			// Never nudge an explicit `ao pipeline fail`. The agent decided;
+			// respect it (spec section 7.1).
+			return settleFailure(run, e.Stage, OutcomeFailed, e.Reason, e.Now, nil)
+		}
+		if !e.ArtifactOK {
+			// Signalled done with the declared artifact missing or empty: one
+			// nudge, then no_output. ArtifactOK is true when nothing is
+			// declared, so getting here means there is a contract to point at.
+			return nudgeOrSettle(run, e.Stage, e.ArtifactOK, e.Now)
 		}
 		// Nothing declared means nothing verified, and the signal was the whole
 		// contract.
@@ -47,13 +57,24 @@ func Reduce(run RunState, ev Event) (RunState, []Effect) {
 		return settleSuccess(run, e.Stage, outcome, e.Now)
 	case CommandExited:
 		if e.ExitCode != 0 {
-			return run, nil // failure settlement: next task
+			return settleFailure(run, e.Stage, OutcomeFailed, fmt.Sprintf("command exited %d", e.ExitCode), e.Now, nil)
 		}
 		return settleSuccess(run, e.Stage, OutcomeSucceeded, e.Now)
+	case SessionIdle:
+		// Idle-without-signal is where the nudge is most valuable: it is the
+		// disambiguator between "finished and forgot to call the CLI" and
+		// "stuck waiting" (spec section 7.1).
+		return nudgeOrSettle(run, e.Stage, e.ArtifactOK, e.Now)
+	case SessionGone:
+		// Never nudge an exited session. Nothing to nudge.
+		return settleFailure(run, e.Stage, OutcomeNoSignal, "session exited without signalling", e.Now, nil)
+	case NudgeDelivered:
+		return reduceNudgeDelivered(run, e)
+	case Tick:
+		return reduceTick(run, e)
+	case CancelRequested:
+		return reduceCancel(run, e)
 	default:
-		// StageLaunchFailed, SessionIdle, SessionGone, NudgeDelivered, Tick and
-		// CancelRequested are failure routing, the nudge, deadlines and
-		// cancellation, all owned by the second half of the reducer.
 		return run, nil
 	}
 }
@@ -168,12 +189,215 @@ func settleSuccess(run RunState, stageID string, outcome Outcome, now time.Time)
 		})
 	}
 	effects = append(effects, PersistRun{})
+	effects = appendSessionDisposition(effects, &next, stageID, outcome)
 
 	// advance writes through next, so it has to run before next is copied into
 	// the result.
 	starts := startSuccessTargets(&next, stageID, now)
 	effects = append(effects, advance(&next, starts, now)...)
 	return next, effects
+}
+
+// settleFailure settles an in-flight stage on one of the four outcomes that
+// route to failure, then takes that stage's failure edge.
+//
+// extra carries the effects that belong to this particular failure and must
+// land before the session disposition: today that is only the InterruptStage a
+// timeout needs.
+func settleFailure(run RunState, stageID string, outcome Outcome, reason string, now time.Time, extra []Effect) (RunState, []Effect) {
+	if st := run.Stages[stageID]; st == nil || !inFlight(st) {
+		return run, nil
+	}
+	next := run.clone()
+	st := next.Stages[stageID]
+	st.Outcome = outcome
+	st.SettledAt = now
+	if reason != "" {
+		st.Reason = reason
+	}
+	next.UpdatedAt = now
+
+	effects := make([]Effect, 0, len(extra)+4)
+	effects = append(effects, PersistRun{})
+	effects = append(effects, extra...)
+	effects = appendSessionDisposition(effects, &next, stageID, outcome)
+
+	// advance writes through next, so it has to run before next is copied into
+	// the result.
+	starts := startFailureTarget(&next, stageID, outcome, now)
+	effects = append(effects, advance(&next, starts, now)...)
+	return next, effects
+}
+
+// startFailureTarget takes the settled stage's failure edge: its own
+// on_failure, else defaults.on_failure, else the branch ends. The one carve-out
+// (the default target does not route into itself) lives in failureEdges.
+//
+// Failure entry is first-arrival-wins (spec section 9.3): a second stage
+// routing into a target that is no longer pending is dropped. The run is
+// already failing, and three notifications from three dead builds is noise.
+// needs is deliberately not consulted, because failure edges never join.
+func startFailureTarget(run *RunState, from string, outcome Outcome, now time.Time) []Effect {
+	targets := run.Def.failureEdges()[from]
+	if len(targets) == 0 || !canEnter(run, targets[0]) {
+		return nil
+	}
+	target := targets[0]
+	st := run.Stages[target]
+	st.FailedStage = from
+	st.FailedOutcome = outcome
+	// PrevStage stays empty: AO_PREV_* names the success predecessor, and a
+	// failure entry surfaces as AO_FAILED_* instead (spec section 12.2). The
+	// stage's workspace stays the symbolic `inherit`; the driver resolves it at
+	// launch to FailedStage's tree, which is the whole point of the failure
+	// default (spec section 5.4).
+	return []Effect{startStage(run, target, EntryFailure, "", now)}
+}
+
+// nudgeMissingArtifactFormat is the spec section 7.1 nudge, verbatim. It says
+// overwrite, not write: there is no reliable way to detect a partial file after
+// the fact, so the fix is prescriptive rather than detective.
+const nudgeMissingArtifactFormat = "You signaled done but agent-outputs/%s does not exist or is empty.\n" +
+	"Overwrite it now, then signal again."
+
+// nudgeUnsignalledMessage is the nudge for a session that went idle with
+// nothing left to verify: what is missing is the signal, not the artifact.
+const nudgeUnsignalledMessage = "You appear to be finished but have not signalled. " +
+	"Run 'ao pipeline done' or 'ao pipeline fail --reason ...' now."
+
+// nudgeOrSettle is the one nudge each stage gets, and the settlement that
+// follows a second arrival at the same dead end.
+//
+// The discriminator is artifactOK, not the presence of `produces`: the driver
+// reports artifactOK true when nothing is declared, so a stage with no contract
+// and a stage whose file is actually there take the same branch, and neither is
+// told its artifact is missing. What each is missing is the signal.
+//
+// Two attempts total, not configurable. If a second nudge would help, the
+// prompt is wrong (spec section 7.1).
+func nudgeOrSettle(run RunState, stageID string, artifactOK bool, now time.Time) (RunState, []Effect) {
+	st := run.Stages[stageID]
+	if st == nil || st.Outcome != OutcomeRunning {
+		return run, nil
+	}
+
+	outcome, message, reason := OutcomeNoSignal, nudgeUnsignalledMessage, "session went idle without signalling"
+	if !artifactOK {
+		produces := ""
+		if def := run.Def.StageByID(stageID); def != nil {
+			produces = def.Produces
+		}
+		outcome = OutcomeNoOutput
+		message = fmt.Sprintf(nudgeMissingArtifactFormat, produces)
+		reason = fmt.Sprintf("declared artifact agent-outputs/%s is missing or empty", produces)
+	}
+
+	if run.Nudged[stageID] {
+		return settleFailure(run, stageID, outcome, reason, now, nil)
+	}
+
+	next := run.clone()
+	if next.Nudged == nil {
+		next.Nudged = map[string]bool{}
+	}
+	next.Nudged[stageID] = true
+	next.UpdatedAt = now
+	// The stage stays running: the nudge never leaves it, and it works because
+	// the session is still alive with its context. Attempt becomes 2 only once
+	// the driver reports the nudge delivered.
+	return next, []Effect{
+		PersistRun{},
+		NudgeStage{Stage: stageID, SessionID: st.SessionID, Message: message},
+	}
+}
+
+// reduceNudgeDelivered records that the stage is on its second and last
+// attempt, which surfaces to the prompt as AO_ATTEMPT.
+func reduceNudgeDelivered(run RunState, e NudgeDelivered) (RunState, []Effect) {
+	st := run.Stages[e.Stage]
+	if st == nil || st.Outcome != OutcomeRunning || !run.Nudged[e.Stage] || st.Attempt >= 2 {
+		return run, nil
+	}
+	next := run.clone()
+	next.Stages[e.Stage].Attempt = 2
+	next.UpdatedAt = e.Now
+	return next, []Effect{PersistRun{}}
+}
+
+// reduceTick enforces deadlines. Every stage has one: an agent that hangs must
+// eventually settle as timed_out, or the run board grows entries nobody ever
+// closes (spec section 13.1).
+//
+// Stages are walked in document order, because map iteration is random and the
+// effect list the driver walks has to be deterministic.
+func reduceTick(run RunState, e Tick) (RunState, []Effect) {
+	effects := make([]Effect, 0, len(run.Stages))
+	for _, id := range run.Def.stageIDs() {
+		st := run.Stages[id]
+		if st == nil || st.Outcome != OutcomeRunning || st.DeadlineAt.IsZero() || !e.Now.After(st.DeadlineAt) {
+			continue
+		}
+		// InterruptStage kills the process and keeps the session: a timed-out
+		// agent may still be running, and the scrollback is the point, but
+		// keeping a runaway agent burning tokens for a day is not (spec 7.2).
+		var settled []Effect
+		run, settled = settleFailure(run, id, OutcomeTimedOut, "deadline exceeded", e.Now, []Effect{InterruptStage{Stage: id}})
+		effects = append(effects, settled...)
+	}
+	return run, effects
+}
+
+// reduceCancel tears the run down: superseded by concurrency, or killed by a
+// human. A cancelled stage does not route to on_failure, because the run is
+// being torn down rather than routed (spec section 13.2).
+func reduceCancel(run RunState, e CancelRequested) (RunState, []Effect) {
+	next := run.clone()
+	next.CancelReason = e.Reason
+	next.UpdatedAt = e.Now
+
+	effects := make([]Effect, 0, 2*len(next.Stages)+2)
+	effects = append(effects, PersistRun{})
+	for _, id := range next.Def.stageIDs() {
+		st := next.Stages[id]
+		if st == nil || st.Outcome.IsSettled() {
+			continue
+		}
+		st.SettledAt = e.Now
+		if st.Outcome != OutcomeRunning {
+			// It never ran, and skipped is not failed.
+			st.Outcome = OutcomeSkipped
+			continue
+		}
+		st.Outcome = OutcomeCancelled
+		effects = append(effects, CancelStageExec{Stage: id})
+		effects = appendSessionDisposition(effects, &next, id, OutcomeCancelled)
+	}
+
+	next.Status = RunCancelled
+	next.SettledAt = e.Now
+	return next, append(effects, RunSettled{Status: RunCancelled})
+}
+
+// appendSessionDisposition hands the driver an agent stage's settled outcome so
+// it can apply the stage's kill-on rule. The reducer only reports the
+// settlement; kill versus keep-and-mark-orphaned is EffectiveKillOn's call.
+//
+// A command stage and a stage that never launched have no session, so neither
+// produces one.
+func appendSessionDisposition(effects []Effect, run *RunState, stageID string, outcome Outcome) []Effect {
+	st := run.Stages[stageID]
+	def := run.Def.StageByID(stageID)
+	if st == nil || st.SessionID == "" || def == nil || def.Executor != ExecutorAgent {
+		return effects
+	}
+	return append(effects, SettleSession{Stage: stageID, SessionID: st.SessionID, Outcome: outcome})
+}
+
+// inFlight reports whether a stage can still settle: running, or pending with a
+// launch already committed. The second case is how a launch that never got off
+// the ground settles.
+func inFlight(st *StageState) bool {
+	return st.Outcome == OutcomeRunning || (st.Outcome == OutcomePending && st.Attempt > 0)
 }
 
 // advance runs the two passes that follow any settlement, then settles the run
