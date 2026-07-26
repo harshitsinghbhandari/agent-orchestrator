@@ -1,12 +1,16 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
 	pipelinesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pipeline"
 )
 
@@ -33,6 +37,12 @@ type PipelineRunIDParam struct {
 type PipelineArtifactIDParam struct {
 	RunID      string `path:"runId" description:"Pipeline run identifier."`
 	ArtifactID string `path:"artifactId" description:"Artifact identifier."`
+}
+
+// PipelineStageIDParam carries both path segments of the stage signal route.
+type PipelineStageIDParam struct {
+	RunID   string `path:"runId" description:"Pipeline run identifier."`
+	StageID string `path:"stageId" description:"Stage id as declared in the pipeline definition."`
 }
 
 // PipelineProjectQuery is the shared `project` scoping query for the collection
@@ -222,6 +232,20 @@ type UpdatePipelineArtifactStatusRequest struct {
 	Status string `json:"status" description:"New artifact status: open | resolved | dismissed."`
 }
 
+// SignalPipelineStageRequest is the body of the stage signal route: how an
+// agent settles its own stage, sent by `ao pipeline done|fail`.
+type SignalPipelineStageRequest struct {
+	Status string `json:"status" enum:"done,fail" description:"How the stage settled: done | fail."`
+	Reason string `json:"reason,omitempty" description:"Why the stage failed. Carried on the failure edge and shown in run detail."`
+}
+
+// SignalPipelineStageResponse acknowledges a recorded signal. The stage does
+// not settle here: the engine reads the signal on its next poll, so this is an
+// acceptance receipt rather than an outcome.
+type SignalPipelineStageResponse struct {
+	Accepted bool `json:"accepted"`
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
@@ -247,9 +271,60 @@ func (c *PipelinesController) Register(r chi.Router) {
 	r.Post("/pipelines/runs/{runId}/resume", notImplementedHandler("POST", "/api/v1/pipelines/runs/{runId}/resume"))
 	r.Get("/pipelines/runs/{runId}/artifacts/{artifactId}", notImplementedHandler("GET", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}"))
 	r.Post("/pipelines/runs/{runId}/artifacts/{artifactId}/status", notImplementedHandler("POST", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status"))
+	r.Post("/pipelines/runs/{runId}/stages/{stageId}/signal", c.signalStage)
 
 	r.Put("/pipelines/{id}", notImplementedHandler("PUT", "/api/v1/pipelines/{id}"))
 	r.Delete("/pipelines/{id}", notImplementedHandler("DELETE", "/api/v1/pipelines/{id}"))
+}
+
+// signalStagePath is the one route this controller really serves, spelled the
+// way the OpenAPI document spells it.
+const signalStagePath = "/api/v1/pipelines/runs/{runId}/stages/{stageId}/signal"
+
+// signalStage records how an agent settled its own stage (spec section 6.3).
+// The signal is only recorded here; the engine reads it on its next poll and
+// decides the outcome, so the answer is 202 rather than the settled stage.
+func (c *PipelinesController) signalStage(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", signalStagePath)
+		return
+	}
+	var in SignalPipelineStageRequest
+	if err := decodeJSON(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	kind := pipeline.SignalKind(strings.TrimSpace(in.Status))
+	if !kind.IsKnown() {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SIGNAL_STATUS",
+			`status must be "done" or "fail"`, nil)
+		return
+	}
+
+	runID := pipeline.RunID(chi.URLParam(r, "runId"))
+	stageID := chi.URLParam(r, "stageId")
+	if err := c.Svc.SignalStage(r.Context(), runID, stageID, kind, strings.TrimSpace(in.Reason)); err != nil {
+		writePipelineSignalError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, SignalPipelineStageResponse{Accepted: true})
+}
+
+// writePipelineSignalError maps the signal service's sentinels onto the wire
+// contract, falling back to 500 for unexpected failures.
+func writePipelineSignalError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, pipelinesvc.ErrRunNotFound):
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PIPELINE_RUN_NOT_FOUND", "Unknown pipeline run", nil)
+	case errors.Is(err, pipelinesvc.ErrStageNotFound):
+		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PIPELINE_STAGE_NOT_FOUND", "Unknown pipeline stage", nil)
+	case errors.Is(err, pipelinesvc.ErrStageNotRunning):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "PIPELINE_STAGE_NOT_RUNNING", "Pipeline stage is not running", nil)
+	case errors.Is(err, pipelinesvc.ErrUnknownSignalKind):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SIGNAL_STATUS", `status must be "done" or "fail"`, nil)
+	default:
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "PIPELINE_SIGNAL_FAILED", "Recording the stage signal failed", nil)
+	}
 }
 
 // notImplementedHandler answers the locked 501 envelope for one operation.
