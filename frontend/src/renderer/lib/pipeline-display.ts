@@ -88,41 +88,25 @@ export function stageOutcomeLabel(outcome: StageOutcome): string {
 	return outcome === "succeeded_unverified" ? "succeeded (unverified)" : outcome.replace(/_/g, " ");
 }
 
-// The run fields this module reads. Task 18 regenerates `api/schema.ts` with the
-// v2 DTO (`status`, `stageOutcomes`); until then the runs list still serves the
-// v1 `loopState`/`stageStatuses`, so both readers below prefer the v2 field and
-// fall back to the v1 one. The board therefore keys on RunStatus today and keeps
-// working the day the regen lands.
-// ponytail: drop the v1 fallbacks (and this type) once Task 18 has merged.
+// The run fields this module reads, straight off the v2 run DTO.
 export type RunDisplayFields = {
 	status?: string;
-	loopState?: string;
 	stageOutcomes?: { [key: string]: string } | null;
-	stageStatuses?: { [key: string]: string } | null;
 };
 
 const RUN_STATUSES: readonly string[] = KANBAN_COLUMNS.map((col) => col.status);
-
-// v1 loop states → the v2 run status they stood for.
-const LOOP_STATE_STATUS: Record<string, RunStatus> = {
-	running: "running",
-	awaiting_context: "running",
-	done: "succeeded",
-	stalled: "failed",
-	terminated: "cancelled",
-};
 
 // An unknown status reads as "pending" so an unrecognised run still lands in a
 // column instead of vanishing off the board.
 export function runStatusOf(run: RunDisplayFields): RunStatus {
 	if (run.status && RUN_STATUSES.includes(run.status)) return run.status as RunStatus;
-	return LOOP_STATE_STATUS[run.loopState ?? ""] ?? "pending";
+	return "pending";
 }
 
-// v1 statuses that are not v2 outcomes (e.g. "outdated") fall through to the
-// neutral branch of stageOutcomeDotTone, which is why this cast is safe.
+// An outcome the UI does not know falls through to the neutral branch of
+// stageOutcomeDotTone, which is why this cast is safe.
 export function stageOutcomesOf(run: RunDisplayFields): Record<string, StageOutcome> {
-	return (run.stageOutcomes ?? run.stageStatuses ?? {}) as Record<string, StageOutcome>;
+	return (run.stageOutcomes ?? {}) as Record<string, StageOutcome>;
 }
 
 // A short commit reference for a run header.
@@ -130,39 +114,17 @@ export function shortSha(sha: string): string {
 	return sha.length > 12 ? sha.slice(0, 12) : sha;
 }
 
-// --- v1 leftovers -----------------------------------------------------------
-// PipelineRunDetail still renders the v1 loop/findings vocabulary; Task 24
-// rewrites it onto the outcome palette above. These three exist only to keep it
-// compiling until then, and go with it.
-
-export function loopStateTone(state: string): string {
-	switch (state) {
-		case "running":
-			return "text-working";
-		case "awaiting_context":
-			return "text-warning";
-		case "done":
-			return "text-success";
-		case "stalled":
-			return "text-error";
-		case "terminated":
-		default:
-			return "text-passive";
-	}
-}
-
-export function stageStatusDotTone(status: string): string {
-	return stageOutcomeDotTone(status as StageOutcome);
-}
-
-export function severityBadgeVariant(severity: string | undefined): "error" | "warning" | "neutral" {
-	switch ((severity ?? "").toLowerCase()) {
-		case "critical":
-		case "high":
-			return "error";
-		case "medium":
-			return "warning";
-		default:
-			return "neutral";
-	}
+// How long a stage took, for run detail. An unsettled stage is measured against
+// now, so a running stage's row keeps counting; a stage that never started has
+// no duration at all rather than a misleading zero.
+export function formatStageDuration(startedAt?: string | null, settledAt?: string | null): string {
+	if (!startedAt) return "";
+	const start = new Date(startedAt).getTime();
+	const end = settledAt ? new Date(settledAt).getTime() : Date.now();
+	if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "";
+	const seconds = Math.round((end - start) / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }

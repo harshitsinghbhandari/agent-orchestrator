@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SETTLED_OUTCOMES, type StageOutcome } from "./pipeline-draft";
 import {
+	formatStageDuration,
 	KANBAN_COLUMNS,
 	runStatusOf,
 	runStatusTone,
@@ -78,33 +79,43 @@ describe("stageOutcomeDotTone", () => {
 });
 
 describe("runStatusOf", () => {
-	it("prefers the v2 status field", () => {
-		expect(runStatusOf({ status: "succeeded", loopState: "stalled" })).toBe("succeeded");
-	});
-
-	it("falls back to the v1 loop state until the API regen lands", () => {
-		expect(runStatusOf({ loopState: "running" })).toBe("running");
-		expect(runStatusOf({ loopState: "awaiting_context" })).toBe("running");
-		expect(runStatusOf({ loopState: "done" })).toBe("succeeded");
-		expect(runStatusOf({ loopState: "stalled" })).toBe("failed");
-		expect(runStatusOf({ loopState: "terminated" })).toBe("cancelled");
+	it("reads the run's status field", () => {
+		expect(runStatusOf({ status: "succeeded" })).toBe("succeeded");
 	});
 
 	it("reads an unknown or missing status as pending rather than dropping the run", () => {
 		expect(runStatusOf({})).toBe("pending");
 		expect(runStatusOf({ status: "exploded" })).toBe("pending");
-		expect(runStatusOf({ loopState: "who_knows" })).toBe("pending");
 	});
 });
 
 describe("stageOutcomesOf", () => {
-	it("prefers stageOutcomes and falls back to the v1 stageStatuses map", () => {
+	it("reads the outcome map, treating a null one as empty", () => {
 		expect(stageOutcomesOf({ stageOutcomes: { lint: "succeeded_unverified" } })).toEqual({
 			lint: "succeeded_unverified",
 		});
-		expect(stageOutcomesOf({ stageStatuses: { lint: "running" } })).toEqual({ lint: "running" });
-		expect(stageOutcomesOf({ stageStatuses: null })).toEqual({});
+		expect(stageOutcomesOf({ stageOutcomes: null })).toEqual({});
 		expect(stageOutcomesOf({})).toEqual({});
+	});
+});
+
+describe("formatStageDuration", () => {
+	it("scales from seconds to hours", () => {
+		expect(formatStageDuration("2026-07-15T00:00:00Z", "2026-07-15T00:00:09Z")).toBe("9s");
+		expect(formatStageDuration("2026-07-15T00:00:00Z", "2026-07-15T00:01:30Z")).toBe("1m 30s");
+		expect(formatStageDuration("2026-07-15T00:00:00Z", "2026-07-15T02:05:00Z")).toBe("2h 5m");
+	});
+
+	it("measures an unsettled stage against now", () => {
+		const startedAt = new Date(Date.now() - 90_000).toISOString();
+		expect(formatStageDuration(startedAt, null)).toBe("1m 30s");
+	});
+
+	it("has no duration for a stage that never started, or for clocks that ran backwards", () => {
+		expect(formatStageDuration(null, null)).toBe("");
+		expect(formatStageDuration(undefined, "2026-07-15T00:01:00Z")).toBe("");
+		expect(formatStageDuration("2026-07-15T00:01:00Z", "2026-07-15T00:00:00Z")).toBe("");
+		expect(formatStageDuration("not a date", "2026-07-15T00:00:00Z")).toBe("");
 	});
 });
 
