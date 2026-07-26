@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelineRunDetail } from "./PipelineRunDetail";
-import type { PipelineArtifact, PipelineRunDetail as RunDetail } from "../hooks/usePipelineRuns";
+import type { PipelineRunDetail as RunDetail } from "../hooks/usePipelineRuns";
 
 const { usePipelineRunMock, postMock, navigateMock } = vi.hoisted(() => ({
 	usePipelineRunMock: vi.fn(),
@@ -25,24 +25,11 @@ vi.mock("@tanstack/react-router", () => ({
 
 type StageView = RunDetail["stages"][number];
 
-function stage(overrides: Partial<StageView> & { stageName: string }): StageView {
+function stage(overrides: Partial<StageView> & { stageId: string }): StageView {
 	return {
-		stageRunId: `sr-${overrides.stageName}`,
-		status: "succeeded",
+		outcome: "succeeded",
 		attempt: 1,
-		artifactIds: [],
-		...overrides,
-	};
-}
-
-function finding(overrides: Partial<PipelineArtifact> & { artifactId: string }): PipelineArtifact {
-	return {
-		kind: "finding",
-		pipelineRunId: "run-1",
-		stageRunId: "sr-1",
-		stageName: "review",
-		status: "open",
-		createdAt: "2026-07-15T00:00:00Z",
+		enteredVia: "success",
 		...overrides,
 	};
 }
@@ -52,15 +39,12 @@ function detail(overrides: Partial<RunDetail>): RunDetail {
 		runId: "run-1",
 		pipelineId: "def-1",
 		pipelineName: "review",
+		status: "running",
+		subjectKind: "session",
 		sessionId: "sess-1",
-		loopState: "running",
-		loopRounds: 2,
 		headSha: "abcdef1234567890",
 		stageCount: 1,
-		stageStatuses: { review: "running" },
-		hasOpenFindings: false,
-		blocksMerge: false,
-		findings: [],
+		stageOutcomes: { review: "running" },
 		stages: [],
 		createdAt: "2026-07-15T00:00:00Z",
 		updatedAt: "2026-07-15T00:00:00Z",
@@ -89,42 +73,58 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("PipelineRunDetail", () => {
-	it("renders each stage with status, attempt, verdict, and error message", () => {
+	it("renders each stage with its outcome, attempt and reason", () => {
 		setRun(
 			detail({
-				stages: [stage({ stageName: "lint", status: "failed", attempt: 2, verdict: "fail", errorMessage: "exit 1" })],
+				stages: [stage({ stageId: "lint", outcome: "failed", attempt: 2, reason: "exit 1" })],
 			}),
 		);
 		renderDetail("proj-1");
 
 		const row = screen.getByText("lint").closest("[data-stage]") as HTMLElement;
 		expect(within(row).getByText("failed")).toBeInTheDocument();
-		expect(within(row).getByText("attempt 2")).toBeInTheDocument();
-		expect(within(row).getByText("fail")).toBeInTheDocument();
+		// Attempt 2 is the one nudge a stage gets, and it is labelled as such.
+		expect(within(row).getByText(/attempt 2/)).toBeInTheDocument();
+		expect(within(row).getByText(/nudged/)).toBeInTheDocument();
 		expect(within(row).getByText("exit 1")).toBeInTheDocument();
 	});
 
-	it("hides dismissed findings until the show-dismissed toggle is on", async () => {
+	it("spells succeeded_unverified the way the spec does", () => {
+		setRun(detail({ stages: [stage({ stageId: "answer", outcome: "succeeded_unverified" })] }));
+		renderDetail("proj-1");
+
+		const row = screen.getByText("answer").closest("[data-stage]") as HTMLElement;
+		expect(within(row).getByText("succeeded (unverified)")).toBeInTheDocument();
+	});
+
+	it("names a declared artifact and flags it when the engine did not find one", () => {
 		setRun(
 			detail({
-				findings: [
-					finding({ artifactId: "f1", title: "Open bug", filePath: "a.ts", startLine: 10, severity: "high" }),
-					finding({ artifactId: "f2", title: "Dismissed nit", status: "dismissed" }),
+				stages: [
+					stage({ stageId: "assess", outcome: "no_output", producedArtifact: { name: "review.md", exists: false } }),
+					stage({ stageId: "audit", outcome: "succeeded", producedArtifact: { name: "audit.md", exists: true } }),
 				],
 			}),
 		);
 		renderDetail("proj-1");
 
-		expect(screen.getByText("Open bug")).toBeInTheDocument();
-		expect(screen.getByText("a.ts:10")).toBeInTheDocument();
-		expect(screen.queryByText("Dismissed nit")).not.toBeInTheDocument();
+		const missing = screen.getByText("assess").closest("[data-stage]") as HTMLElement;
+		expect(within(missing).getByText("review.md (missing)")).toBeInTheDocument();
 
-		await userEvent.setup().click(screen.getByRole("switch"));
-		expect(screen.getByText("Dismissed nit")).toBeInTheDocument();
+		const present = screen.getByText("audit").closest("[data-stage]") as HTMLElement;
+		expect(within(present).getByText("audit.md")).toBeInTheDocument();
+	});
+
+	it("names the stage whose failure routed here", () => {
+		setRun(detail({ stages: [stage({ stageId: "notify", enteredVia: "failure", failedStage: "publish" })] }));
+		renderDetail("proj-1");
+
+		const row = screen.getByText("notify").closest("[data-stage]") as HTMLElement;
+		expect(within(row).getByText("via publish failing")).toBeInTheDocument();
 	});
 
 	it("cancels a running run with the run's project scope", async () => {
-		setRun(detail({ loopState: "running" }));
+		setRun(detail({ status: "running" }));
 		renderDetail("proj-7");
 
 		await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
@@ -135,57 +135,27 @@ describe("PipelineRunDetail", () => {
 		});
 	});
 
-	it("offers Resume for a stalled run and not Cancel", () => {
-		setRun(detail({ loopState: "stalled" }));
+	// v2 has no resume: a failed run is dead, and re-running means a new run.
+	it("offers no Cancel and no Resume on a settled run", () => {
+		setRun(detail({ status: "failed" }));
 		renderDetail("proj-1");
 
-		expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
 	});
 
 	it("disables the action when the run's project is unknown", () => {
-		setRun(detail({ loopState: "running" }));
+		setRun(detail({ status: "running" }));
 		renderDetail(undefined);
 
 		expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
 	});
 
-	it("dismisses an open finding via the artifact-status endpoint", async () => {
-		setRun(detail({ findings: [finding({ artifactId: "f1", title: "Open bug" })] }));
-		renderDetail("proj-9");
+	it("shows the cancel reason next to a cancelled run's status", () => {
+		setRun(detail({ status: "cancelled", cancelReason: "superseded by a newer run" }));
+		renderDetail("proj-1");
 
-		const row = screen.getByText("Open bug").closest("[data-finding]") as HTMLElement;
-		await userEvent.setup().click(within(row).getByRole("button", { name: "Dismiss" }));
-
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", {
-			params: { path: { runId: "run-1", artifactId: "f1" }, query: { project: "proj-9" } },
-			body: { status: "dismissed" },
-		});
-	});
-
-	it("reopens a dismissed finding with status open", async () => {
-		setRun(detail({ findings: [finding({ artifactId: "f2", title: "Nit", status: "dismissed" })] }));
-		renderDetail("proj-9");
-
-		// Reveal the dismissed row first.
-		await userEvent.setup().click(screen.getByRole("switch"));
-		const row = screen.getByText("Nit").closest("[data-finding]") as HTMLElement;
-		await userEvent.setup().click(within(row).getByRole("button", { name: "Undo" }));
-
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-		expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", {
-			params: { path: { runId: "run-1", artifactId: "f2" }, query: { project: "proj-9" } },
-			body: { status: "open" },
-		});
-	});
-
-	it("disables the dismiss button when the run's project is unknown", () => {
-		setRun(detail({ findings: [finding({ artifactId: "f1", title: "Open bug" })] }));
-		renderDetail(undefined);
-
-		const row = screen.getByText("Open bug").closest("[data-finding]") as HTMLElement;
-		expect(within(row).getByRole("button", { name: "Dismiss" })).toBeDisabled();
+		expect(screen.getByText("· superseded by a newer run")).toBeInTheDocument();
 	});
 
 	it("links the run-level session id to the session page", async () => {
@@ -205,11 +175,7 @@ describe("PipelineRunDetail", () => {
 	});
 
 	it("links a stage's session id to the session page", async () => {
-		setRun(
-			detail({
-				stages: [stage({ stageName: "fix", sessionId: "sess-fix-1" })],
-			}),
-		);
+		setRun(detail({ stages: [stage({ stageId: "fix", sessionId: "sess-fix-1" })] }));
 		renderDetail("proj-1");
 
 		const row = screen.getByText("fix").closest("[data-stage]") as HTMLElement;
@@ -217,29 +183,29 @@ describe("PipelineRunDetail", () => {
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/sessions/$sessionId", params: { sessionId: "sess-fix-1" } });
 	});
 
-	it("does not render a stage session link when the stage has no sessionId (command/builtin stages)", () => {
-		setRun(detail({ stages: [stage({ stageName: "lint" })] }));
+	it("does not render a stage session link when the stage has no sessionId (command stages)", () => {
+		setRun(detail({ stages: [stage({ stageId: "lint" })] }));
 		renderDetail("proj-1");
 
 		const row = screen.getByText("lint").closest("[data-stage]") as HTMLElement;
 		expect(within(row).queryAllByRole("button")).toHaveLength(0);
 	});
 
-	it("renders stage notes as read-only annotations", () => {
+	// The API returns stages in the definition's document order, so the view must
+	// not re-sort them: a run reads top to bottom the way it was written.
+	it("renders stages in the order the API returned them", () => {
 		setRun(
 			detail({
-				stages: [
-					stage({
-						stageName: "triage",
-						notes: ["fork PR: findings skipped", "exit mode fell back to timeout"],
-					}),
-				],
+				stages: [stage({ stageId: "review" }), stage({ stageId: "assess" }), stage({ stageId: "publish" })],
 			}),
 		);
-		renderDetail("proj-1");
+		const { container } = render(
+			<QueryClientProvider client={new QueryClient()}>
+				<PipelineRunDetail runId="run-1" project="proj-1" />
+			</QueryClientProvider>,
+		);
 
-		const row = screen.getByText("triage").closest("[data-stage]") as HTMLElement;
-		expect(within(row).getByText("fork PR: findings skipped")).toBeInTheDocument();
-		expect(within(row).getByText("exit mode fell back to timeout")).toBeInTheDocument();
+		const ids = Array.from(container.querySelectorAll("[data-stage]")).map((el) => el.getAttribute("data-stage"));
+		expect(ids).toEqual(["review", "assess", "publish"]);
 	});
 });

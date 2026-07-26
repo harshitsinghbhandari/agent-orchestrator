@@ -9,7 +9,6 @@ import {
 	stageOutcomesOf,
 } from "../lib/pipeline-display";
 import type { PipelineRunSummary } from "../hooks/usePipelineRuns";
-import { Badge } from "./ui/badge";
 
 // Card view of a single pipeline run in a Kanban column: pipeline name, run
 // status, session, per-stage outcome dots, an unverified-success hint, and a
@@ -30,11 +29,6 @@ export function PipelineRunCard({ run, onOpen }: { run: PipelineRunSummary; onOp
 		>
 			<div className="flex items-baseline gap-2">
 				<span className="truncate font-mono text-caption font-semibold text-foreground">{run.pipelineName}</span>
-				{run.blocksMerge && (
-					<Badge variant="error" className="shrink-0">
-						Blocks merge
-					</Badge>
-				)}
 				<span className={cn("ml-auto text-micro font-medium", runStatusTone(status))}>{status}</span>
 			</div>
 			<div className="flex items-center gap-2 font-mono text-micro text-passive">

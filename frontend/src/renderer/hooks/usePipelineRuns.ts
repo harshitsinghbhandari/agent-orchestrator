@@ -5,11 +5,10 @@ import { useWorkspaceQuery } from "./useWorkspaceQuery";
 
 // A run summary tagged with the project it belongs to. The pipelines runs API is
 // project-scoped (`?project=ID`), but the Runs section aggregates across every
-// project (like the PR board), so each row carries its projectId for the
-// cancel/resume calls, which are also project-scoped.
+// project (like the PR board), so each row carries its projectId for the cancel
+// call, which is also project-scoped.
 export type PipelineRunSummary = components["schemas"]["PipelineRunSummary"] & { projectId: string };
 export type PipelineRunDetail = components["schemas"]["PipelineRunDetail"];
-export type PipelineArtifact = components["schemas"]["PipelineArtifact"];
 
 // Query keys. Every pipeline key is prefixed "pipeline-" so the event transport
 // can invalidate the whole family with one predicate on a pipeline_* CDC event.
@@ -52,7 +51,8 @@ export function usePipelineRuns() {
 	};
 }
 
-// One run's full detail (stages + findings). GET run detail is not project-scoped.
+// One run's full detail (summary + per-stage state). GET run detail is not
+// project-scoped.
 export function usePipelineRun(runId: string) {
 	return useQuery({
 		queryKey: pipelineRunQueryKey(runId),
