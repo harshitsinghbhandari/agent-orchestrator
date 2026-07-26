@@ -121,6 +121,10 @@ func (a *SessionAdapter) Get(ctx context.Context, sessionID string) (executors.S
 	return executors.SessionSnapshot{
 		Activity:   rec.Activity.State,
 		Terminated: rec.IsTerminated,
+		// FirstSignalAt is the platform's own record of the first hook callback
+		// for this spawn, cleared on every spawn/restore. Zero means the row
+		// still carries its seeded activity and nothing has been observed yet.
+		Signalled: !rec.FirstSignalAt.IsZero(),
 	}, true, nil
 }
 

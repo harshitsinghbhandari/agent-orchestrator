@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline/executors"
@@ -204,6 +205,39 @@ func TestSessionAdapterAliveAndWorkspace(t *testing.T) {
 	path, ok, err := adapter.SessionWorkspaces().Get(context.Background(), "sess-1")
 	if err != nil || !ok || path != "/trees/sess-1" {
 		t.Fatalf("session workspace = %q, %v, %v", path, ok, err)
+	}
+}
+
+// TestSessionAdapterGetReportsFirstSignal pins the fact the agent executor
+// reads to tell a launching session from an idle one: a row whose
+// FirstSignalAt is zero has never had a hook callback, so its seeded idle is
+// not an observation.
+func TestSessionAdapterGetReportsFirstSignal(t *testing.T) {
+	launching := liveSession()
+	launching.ID = "sess-launching"
+	launching.Activity = domain.Activity{State: domain.ActivityIdle}
+	reported := liveSession()
+	reported.ID = "sess-reported"
+	reported.Activity = domain.Activity{State: domain.ActivityIdle}
+	reported.FirstSignalAt = time.Unix(1, 0)
+	rows := fakeSessionRows{rows: map[domain.SessionID]domain.SessionRecord{
+		"sess-launching": launching,
+		"sess-reported":  reported,
+	}}
+	adapter := NewSessionAdapter(newFakeCommander(), rows, nil, nil)
+
+	snap, ok, err := adapter.Get(context.Background(), "sess-launching")
+	if err != nil || !ok {
+		t.Fatalf("Get(sess-launching) = %v, %v", ok, err)
+	}
+	if snap.Signalled {
+		t.Error("signalled = true for a session with no hook callback yet")
+	}
+	if snap, ok, err = adapter.Get(context.Background(), "sess-reported"); err != nil || !ok {
+		t.Fatalf("Get(sess-reported) = %v, %v", ok, err)
+	}
+	if !snap.Signalled {
+		t.Error("signalled = false for a session whose first hook callback landed")
 	}
 }
 

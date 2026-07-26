@@ -285,3 +285,39 @@ func TestStage_EffectiveKillOn(t *testing.T) {
 		t.Errorf("empty session block kill-on = %v, want %v", got, want)
 	}
 }
+
+// TestStage_KillsOn pins the one place the kill-on list is not matched
+// literally: an author who wrote `succeeded` means the stage worked, and a
+// stage with no `produces:` can only ever reach succeeded_unverified. Matching
+// the two strings exactly kept a session alive after every clean run of every
+// unverified stage, which the live drill showed as an orphan badge on a stage
+// that had nothing wrong with it.
+func TestStage_KillsOn(t *testing.T) {
+	def := Stage{}
+	if !def.KillsOn(OutcomeSucceededUnverified) {
+		t.Error("default kill-on did not kill on succeeded_unverified")
+	}
+	if !def.KillsOn(OutcomeSucceeded) || !def.KillsOn(OutcomeFailed) {
+		t.Error("default kill-on did not kill on its own two outcomes")
+	}
+	for _, kept := range []Outcome{OutcomeNoOutput, OutcomeNoSignal, OutcomeTimedOut, OutcomeCancelled} {
+		if def.KillsOn(kept) {
+			t.Errorf("default kill-on killed on %s, which must keep the session", kept)
+		}
+	}
+
+	never := Stage{Session: &SessionSpec{KillOn: []Outcome{}}}
+	if never.KillsOn(OutcomeSucceeded) || never.KillsOn(OutcomeSucceededUnverified) {
+		t.Error("an explicit empty kill-on killed a session")
+	}
+
+	// The subsumption is one-way: asking for the unverified outcome alone does
+	// not kill a stage that verified its artifact.
+	unverifiedOnly := Stage{Session: &SessionSpec{KillOn: []Outcome{OutcomeSucceededUnverified}}}
+	if unverifiedOnly.KillsOn(OutcomeSucceeded) {
+		t.Error("kill-on [succeeded_unverified] killed on succeeded")
+	}
+	if !unverifiedOnly.KillsOn(OutcomeSucceededUnverified) {
+		t.Error("kill-on [succeeded_unverified] did not kill on its own outcome")
+	}
+}

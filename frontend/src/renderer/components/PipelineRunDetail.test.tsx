@@ -76,7 +76,7 @@ function sessionView(overrides: Partial<WorkspaceSession> & { id: string }): Wor
 		workspaceId: "proj-1",
 		workspaceName: "proj-1",
 		title: overrides.id,
-		provider: "claude",
+		provider: "claude-code",
 		branch: `session/${overrides.id}`,
 		status: "idle",
 		createdAt: "2026-07-15T00:00:00Z",

@@ -70,11 +70,13 @@ func (s *fakeSpawner) Kill(_ context.Context, _ string) error {
 	return nil
 }
 
-// activity sets what the next Get reports.
+// activity sets what the next Get reports for a session that has already
+// reported at least one hook callback, which is the state every reading other
+// than the spawn window describes.
 func (s *fakeSpawner) activity(state domain.ActivityState, exists bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.snap = SessionSnapshot{Activity: state}
+	s.snap = SessionSnapshot{Activity: state, Signalled: true}
 	s.exists = exists
 }
 
@@ -352,6 +354,49 @@ func TestAgentPollIdleAndGone(t *testing.T) {
 				t.Errorf("state = %q, want %q", got.State, tc.want)
 			}
 		})
+	}
+}
+
+// TestAgentPollIdleBeforeFirstSignalIsStillStarting pins the spawn window. A
+// session row is seeded `idle` at spawn and stays there until the harness's
+// first hook callback lands, so reading that seed as "the agent stopped" nudges
+// and settles the stage seconds after launch, before the agent has read a
+// token. Live drill: a real claude-code stage settled no_signal 9s after spawn
+// with first_signal_at still NULL.
+func TestAgentPollIdleBeforeFirstSignalIsStillStarting(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityIdle, domain.ActivityWaitingInput, domain.ActivityBlocked} {
+		t.Run(string(state), func(t *testing.T) {
+			exec, spawner, _, h := startAgent(t, agentInput(t))
+			spawner.mu.Lock()
+			spawner.snap = SessionSnapshot{Activity: state, Signalled: false}
+			spawner.mu.Unlock()
+
+			got, err := exec.Poll(context.Background(), h)
+			if err != nil {
+				t.Fatalf("Poll: %v", err)
+			}
+			if got.State != PollRunning {
+				t.Errorf("state = %q, want %q: the spawn seed is not an observation", got.State, PollRunning)
+			}
+		})
+	}
+}
+
+// TestAgentPollGoneBeforeFirstSignal keeps the exit path unconditional: a
+// session that ended during its spawn window is gone whether or not a hook ever
+// reported, and waiting for the deadline there would be a lie.
+func TestAgentPollGoneBeforeFirstSignal(t *testing.T) {
+	exec, spawner, _, h := startAgent(t, agentInput(t))
+	spawner.mu.Lock()
+	spawner.snap = SessionSnapshot{Activity: domain.ActivityExited, Signalled: false}
+	spawner.mu.Unlock()
+
+	got, err := exec.Poll(context.Background(), h)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if got.State != PollGone {
+		t.Errorf("state = %q, want %q", got.State, PollGone)
 	}
 }
 
