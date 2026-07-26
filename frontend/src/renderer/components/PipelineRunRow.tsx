@@ -1,16 +1,20 @@
-import { CalendarDays, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, MoreHorizontal, Timer } from "lucide-react";
+import {
+	CalendarDays,
+	Circle,
+	CircleCheck,
+	CircleDot,
+	CircleSlash,
+	CircleX,
+	MoreHorizontal,
+	Timer,
+} from "lucide-react";
 import { cn } from "../lib/utils";
 import { formatTimeCompact } from "../lib/format-time";
 import { formatStageDuration, runStatusLabel, runStatusOf, runStatusTone } from "../lib/pipeline-display";
 import type { RunStatus } from "../lib/pipeline-draft";
 import type { PipelineRunSummary } from "../hooks/usePipelineRuns";
 import type { WorkspaceSession } from "../types/workspace";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 // What fired a run. The DTO's `subjectKind` is the closest thing we have to
 // GitHub's workflow `event`, so the list filters and labels on it.

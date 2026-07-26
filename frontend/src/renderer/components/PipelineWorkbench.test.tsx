@@ -1,16 +1,33 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelineWorkbench } from "./PipelineWorkbench";
 import type { PipelineRunSummary } from "../hooks/usePipelineRuns";
 
-const { navigateMock, usePipelineRunsMock } = vi.hoisted(() => ({
+const { navigateMock, usePipelineRunsMock, useWorkspaceQueryMock, useDefinitionsMock, postMock } = vi.hoisted(() => ({
 	navigateMock: vi.fn(),
 	usePipelineRunsMock: vi.fn(),
+	useWorkspaceQueryMock: vi.fn(),
+	useDefinitionsMock: vi.fn(),
+	postMock: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigateMock }));
-vi.mock("../hooks/usePipelineRuns", () => ({ usePipelineRuns: () => usePipelineRunsMock() }));
+vi.mock("../hooks/usePipelineRuns", async () => {
+	const actual = await vi.importActual<typeof import("../hooks/usePipelineRuns")>("../hooks/usePipelineRuns");
+	return { ...actual, usePipelineRuns: () => usePipelineRunsMock() };
+});
+vi.mock("../hooks/useWorkspaceQuery", () => ({
+	useWorkspaceQuery: () => useWorkspaceQueryMock(),
+}));
+vi.mock("../hooks/usePipelineDefinitions", () => ({
+	usePipelineDefinitionsQuery: () => useDefinitionsMock(),
+}));
+vi.mock("../lib/api-client", () => ({
+	apiClient: { POST: (...args: unknown[]) => postMock(...args) },
+	apiErrorMessage: () => "cancel failed",
+}));
 
 function run(overrides: Partial<PipelineRunSummary> & { runId: string }): PipelineRunSummary {
 	return {
@@ -30,89 +47,196 @@ function run(overrides: Partial<PipelineRunSummary> & { runId: string }): Pipeli
 }
 
 function setRuns(runs: PipelineRunSummary[]) {
-	usePipelineRunsMock.mockReturnValue({ runs, isError: false, error: null, isLoading: false });
+	usePipelineRunsMock.mockReturnValue({
+		runs,
+		isError: false,
+		error: null,
+		isLoading: false,
+	});
+}
+
+function renderWorkbench(projectId?: string) {
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	return render(
+		<QueryClientProvider client={client}>
+			<PipelineWorkbench projectId={projectId} />
+		</QueryClientProvider>,
+	);
 }
 
 beforeEach(() => {
 	navigateMock.mockReset();
 	usePipelineRunsMock.mockReset();
+	postMock.mockReset();
+	postMock.mockResolvedValue({ error: undefined });
+	useDefinitionsMock.mockReturnValue({ data: [] });
+	useWorkspaceQueryMock.mockReturnValue({
+		data: [
+			{
+				id: "proj-1",
+				sessions: [
+					{
+						id: "sess-1",
+						title: "fix: preserve scratch workspaces",
+						branch: "fix/scratch-retry",
+					},
+				],
+			},
+		],
+	});
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("PipelineWorkbench", () => {
-	it("groups runs into the five run-status columns", () => {
-		setRuns([
-			run({ runId: "r1", pipelineName: "review", status: "running" }),
-			run({ runId: "r2", pipelineName: "audit", status: "succeeded" }),
-			run({ runId: "r3", pipelineName: "audit", status: "failed" }),
-		]);
-		render(<PipelineWorkbench />);
-
-		expect(within(screen.getByLabelText("Running column")).getByText("review")).toBeInTheDocument();
-		expect(within(screen.getByLabelText("Succeeded column")).getByText("audit")).toBeInTheDocument();
-		expect(within(screen.getByLabelText("Failed column")).getByText("audit")).toBeInTheDocument();
-		// Empty columns render the placeholder.
-		expect(within(screen.getByLabelText("Queued column")).getByText("Empty")).toBeInTheDocument();
-		expect(within(screen.getByLabelText("Cancelled column")).getByText("Empty")).toBeInTheDocument();
-	});
-
-	it("renders card fields: pipeline name, run status, and stage count", () => {
-		setRuns([run({ runId: "r1", pipelineName: "review", status: "running", stageCount: 2 })]);
-		const { container } = render(<PipelineWorkbench />);
-
-		const card = container.querySelector('[data-run-id="r1"]') as HTMLElement;
-		expect(within(card).getByText("review")).toBeInTheDocument();
-		expect(within(card).getByText("running")).toBeInTheDocument();
-		expect(within(card).getByText("2 stages")).toBeInTheDocument();
-	});
-
-	it("hints at unverified successes on the card and tones each stage dot by outcome", () => {
+	it("lists every run newest first, with the total count above the list", () => {
 		setRuns([
 			run({
-				runId: "r1",
-				stageCount: 3,
-				stageOutcomes: { lint: "succeeded", review: "succeeded_unverified", test: "timed_out" },
+				runId: "run-1111aaaa-0000",
+				pipelineName: "review",
+				createdAt: "2026-07-15T00:00:00Z",
+			}),
+			run({
+				runId: "run-2222bbbb-0000",
+				pipelineName: "audit",
+				createdAt: "2026-07-16T00:00:00Z",
 			}),
 		]);
-		const { container } = render(<PipelineWorkbench />);
+		renderWorkbench();
 
-		const card = container.querySelector('[data-run-id="r1"]') as HTMLElement;
-		expect(within(card).getByText("· 1 unverified")).toBeInTheDocument();
-		expect(within(card).getByTitle("review: succeeded (unverified)")).toBeInTheDocument();
-		const dots = card.querySelectorAll('ul[aria-label="stage outcomes"] li span:first-child');
-		// lint solid success, review hollow success, test error: three distinct looks.
-		expect(dots[0].className).toContain("bg-success");
-		expect(dots[1].className).toContain("border-success");
-		expect(dots[1].className).not.toContain("bg-success");
-		expect(dots[2].className).toContain("bg-error");
+		expect(screen.getByText("2 pipeline runs")).toBeInTheDocument();
+		const rows = screen.getAllByRole("listitem").filter((item) => item.dataset.runId);
+		expect(rows.map((item) => item.dataset.runId)).toEqual(["run-2222bbbb-0000", "run-1111aaaa-0000"]);
 	});
 
-	it("filters the board to the selected pipeline names", async () => {
+	it("renders the trigger sub-line, branch chip, and stacked time and duration", () => {
 		setRuns([
-			run({ runId: "r1", pipelineName: "review", status: "running" }),
-			run({ runId: "r2", pipelineName: "audit", status: "running" }),
+			run({
+				runId: "run-abc1234-0000",
+				pipelineName: "review",
+				subjectKind: "pr",
+				prNumber: 3136,
+				status: "succeeded",
+				createdAt: "2026-07-15T00:00:00Z",
+				settledAt: "2026-07-15T00:00:29Z",
+			}),
 		]);
-		render(<PipelineWorkbench />);
-		const user = userEvent.setup();
+		const { container } = renderWorkbench();
 
-		await user.click(screen.getByRole("button", { name: "review", pressed: false }));
-
-		const running = screen.getByLabelText("Running column");
-		expect(within(running).getByText("review")).toBeInTheDocument();
-		expect(within(running).queryByText("audit")).not.toBeInTheDocument();
+		const row = container.querySelector('[data-run-id="run-abc1234-0000"]') as HTMLElement;
+		// Title falls back to the subject the session names, the way GitHub shows the PR title.
+		expect(within(row).getByText("fix: preserve scratch workspaces")).toBeInTheDocument();
+		expect(
+			within(row).getByText("review #abc1234: Pull request #3136 in session fix: preserve scratch workspaces"),
+		).toBeInTheDocument();
+		expect(within(row).getByText("fix/scratch-retry")).toBeInTheDocument();
+		expect(within(row).getByText("29s")).toBeInTheDocument();
 	});
 
-	it("navigates to the run detail with the run's project on card click", async () => {
-		setRuns([run({ runId: "r1", pipelineName: "review", projectId: "proj-9" })]);
-		const { container } = render(<PipelineWorkbench />);
+	it("says what a live run is doing instead of showing a duration that never ticks", () => {
+		setRuns([run({ runId: "run-live-0000", status: "running" })]);
+		const { container } = renderWorkbench();
+
+		const row = container.querySelector('[data-run-id="run-live-0000"]') as HTMLElement;
+		expect(within(row).getByText("In progress")).toBeInTheDocument();
+	});
+
+	it("filters the list from the pipeline rail", async () => {
+		setRuns([
+			run({ runId: "run-1111aaaa-0000", pipelineName: "review" }),
+			run({ runId: "run-2222bbbb-0000", pipelineName: "audit" }),
+		]);
+		renderWorkbench();
 		const user = userEvent.setup();
 
-		await user.click(container.querySelector('[data-run-id="r1"]') as HTMLElement);
+		await user.click(
+			within(screen.getByRole("navigation", { name: "Pipelines" })).getByRole("button", { name: "audit" }),
+		);
+
+		expect(screen.getByText("1 pipeline run")).toBeInTheDocument();
+		const list = screen.getByRole("list", { name: "Pipeline runs" });
+		expect(within(list).queryByText(/review #/)).not.toBeInTheDocument();
+		expect(within(list).getByText(/audit #/)).toBeInTheDocument();
+	});
+
+	it("lists a definition with no runs in the rail, and shows an empty list for it", async () => {
+		useDefinitionsMock.mockReturnValue({
+			data: [{ id: "def-2", name: "nightly", projectId: "proj-1" }],
+		});
+		setRuns([run({ runId: "run-1111aaaa-0000", pipelineName: "review" })]);
+		renderWorkbench("proj-1");
+		const user = userEvent.setup();
+
+		await user.click(
+			within(screen.getByRole("navigation", { name: "Pipelines" })).getByRole("button", { name: "nightly" }),
+		);
+
+		expect(screen.getByText("0 pipeline runs")).toBeInTheDocument();
+		expect(screen.getByText("No runs match these filters.")).toBeInTheDocument();
+	});
+
+	it("narrows on status through the filter row", async () => {
+		setRuns([
+			run({ runId: "run-1111aaaa-0000", status: "running" }),
+			run({ runId: "run-2222bbbb-0000", status: "failed" }),
+		]);
+		renderWorkbench();
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("button", { name: /^Status/ }));
+		await user.click(await screen.findByRole("menuitem", { name: "Failure" }));
+
+		expect(screen.getByText("1 pipeline run")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Status: Failure/ })).toBeInTheDocument();
+	});
+
+	it("cancels a live run from the row overflow menu", async () => {
+		setRuns([run({ runId: "run-live-0000", status: "running", projectId: "proj-9" })]);
+		renderWorkbench();
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("button", { name: /^Actions for/ }));
+		await user.click(await screen.findByRole("menuitem", { name: "Cancel run" }));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/pipelines/runs/{runId}/cancel", {
+			params: {
+				path: { runId: "run-live-0000" },
+				query: { project: "proj-9" },
+			},
+		});
+	});
+
+	it("offers no cancel on a settled run", async () => {
+		setRuns([run({ runId: "run-done-0000", status: "succeeded" })]);
+		renderWorkbench();
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("button", { name: /^Actions for/ }));
+
+		expect(await screen.findByRole("menuitem", { name: "View run detail" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Cancel run" })).not.toBeInTheDocument();
+	});
+
+	it("navigates to the run detail with the run's project on title click", async () => {
+		setRuns([
+			run({
+				runId: "run-1111aaaa-0000",
+				pipelineName: "review",
+				sessionId: undefined,
+				projectId: "proj-9",
+			}),
+		]);
+		renderWorkbench();
+		const user = userEvent.setup();
+
+		const list = screen.getByRole("list", { name: "Pipeline runs" });
+		await user.click(within(list).getByRole("button", { name: "review" }));
 
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/pipelines/runs/$runId",
-			params: { runId: "r1" },
+			params: { runId: "run-1111aaaa-0000" },
 			search: { project: "proj-9" },
 		});
 	});
@@ -124,7 +248,7 @@ describe("PipelineWorkbench", () => {
 			error: new Error("boom"),
 			isLoading: false,
 		});
-		render(<PipelineWorkbench />);
+		renderWorkbench();
 		expect(screen.getByText(/Could not load pipeline runs: boom/)).toBeInTheDocument();
 	});
 });

@@ -35,10 +35,12 @@ export function PipelineWorkbench({ projectId }: { projectId?: string }) {
 	}, [workspaces]);
 
 	const rows = useMemo(() => {
-		return runs
-			.map((run) => toRunRowModel(run, run.sessionId ? sessionsById.get(run.sessionId) : undefined))
-			// Newest first, the way a run list is read.
-			.sort((a, b) => (a.run.createdAt < b.run.createdAt ? 1 : a.run.createdAt > b.run.createdAt ? -1 : 0));
+		return (
+			runs
+				.map((run) => toRunRowModel(run, run.sessionId ? sessionsById.get(run.sessionId) : undefined))
+				// Newest first, the way a run list is read.
+				.sort((a, b) => (a.run.createdAt < b.run.createdAt ? 1 : a.run.createdAt > b.run.createdAt ? -1 : 0))
+		);
 	}, [runs, sessionsById]);
 
 	// The rail lists every pipeline the project defines, plus any pipeline that
@@ -74,7 +76,11 @@ export function PipelineWorkbench({ projectId }: { projectId?: string }) {
 		<div className="flex h-full min-h-0 bg-background text-foreground">
 			<nav aria-label="Pipelines" className="w-56 shrink-0 overflow-y-auto border-r border-border p-3">
 				<ul className="flex flex-col gap-0.5">
-					<RailItem label="All pipelines" active={!selected} onSelect={() => setFilters({ ...filters, pipeline: undefined })} />
+					<RailItem
+						label="All pipelines"
+						active={!selected}
+						onSelect={() => setFilters({ ...filters, pipeline: undefined })}
+					/>
 					{railPipelines.map((name) => (
 						<RailItem
 							key={name}
@@ -83,9 +89,7 @@ export function PipelineWorkbench({ projectId }: { projectId?: string }) {
 							onSelect={() => setFilters({ ...filters, pipeline: name })}
 						/>
 					))}
-					{railPipelines.length === 0 && (
-						<li className="px-2.5 py-1.5 text-caption text-passive">No pipelines yet</li>
-					)}
+					{railPipelines.length === 0 && <li className="px-2.5 py-1.5 text-caption text-passive">No pipelines yet</li>}
 				</ul>
 			</nav>
 
