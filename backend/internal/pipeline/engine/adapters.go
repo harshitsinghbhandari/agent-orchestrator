@@ -37,12 +37,6 @@ type RuntimeInterrupter interface {
 	Interrupt(ctx context.Context, handle ports.RuntimeHandle) error
 }
 
-// SignalStore reads the latest `ao pipeline done|fail` a stage recorded.
-// Satisfied by *storage/sqlite/store.Store.
-type SignalStore interface {
-	LatestPipelineStageSignal(ctx context.Context, runID pipeline.RunID, stageID string) (pipeline.StageSignal, bool, error)
-}
-
 // CredentialStore is the persistence half of the engine-held credentials.
 // Satisfied by *storage/sqlite/store.Store.
 type CredentialStore interface {
@@ -177,38 +171,6 @@ func (a *SessionAdapter) GetPath(ctx context.Context, sessionID string) (string,
 // ---------------------------------------------------------------------------
 // Store-backed seams
 // ---------------------------------------------------------------------------
-
-// SignalAdapter serves the agent executor's SignalReader over the store.
-//
-// The executor's port is context-free (it is polled from the actor loop, which
-// has its own base context), so the adapter carries one.
-type SignalAdapter struct {
-	ctx    context.Context
-	store  SignalStore
-	logger *slog.Logger
-}
-
-// NewSignalAdapter builds the signal reader. ctx bounds the store reads.
-func NewSignalAdapter(ctx context.Context, store SignalStore, log *slog.Logger) *SignalAdapter {
-	if log == nil {
-		log = slog.Default()
-	}
-	return &SignalAdapter{ctx: ctx, store: store, logger: log}
-}
-
-var _ executors.SignalReader = (*SignalAdapter)(nil)
-
-// LatestSignal returns the newest signal for a stage, if any. A read failure is
-// reported as "no signal": the stage's deadline still bounds it, and settling a
-// stage on a database hiccup would be worse.
-func (a *SignalAdapter) LatestSignal(runID pipeline.RunID, stageID string) (pipeline.StageSignal, bool) {
-	sig, ok, err := a.store.LatestPipelineStageSignal(a.ctx, runID, stageID)
-	if err != nil {
-		a.logger.Warn("pipeline read stage signal", "run", runID, "stage", stageID, "err", err)
-		return pipeline.StageSignal{}, false
-	}
-	return sig, ok
-}
 
 // CredentialAdapter serves both the engine's Credentials seam and the service
 // layer's pipeline.CredentialResolver over the store.

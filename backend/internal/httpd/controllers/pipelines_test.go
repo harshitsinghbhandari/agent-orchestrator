@@ -18,7 +18,13 @@ import (
 
 // fakePipelineService records the last signal it was handed and answers with a
 // canned error, so the handler's status mapping is what is under test.
+//
+// The embedded Manager supplies the rest of the interface: those methods are
+// not exercised here and panic on a nil embed if a test ever reaches one, which
+// is louder than a silent zero value.
 type fakePipelineService struct {
+	pipelinesvc.Manager
+
 	signalErr error
 	got       pipeline.StageSignal
 	calls     int

@@ -154,19 +154,26 @@ func Run() error {
 
 	// Pipelines: enablement resolves from the AO_PIPELINES env override (dev/CI)
 	// falling through to the persisted "pipelines.enabled" app-setting the
-	// Settings UI writes: see resolvePipelinesEnabled. The v1 engine was
-	// stripped ahead of the v2 rebuild, so starting the stack is currently a
-	// no-op and every /api/v1/pipelines route answers 501 either way.
+	// Settings UI writes: see resolvePipelinesEnabled. With the flag off, the
+	// stack is never built and every /api/v1/pipelines route answers 501.
 	// pipelineStk.Stop is nil-safe, so teardown needs no extra guard.
 	var pipelineStk *pipelineStack
 	var pipelinesSvc pipelinesvc.Manager
 	if resolvePipelinesEnabled(ctx, cfg, store, log) {
-		pipelineStk = startPipelineEngine(ctx, log)
-		pipelinesSvc = pipelinesvc.New(store)
-		// Let the lifecycle merge-readiness path veto a ready-to-merge PR whose
-		// latest settled pipeline run blocks merge. Only wired when pipelines are
-		// enabled, so the gate stays a no-op otherwise.
-		lcStack.LCM.SetPipelineMergeGate(pipelinesSvc)
+		pipelineStk = startPipelineEngine(ctx, pipelineDeps{
+			Store:       store,
+			Sessions:    sessionSvc,
+			Runtime:     runtimeAdapter,
+			Broadcaster: cdcPipe.Broadcaster,
+			DataDir:     cfg.DataDir,
+		}, log)
+		pipelinesSvc = pipelineStk.Manager()
+		if pipelinesSvc != nil {
+			// Let the lifecycle merge-readiness path consult pipelines before it
+			// calls a PR ready to merge. Only wired when pipelines are enabled,
+			// so the gate stays absent otherwise.
+			lcStack.LCM.SetPipelineMergeGate(pipelinesSvc)
+		}
 	}
 
 	agentSvc := agentsvc.New()
