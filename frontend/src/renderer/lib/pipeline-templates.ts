@@ -1,196 +1,184 @@
-// The three static "New pipeline" templates (mockup 1e). Baked into the
-// renderer for v1 (spec decision: no template API); each is a full
-// PipelineDraft in the normalized codec shape, so instantiating one is just
-// serializeToYaml(template.draft()) and the result parses clean through
-// backend ParseDefinition (/validate). pipeline-templates.test.ts mirrors the
-// Go validation rules to keep them honest.
+// The three static "New pipeline" templates. Baked into the renderer (spec
+// decision: no template API); each is a full PipelineDraft in the normalized
+// codec shape, so instantiating one is just serializeToYaml(template.draft())
+// and the result parses clean through backend ParseDefinition (/validate).
+// pipeline-templates.test.ts mirrors the Go validation rules to keep them
+// honest.
 
 import type { PipelineDraft } from "./pipeline-draft";
 
 export interface PipelineTemplate {
-	id: "pr-review-loop" | "nightly-triage-sweep" | "release-gate";
+	id: "pr-review" | "session-idle-triage" | "release-gate";
 	name: string;
 	description: string;
-	// Accent dot in the modal's template list (mockup 1e row markers).
+	// Accent dot in the modal's template list.
 	dotClass: string;
 	// Fresh draft per call so an edited instantiation never mutates the template.
 	draft: () => PipelineDraft;
 }
 
-// review -> triage -> fix -> verify, gated on findings (8 stages).
-function prReviewLoop(): PipelineDraft {
+// An agent produces the review, a command posts it: the §6.4 split that makes
+// the outcome measurable, and the reason the agent stage carries no credentials.
+function prReview(): PipelineDraft {
 	return {
-		name: "pr-review-loop",
+		name: "pr-review",
+		on: { pr: ["created", "updated"] },
+		// The head moved, so an in-flight review is reading stale code (§10).
+		concurrency: { scope: "pr", group: "pr-review", cancelInProgress: true },
+		defaults: { onFailure: "notify-failure" },
 		stages: [
 			{
-				name: "review-correctness",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: { prompt: "Review the diff for correctness bugs: logic errors, unhandled edge cases, broken contracts." },
+				id: "review",
+				executor: "agent",
+				agent: "claude-code",
+				produces: "review.md",
+				deadline: "20m",
+				session: { killOn: ["succeeded", "failed"] },
+				prompt: [
+					"Review the diff for correctness, security, and convention drift.",
+					"Write the review to $AO_OUTPUT, then `ao pipeline done`.",
+					'If the change cannot be reviewed, `ao pipeline fail --reason "..."`.',
+				].join("\n"),
+				onSuccess: ["post-review"],
 			},
 			{
-				name: "review-security",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: { prompt: "Review the diff for security issues: injection, authz gaps, secret handling, unsafe input." },
+				id: "post-review",
+				executor: "command",
+				workspace: "run",
+				credentials: ["github-review"],
+				run: 'gh pr comment "$AO_PR_NUMBER" --body-file "$AO_RUN_DIR/agent-outputs/review.md"',
 			},
 			{
-				name: "review-style",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: { prompt: "Review the diff for style and convention drift against the surrounding code." },
-			},
-			{
-				name: "compose-findings",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "builtin", name: "compose" },
-				dependsOn: ["review-correctness", "review-security", "review-style"],
-			},
-			{
-				name: "triage",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "answer" },
-				task: { prompt: "Triage the composed findings: deduplicate, rank by severity, drop false positives." },
-				dependsOn: ["compose-findings"],
-			},
-			{
-				name: "fix",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "code" },
-				task: { prompt: "Fix the open findings, smallest correct change first. Push the fixes to the PR branch." },
-				dependsOn: ["triage"],
-				// Run the fix stage whenever the run has any open findings. Scoping this
-				// to "compose-findings" was vacuously true (that builtin emits a JSON
-				// artifact, never findings), so fix was skipped every run. Unscoped
-				// matches the run's done predicate below.
-				routes: { when: { kind: "not", predicate: { kind: "no_open_findings" } } },
-				workspace: "isolated-rw",
-				maxLoopRounds: 3,
-			},
-			{
-				name: "verify",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: { prompt: "Verify each finding was actually resolved by the fixes; reopen anything still broken." },
-				dependsOn: ["fix"],
-			},
-			{
-				name: "route",
-				trigger: { on: ["pr.opened", "pr.updated"] },
-				executor: { kind: "builtin", name: "router" },
-				dependsOn: ["verify"],
+				id: "notify-failure",
+				executor: "command",
+				workspace: "run",
+				run: 'echo "pr-review failed at $AO_FAILED_STAGE ($AO_FAILED_OUTCOME)"',
 			},
 		],
-		exitPredicates: {
-			done: { kind: "no_open_findings" },
-			stalled: { kind: "loop_rounds_at_least", n: 5 },
-		},
 	};
 }
 
-// Scheduled scan across open PRs (4 stages). v1 has no cron trigger; the
-// sweep is manual-triggered so an external scheduler (or a human) fires it.
-function nightlyTriageSweep(): PipelineDraft {
+// One agent in the user's own session, so it must never be killed (§7.2).
+function sessionIdleTriage(): PipelineDraft {
 	return {
-		name: "nightly-triage-sweep",
+		name: "session-idle-triage",
+		on: { session: ["idle"] },
+		concurrency: { scope: "session", group: "session-idle-triage", cancelInProgress: true },
 		stages: [
 			{
-				name: "scan",
-				trigger: { on: ["manual"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: {
-					prompt: "Scan the open pull requests and collect actionable findings: stale PRs, red CI, unanswered reviews.",
-				},
-			},
-			{
-				name: "triage",
-				trigger: { on: ["manual"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "answer" },
-				task: { prompt: "Classify each finding by urgency and owner; decide which PRs need action tonight." },
-				dependsOn: ["scan"],
-			},
-			{
-				name: "label",
-				trigger: { on: ["manual"] },
-				executor: { kind: "command", command: "gh", args: ["pr", "edit", "--add-label", "triaged"] },
-				dependsOn: ["triage"],
-			},
-			{
-				name: "report",
-				trigger: { on: ["manual"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "answer" },
-				task: { prompt: "Write a short sweep report: what was triaged, what is blocked, what needs a human." },
-				dependsOn: ["triage"],
+				id: "triage",
+				executor: "agent",
+				agent: "claude-code",
+				workspace: "session",
+				produces: "triage.md",
+				deadline: "10m",
+				// kill-on: [] never kills: this stage runs in a live human session.
+				session: { killOn: [] },
+				prompt: [
+					"The session has gone idle. Summarize where the work stands,",
+					"what is blocked, and the single next action.",
+					"Write it to $AO_OUTPUT, then `ao pipeline done`.",
+				].join("\n"),
 			},
 		],
-		exitPredicates: {
-			done: { kind: "all_pass", stages: ["triage", "report"] },
-			stalled: { kind: "loop_rounds_at_least", n: 3 },
-		},
 	};
 }
 
-// Compose checks, block merge on any high finding (5 stages).
+// A trimmed version of the spec §11 release pipeline: fan-out, one join, an
+// agent on the failure path, and the pipeline-level failure default.
 function releaseGate(): PipelineDraft {
 	return {
 		name: "release-gate",
+		on: { pr: ["merged"] },
+		// Nothing is worse than killing a run mid-release, so no cancellation, and
+		// the scope is the project rather than the merged PR (§10).
+		concurrency: { scope: "project", group: "release", cancelInProgress: false },
+		defaults: { deadline: "30m", onFailure: "notify-failure" },
 		stages: [
 			{
-				name: "lint",
-				trigger: { on: ["pr.merge_ready"] },
-				executor: { kind: "command", command: "pnpm", args: ["lint"] },
+				id: "prepare",
+				executor: "command",
+				workspace: "run",
+				run: 'ao release resolve-version > "$AO_RUN_DIR/version"',
+				onSuccess: ["build", "release-notes"],
 			},
 			{
-				name: "test",
-				trigger: { on: ["pr.merge_ready"] },
-				executor: { kind: "command", command: "pnpm", args: ["test"] },
+				id: "build",
+				executor: "command",
+				workspace: "stage",
+				deadline: "40m",
+				run: "npm ci\nnpm run build",
+				onSuccess: ["publish"],
+				onFailure: "diagnose-build",
 			},
 			{
-				name: "security-review",
-				trigger: { on: ["pr.merge_ready"] },
-				executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-				task: { prompt: "Final security pass over the release diff; flag anything that must not ship." },
+				id: "release-notes",
+				executor: "agent",
+				agent: "claude-code",
+				workspace: "stage",
+				produces: "release-notes.md",
+				deadline: "15m",
+				session: { killOn: ["succeeded", "failed"] },
+				prompt: [
+					'Write release notes for version $(cat "$AO_RUN_DIR/version").',
+					"Group by user-visible change, not by commit.",
+					"Write them to $AO_OUTPUT, then `ao pipeline done`.",
+				].join("\n"),
+				onSuccess: ["publish"],
 			},
 			{
-				name: "compose-checks",
-				trigger: { on: ["pr.merge_ready"] },
-				executor: { kind: "builtin", name: "compose" },
-				dependsOn: ["lint", "test", "security-review"],
+				id: "publish",
+				executor: "command",
+				needs: ["build", "release-notes"],
+				workspace: "run",
+				credentials: ["github-release"],
+				run: 'gh release create "v$(cat "$AO_RUN_DIR/version")" --notes-file "$AO_RUN_DIR/agent-outputs/release-notes.md"',
 			},
 			{
-				name: "gate",
-				trigger: { on: ["pr.merge_ready"] },
-				executor: { kind: "builtin", name: "router" },
-				dependsOn: ["compose-checks"],
-				policy: { blocksMerge: true },
+				id: "diagnose-build",
+				executor: "agent",
+				agent: "claude-code",
+				produces: "diagnosis.md",
+				deadline: "15m",
+				// Kept alive on every outcome: this is the stage a human opens.
+				session: { killOn: [] },
+				prompt: [
+					"Build stage `$AO_FAILED_STAGE` failed. Its log is at",
+					"$AO_RUN_DIR/stage-logs/$AO_FAILED_STAGE.log and you are in its",
+					"working tree with the failure state intact.",
+					"Diagnose the root cause, write to $AO_OUTPUT, then `ao pipeline done`.",
+				].join("\n"),
+				onSuccess: ["notify-failure"],
+			},
+			{
+				id: "notify-failure",
+				executor: "command",
+				workspace: "run",
+				run: 'echo "release failed at $AO_FAILED_STAGE ($AO_FAILED_OUTCOME)"',
 			},
 		],
-		exitPredicates: {
-			done: { kind: "all_pass", stages: ["lint", "test", "security-review"] },
-			blocksMerge: { kind: "not", predicate: { kind: "finding_count_below", max: 1, severity: "error" } },
-		},
 	};
 }
 
 export const PIPELINE_TEMPLATES: PipelineTemplate[] = [
 	{
-		id: "pr-review-loop",
-		name: "PR review loop",
-		description: "review, triage, fix, verify, gated on findings",
+		id: "pr-review",
+		name: "PR review",
+		description: "an agent reviews the diff, a command posts it",
 		dotClass: "bg-accent",
-		draft: prReviewLoop,
+		draft: prReview,
 	},
 	{
-		id: "nightly-triage-sweep",
-		name: "Nightly triage sweep",
-		description: "scheduled scan across open PRs",
+		id: "session-idle-triage",
+		name: "Session idle triage",
+		description: "summarize where an idle session stands",
 		dotClass: "bg-warning",
-		draft: nightlyTriageSweep,
+		draft: sessionIdleTriage,
 	},
 	{
 		id: "release-gate",
 		name: "Release gate",
-		description: "compose checks, block merge on any high finding",
+		description: "build and notes fan out, join, publish",
 		dotClass: "bg-success",
 		draft: releaseGate,
 	},

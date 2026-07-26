@@ -16,7 +16,7 @@ function wrapper({ children }: { children: ReactNode }) {
 	return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
-const VALID_YAML = "name: review\nstages:\n  - name: s\n";
+const VALID_YAML = "name: review\nstages:\n  - id: s\n    executor: agent\n";
 
 beforeEach(() => {
 	postMock.mockReset().mockResolvedValue({ data: { valid: true, issues: [] }, error: undefined });
@@ -101,7 +101,7 @@ describe("usePipelineDraft", () => {
 		act(() =>
 			result.current.setDraft({
 				name: "renamed",
-				stages: [{ name: "s", trigger: { on: ["manual"] }, executor: { kind: "agent" } }],
+				stages: [{ id: "s", executor: "agent" }],
 			}),
 		);
 

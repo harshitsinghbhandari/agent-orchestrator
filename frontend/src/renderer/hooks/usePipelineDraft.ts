@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "../lib/api-client";
-import { parseYamlToDraft, serializeToYaml, type PipelineDraft } from "../lib/pipeline-draft";
+import { emptyDraft, parseYamlToDraft, serializeToYaml, type PipelineDraft } from "../lib/pipeline-draft";
 import type { PipelineValidationIssue } from "../lib/pipeline-yaml";
 
 // The draft editor's state hook. It owns the YAML buffer (the canonical source
@@ -62,10 +62,11 @@ export function usePipelineDraft(initialYaml: string): UsePipelineDraftResult {
 	// Parse on the debounced buffer, not per keystroke, so YAML typing stays
 	// smooth (a parse rebuilds the whole canvas node set downstream).
 	const parsed = useMemo(() => parseYamlToDraft(debounced), [debounced]);
-	// On a YAML syntax error keep the last good graph (the split view must not
-	// blank the canvas mid-edit); the error itself surfaces as parseError.
-	const lastGoodRef = useRef(parsed.draft);
-	if (!parsed.error) lastGoodRef.current = parsed.draft;
+	// On a YAML syntax error the codec returns no draft; keep the last good graph
+	// (the split view must not blank the canvas mid-edit) and surface the message
+	// as parseError.
+	const lastGoodRef = useRef(parsed.draft ?? emptyDraft());
+	if (parsed.draft) lastGoodRef.current = parsed.draft;
 
 	const setYamlSource = useCallback((next: string) => {
 		setPending(null);
@@ -94,10 +95,10 @@ export function usePipelineDraft(initialYaml: string): UsePipelineDraftResult {
 		issues: query.data?.issues ?? [],
 	};
 
-	const draft = pending ?? (parsed.error ? lastGoodRef.current : parsed.draft);
+	const draft = pending ?? parsed.draft ?? lastGoodRef.current;
 	// While a pending canvas edit awaits its round-trip re-parse, the buffer was
 	// serialized by us and cannot be broken; suppress the stale error.
-	const parseError = pending ? undefined : parsed.error;
+	const parseError = pending ? undefined : parsed.parseError;
 
 	return { yamlSource, setYamlSource, draft, parseError, setDraft, validation };
 }
