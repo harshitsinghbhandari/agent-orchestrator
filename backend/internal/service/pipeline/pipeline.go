@@ -45,6 +45,13 @@ type Store interface {
 
 	ListPipelineRuns(ctx context.Context, projectID domain.ProjectID, filter pipeline.RunFilter) ([]pipeline.RunState, error)
 
+	// Credential writes and the names-only read (decision D13). Reading a
+	// credential's values is not part of this seam: only the engine's resolver
+	// does that, and only into a command stage's env.
+	SetPipelineCredential(ctx context.Context, projectID domain.ProjectID, name string, env map[string]string, now time.Time) error
+	ListPipelineCredentialNames(ctx context.Context, projectID domain.ProjectID) ([]string, error)
+	DeletePipelineCredential(ctx context.Context, projectID domain.ProjectID, name string) (bool, error)
+
 	// Sessions and their PRs are how a manual trigger resolves a PR subject
 	// server-side: the pr table reaches a project only through its session.
 	ListSessions(ctx context.Context, projectID domain.ProjectID) ([]domain.SessionRecord, error)
@@ -123,6 +130,13 @@ type Manager interface {
 	// The read side is not here: the agent executor polls the concrete Service
 	// through executors.SignalReader, not through this HTTP-facing seam.
 	SignalStage(ctx context.Context, runID pipeline.RunID, stageID string, kind pipeline.SignalKind, reason string) error
+
+	// Credentials (decision D13): set and delete take values in, listing gives
+	// names back. Nothing here returns a value, which is what keeps a secret
+	// out of every HTTP response and every line the CLI prints.
+	SetCredential(ctx context.Context, projectID domain.ProjectID, name string, env map[string]string) error
+	ListCredentialNames(ctx context.Context, projectID domain.ProjectID) ([]string, error)
+	DeleteCredential(ctx context.Context, projectID domain.ProjectID, name string) error
 }
 
 // Service is the concrete Manager over a Store plus, once wired, the engine

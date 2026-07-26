@@ -627,6 +627,9 @@ func TestPipelineRoutes_NilServiceReturns501(t *testing.T) {
 		{"DELETE", "/api/v1/pipelines/pl-1", ""},
 		{"POST", "/api/v1/pipelines/validate?project=proj", `{"yamlSource":"name: x"}`},
 		{"GET", "/api/v1/pipelines/schema", ""},
+		{"GET", "/api/v1/pipelines/credentials?project=proj", ""},
+		{"PUT", "/api/v1/pipelines/credentials/npm?project=proj", `{"env":{"A":"1"}}`},
+		{"DELETE", "/api/v1/pipelines/credentials/npm?project=proj", ""},
 		{"GET", "/api/v1/pipelines/runs?project=proj", ""},
 		{"POST", "/api/v1/pipelines/runs?project=proj", `{"pipeline":"review"}`},
 		{"GET", "/api/v1/pipelines/runs/run-1", ""},
@@ -659,4 +662,69 @@ func TestPipelineRoutes_ResumeAndArtifactsAreGone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Decision D13: a credential's value is write-only. It goes in through the set
+// route and comes out only inside a command stage's process env, so no response
+// body on these routes may carry one.
+func TestPipelineCredentials_SetListDelete_NeverEchoValues(t *testing.T) {
+	srv, _ := newPipelineV2Server(t)
+	const secret = "s3cret-value"
+
+	body, status, headers := doRequest(t, srv, "PUT", "/api/v1/pipelines/credentials/npm?project=proj",
+		`{"env":{"NPM_TOKEN":"`+secret+`","NPM_SCOPE":"@ao"}}`)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	if strings.Contains(string(body), secret) {
+		t.Fatalf("set response echoed the value: %s", body)
+	}
+	var set controllers.PipelineCredentialResponse
+	mustJSON(t, body, &set)
+	if set.Name != "npm" || !slices.Equal(set.Keys, []string{"NPM_SCOPE", "NPM_TOKEN"}) {
+		t.Fatalf("set response = %+v", set)
+	}
+
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/pipelines/credentials?project=proj", "")
+	if status != http.StatusOK {
+		t.Fatalf("list status = %d; body=%s", status, body)
+	}
+	if strings.Contains(string(body), secret) {
+		t.Fatalf("list response echoed the value: %s", body)
+	}
+	var list controllers.ListPipelineCredentialsResponse
+	mustJSON(t, body, &list)
+	if !slices.Equal(list.Names, []string{"npm"}) {
+		t.Fatalf("names = %v", list.Names)
+	}
+
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/pipelines/credentials/npm?project=proj", "")
+	if status != http.StatusOK {
+		t.Fatalf("delete status = %d; body=%s", status, body)
+	}
+	body, _, _ = doRequest(t, srv, "GET", "/api/v1/pipelines/credentials?project=proj", "")
+	mustJSON(t, body, &list)
+	if len(list.Names) != 0 {
+		t.Fatalf("names after delete = %v", list.Names)
+	}
+}
+
+func TestPipelineCredentials_Errors(t *testing.T) {
+	srv, _ := newPipelineV2Server(t)
+
+	body, status, _ := doRequest(t, srv, "DELETE", "/api/v1/pipelines/credentials/nope?project=proj", "")
+	assertErrorCode(t, body, status, http.StatusNotFound, "PIPELINE_CREDENTIAL_NOT_FOUND")
+
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/pipelines/credentials/npm?project=proj", `{"env":{}}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "PIPELINE_CREDENTIAL_ENV_REQUIRED")
+
+	body, status, _ = doRequest(t, srv, "PUT", "/api/v1/pipelines/credentials/npm?project=proj", `{"env":{"not a key":"v"}}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "PIPELINE_CREDENTIAL_ENV_INVALID")
+	if strings.Contains(string(body), `"v"`) {
+		t.Fatalf("rejection echoed the value: %s", body)
+	}
+
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/pipelines/credentials", "")
+	assertErrorCode(t, body, status, http.StatusBadRequest, "PROJECT_REQUIRED")
 }
