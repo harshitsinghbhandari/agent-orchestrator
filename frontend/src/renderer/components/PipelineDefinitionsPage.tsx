@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, Loader2, Pencil, Plus, Settings2, Trash2, Wo
 import { apiErrorMessage } from "../lib/api-client";
 import { formatTimeCompact } from "../lib/format-time";
 import { serializeToYaml, type StageDraft } from "../lib/pipeline-draft";
+import { stageEnvVars } from "../lib/pipeline-env";
 import { removeStage, stageIndexFromNodeId } from "../lib/pipeline-graph";
 import { issueStageNodeId, stageIssueMessages, stageYamlLine } from "../lib/pipeline-problems";
 import { countStagesFromYaml, parsePipelineValidationIssues, type PipelineValidationIssue } from "../lib/pipeline-yaml";
@@ -172,7 +173,7 @@ function DefinitionRow({
 						Edit
 					</Button>
 					<Button
-								variant="ghost"
+						variant="ghost"
 						className="h-6 px-2 text-caption text-destructive hover:text-destructive"
 						onClick={() => setConfirmOpen(true)}
 						aria-label={`Delete ${def.name || def.id}`}
@@ -196,7 +197,7 @@ function DefinitionRow({
 					destructive
 					busy={remove.isPending}
 					error={remove.isError ? apiErrorMessage(remove.error) : null}
-						onConfirm={() =>
+					onConfirm={() =>
 						remove.mutate(def.id, {
 							onSuccess: () => setConfirmOpen(false),
 						})
@@ -358,6 +359,9 @@ function DefinitionEditor({
 									// pr.* trigger (spec §5.3) and the inherited deadline.
 									prTriggered={(draft.on?.pr?.length ?? 0) > 0}
 									defaultDeadline={draft.defaults?.deadline}
+									// The ambient set this stage resolves to, which only the
+									// whole draft can answer (triggers plus the entry edges).
+									envVars={stageEnvVars(draft, selectedStageDraft)}
 									onChange={updateSelectedStage}
 									onClose={() => selection.selectStage(null)}
 									onDelete={deleteSelectedStage}

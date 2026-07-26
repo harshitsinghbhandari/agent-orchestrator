@@ -2,7 +2,8 @@ import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { StageDraft } from "../lib/pipeline-draft";
+import type { PipelineDraft, StageDraft } from "../lib/pipeline-draft";
+import { stageEnvVars } from "../lib/pipeline-env";
 import { StageInspector, type StageInspectorProps } from "./StageInspector";
 
 const STAGE_IDS = ["fix", "triage", "tests"];
@@ -234,5 +235,131 @@ describe("StageInspector", () => {
 	it("hides the delete button while onDelete is unwired", () => {
 		renderInspector(agentStage());
 		expect(screen.queryByRole("button", { name: "Delete stage" })).not.toBeInTheDocument();
+	});
+});
+
+// The catalog the editor really passes: derived from the draft the stage lives
+// in, so availability here is what a run of this pipeline would produce.
+function envFor(stage: StageDraft, rest: Partial<PipelineDraft> = {}): StageInspectorProps["envVars"] {
+	return stageEnvVars({ name: "p", stages: [stage], ...rest }, stage);
+}
+
+describe("StageInspector $AO completion", () => {
+	const promptStage = () => agentStage();
+
+	async function typeInPrompt(text: string, stage = promptStage(), rest: Partial<PipelineDraft> = {}) {
+		const { last } = renderInspector({ ...stage, prompt: "" }, { envVars: envFor(stage, rest) });
+		const prompt = screen.getByRole("textbox", { name: "Prompt" });
+		await userEvent.click(prompt);
+		await userEvent.type(prompt, text);
+		return { prompt, last };
+	}
+
+	it("opens the menu on $AO and lists the stage's variables", async () => {
+		await typeInPrompt("Write to $AO");
+		const options = screen.getAllByRole("option");
+		expect(options.length).toBeGreaterThan(10);
+		expect(options[0]).toHaveTextContent("$AO_PROJECT");
+	});
+
+	it("stays shut for a bare $ and for other shell variables", async () => {
+		await typeInPrompt("cd $HOME");
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+	});
+
+	it("narrows as the name is typed", async () => {
+		await typeInPrompt("Write to $AO_RU");
+		expect(screen.getAllByRole("option").map((o) => o.textContent)).toHaveLength(2);
+		expect(screen.getByRole("option", { name: /AO_RUN_ID/ })).toBeInTheDocument();
+	});
+
+	it("inserts the highlighted entry on Enter", async () => {
+		const { last } = await typeInPrompt("Write to $AO_CON");
+		await userEvent.keyboard("{Enter}");
+		expect(last().prompt).toBe("Write to $AO_CONTEXT");
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+	});
+
+	it("moves the highlight with the arrow keys", async () => {
+		const { last } = await typeInPrompt("Write to $AO_PREV");
+		await userEvent.keyboard("{ArrowDown}{Enter}");
+		expect(last().prompt).toBe("Write to $AO_PREV_OUTCOME");
+	});
+
+	it("dismisses on Escape without inserting", async () => {
+		const { last } = await typeInPrompt("Write to $AO_CON");
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		expect(last().prompt).toBe("Write to $AO_CON");
+	});
+
+	it("does not reopen on the token it just completed", async () => {
+		await typeInPrompt("Write to $AO_CON");
+		await userEvent.keyboard("{Enter}");
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+	});
+
+	it("keeps the text after the caret when completing mid-line", async () => {
+		const stage = promptStage();
+		const { last } = renderInspector(
+			{ ...stage, prompt: "" },
+			{ envVars: envFor({ ...stage, produces: "review.md" }) },
+		);
+		const prompt = screen.getByRole("textbox", { name: "Prompt" });
+		await userEvent.type(prompt, "cat  then stop");
+		// Park the caret in the gap and complete there.
+		await userEvent.type(prompt, "$AO_OUT", { initialSelectionStart: 4, initialSelectionEnd: 4 });
+		await userEvent.keyboard("{Enter}");
+		expect(last().prompt).toBe("cat $AO_OUTPUT then stop");
+	});
+
+	it("still lists what the stage lacks, greyed and with the reason", async () => {
+		// No `produces:`, so AO_OUTPUT cannot resolve; the menu says why instead
+		// of hiding it.
+		await typeInPrompt("Write to $AO_OUT");
+		const option = screen.getByRole("option", { name: /AO_OUTPUT/ });
+		expect(option).toHaveAttribute("aria-disabled", "true");
+		expect(option).toHaveTextContent("needs `produces:`");
+	});
+
+	it("offers the same completion in a command stage's run script", async () => {
+		const cmd: StageDraft = { id: "tests", executor: "command", run: "" };
+		const { last } = renderInspector(cmd, { envVars: envFor(cmd) });
+		const run = screen.getByRole("textbox", { name: "Run" });
+		await userEvent.type(run, "cd $AO_WORK");
+		await userEvent.keyboard("{Enter}");
+		expect(last().run).toBe("cd $AO_WORKSPACE");
+	});
+});
+
+describe("StageInspector environment reference", () => {
+	it("summarizes reach and expands to the full catalog", async () => {
+		const stage = agentStage();
+		renderInspector(stage, { envVars: envFor(stage) });
+		const toggle = screen.getByRole("button", { name: /\$AO variables reach this stage/ });
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		// 7 always-present of the 16 the engine can inject; nothing else resolves
+		// for a lone agent stage with no triggers and no produces.
+		expect(toggle).toHaveTextContent("7 of 16 $AO variables reach this stage");
+
+		await userEvent.click(toggle);
+		const list = screen.getByTestId("stage-env-reference");
+		expect(list).toHaveTextContent("$AO_RUN_ID");
+		expect(list).toHaveTextContent("$AO_FAILED_STAGE");
+		expect(list).toHaveTextContent("only on stages entered via `on_failure`");
+		// AO_ATTEMPT is described as it behaves, not as the spec's table says.
+		expect(list).toHaveTextContent(/Always 1\./);
+	});
+
+	it("counts the ones a pr trigger and a produces unlock", async () => {
+		const stage = agentStage();
+		renderInspector(stage, { envVars: envFor({ ...stage, produces: "review.md" }, { on: { pr: ["created"] } }) });
+		// The pr trio, AO_SESSION_ID and AO_OUTPUT join the seven.
+		expect(screen.getByRole("button", { name: /\$AO variables reach this stage/ })).toHaveTextContent("12 of 16");
+	});
+
+	it("stays out of the panel when no catalog is wired", () => {
+		renderInspector(agentStage());
+		expect(screen.queryByRole("button", { name: /\$AO variables/ })).not.toBeInTheDocument();
 	});
 });

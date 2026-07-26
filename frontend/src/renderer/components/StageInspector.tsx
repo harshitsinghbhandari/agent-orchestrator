@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { AlertTriangle, Trash2, X } from "lucide-react";
+import { useId, useRef, useState } from "react";
+import { AlertTriangle, ChevronRight, Trash2, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_OPTIONS } from "../lib/agent-options";
 import {
@@ -12,6 +12,14 @@ import {
 	type StageOutcome,
 	type WorkspaceKind,
 } from "../lib/pipeline-draft";
+import {
+	applyEnvCompletion,
+	envCompletionAt,
+	isAvailable,
+	matchEnvVars,
+	type EnvCompletion,
+	type StageEnvVar,
+} from "../lib/pipeline-env";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -34,6 +42,11 @@ import { Switch } from "./ui/switch";
 // `produces` with a path separator (spec §13), and `workspace: session` under a
 // `pr.*` trigger, which is legal but fails at plan time when the PR has no
 // local session (spec §5.3).
+//
+// The prompt and the run script complete `$AO...` from the stage's own ambient
+// set, and the Environment section lists that set in full (lib/pipeline-env.ts
+// derives both). Both are resolved by the parent, which owns the draft the
+// availability rules read.
 
 export interface StageInspectorProps {
 	stage: StageDraft;
@@ -50,6 +63,10 @@ export interface StageInspectorProps {
 	// `defaults.deadline`, shown as the deadline placeholder so the effective
 	// bound is visible even when this stage does not override it (spec §13.1).
 	defaultDeadline?: string;
+	// The ambient `$AO_*` set for this stage (stageEnvVars), which drives both
+	// the completion menu and the Environment reference. Unwired means neither
+	// renders rather than a catalog guessed from partial context.
+	envVars?: StageEnvVar[];
 }
 
 // A `produces` value names a file inside the stage's output directory, so a
@@ -82,6 +99,7 @@ export function StageInspector({
 	onDelete,
 	prTriggered,
 	defaultDeadline,
+	envVars = [],
 }: StageInspectorProps) {
 	const update = (patch: Partial<StageDraft>) => onChange({ ...stage, ...patch });
 
@@ -156,14 +174,16 @@ export function StageInspector({
 					/>
 					<div className="mt-2.5">
 						{stage.executor === "agent" ? (
-							<AgentFields stage={stage} update={update} />
+							<AgentFields stage={stage} update={update} envVars={envVars} />
 						) : (
 							// `credentials` lives here and nowhere else, so an agent stage
 							// cannot express it at all (spec §6.2).
-							<CommandFields stage={stage} update={update} />
+							<CommandFields stage={stage} update={update} envVars={envVars} />
 						)}
 					</div>
 				</Section>
+
+				{envVars.length > 0 && <EnvReference vars={envVars} executor={stage.executor} />}
 
 				{stage.executor === "agent" && (
 					<Section label="Session · kill-on">
@@ -322,9 +342,9 @@ export function StageInspector({
 
 // --- executor sub-forms ------------------------------------------------------
 
-type FieldsProps = { stage: StageDraft; update: (patch: Partial<StageDraft>) => void };
+type FieldsProps = { stage: StageDraft; update: (patch: Partial<StageDraft>) => void; envVars: StageEnvVar[] };
 
-function AgentFields({ stage, update }: FieldsProps) {
+function AgentFields({ stage, update, envVars }: FieldsProps) {
 	const producesIssue = producesError(stage.produces);
 	return (
 		<div className="flex flex-col gap-2.5">
@@ -343,13 +363,13 @@ function AgentFields({ stage, update }: FieldsProps) {
 				</Select>
 			</LabeledControl>
 			<LabeledControl label="Prompt">
-				<textarea
-					aria-label="Prompt"
-					className={textareaClass}
+				<EnvTextarea
+					ariaLabel="Prompt"
 					rows={4}
 					value={stage.prompt ?? ""}
-					onChange={(e) => update({ prompt: e.target.value || undefined })}
+					onValueChange={(prompt) => update({ prompt: prompt || undefined })}
 					placeholder="What this stage should do."
+					envVars={envVars}
 				/>
 			</LabeledControl>
 			<LabeledControl label="Produces">
@@ -371,7 +391,7 @@ function AgentFields({ stage, update }: FieldsProps) {
 	);
 }
 
-function CommandFields({ stage, update }: FieldsProps) {
+function CommandFields({ stage, update, envVars }: FieldsProps) {
 	const credentials = stage.credentials ?? [];
 	// The pending chip text. The inspector is remounted per selected node, so
 	// this never leaks between stages.
@@ -390,13 +410,13 @@ function CommandFields({ stage, update }: FieldsProps) {
 	return (
 		<div className="flex flex-col gap-2.5">
 			<LabeledControl label="Run">
-				<textarea
-					aria-label="Run"
-					className={textareaClass}
+				<EnvTextarea
+					ariaLabel="Run"
 					rows={4}
 					value={stage.run ?? ""}
-					onChange={(e) => update({ run: e.target.value || undefined })}
+					onValueChange={(run) => update({ run: run || undefined })}
 					placeholder="npm test"
+					envVars={envVars}
 				/>
 			</LabeledControl>
 			<LabeledControl label="Credentials">
@@ -432,6 +452,217 @@ function CommandFields({ stage, update }: FieldsProps) {
 				</span>
 			</LabeledControl>
 		</div>
+	);
+}
+
+// --- $AO completion ----------------------------------------------------------
+
+// EnvTextarea is the prompt / run field with the `$AO` completion menu on it.
+// Typing `$AO` opens a list of this stage's ambient variables; arrow keys move,
+// Enter or Tab inserts, Escape dismisses.
+//
+// Entries the stage will not have are listed too, greyed and with the reason,
+// because the menu is where the availability model is learned. They stay
+// insertable: someone completing `$AO_OUTPUT` before typing `produces:` is
+// writing the stage they mean to have, and the reason is on screen either way.
+function EnvTextarea({
+	ariaLabel,
+	value,
+	onValueChange,
+	envVars,
+	rows,
+	placeholder,
+}: {
+	ariaLabel: string;
+	value: string;
+	onValueChange: (next: string) => void;
+	envVars: StageEnvVar[];
+	rows: number;
+	placeholder: string;
+}) {
+	const ref = useRef<HTMLTextAreaElement>(null);
+	const [completion, setCompletion] = useState<EnvCompletion | null>(null);
+	const [active, setActive] = useState(0);
+	// The `caret:value` signature the menu must stay shut at: set by Escape and
+	// by an insertion, so neither the caret move nor the resulting change event
+	// reopens the menu on the token that was just completed. Cleared as soon as
+	// the caret or the text moves off it.
+	const closedAt = useRef<string | null>(null);
+	const listId = useId();
+
+	const matches = completion ? matchEnvVars(envVars, completion.query) : [];
+	const open = matches.length > 0;
+	const activeIndex = Math.min(active, matches.length - 1);
+
+	const sync = (el: HTMLTextAreaElement) => {
+		const signature = `${el.selectionStart}:${el.value}`;
+		if (closedAt.current === signature) {
+			setCompletion(null);
+			return;
+		}
+		closedAt.current = null;
+		const next = envCompletionAt(el.value, el.selectionStart);
+		// Same token means same menu; keeping the object stable avoids a render
+		// on every caret move through unrelated text.
+		setCompletion((prev) => (prev?.start === next?.start && prev?.query === next?.query ? prev : next));
+		setActive(0);
+	};
+
+	const insert = (chosen: StageEnvVar) => {
+		const el = ref.current;
+		if (!el || !completion) return;
+		const next = applyEnvCompletion(el.value, completion, chosen.name);
+		closedAt.current = `${next.caret}:${next.value}`;
+		setCompletion(null);
+		el.focus();
+		el.setSelectionRange(completion.start, completion.start + 1 + completion.query.length);
+		// A native insertText keeps the textarea's own undo stack: ⌘Z takes back
+		// the completion and leaves the typed `$AO...` rather than clearing the
+		// whole field. React sees the resulting input event like any keystroke.
+		if (typeof document.execCommand === "function" && document.execCommand("insertText", false, `$${chosen.name}`)) {
+			return;
+		}
+		// No execCommand (jsdom, and any engine that drops it): write the value
+		// through, then place the caret. The DOM node is set first so React's
+		// re-render finds it already correct and leaves the selection alone.
+		el.value = next.value;
+		el.setSelectionRange(next.caret, next.caret);
+		onValueChange(next.value);
+	};
+
+	const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+		if (!open) return;
+		if (e.key === "ArrowDown") {
+			e.preventDefault();
+			setActive((activeIndex + 1) % matches.length);
+		} else if (e.key === "ArrowUp") {
+			e.preventDefault();
+			setActive((activeIndex - 1 + matches.length) % matches.length);
+		} else if (e.key === "Enter" || e.key === "Tab") {
+			e.preventDefault();
+			insert(matches[activeIndex]);
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			// The editor also listens for Escape; a dismissal is not a close.
+			e.stopPropagation();
+			closedAt.current = `${e.currentTarget.selectionStart}:${e.currentTarget.value}`;
+			setCompletion(null);
+		}
+	};
+
+	return (
+		<div className="relative">
+			<textarea
+				ref={ref}
+				aria-label={ariaLabel}
+				className={textareaClass}
+				rows={rows}
+				value={value}
+				onChange={(e) => {
+					onValueChange(e.target.value);
+					sync(e.target);
+				}}
+				// Fires on caret moves and selection changes, which is what closes
+				// the menu when the caret leaves the token.
+				onSelect={(e) => sync(e.currentTarget)}
+				onKeyDown={onKeyDown}
+				onBlur={() => setCompletion(null)}
+				placeholder={placeholder}
+				aria-autocomplete="list"
+				aria-expanded={open}
+				aria-controls={open ? listId : undefined}
+				aria-activedescendant={open ? `${listId}-${activeIndex}` : undefined}
+			/>
+			{open && (
+				<ul
+					id={listId}
+					role="listbox"
+					aria-label="Ambient variables"
+					className="absolute inset-x-0 top-full z-overlay mt-1 max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md"
+				>
+					{matches.map((v, i) => (
+						<li
+							key={v.name}
+							id={`${listId}-${i}`}
+							role="option"
+							aria-selected={i === activeIndex}
+							aria-disabled={!isAvailable(v)}
+							// mousedown, not click: the textarea must keep focus so the
+							// insertion lands where the caret already is.
+							onMouseDown={(e) => {
+								e.preventDefault();
+								insert(v);
+							}}
+							onMouseMove={() => setActive(i)}
+							className={cn(
+								"cursor-default rounded-md px-2 py-1.5 transition-colors",
+								i === activeIndex && "bg-surface",
+								!isAvailable(v) && "opacity-60",
+							)}
+						>
+							<div className="flex items-baseline justify-between gap-2">
+								<span className="font-mono text-caption text-foreground">${v.name}</span>
+								{v.note && <span className="shrink-0 text-micro text-passive">{v.note}</span>}
+							</div>
+							<p className="text-micro text-passive">{v.description}</p>
+						</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+// EnvReference is the same catalog without the typing: collapsed by default so
+// the panel stays a form, expanded when someone wants to know what a stage
+// actually gets. Collapsed by hand rather than with a primitive, because
+// components/ui has no collapsible and this is one boolean.
+function EnvReference({ vars, executor }: { vars: StageEnvVar[]; executor: ExecutorKind }) {
+	const [open, setOpen] = useState(false);
+	const reach = vars.filter(isAvailable).length;
+
+	return (
+		<Section label="Environment">
+			<button
+				type="button"
+				aria-expanded={open}
+				onClick={() => setOpen(!open)}
+				className="flex w-full items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground"
+			>
+				<ChevronRight
+					className={cn("size-icon-xs shrink-0 transition-transform", open && "rotate-90")}
+					aria-hidden="true"
+				/>
+				<span>
+					{reach} of {vars.length} $AO variables reach this stage
+				</span>
+			</button>
+			{open && (
+				<>
+					<ul className="mt-2 flex flex-col gap-2.5" data-testid="stage-env-reference">
+						{vars.map((v) => (
+							<li key={v.name} className={cn(!isAvailable(v) && "opacity-60")}>
+								<div className="flex items-baseline justify-between gap-2">
+									<span className="font-mono text-caption text-foreground">${v.name}</span>
+									{v.note && <span className="shrink-0 text-micro text-passive">{v.note}</span>}
+								</div>
+								<p className="text-micro text-passive">{v.description}</p>
+								<p className="truncate font-mono text-micro text-passive/80" title={v.example}>
+									{v.example}
+								</p>
+							</li>
+						))}
+					</ul>
+					<p className="mt-3 text-caption text-passive">
+						{executor === "command"
+							? "The run script is shell interpolated, so $AO_OUTPUT expands before the command sees it."
+							: "The prompt is handed to the agent verbatim; the agent reads these from its own environment."}{" "}
+						Type $AO in the {executor === "command" ? "run script" : "prompt"} to insert one. A manual run names its own
+						subject, so it can be about a session or a PR the triggers never mention.
+					</p>
+				</>
+			)}
+		</Section>
 	);
 }
 
