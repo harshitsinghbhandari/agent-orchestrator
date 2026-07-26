@@ -1,0 +1,79 @@
+package pipeline
+
+import "time"
+
+// EntryEdge records how a stage was entered, which decides its workspace
+// default and which ambient failure variables resolve.
+type EntryEdge string
+
+// Every entry edge.
+const (
+	// EntryTrigger is the entry stage, started by the trigger itself.
+	EntryTrigger EntryEdge = "trigger"
+	// EntrySuccess means a predecessor's on_success routed here.
+	EntrySuccess EntryEdge = "success"
+	// EntryFailure means a predecessor's on_failure (or defaults.on_failure)
+	// routed here.
+	EntryFailure EntryEdge = "failure"
+)
+
+// StageState is one stage's slice of a run. It is a value carried in RunState
+// and rewritten copy-on-write by the reducer, never mutated in place.
+type StageState struct {
+	ID      string  `json:"id"`
+	Outcome Outcome `json:"outcome"`
+	// Attempt is 0 until the stage starts, 1 normally, and 2 after a nudge.
+	// It surfaces to the stage as AO_ATTEMPT so a prompt can branch on being
+	// nudged.
+	Attempt    int       `json:"attempt"`
+	EnteredVia EntryEdge `json:"enteredVia"`
+	// PrevStage is the sole success predecessor, and is empty at a join or at
+	// the entry stage. AO_PREV_* is unset where this is empty, because at a
+	// join it would be ambiguous (spec section 12.2).
+	PrevStage string `json:"prevStage,omitempty"`
+	// FailedStage and FailedOutcome are set when EnteredVia is EntryFailure,
+	// and surface as AO_FAILED_STAGE / AO_FAILED_OUTCOME.
+	FailedStage   string  `json:"failedStage,omitempty"`
+	FailedOutcome Outcome `json:"failedOutcome,omitempty"`
+
+	SessionID string `json:"sessionId,omitempty"`
+	// WorkspaceKind is the resolved tree kind, never "auto", "inherit" or
+	// unset: those are plan-time symbols, resolved to a concrete kind by the
+	// time the stage launches.
+	WorkspaceKind WorkspaceKind `json:"workspaceKind,omitempty"`
+	WorkspacePath string        `json:"workspacePath,omitempty"`
+
+	DeadlineAt time.Time `json:"deadlineAt,omitempty"`
+	StartedAt  time.Time `json:"startedAt,omitempty"`
+	SettledAt  time.Time `json:"settledAt,omitempty"`
+
+	// Reason carries the fail reason, cancel reason, or plan-failure reason.
+	Reason string `json:"reason,omitempty"`
+}
+
+// RunState is one run, in full. SQLite stays the store of record; run.json in
+// the run folder is a projection of this for humans and debugging.
+//
+// Def is a frozen snapshot taken when the run was triggered: editing the
+// definition mid-run never changes a run in flight.
+type RunState struct {
+	RunID        RunID     `json:"runId"`
+	ProjectID    string    `json:"projectId"`
+	PipelineID   ID        `json:"pipelineId"`
+	PipelineName string    `json:"pipelineName"`
+	Subject      Subject   `json:"subject"`
+	Status       RunStatus `json:"status"`
+	RunDir       string    `json:"runDir"`
+	Def          Pipeline  `json:"definition"`
+
+	Stages map[string]*StageState `json:"stages"`
+	// Nudged records the one nudge each stage is allowed. Two attempts total,
+	// not configurable: if a second nudge would help, the prompt is wrong.
+	Nudged map[string]bool `json:"nudged,omitempty"`
+
+	CancelReason string `json:"cancelReason,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	SettledAt time.Time `json:"settledAt,omitempty"`
+}
