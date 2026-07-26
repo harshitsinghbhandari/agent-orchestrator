@@ -342,7 +342,9 @@ describe("PipelineRunDetail stage log", () => {
 		renderDetail("proj-1");
 
 		await userEvent.setup().click(within(row("lint")).getByRole("button", { name: "Log" }));
-		expect(await within(row("lint")).findByText(/disk on fire/)).toBeInTheDocument();
+		// The query retries once before it settles into its error state, so this
+		// waits past the retry rather than racing it.
+		expect(await within(row("lint")).findByText(/disk on fire/, {}, { timeout: 5000 })).toBeInTheDocument();
 	});
 
 	it("offers no log for a stage that never ran", () => {
