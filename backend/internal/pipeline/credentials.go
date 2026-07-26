@@ -33,6 +33,11 @@ type CredentialResolver interface {
 // A store failure comes back as an ordinary error, not a *ValidationError:
 // "unknown credential" on a failed read would tell the author to fix a name
 // that is fine.
+//
+// The message names the exact command that fixes it. Two of the three starter
+// templates declare credentials, so this error is the first thing a new user
+// sees after clicking a template; a bare "unknown credential" there reads as
+// the feature being broken rather than as one command being missing.
 func ValidateCredentials(ctx context.Context, p *Pipeline, projectID string, r CredentialResolver) error {
 	if r == nil || p == nil {
 		return nil
@@ -50,7 +55,7 @@ func ValidateCredentials(ctx context.Context, p *Pipeline, projectID string, r C
 			}
 			issues = append(issues, Issue{
 				Path:    fmt.Sprintf("stages[%d].credentials[%d]", i, j),
-				Message: fmt.Sprintf("unknown credential %q: set it with `ao pipeline credential set %s KEY=VALUE`", name, name),
+				Message: unknownCredentialMessage(name, projectID),
 			})
 		}
 	}
@@ -58,6 +63,17 @@ func ValidateCredentials(ctx context.Context, p *Pipeline, projectID string, r C
 		return &ValidationError{Issues: issues}
 	}
 	return nil
+}
+
+// unknownCredentialMessage spells the one command that turns this error into a
+// working pipeline. KEY=VALUE stays a placeholder because only the author knows
+// which environment variable the stage's script reads.
+func unknownCredentialMessage(name, projectID string) string {
+	cmd := fmt.Sprintf("ao pipeline credential set %s KEY=VALUE", name)
+	if projectID != "" {
+		cmd += " --project " + projectID
+	}
+	return fmt.Sprintf("unknown credential %q; create it with: %s", name, cmd)
 }
 
 // KnownCredentialSet turns the project's declared credential names into the

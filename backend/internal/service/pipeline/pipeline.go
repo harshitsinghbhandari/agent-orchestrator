@@ -44,6 +44,11 @@ type Store interface {
 	DeletePipelineDefinition(ctx context.Context, id pipeline.ID) (bool, error)
 
 	ListPipelineRuns(ctx context.Context, projectID domain.ProjectID, filter pipeline.RunFilter) ([]pipeline.RunState, error)
+
+	// Sessions and their PRs are how a manual trigger resolves a PR subject
+	// server-side: the pr table reaches a project only through its session.
+	ListSessions(ctx context.Context, projectID domain.ProjectID) ([]domain.SessionRecord, error)
+	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 }
 
 // Engine is the subset of the per-project engine actor the request handlers
@@ -75,14 +80,18 @@ func (s supervisorEngines) For(ctx context.Context, projectID domain.ProjectID) 
 	return eng, nil
 }
 
-// TriggerInput is a manual trigger: which definition, and optionally the
-// session the run is about.
+// TriggerInput is a manual trigger: which definition, and optionally what the
+// run is about.
 type TriggerInput struct {
 	// Ref is the definition id or name to run.
 	Ref string
 	// SessionID makes the run a session-subject run. Empty makes it a
 	// project-subject run, which is first-class (spec section 4).
 	SessionID string
+	// PRNumber makes the run a PR-subject run. It wins over SessionID, because
+	// a PR subject already carries the session tracking it when there is one,
+	// and a PR subject is the more specific of the two. Zero means no PR.
+	PRNumber int
 }
 
 // Manager is the pipelines service the HTTP controller and the lifecycle merge
@@ -93,13 +102,19 @@ type Manager interface {
 	CreateDefinition(ctx context.Context, projectID domain.ProjectID, yamlSource string) (pipeline.Definition, error)
 	UpdateDefinition(ctx context.Context, id pipeline.ID, yamlSource string) (pipeline.Definition, error)
 	DeleteDefinition(ctx context.Context, id pipeline.ID) error
-	ValidateDefinition(ctx context.Context, projectID domain.ProjectID, yamlSource string) (valid bool, issues []pipeline.Issue, err error)
+	ValidateDefinition(ctx context.Context, projectID domain.ProjectID, yamlSource string) (valid bool, issues, warnings []pipeline.Issue, err error)
 	ConfigSchema() []byte
 
 	ListRuns(ctx context.Context, projectID domain.ProjectID, filter pipeline.RunFilter) ([]pipeline.RunState, error)
 	GetRun(ctx context.Context, id pipeline.RunID) (pipeline.RunState, error)
 	TriggerRun(ctx context.Context, projectID domain.ProjectID, in TriggerInput) (pipeline.RunID, error)
 	CancelRun(ctx context.Context, projectID domain.ProjectID, id pipeline.RunID) (pipeline.RunState, error)
+	// StageLog reads a stage's captured stdout+stderr out of the run folder,
+	// tailed to the last tailLines lines (0 for the whole log).
+	StageLog(ctx context.Context, runID pipeline.RunID, stageID string, tailLines int) (StageLog, error)
+	// RunOutput reads one declared `produces` artifact out of the run folder.
+	// The filename is authorized against the run's frozen declared set.
+	RunOutput(ctx context.Context, runID pipeline.RunID, filename string) (RunOutput, error)
 
 	// PRBlocksMerge reports whether a PR's pipeline runs block it from merging.
 	// It is the read side of the lifecycle merge-readiness gate.
@@ -292,21 +307,25 @@ func (s *Service) DeleteDefinition(ctx context.Context, id pipeline.ID) error {
 // ValidateDefinition dry-runs the parser over the raw YAML and reports the
 // outcome as data, never an error envelope: the editor wants the issue list as
 // a result. Persists nothing.
-func (s *Service) ValidateDefinition(ctx context.Context, projectID domain.ProjectID, yamlSource string) (bool, []pipeline.Issue, error) {
-	cfg, err := pipeline.ParseDefinition([]byte(yamlSource))
+//
+// Warnings come back on their own channel and survive an invalid document: a
+// pipeline can be both unsaveable and worth a second look, and the editor
+// renders the two lists differently.
+func (s *Service) ValidateDefinition(ctx context.Context, projectID domain.ProjectID, yamlSource string) (bool, []pipeline.Issue, []pipeline.Issue, error) {
+	cfg, warnings, err := pipeline.ParseDefinitionWithWarnings([]byte(yamlSource))
 	if err != nil {
-		return false, issuesFromError(err), nil
+		return false, issuesFromError(err), warnings, nil
 	}
 	if err := pipeline.ValidateCredentials(ctx, cfg, string(projectID), s.creds); err != nil {
 		var verr *pipeline.ValidationError
 		if errors.As(err, &verr) {
-			return false, verr.Issues, nil
+			return false, verr.Issues, warnings, nil
 		}
 		// A store failure is a real error: telling the author to fix a name that
 		// is fine would be worse than saying the check could not run.
-		return false, nil, err
+		return false, nil, nil, err
 	}
-	return true, nil, nil
+	return true, nil, warnings, nil
 }
 
 // ConfigSchema returns the JSON Schema for the definition document, which the
@@ -337,11 +356,17 @@ func (s *Service) GetRun(ctx context.Context, id pipeline.RunID) (pipeline.RunSt
 // TriggerRun resolves the definition reference (id first, then name within the
 // project) and starts a run through the project engine.
 //
-// The subject is resolved here: a session id makes it a session subject, and
-// nothing makes it a project subject. PR subjects arrive through the trigger
-// bridge; a manual PR trigger lands with the run API pass.
+// The subject is resolved server-side, never taken from the caller: a PR number
+// is looked up against the project's tracked PRs so the run carries the real
+// head SHA, branches and fork provenance. The fork flag in particular decides
+// whether any credential is injected anywhere in the run (spec section 8), so
+// letting a client assert it would be a hole.
 func (s *Service) TriggerRun(ctx context.Context, projectID domain.ProjectID, in TriggerInput) (pipeline.RunID, error) {
 	def, err := s.resolveDefinition(ctx, projectID, in.Ref)
+	if err != nil {
+		return "", err
+	}
+	subject, err := s.resolveSubject(ctx, projectID, in)
 	if err != nil {
 		return "", err
 	}
@@ -349,15 +374,67 @@ func (s *Service) TriggerRun(ctx context.Context, projectID domain.ProjectID, in
 	if err != nil {
 		return "", err
 	}
-	subject := pipeline.Subject{Kind: pipeline.SubjectProject, ProjectID: string(projectID)}
-	if in.SessionID != "" {
-		subject = pipeline.Subject{Kind: pipeline.SubjectSession, ProjectID: string(projectID), SessionID: in.SessionID}
-	}
 	runID, err := eng.TriggerRun(triggers.TriggerRequest{Definition: def, Event: "manual", Subject: subject})
 	if err != nil {
 		return "", apierr.Invalid("PIPELINE_TRIGGER_REJECTED", err.Error(), nil)
 	}
 	return runID, nil
+}
+
+// resolveSubject turns a manual trigger's optional pointers into the subject the
+// run is about: a PR when a number was given, else a session, else the project
+// (which is first-class, spec section 4).
+func (s *Service) resolveSubject(ctx context.Context, projectID domain.ProjectID, in TriggerInput) (pipeline.Subject, error) {
+	if in.PRNumber > 0 {
+		return s.prSubject(ctx, projectID, in.PRNumber)
+	}
+	if in.SessionID != "" {
+		return pipeline.Subject{Kind: pipeline.SubjectSession, ProjectID: string(projectID), SessionID: in.SessionID}, nil
+	}
+	return pipeline.Subject{Kind: pipeline.SubjectProject, ProjectID: string(projectID)}, nil
+}
+
+// prSubject looks up one tracked PR by number within the project.
+//
+// ponytail: the pr table is keyed by url and reaches a project only through the
+// session that tracks it, so this walks the project's sessions. Manual triggers
+// are a human clicking a button; add a project-scoped PR query if that stops
+// being true.
+func (s *Service) prSubject(ctx context.Context, projectID domain.ProjectID, number int) (pipeline.Subject, error) {
+	sessions, err := s.store.ListSessions(ctx, projectID)
+	if err != nil {
+		return pipeline.Subject{}, err
+	}
+	for _, sess := range sessions {
+		prs, err := s.store.ListPRsBySession(ctx, sess.ID)
+		if err != nil {
+			return pipeline.Subject{}, err
+		}
+		for _, pr := range prs {
+			if pr.Number != number {
+				continue
+			}
+			return pipeline.Subject{
+				Kind:      pipeline.SubjectPR,
+				ProjectID: string(projectID),
+				SessionID: string(pr.SessionID),
+				PR: &pipeline.PRRef{
+					Number:     pr.Number,
+					Repo:       pr.Repo,
+					URL:        pr.URL,
+					HeadSHA:    pr.HeadSHA,
+					HeadBranch: pr.SourceBranch,
+					BaseBranch: pr.TargetBranch,
+					// Unknown provenance is treated as a fork: identity-only is
+					// the fail-safe answer when nobody can say where the head
+					// lives (decision D17).
+					FromFork: pr.IsFromFork == nil || *pr.IsFromFork,
+				},
+			}, nil
+		}
+	}
+	return pipeline.Subject{}, apierr.NotFound("PIPELINE_PR_NOT_FOUND",
+		fmt.Sprintf("this project tracks no pull request #%d", number))
 }
 
 // CancelRun tears an in-flight run down through the project engine and returns

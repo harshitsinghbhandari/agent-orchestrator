@@ -349,40 +349,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Fetch one pipeline run artifact by id */
-        get: operations["getPipelineArtifact"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Change a pipeline finding's lifecycle status (dismiss, reopen, resolve) */
-        post: operations["updatePipelineArtifactStatus"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/pipelines/runs/{runId}/cancel": {
         parameters: {
             query?: never;
@@ -400,17 +366,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/pipelines/runs/{runId}/resume": {
+    "/api/v1/pipelines/runs/{runId}/outputs/{filename}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Download one artifact a stage declared with produces */
+        get: operations["getPipelineRunOutput"];
         put?: never;
-        /** Resume a stalled or failed pipeline run */
-        post: operations["resumePipelineRun"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipelines/runs/{runId}/stages/{stageId}/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch a stage's captured stdout and stderr, optionally tailed */
+        get: operations["getPipelineStageLog"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1049,22 +1032,6 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
         };
-        ControllersSignalPipelineStageRequest: {
-            /** @description Why the stage failed. Carried on the failure edge and shown in run detail. */
-            reason?: string;
-            /**
-             * @description How the stage settled: done | fail.
-             * @enum {string}
-             */
-            status: "done" | "fail";
-        };
-        ControllersSignalPipelineStageResponse: {
-            accepted: boolean;
-        };
-        ControllersUpdatePipelineArtifactStatusRequest: {
-            /** @description New artifact status: open | resolved | dismissed. */
-            status: string;
-        };
         DegradedProject: {
             id: string;
             kind: string;
@@ -1242,36 +1209,6 @@ export interface components {
             targetSha: string;
             title: string;
         };
-        PipelineArtifact: {
-            anchorSignature?: string;
-            artifactId: string;
-            belowConfidenceThreshold?: boolean;
-            category?: string;
-            /** Format: double */
-            confidence?: number;
-            /** Format: date-time */
-            createdAt: string;
-            data?: {
-                [key: string]: unknown;
-            };
-            description?: string;
-            endLine?: number;
-            filePath?: string;
-            fingerprint?: string;
-            kind: string;
-            pipelineRunId: string;
-            /** Format: date-time */
-            sentToAgentAt?: null | string;
-            severity?: string;
-            stageName: string;
-            stageRunId: string;
-            startLine?: number;
-            status: string;
-            title?: string;
-        };
-        PipelineArtifactResponse: {
-            artifact: components["schemas"]["PipelineArtifact"];
-        };
         PipelineDefinitionResponse: {
             definition: components["schemas"]["PipelineDefinitionSummary"];
         };
@@ -1285,25 +1222,38 @@ export interface components {
             updatedAt: string;
             yamlSource: string;
         };
+        PipelineProducedArtifact: {
+            exists: boolean;
+            name: string;
+        };
         PipelineRunDetail: {
-            blocksMerge: boolean;
+            cancelReason?: string;
             /** Format: date-time */
             createdAt: string;
-            findings: components["schemas"]["PipelineArtifact"][];
-            hasOpenFindings: boolean;
-            headSha: string;
-            loopRounds: number;
-            loopState: string;
+            headSha?: string;
             pipelineId: string;
             pipelineName: string;
+            prNumber?: number;
+            runDir?: string;
             runId: string;
-            sessionId: string;
+            sessionId?: string;
+            /** Format: date-time */
+            settledAt?: null | string;
             stageCount: number;
-            stageStatuses: {
+            stageOutcomes: {
                 [key: string]: string;
             } | null;
             stages: components["schemas"]["PipelineStageView"][];
-            terminationReason?: string;
+            /**
+             * @description Run-level rollup of the stage outcomes.
+             * @enum {string}
+             */
+            status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+            /**
+             * @description What the run is about.
+             * @enum {string}
+             */
+            subjectKind: "session" | "pr" | "project";
             /** Format: date-time */
             updatedAt: string;
         };
@@ -1311,40 +1261,60 @@ export interface components {
             run: components["schemas"]["PipelineRunDetail"];
         };
         PipelineRunSummary: {
-            blocksMerge: boolean;
+            cancelReason?: string;
             /** Format: date-time */
             createdAt: string;
-            hasOpenFindings: boolean;
-            headSha: string;
-            loopRounds: number;
-            loopState: string;
+            headSha?: string;
             pipelineId: string;
             pipelineName: string;
+            prNumber?: number;
             runId: string;
-            sessionId: string;
+            sessionId?: string;
+            /** Format: date-time */
+            settledAt?: null | string;
             stageCount: number;
-            stageStatuses: {
+            stageOutcomes: {
                 [key: string]: string;
             } | null;
-            terminationReason?: string;
+            /**
+             * @description Run-level rollup of the stage outcomes.
+             * @enum {string}
+             */
+            status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+            /**
+             * @description What the run is about.
+             * @enum {string}
+             */
+            subjectKind: "session" | "pr" | "project";
             /** Format: date-time */
             updatedAt: string;
         };
+        PipelineStageLogResponse: {
+            content: string;
+            runId: string;
+            stageId: string;
+            truncated: boolean;
+        };
         PipelineStageView: {
-            artifactIds: string[];
             attempt: number;
-            /** Format: date-time */
-            completedAt?: null | string;
-            errorMessage?: string;
-            notes?: string[];
-            output?: string;
+            /**
+             * @description Which edge started this stage.
+             * @enum {string}
+             */
+            enteredVia: "trigger" | "success" | "failure";
+            failedStage?: string;
+            /** @enum {string} */
+            outcome: "pending" | "running" | "succeeded" | "succeeded_unverified" | "failed" | "no_output" | "no_signal" | "timed_out" | "cancelled" | "skipped";
+            outputTail?: string;
+            producedArtifact?: components["schemas"]["PipelineProducedArtifact"];
+            reason?: string;
             sessionId?: string;
-            stageName: string;
-            stageRunId: string;
+            /** Format: date-time */
+            settledAt?: null | string;
+            stageId: string;
             /** Format: date-time */
             startedAt?: null | string;
-            status: string;
-            verdict?: string;
+            workspaceKind?: string;
         };
         PipelineValidationIssue: {
             /** @description Human-readable description of the problem. */
@@ -1630,6 +1600,18 @@ export interface components {
             title: string;
             workingDir: string;
         };
+        SignalPipelineStageRequest: {
+            /** @description Why the stage failed. Carried on the failure edge and shown in run detail. */
+            reason?: string;
+            /**
+             * @description How the stage settled: done | fail.
+             * @enum {string}
+             */
+            status: "done" | "fail";
+        };
+        SignalPipelineStageResponse: {
+            accepted: boolean;
+        };
         SpawnOrchestratorRequest: {
             clean?: boolean;
             projectId: string;
@@ -1678,11 +1660,11 @@ export interface components {
             repo?: string;
         };
         TriggerPipelineRunRequest: {
-            /** @description Head commit SHA to pin the run to. */
-            headSha?: string;
             /** @description Definition reference to run: its id or name. */
             pipeline: string;
-            /** @description Session id to scope the run's loop key. */
+            /** @description Run against this tracked pull request as the subject. */
+            prNumber?: number;
+            /** @description Run against this session as the subject. */
             sessionId?: string;
         };
         TriggerPipelineRunResponse: {
@@ -1703,6 +1685,7 @@ export interface components {
         ValidatePipelineDefinitionResponse: {
             issues: components["schemas"]["PipelineValidationIssue"][];
             valid: boolean;
+            warnings: components["schemas"]["PipelineValidationIssue"][];
         };
         WorkspaceFileResponse: {
             additions: number;
@@ -2783,8 +2766,8 @@ export interface operations {
                 project?: string;
                 /** @description Filter runs to one pipeline name. */
                 pipeline?: string;
-                /** @description Filter runs by loop state (running|awaiting_context|done|stalled|terminated). */
-                status?: string;
+                /** @description Filter runs by run status. */
+                status?: "pending" | "running" | "succeeded" | "failed" | "cancelled";
                 /** @description Cap the number of runs returned (newest first). */
                 limit?: null | number;
             };
@@ -2954,126 +2937,6 @@ export interface operations {
             };
         };
     };
-    getPipelineArtifact: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Pipeline run identifier. */
-                runId: string;
-                /** @description Artifact identifier. */
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PipelineArtifactResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Implemented */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-        };
-    };
-    updatePipelineArtifactStatus: {
-        parameters: {
-            query?: {
-                /** @description Project id the pipeline belongs to (required). */
-                project?: string;
-            };
-            header?: never;
-            path: {
-                /** @description Pipeline run identifier. */
-                runId: string;
-                /** @description Artifact identifier. */
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ControllersUpdatePipelineArtifactStatusRequest"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PipelineArtifactResponse"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Implemented */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-        };
-    };
     cancelPipelineRun: {
         parameters: {
             query?: {
@@ -3136,16 +2999,15 @@ export interface operations {
             };
         };
     };
-    resumePipelineRun: {
+    getPipelineRunOutput: {
         parameters: {
-            query?: {
-                /** @description Project id the pipeline belongs to (required). */
-                project?: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 /** @description Pipeline run identifier. */
                 runId: string;
+                /** @description Artifact filename. Only a name the run's frozen definition declares as a stage's produces is served. */
+                filename: string;
             };
             cookie?: never;
         };
@@ -3157,7 +3019,62 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PipelineRunDetailResponse"];
+                    "text/plain": string;
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getPipelineStageLog: {
+        parameters: {
+            query?: {
+                /** @description Return only the last N lines. Omitted returns the whole log. */
+                tail?: null | number;
+            };
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+                /** @description Stage id as declared in the pipeline definition. */
+                stageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineStageLogResponse"];
                 };
             };
             /** @description Bad Request */
@@ -3212,7 +3129,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ControllersSignalPipelineStageRequest"];
+                "application/json": components["schemas"]["SignalPipelineStageRequest"];
             };
         };
         responses: {
@@ -3222,7 +3139,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ControllersSignalPipelineStageResponse"];
+                    "application/json": components["schemas"]["SignalPipelineStageResponse"];
                 };
             };
             /** @description Bad Request */

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,6 +96,76 @@ func (f RunFolder) OutputPath(stage *Stage) string {
 // executors always capture one.
 func (f RunFolder) LogPath(stageID string) string {
 	return filepath.Join(f.Dir, stageLogsDir, stageID+".log")
+}
+
+// ErrOutputNotDeclared means the requested filename is not the `produces` of
+// any stage in the run. It is the whole authorization rule for the outputs
+// endpoint: the declared set is a closed allowlist, so a filename that is not
+// in it never becomes a path at all.
+var ErrOutputNotDeclared = errors.New("pipeline run declares no such output")
+
+// DeclaredOutput resolves one declared artifact filename to its path inside the
+// run folder, or ErrOutputNotDeclared.
+//
+// The filename is matched against the run's `produces` set by exact string
+// equality and never joined onto the folder as caller input. That is what makes
+// traversal ("../../id_rsa"), absolute paths and encoded separators
+// unreachable rather than merely filtered: validation guarantees every declared
+// `produces` is a bare filename, so anything that matches one is a bare
+// filename too.
+func (f RunFolder) DeclaredOutput(p *Pipeline, filename string) (string, error) {
+	if p == nil || filename == "" {
+		return "", ErrOutputNotDeclared
+	}
+	for i := range p.Stages {
+		if p.Stages[i].Produces != filename {
+			continue
+		}
+		// Belt and braces: a definition frozen by an older build, or hand-edited
+		// in the run folder, could carry a `produces` the current validator
+		// would reject. Re-check rather than trust the frozen copy.
+		if checkPathComponent("output filename", filename) != nil {
+			return "", ErrOutputNotDeclared
+		}
+		return filepath.Join(f.Dir, agentOutputsDir, filename), nil
+	}
+	return "", ErrOutputNotDeclared
+}
+
+// ReadLogTail returns the last n lines of a stage's log, or the whole log when
+// n <= 0. A missing log is not an error: a stage that has not started yet
+// simply has nothing to show, and exists says which it was. truncated reports
+// whether lines were dropped off the front.
+//
+// ponytail: reads the whole file, then keeps the tail. Stage logs are capped by
+// the executor, so this is bounded in practice; switch to a seek-from-end
+// reader if a stage ever streams gigabytes.
+func (f RunFolder) ReadLogTail(stageID string, n int) (content string, exists, truncated bool, err error) {
+	raw, err := os.ReadFile(f.LogPath(stageID))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, fmt.Errorf("read stage log %s: %w", stageID, err)
+	}
+	tail := tailLines(string(raw), n)
+	return tail, true, len(tail) < len(raw), nil
+}
+
+// tailLines keeps the last n lines of s, preserving its trailing newline.
+func tailLines(s string, n int) string {
+	if n <= 0 || s == "" {
+		return s
+	}
+	body, trailer := s, ""
+	if strings.HasSuffix(body, "\n") {
+		body, trailer = body[:len(body)-1], "\n"
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n") + trailer
 }
 
 // WriteRunJSON writes a pretty-printed projection of the run state. SQLite

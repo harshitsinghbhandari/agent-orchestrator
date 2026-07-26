@@ -297,3 +297,116 @@ func hasIndentedLine(raw []byte) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------
+// Declared outputs: the outputs endpoint's whole authorization rule
+// ---------------------------------------------------------------------------
+
+func TestDeclaredOutputResolvesADeclaredFilename(t *testing.T) {
+	f := RunFolder{Dir: t.TempDir()}
+	p, err := ParseDefinition([]byte(sampleDefYAML))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+
+	got, err := f.DeclaredOutput(p, "review.md")
+	if err != nil {
+		t.Fatalf("DeclaredOutput: %v", err)
+	}
+	if want := filepath.Join(f.Dir, "agent-outputs", "review.md"); got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+}
+
+func TestDeclaredOutputRejectsEverythingElse(t *testing.T) {
+	f := RunFolder{Dir: t.TempDir()}
+	p, err := ParseDefinition([]byte(sampleDefYAML))
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+
+	// Traversal, absolute paths, separators, near-misses and the run folder's
+	// own files are all the same answer: not declared, so not servable.
+	for _, name := range []string{
+		"", ".", "..", "../definition.yaml", "../../../etc/passwd",
+		"/etc/passwd", `..\..\secrets`, "agent-outputs/review.md",
+		"review.md/../../run.json", "run.json", "definition.yaml",
+		"Review.md", "review.md ", "review",
+	} {
+		if _, err := f.DeclaredOutput(p, name); err == nil {
+			t.Errorf("DeclaredOutput(%q) resolved, want rejection", name)
+		}
+	}
+}
+
+func TestDeclaredOutputRejectsATraversingProduces(t *testing.T) {
+	// A frozen definition from an older build could carry a `produces` the
+	// current validator rejects. Matching it must still not yield a path.
+	f := RunFolder{Dir: t.TempDir()}
+	p := &Pipeline{Stages: []Stage{{ID: "s", Produces: "../../run.json"}}}
+
+	if _, err := f.DeclaredOutput(p, "../../run.json"); err == nil {
+		t.Fatal("a traversing produces resolved, want rejection")
+	}
+}
+
+func TestDeclaredOutputOnANilPipeline(t *testing.T) {
+	if _, err := (RunFolder{Dir: t.TempDir()}).DeclaredOutput(nil, "review.md"); err == nil {
+		t.Fatal("nil pipeline resolved, want rejection")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Log tail
+// ---------------------------------------------------------------------------
+
+func TestReadLogTail(t *testing.T) {
+	f, err := CreateRunFolder(t.TempDir(), "proj-1", RunID("run-1"), []byte(sampleDefYAML))
+	if err != nil {
+		t.Fatalf("CreateRunFolder: %v", err)
+	}
+	if err := os.WriteFile(f.LogPath("review"), []byte("one\ntwo\nthree\n"), 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	tests := []struct {
+		n             int
+		want          string
+		wantTruncated bool
+	}{
+		{0, "one\ntwo\nthree\n", false},
+		{-1, "one\ntwo\nthree\n", false},
+		{2, "two\nthree\n", true},
+		{99, "one\ntwo\nthree\n", false},
+		{1, "three\n", true},
+	}
+	for _, tc := range tests {
+		got, exists, truncated, tailErr := f.ReadLogTail("review", tc.n)
+		if tailErr != nil {
+			t.Fatalf("ReadLogTail(%d): %v", tc.n, tailErr)
+		}
+		if !exists {
+			t.Fatalf("ReadLogTail(%d): exists = false", tc.n)
+		}
+		if got != tc.want {
+			t.Errorf("ReadLogTail(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+		if truncated != tc.wantTruncated {
+			t.Errorf("ReadLogTail(%d) truncated = %v, want %v", tc.n, truncated, tc.wantTruncated)
+		}
+	}
+}
+
+func TestReadLogTailMissingLogIsNotAnError(t *testing.T) {
+	f, err := CreateRunFolder(t.TempDir(), "proj-1", RunID("run-1"), []byte(sampleDefYAML))
+	if err != nil {
+		t.Fatalf("CreateRunFolder: %v", err)
+	}
+	content, exists, _, err := f.ReadLogTail("never-started", 10)
+	if err != nil {
+		t.Fatalf("ReadLogTail: %v", err)
+	}
+	if exists || content != "" {
+		t.Fatalf("exists = %v, content = %q, want false and empty", exists, content)
+	}
+}

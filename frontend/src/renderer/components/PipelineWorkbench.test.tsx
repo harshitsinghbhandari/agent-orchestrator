@@ -16,14 +16,12 @@ function run(overrides: Partial<PipelineRunSummary> & { runId: string }): Pipeli
 	return {
 		pipelineId: "def-1",
 		pipelineName: "review",
+		status: "running",
+		subjectKind: "session",
 		sessionId: "sess-1",
-		loopState: "running",
-		loopRounds: 1,
 		headSha: "abcdef1234567890",
 		stageCount: 2,
-		stageStatuses: { lint: "succeeded", test: "running" },
-		hasOpenFindings: false,
-		blocksMerge: false,
+		stageOutcomes: { lint: "succeeded", test: "running" },
 		createdAt: "2026-07-15T00:00:00Z",
 		updatedAt: "2026-07-15T00:00:00Z",
 		projectId: "proj-1",
@@ -45,9 +43,9 @@ afterEach(() => vi.restoreAllMocks());
 describe("PipelineWorkbench", () => {
 	it("groups runs into the five run-status columns", () => {
 		setRuns([
-			run({ runId: "r1", pipelineName: "review", loopState: "running" }),
-			run({ runId: "r2", pipelineName: "audit", loopState: "done" }),
-			run({ runId: "r3", pipelineName: "audit", loopState: "stalled" }),
+			run({ runId: "r1", pipelineName: "review", status: "running" }),
+			run({ runId: "r2", pipelineName: "audit", status: "succeeded" }),
+			run({ runId: "r3", pipelineName: "audit", status: "failed" }),
 		]);
 		render(<PipelineWorkbench />);
 
@@ -60,7 +58,7 @@ describe("PipelineWorkbench", () => {
 	});
 
 	it("renders card fields: pipeline name, run status, and stage count", () => {
-		setRuns([run({ runId: "r1", pipelineName: "review", loopState: "running", stageCount: 2 })]);
+		setRuns([run({ runId: "r1", pipelineName: "review", status: "running", stageCount: 2 })]);
 		const { container } = render(<PipelineWorkbench />);
 
 		const card = container.querySelector('[data-run-id="r1"]') as HTMLElement;
@@ -74,7 +72,7 @@ describe("PipelineWorkbench", () => {
 			run({
 				runId: "r1",
 				stageCount: 3,
-				stageStatuses: { lint: "succeeded", review: "succeeded_unverified", test: "timed_out" },
+				stageOutcomes: { lint: "succeeded", review: "succeeded_unverified", test: "timed_out" },
 			}),
 		]);
 		const { container } = render(<PipelineWorkbench />);
@@ -92,8 +90,8 @@ describe("PipelineWorkbench", () => {
 
 	it("filters the board to the selected pipeline names", async () => {
 		setRuns([
-			run({ runId: "r1", pipelineName: "review", loopState: "running" }),
-			run({ runId: "r2", pipelineName: "audit", loopState: "running" }),
+			run({ runId: "r1", pipelineName: "review", status: "running" }),
+			run({ runId: "r2", pipelineName: "audit", status: "running" }),
 		]);
 		render(<PipelineWorkbench />);
 		const user = userEvent.setup();
