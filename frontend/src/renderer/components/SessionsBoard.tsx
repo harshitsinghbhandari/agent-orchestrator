@@ -514,7 +514,6 @@ function SessionCard({
 							{issueId}
 						</span>
 					)}
-					{orphan && <PipelineOrphanBadge orphan={orphan} />}
 					<span className="ml-auto shrink-0 font-mono text-2xs tracking-wide-xs text-passive">
 						{agentLabel(session.provider)}
 					</span>
@@ -522,13 +521,22 @@ function SessionCard({
 				<div
 					className={cn(
 						"px-3.25 text-control font-medium leading-snug tracking-tight text-foreground",
-						showBranch ? "pb-2" : "pb-3",
+						showBranch || orphan ? "pb-2" : "pb-3",
 						"line-clamp-2 overflow-hidden",
 					)}
 				>
 					{session.title}
 				</div>
-				{showBranch && <div className="px-3.25 pb-2.5 font-mono text-2xs text-passive">{branch}</div>}
+				{/* The pipeline badge shares the branch line rather than the header
+				    row: the header already carries the status label, the intake chip
+				    and the agent name, and a fourth chip wraps it on a column-width
+				    card. */}
+				{(showBranch || orphan) && (
+					<div className="flex items-center gap-2 px-3.25 pb-2.5">
+						{orphan && <PipelineOrphanBadge orphan={orphan} />}
+						{showBranch && <span className="min-w-0 truncate font-mono text-2xs text-passive">{branch}</span>}
+					</div>
+				)}
 			</div>
 			{restoreError && (
 				<div className="border-t border-border px-3.25 py-1.5 text-2xs text-destructive">{restoreError}</div>
@@ -592,8 +600,9 @@ function PipelineOrphanBadge({ orphan }: { orphan: PipelineOrphanInfo }) {
 						<span className="font-medium text-warning">{stageOutcomeLabel(orphan.outcome as StageOutcome)}</span>, so
 						this session was kept for you to inspect instead of being cleaned up.
 					</p>
-					<p className="font-mono text-micro text-muted-foreground">
-						{orphan.pipeline} · run {orphan.runId}
+					{/* Run ids are `run-<uuid>`, so they self-label and need to wrap. */}
+					<p className="break-all font-mono text-micro text-muted-foreground">
+						{orphan.pipeline} · {orphan.runId}
 					</p>
 					<p className="text-micro text-muted-foreground">kept {formatTimeCompact(orphan.keptAt)}</p>
 				</TooltipContent>
@@ -633,7 +642,7 @@ function PipelineOrphanKillButton({ orphan, session }: { orphan: PipelineOrphanI
 				confirmLabel="Kill session"
 				description={
 					<p className="text-xs leading-5 text-muted-foreground">
-						Stage <span className="font-mono text-foreground">{orphan.stage}</span> of run{" "}
+						Stage <span className="font-mono text-foreground">{orphan.stage}</span> of{" "}
 						<span className="font-mono text-foreground">{orphan.runId}</span> ({orphan.pipeline}) ended{" "}
 						{stageOutcomeLabel(orphan.outcome as StageOutcome)}, which is why this session is still here. Killing it
 						tears down the agent and its kept workspace. This cannot be undone.
