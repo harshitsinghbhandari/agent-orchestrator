@@ -145,6 +145,16 @@ func (h setHandle) OutputTail() (string, bool) {
 	return "", false
 }
 
+// SessionID forwards to the wrapped handle when the stage runs in a session, so
+// the driver can name it in StageLaunched and in the kill-on decision without
+// unwrapping the routing layer. A command stage has no session and returns "".
+func (h setHandle) SessionID() string {
+	if holder, ok := h.inner.(SessionHolder); ok {
+		return holder.SessionID()
+	}
+	return ""
+}
+
 func (s *Set) executorFor(kind pipeline.ExecutorKind) (StageExecutor, error) {
 	switch kind {
 	case pipeline.ExecutorAgent:
