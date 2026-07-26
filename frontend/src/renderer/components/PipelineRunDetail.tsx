@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { ArrowLeft, FileText, Folder, LayoutList } from "lucide-react";
 import { cn } from "../lib/utils";
 import { formatTimeCompact } from "../lib/format-time";
 import { apiClient, apiErrorCode, apiErrorMessage, getApiBaseUrl } from "../lib/api-client";
@@ -11,16 +12,19 @@ import {
 	stageOutcomeDotTone,
 	stageOutcomeLabel,
 } from "../lib/pipeline-display";
+import { parseYamlToDraft, type PipelineDraft, type RunStatus, type StageOutcome } from "../lib/pipeline-draft";
 import { useKillSession } from "../hooks/useKillSession";
+import { usePipelineDefinitionsQuery } from "../hooks/usePipelineDefinitions";
 import { pipelineRunQueryKey, usePipelineRun } from "../hooks/usePipelineRuns";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
-import type { RunStatus, StageOutcome } from "../lib/pipeline-draft";
 import type { WorkspaceSession } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { PipelineRunGraph, RunStatusIcon, StageStatusIcon } from "./PipelineRunGraph";
 
 type PipelineStageView = components["schemas"]["PipelineStageView"];
+type RunDetail = components["schemas"]["PipelineRunDetail"];
 
 // How much of a stage log the viewer asks for. The log is the main debugging
 // surface for a command stage that failed, and the interesting part of a failure
@@ -31,16 +35,44 @@ const LOG_TAIL_LINES = 200;
 // as an empty log rather than as a failure.
 const LOG_NOT_FOUND_CODE = "PIPELINE_STAGE_LOG_NOT_FOUND";
 
-// Read-only detail for one pipeline run. Its job is to make the outcome taxonomy
-// (spec section 7) legible: which stage settled how, whether it was nudged,
-// which failure routed into it, what it produced or failed to produce, and what
-// its log says. There is no resume (spec section 14.1) and no findings panel:
-// the findings subsystem is deleted (D10), and a stage's contract is its one
-// declared artifact.
+// Read-only detail for one pipeline run, laid out like a GitHub Actions run page
+// (workflow = pipeline definition, job = stage, workflow run = pipeline run):
+// a status header with the live run's one destructive action, a job rail down
+// the left, and a main column of summary, stage graph, and per-stage detail.
+//
+// The per-stage detail is where the outcome taxonomy (spec section 7) stays
+// legible: which stage settled how, whether it was nudged, which failure routed
+// into it, what it produced or failed to produce, and what its log says. There
+// is no resume (spec section 14.1) and no findings panel: the findings subsystem
+// is deleted (D10), and a stage's contract is its one declared artifact.
 export function PipelineRunDetail({ runId, project }: { runId: string; project?: string }) {
 	const queryClient = useQueryClient();
+	const navigate = useNavigate();
 	const { data: run, isLoading, isError, error } = usePipelineRun(runId);
 	const [actionError, setActionError] = useState<string | null>(null);
+	// Which stage the rail or the graph has focused. Null is the Summary entry:
+	// no stage is singled out and the main column reads from the top.
+	const [focusedStage, setFocusedStage] = useState<string | null>(null);
+	const stageRefs = useRef<Record<string, HTMLElement | null>>({});
+	const mainRef = useRef<HTMLDivElement | null>(null);
+
+	// The run DTO names its pipeline but carries neither its routing nor its
+	// triggers, so the graph reads both off the project's definitions, which the
+	// definitions page has usually already cached. Without a project scope there
+	// is no definitions endpoint to ask.
+	const definitions = usePipelineDefinitionsQuery(project).data;
+	const definition = useMemo<PipelineDraft | undefined>(() => {
+		const source = definitions?.find((candidate) => candidate.id === run?.pipelineId)?.yamlSource;
+		return source ? (parseYamlToDraft(source).draft ?? undefined) : undefined;
+	}, [definitions, run?.pipelineId]);
+
+	// Focusing a stage scrolls its card into view; Summary scrolls back to the
+	// top, because that is what the entry means on GitHub's rail.
+	const focusStage = useCallback((stageId: string | null) => {
+		setFocusedStage(stageId);
+		if (stageId) stageRefs.current[stageId]?.scrollIntoView({ behavior: "smooth", block: "start" });
+		else mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+	}, []);
 
 	const cancel = useMutation({
 		mutationFn: async () => {
@@ -75,14 +107,29 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 	const canCancel = status === "pending" || status === "running";
 
 	return (
-		<div className="flex h-full min-h-0 flex-col overflow-y-auto bg-background text-foreground">
-			<header className="border-b border-border px-6 py-5">
-				<div className="flex flex-wrap items-center gap-2">
-					<h1 className="truncate text-subtitle font-bold tracking-tight text-foreground">{run.pipelineName}</h1>
-					<Badge variant="outline" className={cn("gap-1.5", runStatusTone(status))} data-run-status={status}>
-						<span className={cn("h-1.5 w-1.5 rounded-full", stageOutcomeDotTone(status as StageOutcome))} />
-						{status}
-					</Badge>
+		<div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+			<header className="shrink-0 border-b border-border px-6 pb-4 pt-4">
+				<button
+					type="button"
+					onClick={() => void navigate({ to: "/pipelines/runs" })}
+					className="flex items-center gap-1.5 rounded text-caption text-passive underline-offset-2 hover:text-foreground hover:underline"
+				>
+					<ArrowLeft className="size-icon-xs" aria-hidden="true" />
+					Runs
+				</button>
+				<div className="mt-2 flex flex-wrap items-center gap-2">
+					<RunStatusIcon status={status} className="size-icon-base" />
+					{/* A settled run's header goes quiet: the screen is a record, not a
+					    thing to act on, which is the difference the red Cancel marks. */}
+					<h1
+						className={cn(
+							"truncate text-subtitle font-bold tracking-tight",
+							canCancel ? "text-foreground" : "text-muted-foreground",
+						)}
+					>
+						{run.pipelineName}
+					</h1>
+					<span className="font-mono text-caption text-passive">{run.runId}</span>
 					{run.cancelReason && <span className="text-caption text-passive">· {run.cancelReason}</span>}
 					<div className="ml-auto flex items-center gap-2">
 						{actionError && <span className="text-caption text-error">{actionError}</span>}
@@ -90,21 +137,172 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 							<Button
 								size="sm"
 								variant="outline"
+								className="border-error/40 text-error hover:bg-error/10 hover:text-error"
 								disabled={cancel.isPending || !project}
 								title={project ? undefined : "Open this run from the board to cancel it"}
 								onClick={() => cancel.mutate()}
 							>
-								{cancel.isPending ? "Cancelling…" : "Cancel"}
+								{cancel.isPending ? "Cancelling…" : "Cancel workflow"}
 							</Button>
 						)}
 					</div>
 				</div>
+			</header>
 
-				<div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-micro text-passive">
-					<span>{run.runId}</span>
-					<span aria-hidden="true">·</span>
+			<div className="flex min-h-0 flex-1">
+				<RunRail
+					run={run}
+					focusedStage={focusedStage}
+					onFocusStage={focusStage}
+					onOpenDefinitions={() => void navigate({ to: "/pipelines" })}
+				/>
+
+				<div ref={mainRef} className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-4">
+					<RunSummaryCard run={run} />
+
+					<section aria-label="Stage graph" className="rounded-lg border border-border bg-card">
+						<div className="border-b border-border px-5 py-3">
+							<p className="truncate text-control font-semibold text-foreground">{run.pipelineName}</p>
+							<p className="mt-0.5 font-mono text-micro text-passive">
+								{definition
+									? triggerSummary(definition)
+									: "routing unavailable: this run's pipeline definition could not be loaded"}
+							</p>
+						</div>
+						<div className="h-72">
+							<PipelineRunGraph
+								stages={stages}
+								definition={definition}
+								selectedStageId={focusedStage}
+								onSelectStage={focusStage}
+							/>
+						</div>
+					</section>
+
+					<section aria-label="Stages" className="flex flex-col gap-3">
+						{stages.map((stage) => (
+							<StageCard
+								key={stage.stageId}
+								runId={run.runId}
+								stage={stage}
+								focused={focusedStage === stage.stageId}
+								cardRef={(el) => {
+									stageRefs.current[stage.stageId] = el;
+								}}
+							/>
+						))}
+						{stages.length === 0 && <p className="text-caption text-passive">No stages yet.</p>}
+					</section>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+// The left rail: Summary, every stage of the run with its status glyph, then the
+// run-level details that are not stage facts. GitHub's `Usage` has no analogue
+// here (the daemon bills nothing), so the group carries the two things a human
+// actually goes looking for: the definition this run came from and the folder
+// its artifacts and logs live in.
+function RunRail({
+	run,
+	focusedStage,
+	onFocusStage,
+	onOpenDefinitions,
+}: {
+	run: RunDetail;
+	focusedStage: string | null;
+	onFocusStage: (stageId: string | null) => void;
+	onOpenDefinitions: () => void;
+}) {
+	return (
+		<nav aria-label="Run navigation" className="w-60 shrink-0 overflow-y-auto border-r border-border px-3 py-4">
+			<RailItem
+				icon={<LayoutList className="size-icon-sm text-muted-foreground" aria-hidden="true" />}
+				label="Summary"
+				active={focusedStage === null}
+				onClick={() => onFocusStage(null)}
+			/>
+
+			<p className="mb-1 mt-4 px-2 text-micro font-semibold uppercase tracking-wide text-passive">All jobs</p>
+			{run.stages.map((stage) => (
+				<RailItem
+					key={stage.stageId}
+					icon={<StageStatusIcon outcome={stage.outcome as StageOutcome} />}
+					label={stage.stageId}
+					active={focusedStage === stage.stageId}
+					onClick={() => onFocusStage(stage.stageId)}
+				/>
+			))}
+			{run.stages.length === 0 && <p className="px-2 text-micro text-passive">No stages yet.</p>}
+
+			<p className="mb-1 mt-4 px-2 text-micro font-semibold uppercase tracking-wide text-passive">Run details</p>
+			<RailItem
+				icon={<FileText className="size-icon-sm text-muted-foreground" aria-hidden="true" />}
+				label="Pipeline definition"
+				active={false}
+				onClick={onOpenDefinitions}
+			/>
+			{run.runDir && (
+				<div className="mt-1 flex items-start gap-2 px-2 py-1.5">
+					<Folder className="mt-px size-icon-sm shrink-0 text-muted-foreground" aria-hidden="true" />
+					<span className="min-w-0 flex-1 break-all font-mono text-micro text-passive" title={run.runDir}>
+						{run.runDir}
+					</span>
+				</div>
+			)}
+		</nav>
+	);
+}
+
+function RailItem({
+	icon,
+	label,
+	active,
+	onClick,
+}: {
+	icon: ReactNode;
+	label: string;
+	active: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			aria-current={active ? "true" : undefined}
+			className={cn(
+				"flex w-full items-center gap-2 rounded-md border-l-2 px-2 py-1.5 text-left text-control transition-colors",
+				active
+					? "border-l-accent bg-raised text-foreground"
+					: "border-l-transparent text-muted-foreground hover:bg-surface hover:text-foreground",
+			)}
+		>
+			{icon}
+			<span className="min-w-0 flex-1 truncate">{label}</span>
+		</button>
+	);
+}
+
+// The summary card: what triggered the run, how it settled, how long it took and
+// what it left behind, in GitHub's four-field layout. Total duration is measured
+// from the run's creation, which is the only clock the run DTO carries.
+function RunSummaryCard({ run }: { run: RunDetail }) {
+	const status = run.status as RunStatus;
+	const duration = formatStageDuration(run.createdAt, run.settledAt);
+	const artifacts = run.stages.filter((stage) => stage.producedArtifact?.exists).length;
+
+	return (
+		<section
+			aria-label="Run summary"
+			className="grid gap-x-8 gap-y-4 rounded-lg border border-border bg-card px-5 py-4 sm:grid-cols-[minmax(0,1fr)_repeat(3,minmax(6rem,auto))]"
+		>
+			<div className="min-w-0">
+				<p className="text-caption text-muted-foreground">Triggered via {SUBJECT_LABEL[run.subjectKind]}</p>
+				<div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-caption text-passive">
 					<RunSubject run={run} />
-					<span aria-hidden="true">·</span>
+				</div>
+				<div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-micro text-passive">
 					<span title={absoluteTime(run.createdAt)}>created {formatTimeCompact(run.createdAt)}</span>
 					<span aria-hidden="true">·</span>
 					{run.settledAt ? (
@@ -113,32 +311,50 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 						<span>not settled</span>
 					)}
 				</div>
+			</div>
 
-				{run.runDir && (
-					<p className="mt-1 truncate font-mono text-micro text-passive" title={run.runDir}>
-						{run.runDir}
-					</p>
-				)}
-			</header>
+			<SummaryField label="Status">
+				<span className={runStatusTone(status)} data-run-status={status}>
+					{status}
+				</span>
+			</SummaryField>
+			<SummaryField label="Total duration">{duration || "0s"}</SummaryField>
+			<SummaryField label="Artifacts">{artifacts > 0 ? String(artifacts) : "None"}</SummaryField>
+		</section>
+	);
+}
 
-			<section aria-label="Stages" className="px-6 py-4">
-				<h2 className="mb-2 text-micro font-semibold uppercase tracking-wide text-passive">Stages</h2>
-				<div className="flex flex-col gap-2">
-					{stages.map((stage) => (
-						<StageRow key={stage.stageId} runId={run.runId} stage={stage} />
-					))}
-					{stages.length === 0 && <p className="text-caption text-passive">No stages yet.</p>}
-				</div>
-			</section>
+function SummaryField({ label, children }: { label: string; children: ReactNode }) {
+	return (
+		<div>
+			<p className="text-micro text-passive">{label}</p>
+			<p className="mt-2 text-control font-semibold text-foreground">{children}</p>
 		</div>
 	);
+}
+
+const SUBJECT_LABEL: Record<RunDetail["subjectKind"], string> = {
+	session: "session",
+	pr: "pull request",
+	project: "project",
+};
+
+// `on: pr.created, pr.updated`, the pipeline's own trigger list, in the same
+// place GitHub prints `on: pull_request`. A definition with no triggers only
+// runs when someone asks it to.
+function triggerSummary(definition: PipelineDraft): string {
+	const events = [
+		...(definition.on?.pr ?? []).map((event) => `pr.${event}`),
+		...(definition.on?.session ?? []).map((event) => `session.${event}`),
+	];
+	return events.length > 0 ? `on: ${events.join(", ")}` : "on: manual";
 }
 
 // What the run is about. A PR subject only has a url when a local session tracks
 // it (the run DTO carries the number, not the link), and a sessionless PR is
 // first-class (spec section 4), so the number renders as plain text rather than
 // as a link to a guessed url.
-function RunSubject({ run }: { run: components["schemas"]["PipelineRunDetail"] }) {
+function RunSubject({ run }: { run: RunDetail }) {
 	const session = useSessionFacts(run.sessionId);
 	if (run.subjectKind === "pr" && run.prNumber) {
 		const prUrl = session?.prs?.find((pr) => pr.number === run.prNumber)?.url;
@@ -167,10 +383,20 @@ function RunSubject({ run }: { run: components["schemas"]["PipelineRunDetail"] }
 	return <span>{run.subjectKind}</span>;
 }
 
-// One stage row: how it settled, how long it took, why it was entered, what it
-// produced, and the two things a human reaches for when it went wrong (the log
-// and the session that is still alive).
-function StageRow({ runId, stage }: { runId: string; stage: PipelineStageView }) {
+// One stage's detail card: how it settled, how long it took, why it was entered,
+// what it produced, and the two things a human reaches for when it went wrong
+// (the log and the session that is still alive).
+function StageCard({
+	runId,
+	stage,
+	focused,
+	cardRef,
+}: {
+	runId: string;
+	stage: PipelineStageView;
+	focused: boolean;
+	cardRef: (el: HTMLElement | null) => void;
+}) {
 	const [showLog, setShowLog] = useState(false);
 	const outcome = stage.outcome as StageOutcome;
 	const settled = Boolean(stage.settledAt);
@@ -180,9 +406,17 @@ function StageRow({ runId, stage }: { runId: string; stage: PipelineStageView })
 	const hasLog = Boolean(stage.startedAt);
 
 	return (
-		<div data-stage={stage.stageId} className="rounded-md border border-border bg-card px-3 py-2.5">
+		<div
+			ref={cardRef}
+			data-stage={stage.stageId}
+			className={cn(
+				"scroll-mt-4 rounded-lg border bg-card px-4 py-3 transition-colors",
+				focused ? "border-accent ring-1 ring-accent/40" : "border-border",
+			)}
+		>
 			<div className="flex flex-wrap items-center gap-2">
-				<span className="font-mono text-caption font-medium text-foreground">{stage.stageId}</span>
+				<StageStatusIcon outcome={outcome} />
+				<span className="font-mono text-control font-medium text-foreground">{stage.stageId}</span>
 				<Badge variant="outline" className="gap-1.5">
 					<span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", stageOutcomeDotTone(outcome))} />
 					{stageOutcomeLabel(outcome)}

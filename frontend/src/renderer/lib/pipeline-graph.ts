@@ -110,13 +110,19 @@ export function draftEdges(draft: PipelineDraft): DraftEdge[] {
 }
 
 // layoutPositions runs dagre left-to-right (execution order flows rightwards)
-// and returns top-left positions keyed by node id.
-export function layoutPositions(draft: PipelineDraft): Record<string, StagePosition> {
+// and returns top-left positions keyed by node id. `size` is the node footprint
+// the layout reserves; it defaults to the editor's card so callers that render
+// a different node (the read-only run graph's compact row) can space their own
+// nodes correctly without a second dagre setup.
+export function layoutPositions(
+	draft: PipelineDraft,
+	size: { width: number; height: number } = { width: STAGE_NODE_WIDTH, height: STAGE_NODE_HEIGHT },
+): Record<string, StagePosition> {
 	const g = new dagre.graphlib.Graph();
 	g.setGraph({ rankdir: "LR", nodesep: 32, ranksep: 64 });
 	g.setDefaultEdgeLabel(() => ({}));
 	draft.stages.forEach((_stage, i) => {
-		g.setNode(stageNodeId(i), { width: STAGE_NODE_WIDTH, height: STAGE_NODE_HEIGHT });
+		g.setNode(stageNodeId(i), { width: size.width, height: size.height });
 	});
 	for (const edge of draftEdges(draft)) g.setEdge(edge.source, edge.target);
 	dagre.layout(g);
@@ -125,9 +131,38 @@ export function layoutPositions(draft: PipelineDraft): Record<string, StagePosit
 	draft.stages.forEach((_stage, i) => {
 		const id = stageNodeId(i);
 		const node = g.node(id);
-		if (node) positions[id] = { x: node.x - STAGE_NODE_WIDTH / 2, y: node.y - STAGE_NODE_HEIGHT / 2 };
+		if (node) positions[id] = { x: node.x - size.width / 2, y: node.y - size.height / 2 };
 	});
 	return positions;
+}
+
+// --- edge treatments ---------------------------------------------------------
+
+// edgeAppearance is the three-way visual split the graph's edge kinds need:
+// on_success solid in the accent, on_failure dashed in the destructive tone,
+// and the synthetic defaults.on_failure edge dashed in a faded version of the
+// same tone (it is inherited boilerplate, so it must not compete with the
+// routes the author actually wrote). A cycle overrides all three: the edge is
+// already invalid, so what kind it was stops mattering.
+//
+// The synthetic edge fades through its color rather than through `opacity` so
+// that its arrowhead marker, which does not inherit path opacity, fades with
+// the line instead of staying solid.
+//
+// It lives here rather than on the editor canvas because the read-only run
+// graph draws the same edge kinds and must not diverge from the editor.
+export function edgeAppearance(
+	kind: EdgeKind,
+	inCycle: boolean,
+): { stroke: string; strokeWidth: number; strokeDasharray?: string } {
+	if (inCycle) return { stroke: "var(--color-error)", strokeWidth: 2, strokeDasharray: "6 4" };
+	if (kind === "success") return { stroke: "var(--color-accent)", strokeWidth: 2 };
+	if (kind === "failure") return { stroke: "var(--color-destructive)", strokeWidth: 1.75, strokeDasharray: "6 4" };
+	return {
+		stroke: "color-mix(in oklab, var(--color-destructive) 45%, transparent)",
+		strokeWidth: 1.5,
+		strokeDasharray: "3 5",
+	};
 }
 
 // --- cycles -----------------------------------------------------------------

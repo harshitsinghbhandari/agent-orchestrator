@@ -1,9 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { edgeAppearance, PipelineCanvas } from "./PipelineCanvas";
+import { PipelineCanvas } from "./PipelineCanvas";
 import type { StageSelection } from "../hooks/useStageSelection";
 import type { PipelineDraft, StageDraft } from "../lib/pipeline-draft";
+import { edgeAppearance } from "../lib/pipeline-graph";
 
 function stage(id: string, overrides?: Partial<StageDraft>): StageDraft {
 	return { id, executor: "agent", agent: "claude-code", ...overrides };
