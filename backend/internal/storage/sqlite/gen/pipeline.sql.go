@@ -43,6 +43,23 @@ func (q *Queries) CreatePipelineDefinition(ctx context.Context, arg CreatePipeli
 	return err
 }
 
+const deletePipelineCredential = `-- name: DeletePipelineCredential :execrows
+DELETE FROM pipeline_credentials WHERE project_id = ? AND name = ?
+`
+
+type DeletePipelineCredentialParams struct {
+	ProjectID domain.ProjectID
+	Name      string
+}
+
+func (q *Queries) DeletePipelineCredential(ctx context.Context, arg DeletePipelineCredentialParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePipelineCredential, arg.ProjectID, arg.Name)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deletePipelineDefinition = `-- name: DeletePipelineDefinition :execrows
 DELETE FROM pipeline_definitions WHERE id = ?
 `
@@ -55,73 +72,56 @@ func (q *Queries) DeletePipelineDefinition(ctx context.Context, id string) (int6
 	return result.RowsAffected()
 }
 
-const getLatestSettledPipelineRunByPR = `-- name: GetLatestSettledPipelineRunByPR :one
-SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
-       loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at, context_json, blocks_merge
-FROM pipeline_runs
-WHERE project_id = ?
-  AND json_extract(context_json, '$.prUrl') = ?2
-  AND loop_state IN ('done', 'stalled')
+const getLatestPipelineStageSignal = `-- name: GetLatestPipelineStageSignal :one
+SELECT run_id, stage_id, kind, reason, created_at
+FROM pipeline_stage_signals
+WHERE run_id = ? AND stage_id = ?
 ORDER BY created_at DESC, id DESC
 LIMIT 1
 `
 
-type GetLatestSettledPipelineRunByPRParams struct {
-	ProjectID domain.ProjectID
-	PRURL     string
+type GetLatestPipelineStageSignalParams struct {
+	RunID   string
+	StageID string
 }
 
-// Latest settled (done or stalled) run for a PR, matched by the RunContext PR
-// URL stored in context_json. The lifecycle merge-readiness path compares the
-// returned run's head SHA against the PR's current head to decide whether the
-// decision is fresh; a stale-SHA run is treated as no opinion by the caller.
-func (q *Queries) GetLatestSettledPipelineRunByPR(ctx context.Context, arg GetLatestSettledPipelineRunByPRParams) (PipelineRun, error) {
-	row := q.db.QueryRowContext(ctx, getLatestSettledPipelineRunByPR, arg.ProjectID, arg.PRURL)
-	var i PipelineRun
+type GetLatestPipelineStageSignalRow struct {
+	RunID     string
+	StageID   string
+	Kind      string
+	Reason    string
+	CreatedAt time.Time
+}
+
+// Latest-wins: a stage signalled twice (once after a nudge) settles on the
+// newest signal, with the earlier one kept for the record.
+func (q *Queries) GetLatestPipelineStageSignal(ctx context.Context, arg GetLatestPipelineStageSignalParams) (GetLatestPipelineStageSignalRow, error) {
+	row := q.db.QueryRowContext(ctx, getLatestPipelineStageSignal, arg.RunID, arg.StageID)
+	var i GetLatestPipelineStageSignalRow
 	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.PipelineID,
-		&i.PipelineName,
-		&i.SessionID,
-		&i.HeadSha,
-		&i.LoopState,
-		&i.TerminationReason,
-		&i.LoopRounds,
-		&i.ConfigSnapshot,
-		&i.Fingerprints,
+		&i.RunID,
+		&i.StageID,
+		&i.Kind,
+		&i.Reason,
 		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.ContextJson,
-		&i.BlocksMerge,
 	)
 	return i, err
 }
 
-const getPipelineArtifact = `-- name: GetPipelineArtifact :one
-SELECT id, pipeline_run_id, project_id, stage_run_id, stage_name, kind,
-       fingerprint, status, sent_to_agent_at, payload, created_at
-FROM pipeline_artifacts WHERE id = ?
+const getPipelineCredential = `-- name: GetPipelineCredential :one
+SELECT env_json FROM pipeline_credentials WHERE project_id = ? AND name = ?
 `
 
-func (q *Queries) GetPipelineArtifact(ctx context.Context, id string) (PipelineArtifact, error) {
-	row := q.db.QueryRowContext(ctx, getPipelineArtifact, id)
-	var i PipelineArtifact
-	err := row.Scan(
-		&i.ID,
-		&i.PipelineRunID,
-		&i.ProjectID,
-		&i.StageRunID,
-		&i.StageName,
-		&i.Kind,
-		&i.Fingerprint,
-		&i.Status,
-		&i.SentToAgentAt,
-		&i.Payload,
-		&i.CreatedAt,
-	)
-	return i, err
+type GetPipelineCredentialParams struct {
+	ProjectID domain.ProjectID
+	Name      string
+}
+
+func (q *Queries) GetPipelineCredential(ctx context.Context, arg GetPipelineCredentialParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getPipelineCredential, arg.ProjectID, arg.Name)
+	var env_json string
+	err := row.Scan(&env_json)
+	return env_json, err
 }
 
 const getPipelineDefinition = `-- name: GetPipelineDefinition :one
@@ -170,10 +170,7 @@ func (q *Queries) GetPipelineDefinitionByName(ctx context.Context, arg GetPipeli
 }
 
 const getPipelineRun = `-- name: GetPipelineRun :one
-SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
-       loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at, context_json, blocks_merge
-FROM pipeline_runs WHERE id = ?
+SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at FROM pipeline_runs WHERE id = ?
 `
 
 func (q *Queries) GetPipelineRun(ctx context.Context, id string) (PipelineRun, error) {
@@ -184,92 +181,71 @@ func (q *Queries) GetPipelineRun(ctx context.Context, id string) (PipelineRun, e
 		&i.ProjectID,
 		&i.PipelineID,
 		&i.PipelineName,
+		&i.SubjectKind,
 		&i.SessionID,
+		&i.PRNumber,
+		&i.PRRepo,
+		&i.PRURL,
 		&i.HeadSha,
-		&i.LoopState,
-		&i.TerminationReason,
-		&i.LoopRounds,
-		&i.ConfigSnapshot,
-		&i.Fingerprints,
+		&i.PRHeadBranch,
+		&i.PRBaseBranch,
+		&i.FromFork,
+		&i.Status,
+		&i.RunDir,
+		&i.DefinitionJson,
+		&i.CancelReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.ContextJson,
-		&i.BlocksMerge,
+		&i.SettledAt,
 	)
 	return i, err
 }
 
-const insertPipelineArtifact = `-- name: InsertPipelineArtifact :exec
+const insertPipelineStageSignal = `-- name: InsertPipelineStageSignal :exec
 
-INSERT INTO pipeline_artifacts (
-    id, pipeline_run_id, project_id, stage_run_id, stage_name, kind,
-    fingerprint, status, sent_to_agent_at, payload, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pipeline_stage_signals (run_id, stage_id, kind, reason, created_at)
+VALUES (?, ?, ?, ?, ?)
 `
 
-type InsertPipelineArtifactParams struct {
-	ID            string
-	PipelineRunID string
-	ProjectID     domain.ProjectID
-	StageRunID    string
-	StageName     string
-	Kind          string
-	Fingerprint   string
-	Status        string
-	SentToAgentAt sql.NullTime
-	Payload       string
-	CreatedAt     time.Time
+type InsertPipelineStageSignalParams struct {
+	RunID     string
+	StageID   string
+	Kind      string
+	Reason    string
+	CreatedAt time.Time
 }
 
-// Pipeline artifacts ---------------------------------------------------------
-func (q *Queries) InsertPipelineArtifact(ctx context.Context, arg InsertPipelineArtifactParams) error {
-	_, err := q.db.ExecContext(ctx, insertPipelineArtifact,
-		arg.ID,
-		arg.PipelineRunID,
-		arg.ProjectID,
-		arg.StageRunID,
-		arg.StageName,
+// Pipeline stage signals -----------------------------------------------------
+func (q *Queries) InsertPipelineStageSignal(ctx context.Context, arg InsertPipelineStageSignalParams) error {
+	_, err := q.db.ExecContext(ctx, insertPipelineStageSignal,
+		arg.RunID,
+		arg.StageID,
 		arg.Kind,
-		arg.Fingerprint,
-		arg.Status,
-		arg.SentToAgentAt,
-		arg.Payload,
+		arg.Reason,
 		arg.CreatedAt,
 	)
 	return err
 }
 
-const listPipelineArtifactsByRun = `-- name: ListPipelineArtifactsByRun :many
-SELECT id, pipeline_run_id, project_id, stage_run_id, stage_name, kind,
-       fingerprint, status, sent_to_agent_at, payload, created_at
-FROM pipeline_artifacts WHERE pipeline_run_id = ? ORDER BY created_at ASC, id ASC
+const listPipelineCredentialNames = `-- name: ListPipelineCredentialNames :many
+SELECT name FROM pipeline_credentials WHERE project_id = ? ORDER BY name ASC
 `
 
-func (q *Queries) ListPipelineArtifactsByRun(ctx context.Context, pipelineRunID string) ([]PipelineArtifact, error) {
-	rows, err := q.db.QueryContext(ctx, listPipelineArtifactsByRun, pipelineRunID)
+// Names only. A credential value never leaves the daemon through a read path a
+// human can reach (decision D13).
+func (q *Queries) ListPipelineCredentialNames(ctx context.Context, projectID domain.ProjectID) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listPipelineCredentialNames, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PipelineArtifact{}
+	items := []string{}
 	for rows.Next() {
-		var i PipelineArtifact
-		if err := rows.Scan(
-			&i.ID,
-			&i.PipelineRunID,
-			&i.ProjectID,
-			&i.StageRunID,
-			&i.StageName,
-			&i.Kind,
-			&i.Fingerprint,
-			&i.Status,
-			&i.SentToAgentAt,
-			&i.Payload,
-			&i.CreatedAt,
-		); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, name)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -317,13 +293,10 @@ func (q *Queries) ListPipelineDefinitions(ctx context.Context, projectID domain.
 }
 
 const listPipelineRuns = `-- name: ListPipelineRuns :many
-SELECT id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
-       loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-       created_at, updated_at, context_json, blocks_merge
-FROM pipeline_runs
+SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at FROM pipeline_runs
 WHERE project_id = ?
   AND (?2 IS NULL OR pipeline_name = ?2)
-  AND (?3 IS NULL OR loop_state = ?3)
+  AND (?3 IS NULL OR status = ?3)
 ORDER BY created_at DESC, id DESC
 LIMIT ?4
 `
@@ -331,7 +304,7 @@ LIMIT ?4
 type ListPipelineRunsParams struct {
 	ProjectID    domain.ProjectID
 	PipelineName interface{}
-	LoopState    interface{}
+	Status       interface{}
 	Lim          int64
 }
 
@@ -339,7 +312,7 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 	rows, err := q.db.QueryContext(ctx, listPipelineRuns,
 		arg.ProjectID,
 		arg.PipelineName,
-		arg.LoopState,
+		arg.Status,
 		arg.Lim,
 	)
 	if err != nil {
@@ -354,17 +327,22 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 			&i.ProjectID,
 			&i.PipelineID,
 			&i.PipelineName,
+			&i.SubjectKind,
 			&i.SessionID,
+			&i.PRNumber,
+			&i.PRRepo,
+			&i.PRURL,
 			&i.HeadSha,
-			&i.LoopState,
-			&i.TerminationReason,
-			&i.LoopRounds,
-			&i.ConfigSnapshot,
-			&i.Fingerprints,
+			&i.PRHeadBranch,
+			&i.PRBaseBranch,
+			&i.FromFork,
+			&i.Status,
+			&i.RunDir,
+			&i.DefinitionJson,
+			&i.CancelReason,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.ContextJson,
-			&i.BlocksMerge,
+			&i.SettledAt,
 		); err != nil {
 			return nil, err
 		}
@@ -380,9 +358,7 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 }
 
 const listPipelineStageRunsByRun = `-- name: ListPipelineStageRunsByRun :many
-SELECT run_id, project_id, stage_name, stage_run_id, status, attempt, verdict,
-       started_at, completed_at, error_message, session_id, notes, output
-FROM pipeline_stage_runs WHERE run_id = ? ORDER BY stage_name ASC
+SELECT run_id, project_id, stage_id, outcome, attempt, entered_via, prev_stage, failed_stage, failed_outcome, session_id, workspace_kind, workspace_path, deadline_at, started_at, settled_at, reason, output_tail, nudged FROM pipeline_stage_runs WHERE run_id = ? ORDER BY stage_id ASC
 `
 
 func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) ([]PipelineStageRun, error) {
@@ -397,17 +373,22 @@ func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) 
 		if err := rows.Scan(
 			&i.RunID,
 			&i.ProjectID,
-			&i.StageName,
-			&i.StageRunID,
-			&i.Status,
+			&i.StageID,
+			&i.Outcome,
 			&i.Attempt,
-			&i.Verdict,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.ErrorMessage,
+			&i.EnteredVia,
+			&i.PrevStage,
+			&i.FailedStage,
+			&i.FailedOutcome,
 			&i.SessionID,
-			&i.Notes,
-			&i.Output,
+			&i.WorkspaceKind,
+			&i.WorkspacePath,
+			&i.DeadlineAt,
+			&i.StartedAt,
+			&i.SettledAt,
+			&i.Reason,
+			&i.OutputTail,
+			&i.Nudged,
 		); err != nil {
 			return nil, err
 		}
@@ -422,22 +403,56 @@ func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) 
 	return items, nil
 }
 
-const updatePipelineArtifactStatus = `-- name: UpdatePipelineArtifactStatus :execrows
-UPDATE pipeline_artifacts SET status = ?, sent_to_agent_at = ? WHERE id = ?
+const listUnsettledPipelineRuns = `-- name: ListUnsettledPipelineRuns :many
+SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at FROM pipeline_runs
+WHERE project_id = ? AND settled_at IS NULL
+ORDER BY created_at ASC, id ASC
 `
 
-type UpdatePipelineArtifactStatusParams struct {
-	Status        string
-	SentToAgentAt sql.NullTime
-	ID            string
-}
-
-func (q *Queries) UpdatePipelineArtifactStatus(ctx context.Context, arg UpdatePipelineArtifactStatusParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updatePipelineArtifactStatus, arg.Status, arg.SentToAgentAt, arg.ID)
+// Hydration on engine start: the runs that still owe work, oldest first so the
+// engine replays them in creation order.
+func (q *Queries) ListUnsettledPipelineRuns(ctx context.Context, projectID domain.ProjectID) ([]PipelineRun, error) {
+	rows, err := q.db.QueryContext(ctx, listUnsettledPipelineRuns, projectID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected()
+	defer rows.Close()
+	items := []PipelineRun{}
+	for rows.Next() {
+		var i PipelineRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.PipelineID,
+			&i.PipelineName,
+			&i.SubjectKind,
+			&i.SessionID,
+			&i.PRNumber,
+			&i.PRRepo,
+			&i.PRURL,
+			&i.HeadSha,
+			&i.PRHeadBranch,
+			&i.PRBaseBranch,
+			&i.FromFork,
+			&i.Status,
+			&i.RunDir,
+			&i.DefinitionJson,
+			&i.CancelReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SettledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updatePipelineDefinition = `-- name: UpdatePipelineDefinition :execrows
@@ -468,43 +483,83 @@ func (q *Queries) UpdatePipelineDefinition(ctx context.Context, arg UpdatePipeli
 	return result.RowsAffected()
 }
 
-const upsertPipelineRun = `-- name: UpsertPipelineRun :exec
+const upsertPipelineCredential = `-- name: UpsertPipelineCredential :exec
 
-INSERT INTO pipeline_runs (
-    id, project_id, pipeline_id, pipeline_name, session_id, head_sha,
-    loop_state, termination_reason, loop_rounds, config_snapshot, fingerprints,
-    created_at, updated_at, context_json, blocks_merge
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (id) DO UPDATE SET
-    pipeline_name = excluded.pipeline_name,
-    session_id = excluded.session_id,
-    head_sha = excluded.head_sha,
-    loop_state = excluded.loop_state,
-    termination_reason = excluded.termination_reason,
-    loop_rounds = excluded.loop_rounds,
-    config_snapshot = excluded.config_snapshot,
-    fingerprints = excluded.fingerprints,
-    context_json = excluded.context_json,
-    blocks_merge = excluded.blocks_merge,
+INSERT INTO pipeline_credentials (project_id, name, env_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (project_id, name) DO UPDATE SET
+    env_json = excluded.env_json,
     updated_at = excluded.updated_at
 `
 
+type UpsertPipelineCredentialParams struct {
+	ProjectID domain.ProjectID
+	Name      string
+	EnvJson   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Pipeline credentials -------------------------------------------------------
+func (q *Queries) UpsertPipelineCredential(ctx context.Context, arg UpsertPipelineCredentialParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPipelineCredential,
+		arg.ProjectID,
+		arg.Name,
+		arg.EnvJson,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const upsertPipelineRun = `-- name: UpsertPipelineRun :exec
+
+INSERT INTO pipeline_runs (
+    id, project_id, pipeline_id, pipeline_name, subject_kind, session_id,
+    pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch,
+    from_fork, status, run_dir, definition_json, cancel_reason,
+    created_at, updated_at, settled_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET
+    pipeline_name = excluded.pipeline_name,
+    subject_kind = excluded.subject_kind,
+    session_id = excluded.session_id,
+    pr_number = excluded.pr_number,
+    pr_repo = excluded.pr_repo,
+    pr_url = excluded.pr_url,
+    head_sha = excluded.head_sha,
+    pr_head_branch = excluded.pr_head_branch,
+    pr_base_branch = excluded.pr_base_branch,
+    from_fork = excluded.from_fork,
+    status = excluded.status,
+    run_dir = excluded.run_dir,
+    definition_json = excluded.definition_json,
+    cancel_reason = excluded.cancel_reason,
+    updated_at = excluded.updated_at,
+    settled_at = excluded.settled_at
+`
+
 type UpsertPipelineRunParams struct {
-	ID                string
-	ProjectID         domain.ProjectID
-	PipelineID        string
-	PipelineName      string
-	SessionID         string
-	HeadSha           string
-	LoopState         string
-	TerminationReason string
-	LoopRounds        int64
-	ConfigSnapshot    string
-	Fingerprints      string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	ContextJson       string
-	BlocksMerge       int64
+	ID             string
+	ProjectID      domain.ProjectID
+	PipelineID     string
+	PipelineName   string
+	SubjectKind    string
+	SessionID      string
+	PRNumber       int64
+	PRRepo         string
+	PRURL          string
+	HeadSha        string
+	PRHeadBranch   string
+	PRBaseBranch   string
+	FromFork       int64
+	Status         string
+	RunDir         string
+	DefinitionJson string
+	CancelReason   string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	SettledAt      sql.NullTime
 }
 
 // Pipeline runs --------------------------------------------------------------
@@ -514,17 +569,22 @@ func (q *Queries) UpsertPipelineRun(ctx context.Context, arg UpsertPipelineRunPa
 		arg.ProjectID,
 		arg.PipelineID,
 		arg.PipelineName,
+		arg.SubjectKind,
 		arg.SessionID,
+		arg.PRNumber,
+		arg.PRRepo,
+		arg.PRURL,
 		arg.HeadSha,
-		arg.LoopState,
-		arg.TerminationReason,
-		arg.LoopRounds,
-		arg.ConfigSnapshot,
-		arg.Fingerprints,
+		arg.PRHeadBranch,
+		arg.PRBaseBranch,
+		arg.FromFork,
+		arg.Status,
+		arg.RunDir,
+		arg.DefinitionJson,
+		arg.CancelReason,
 		arg.CreatedAt,
 		arg.UpdatedAt,
-		arg.ContextJson,
-		arg.BlocksMerge,
+		arg.SettledAt,
 	)
 	return err
 }
@@ -532,36 +592,47 @@ func (q *Queries) UpsertPipelineRun(ctx context.Context, arg UpsertPipelineRunPa
 const upsertPipelineStageRun = `-- name: UpsertPipelineStageRun :exec
 
 INSERT INTO pipeline_stage_runs (
-    run_id, project_id, stage_name, stage_run_id, status, attempt, verdict,
-    started_at, completed_at, error_message, session_id, notes, output
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (run_id, stage_name) DO UPDATE SET
-    stage_run_id = excluded.stage_run_id,
-    status = excluded.status,
+    run_id, project_id, stage_id, outcome, attempt, entered_via, prev_stage,
+    failed_stage, failed_outcome, session_id, workspace_kind, workspace_path,
+    deadline_at, started_at, settled_at, reason, output_tail, nudged
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (run_id, stage_id) DO UPDATE SET
+    outcome = excluded.outcome,
     attempt = excluded.attempt,
-    verdict = excluded.verdict,
-    started_at = excluded.started_at,
-    completed_at = excluded.completed_at,
-    error_message = excluded.error_message,
+    entered_via = excluded.entered_via,
+    prev_stage = excluded.prev_stage,
+    failed_stage = excluded.failed_stage,
+    failed_outcome = excluded.failed_outcome,
     session_id = excluded.session_id,
-    notes = excluded.notes,
-    output = excluded.output
+    workspace_kind = excluded.workspace_kind,
+    workspace_path = excluded.workspace_path,
+    deadline_at = excluded.deadline_at,
+    started_at = excluded.started_at,
+    settled_at = excluded.settled_at,
+    reason = excluded.reason,
+    output_tail = excluded.output_tail,
+    nudged = excluded.nudged
 `
 
 type UpsertPipelineStageRunParams struct {
-	RunID        string
-	ProjectID    domain.ProjectID
-	StageName    string
-	StageRunID   string
-	Status       string
-	Attempt      int64
-	Verdict      string
-	StartedAt    sql.NullTime
-	CompletedAt  sql.NullTime
-	ErrorMessage string
-	SessionID    string
-	Notes        string
-	Output       string
+	RunID         string
+	ProjectID     domain.ProjectID
+	StageID       string
+	Outcome       string
+	Attempt       int64
+	EnteredVia    string
+	PrevStage     string
+	FailedStage   string
+	FailedOutcome string
+	SessionID     string
+	WorkspaceKind string
+	WorkspacePath string
+	DeadlineAt    sql.NullTime
+	StartedAt     sql.NullTime
+	SettledAt     sql.NullTime
+	Reason        string
+	OutputTail    string
+	Nudged        int64
 }
 
 // Pipeline stage runs --------------------------------------------------------
@@ -569,17 +640,22 @@ func (q *Queries) UpsertPipelineStageRun(ctx context.Context, arg UpsertPipeline
 	_, err := q.db.ExecContext(ctx, upsertPipelineStageRun,
 		arg.RunID,
 		arg.ProjectID,
-		arg.StageName,
-		arg.StageRunID,
-		arg.Status,
+		arg.StageID,
+		arg.Outcome,
 		arg.Attempt,
-		arg.Verdict,
-		arg.StartedAt,
-		arg.CompletedAt,
-		arg.ErrorMessage,
+		arg.EnteredVia,
+		arg.PrevStage,
+		arg.FailedStage,
+		arg.FailedOutcome,
 		arg.SessionID,
-		arg.Notes,
-		arg.Output,
+		arg.WorkspaceKind,
+		arg.WorkspacePath,
+		arg.DeadlineAt,
+		arg.StartedAt,
+		arg.SettledAt,
+		arg.Reason,
+		arg.OutputTail,
+		arg.Nudged,
 	)
 	return err
 }

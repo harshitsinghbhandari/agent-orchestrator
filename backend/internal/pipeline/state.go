@@ -49,6 +49,11 @@ type StageState struct {
 
 	// Reason carries the fail reason, cancel reason, or plan-failure reason.
 	Reason string `json:"reason,omitempty"`
+	// OutputTail is the capped tail of the stage's captured stdout+stderr,
+	// kept so run detail can show why a command failed without fetching the
+	// full log from the run folder. The executor caps it; the store persists
+	// whatever it is handed.
+	OutputTail string `json:"outputTail,omitempty"`
 }
 
 // RunState is one run, in full. SQLite stays the store of record; run.json in

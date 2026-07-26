@@ -128,18 +128,12 @@ type PRReviewThread struct {
 	UpdatedAt    time.Time
 }
 
-type PipelineArtifact struct {
-	ID            string
-	PipelineRunID string
-	ProjectID     domain.ProjectID
-	StageRunID    string
-	StageName     string
-	Kind          string
-	Fingerprint   string
-	Status        string
-	SentToAgentAt sql.NullTime
-	Payload       string
-	CreatedAt     time.Time
+type PipelineCredential struct {
+	ProjectID domain.ProjectID
+	Name      string
+	EnvJson   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type PipelineDefinition struct {
@@ -153,37 +147,56 @@ type PipelineDefinition struct {
 }
 
 type PipelineRun struct {
-	ID                string
-	ProjectID         domain.ProjectID
-	PipelineID        string
-	PipelineName      string
-	SessionID         string
-	HeadSha           string
-	LoopState         string
-	TerminationReason string
-	LoopRounds        int64
-	ConfigSnapshot    string
-	Fingerprints      string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	ContextJson       string
-	BlocksMerge       int64
+	ID             string
+	ProjectID      domain.ProjectID
+	PipelineID     string
+	PipelineName   string
+	SubjectKind    string
+	SessionID      string
+	PRNumber       int64
+	PRRepo         string
+	PRURL          string
+	HeadSha        string
+	PRHeadBranch   string
+	PRBaseBranch   string
+	FromFork       int64
+	Status         string
+	RunDir         string
+	DefinitionJson string
+	CancelReason   string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	SettledAt      sql.NullTime
 }
 
 type PipelineStageRun struct {
-	RunID        string
-	ProjectID    domain.ProjectID
-	StageName    string
-	StageRunID   string
-	Status       string
-	Attempt      int64
-	Verdict      string
-	StartedAt    sql.NullTime
-	CompletedAt  sql.NullTime
-	ErrorMessage string
-	SessionID    string
-	Notes        string
-	Output       string
+	RunID         string
+	ProjectID     domain.ProjectID
+	StageID       string
+	Outcome       string
+	Attempt       int64
+	EnteredVia    string
+	PrevStage     string
+	FailedStage   string
+	FailedOutcome string
+	SessionID     string
+	WorkspaceKind string
+	WorkspacePath string
+	DeadlineAt    sql.NullTime
+	StartedAt     sql.NullTime
+	SettledAt     sql.NullTime
+	Reason        string
+	OutputTail    string
+	Nudged        int64
+}
+
+type PipelineStageSignal struct {
+	ID        int64
+	RunID     string
+	StageID   string
+	Kind      string
+	Reason    string
+	CreatedAt time.Time
 }
 
 type Project struct {
