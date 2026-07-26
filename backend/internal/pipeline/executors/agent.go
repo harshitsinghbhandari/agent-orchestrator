@@ -45,10 +45,16 @@ type SpawnedSession struct {
 }
 
 // SessionSnapshot is the subset of session state the executor polls: how busy
-// the agent is, and whether the session row went terminal.
+// the agent is, whether the session row went terminal, and whether any of that
+// activity was ever reported.
 type SessionSnapshot struct {
 	Activity   domain.ActivityState
 	Terminated bool
+	// Signalled reports whether a hook callback has arrived for this spawn.
+	// A session row is seeded `idle` when it is created and stays there until
+	// the harness reports, so idle before the first callback is the spawn
+	// placeholder rather than an observation of the agent.
+	Signalled bool
 }
 
 // SessionSpawner is the session-manager seam the agent executor needs. The
@@ -183,6 +189,15 @@ func (e *AgentExecutor) Poll(ctx context.Context, h Handle) (Poll, error) {
 	case snap.Activity == domain.ActivityIdle,
 		snap.Activity == domain.ActivityWaitingInput,
 		snap.Activity == domain.ActivityBlocked:
+		if !snap.Signalled {
+			// Still in the spawn window: the row is seeded idle and no hook has
+			// reported yet, so this reading describes the launch, not the agent.
+			// Treating it as idle nudges and settles the stage within a couple
+			// of ticks, before the agent has read its prompt. A harness that
+			// never reports at all is bounded by the stage deadline, which is
+			// what deadlines are for (spec section 13.1).
+			return Poll{State: PollRunning}, nil
+		}
 		// Alive but not working, so the missing signal will not arrive on its
 		// own. Whether that earns a nudge or a settlement is the reducer's call.
 		return Poll{State: PollIdle}, nil
