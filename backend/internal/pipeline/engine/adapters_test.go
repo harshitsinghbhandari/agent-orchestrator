@@ -99,6 +99,30 @@ func TestSessionAdapterSpawnCarriesEnvAndPrompt(t *testing.T) {
 	}
 }
 
+// The stage's session runs in the tree the driver already provisioned. Without
+// this the session manager makes a worktree of its own and the agent works
+// somewhere `workspace: run`, `inherit` and $AO_WORKSPACE do not name.
+func TestSessionAdapterSpawnAdoptsTheResolvedWorkspace(t *testing.T) {
+	cmd := newFakeCommander()
+	adapter := NewSessionAdapter(cmd, fakeSessionRows{}, nil, nil)
+
+	out, err := adapter.Spawn(context.Background(), executors.SpawnRequest{
+		ProjectID:     "proj-1",
+		Prompt:        "write the file",
+		WorkspacePath: "/runs/run-a/workspace",
+		Env:           map[string]string{"AO_WORKSPACE": "/runs/run-a/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if cmd.spawned.WorkspacePath != "/runs/run-a/workspace" {
+		t.Fatalf("spawn config workspace path = %q, want the resolved tree", cmd.spawned.WorkspacePath)
+	}
+	if out.WorkspacePath != "/trees/sess-new" {
+		t.Fatalf("spawned workspace path = %q, want what the session manager reported", out.WorkspacePath)
+	}
+}
+
 // Every pipeline-spawned session carries its run id into the spawn config, and
 // the adapter reads that marker back as the session trigger bridge's loop guard.
 func TestSessionAdapterMarksAndDetectsPipelineSpawnedSessions(t *testing.T) {

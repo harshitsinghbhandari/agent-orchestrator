@@ -82,20 +82,19 @@ var (
 	_ triggers.SessionSpawnCheck = (*SessionAdapter)(nil)
 )
 
-// Spawn starts the stage's worker session.
-//
-// ponytail: the driver-provisioned workspace is not handed to the session.
-// ports.SpawnConfig has no path to adopt an existing tree, so the session
-// manager creates its own worktree and the stage runs there; the workspace
-// kinds still govern command stages, `inherit` and teardown. Closing this needs
-// a SpawnConfig.WorkspacePath plus a session teardown that never destroys a
-// pipeline-owned tree, which is a session-lifecycle change, not an engine one.
+// Spawn starts the stage's worker session in the tree the driver resolved for
+// the stage. The session manager adopts that tree instead of creating one of
+// its own, which is what makes `workspace: run`, `stage` and `inherit` mean
+// something for an agent stage and what makes $AO_WORKSPACE name the tree the
+// agent is really in. Ownership of the tree stays with the run (spec section
+// 5.5): session teardown never destroys an adopted workspace.
 func (a *SessionAdapter) Spawn(ctx context.Context, req executors.SpawnRequest) (executors.SpawnedSession, error) {
 	sess, err := a.cmd.Spawn(ctx, ports.SpawnConfig{
-		ProjectID: domain.ProjectID(req.ProjectID),
-		Kind:      domain.KindWorker,
-		Harness:   domain.AgentHarness(req.Harness),
-		Prompt:    req.Prompt,
+		ProjectID:     domain.ProjectID(req.ProjectID),
+		Kind:          domain.KindWorker,
+		Harness:       domain.AgentHarness(req.Harness),
+		Prompt:        req.Prompt,
+		WorkspacePath: req.WorkspacePath,
 		// The run id lands on the session's metadata: it is the marker the
 		// session trigger bridge reads as its loop guard, so it has to be set
 		// here, at spawn, and not once the stage settles.

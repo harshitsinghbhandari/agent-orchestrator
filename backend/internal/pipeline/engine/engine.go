@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -145,6 +146,10 @@ type Engine struct {
 	keys map[pipeline.RunID]groupKey
 	// owned lists the workspaces a run created and may therefore destroy.
 	owned map[pipeline.RunID][]string
+	// occupied lists owned workspaces a spared session is still living in.
+	// Agent stages run in the resolved tree, so destroying one of these would
+	// delete the working directory of a pane the kill-on rule kept on purpose.
+	occupied map[pipeline.RunID][]string
 }
 
 // New builds an Engine. It touches neither the store nor any goroutine; call
@@ -172,6 +177,7 @@ func New(cfg Config) *Engine {
 		inflight:     map[stageKey]executors.Handle{},
 		keys:         map[pipeline.RunID]groupKey{},
 		owned:        map[pipeline.RunID][]string{},
+		occupied:     map[pipeline.RunID][]string{},
 	}
 	if e.log == nil {
 		e.log = slog.Default()
@@ -745,7 +751,12 @@ func (e *Engine) settleSession(runID pipeline.RunID, eff pipeline.SettleSession)
 
 	// Kept: the outcomes that get here (no_output, no_signal, timed_out) are
 	// exactly the ones a human may want to inspect, which is the whole point of
-	// the feature, so the session survives and gets a badge instead.
+	// the feature, so the session survives and gets a badge instead. The stage's
+	// tree is pinned with it: the session runs in that tree, so a kept session in
+	// a destroyed workspace is a pane with no working directory.
+	if st := run.Stages[eff.Stage]; st != nil && st.WorkspacePath != "" {
+		e.occupied[runID] = appendUnique(e.occupied[runID], st.WorkspacePath)
+	}
 	e.orphans.Keep(e.baseCtx, orphanKey(string(e.projectID), run.PipelineName), domain.PipelineOrphanInfo{
 		RunID:    string(runID),
 		Stage:    eff.Stage,
@@ -764,11 +775,16 @@ func (e *Engine) runSettled(runID pipeline.RunID, eff pipeline.RunSettled) {
 			e.log.Info("pipeline workspace kept", "run", runID, "path", path, "status", eff.Status)
 			continue
 		}
+		if slices.Contains(e.occupied[runID], path) {
+			e.log.Info("pipeline workspace kept: a spared session is still in it", "run", runID, "path", path)
+			continue
+		}
 		if err := e.workspaces.Destroy(e.baseCtx, path); err != nil {
 			e.log.Warn("pipeline workspace destroy", "run", runID, "path", path, "err", err)
 		}
 	}
 	delete(e.owned, runID)
+	delete(e.occupied, runID)
 
 	for key := range e.inflight {
 		if key.RunID == runID {
