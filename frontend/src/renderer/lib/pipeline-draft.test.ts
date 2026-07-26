@@ -162,11 +162,13 @@ stages:
     credentials: [discord]
     run: |
       ao discord post --urgent --title "PARTIAL RELEASE" \\
-        --body "GitHub release for v$(cat "$AO_RUN_DIR/version") is live but $AO_FAILED_STAGE failed. Manual reconciliation required."
+        --body "GitHub release for v$(cat "$AO_RUN_DIR/version") is live but \\
+      $AO_FAILED_STAGE failed. Manual reconciliation required."
 `;
-// One deviation from the spec text: §11 wraps notify-partial's --body across a
-// backslash continuation whose second line sits at column 0, which is not legal
-// inside a block scalar. The line is unwrapped here so the fixture parses.
+// One deviation from the spec text, shared with backend testdata/release.yaml:
+// §11 wraps notify-partial's --body across a backslash continuation whose
+// second line sits at column 0, which is not legal inside a block scalar. The
+// continuation is indented into the block here so the fixture parses.
 
 function parseOrThrow(source: string): PipelineDraft {
 	const { draft, parseError } = parseYamlToDraft(source);

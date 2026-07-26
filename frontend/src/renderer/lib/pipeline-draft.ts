@@ -289,11 +289,12 @@ function normalizeStage(raw: Record<string, unknown>): StageDraft {
 	if (onSuccess) stage.onSuccess = onSuccess;
 
 	if (isPlainObject(raw.session)) {
-		const killOn = asStringList(raw.session["kill-on"]);
 		// An explicit empty list is the "never kill" contract, so the key is kept
-		// whenever it was authored, even empty.
+		// whenever it was authored, even empty. A `session:` block with no
+		// kill-on carries no meaning (Go reads it the same as an absent block),
+		// so it is dropped rather than round-tripped as an empty mapping.
+		const killOn = asStringList(raw.session["kill-on"]);
 		if (killOn) stage.session = { killOn: killOn as StageOutcome[] };
-		else stage.session = {};
 	}
 
 	return stage;
