@@ -96,7 +96,10 @@ func reduceTriggerFired(run RunState, e TriggerFired) (RunState, []Effect) {
 	entry := next.Def.EntryStage()
 	starts := []Effect{startStage(&next, entry.ID, EntryTrigger, "", e.Now)}
 
-	return next, append([]Effect{PersistRun{}}, advance(&next, starts, e.Now)...)
+	// advance writes through next, so it has to run before next is copied into
+	// the result.
+	effects := append([]Effect{PersistRun{}}, advance(&next, starts, e.Now)...)
+	return next, effects
 }
 
 // failAtPlanTime settles the run before any stage runs, which is the point of
@@ -166,7 +169,11 @@ func settleSuccess(run RunState, stageID string, outcome Outcome, now time.Time)
 	}
 	effects = append(effects, PersistRun{})
 
-	return next, append(effects, advance(&next, startSuccessTargets(&next, stageID, now), now)...)
+	// advance writes through next, so it has to run before next is copied into
+	// the result.
+	starts := startSuccessTargets(&next, stageID, now)
+	effects = append(effects, advance(&next, starts, now)...)
+	return next, effects
 }
 
 // advance runs the two passes that follow any settlement, then settles the run
