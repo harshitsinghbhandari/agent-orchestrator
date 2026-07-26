@@ -23,15 +23,15 @@ func newFakeCommander() *fakeCommander {
 	return &fakeCommander{sent: map[domain.SessionID]string{}}
 }
 
-func (c *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.Session, error) {
+func (c *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
 	c.spawned = cfg
 	if c.spawnErr != nil {
-		return domain.Session{}, c.spawnErr
+		return domain.Session{}, 0, 0, c.spawnErr
 	}
 	return domain.Session{SessionRecord: domain.SessionRecord{
 		ID:       "sess-new",
 		Metadata: domain.SessionMetadata{WorkspacePath: "/trees/sess-new"},
-	}}, nil
+	}}, len(cfg.Prompt), 0, nil
 }
 
 func (c *fakeCommander) Kill(_ context.Context, id domain.SessionID) (bool, error) {

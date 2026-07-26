@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -79,7 +80,7 @@ func TestSpawn_ConfigEnvReachesRuntime(t *testing.T) {
 	m := New(Deps{Runtime: rt, Agents: singleAgent{agent: &recordingAgent{}}, Workspace: &fakeWorkspace{}, Store: st,
 		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: func(string) (string, error) { return "/bin/true", nil }})
 
-	if _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
 		Env: map[string]string{"AO_RUN_ID": "r1", "FOO": "spawn"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +201,9 @@ func TestEffectiveHarnessAndAgentConfig(t *testing.T) {
 }
 
 func TestApplySymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires a host privilege outside this unit test")
+	}
 	project := t.TempDir()
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("X=1"), 0o644); err != nil {

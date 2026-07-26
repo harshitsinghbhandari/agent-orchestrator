@@ -53,4 +53,19 @@ type SpawnConfig struct {
 	// (AO_SESSION_ID and friends) still win over everything. Nil means no
 	// extra env.
 	Env map[string]string
+
+	// Attachments are images pasted or dropped into the task brief. They are
+	// written into the session worktree and referenced by path in the prompt so
+	// the agent can read them (CLI agents receive the prompt as text and cannot
+	// consume inline binary data).
+	Attachments []SpawnAttachment
+}
+
+// SpawnAttachment is a single image attached to a spawn request. Data holds the
+// already-decoded bytes; the manager derives the on-disk filename.
+type SpawnAttachment struct {
+	// Ext is the file extension (including the leading dot, e.g. ".png")
+	// inferred from the attachment's declared MIME type, or empty when unknown.
+	Ext  string
+	Data []byte
 }

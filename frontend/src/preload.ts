@@ -1,9 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import {
-	KEYBOARD_SHORTCUTS_HELP_CHANNEL,
-	NEW_SESSION_SHORTCUT_CHANNEL,
-	NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL,
-} from "./shared/shortcuts";
+import { FOCUS_TERMINAL_SHORTCUT_CHANNEL, KEYBOARD_SHORTCUTS_HELP_CHANNEL, NEXT_SESSION_SHORTCUT_CHANNEL, NEW_SESSION_SHORTCUT_CHANNEL, NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, OPEN_SETTINGS_SHORTCUT_CHANNEL, PREVIOUS_SESSION_SHORTCUT_CHANNEL } from "./shared/shortcuts";
 import type { BrowserNavState, BrowserRect } from "./main/browser-view-host";
 import type { DaemonStatus } from "./shared/daemon-status";
 import type { TelemetryBootstrap } from "./shared/telemetry";
@@ -70,13 +66,41 @@ const api = {
 				ipcRenderer.off(KEYBOARD_SHORTCUTS_HELP_CHANNEL, wrapped);
 			};
 		},
-		// Fired by the main process when Ctrl+` is pressed in any web contents,
+		// Fired by the main process when Ctrl+Shift+` is pressed in any web contents,
 		// including while focus is inside a terminal pane.
 		onNewShellTerminalShortcut: (listener: () => void) => {
 			const wrapped = () => listener();
 			ipcRenderer.on(NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, wrapped);
 			return () => {
 				ipcRenderer.off(NEW_SHELL_TERMINAL_SHORTCUT_CHANNEL, wrapped);
+			};
+		},
+		onOpenSettingsShortcut: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on(OPEN_SETTINGS_SHORTCUT_CHANNEL, wrapped);
+			return () => {
+				ipcRenderer.off(OPEN_SETTINGS_SHORTCUT_CHANNEL, wrapped);
+			};
+		},
+		onPreviousSessionShortcut: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on(PREVIOUS_SESSION_SHORTCUT_CHANNEL, wrapped);
+			return () => {
+				ipcRenderer.off(PREVIOUS_SESSION_SHORTCUT_CHANNEL, wrapped);
+			};
+		},
+		onNextSessionShortcut: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on(NEXT_SESSION_SHORTCUT_CHANNEL, wrapped);
+			return () => {
+				ipcRenderer.off(NEXT_SESSION_SHORTCUT_CHANNEL, wrapped);
+			};
+		},
+		onFocusTerminalShortcut: (listener: () => void) => {
+			const wrapped = () => listener();
+			ipcRenderer.on(FOCUS_TERMINAL_SHORTCUT_CHANNEL, wrapped);
+			return () => {
+				ipcRenderer.off(FOCUS_TERMINAL_SHORTCUT_CHANNEL, wrapped);
 			};
 		},
 	},
@@ -87,6 +111,14 @@ const api = {
 	window: {
 		setOverlay: (overlay: { color: string; symbolColor: string }) =>
 			ipcRenderer.invoke("window:setOverlay", overlay) as Promise<void>,
+		isFullScreen: () => ipcRenderer.invoke("window:isFullScreen") as Promise<boolean>,
+		onFullScreen: (listener: (fullScreen: boolean) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, fullScreen: boolean) => listener(fullScreen);
+			ipcRenderer.on("window:fullscreen", wrapped);
+			return () => {
+				ipcRenderer.off("window:fullscreen", wrapped);
+			};
+		},
 	},
 	theme: {
 		// Propagate the app's theme preference to Electron's nativeTheme so embedded
@@ -178,6 +210,7 @@ const api = {
 	updates: {
 		getStatus: () => ipcRenderer.invoke("updates:getStatus") as Promise<UpdateStatus>,
 		check: (options?: UpdateCheckOptions) => ipcRenderer.invoke("updates:check", options) as Promise<void>,
+		returnHome: (requestId?: string) => ipcRenderer.invoke("updates:returnHome", requestId) as Promise<void>,
 		download: (requestId?: string) => ipcRenderer.invoke("updates:download", requestId) as Promise<void>,
 		install: () => ipcRenderer.invoke("updates:install") as Promise<void>,
 		onStatus: (listener: (status: UpdateStatus) => void) => {

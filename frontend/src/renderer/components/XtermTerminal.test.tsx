@@ -152,6 +152,13 @@ describe("XtermTerminal", () => {
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("");
 	});
 
+	it("preserves the agent TUI palette without contrast remapping", () => {
+		render(<XtermTerminal theme="dark" />);
+
+		expect(state.lastTerminal!.options.drawBoldTextInBrightColors).toBe(true);
+		expect(state.lastTerminal!.options.minimumContrastRatio).toBe(1);
+	});
+
 	it("copies selected terminal text on the terminal copy shortcut", () => {
 		render(<XtermTerminal theme="dark" />);
 		state.lastTerminal!.selection = "copied selection";
@@ -555,6 +562,73 @@ describe("XtermTerminal", () => {
 		expect(onInput).toHaveBeenCalledTimes(1);
 	});
 
+	it("sends the meta-return escape sequence for Shift+Enter and consumes the event", () => {
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const event = {
+			type: "keydown",
+			key: "Enter",
+			metaKey: false,
+			ctrlKey: false,
+			shiftKey: true,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		const allowed = state.lastTerminal!.keyHandler!(event);
+
+		expect(allowed).toBe(false);
+		expect(event.preventDefault).toHaveBeenCalled();
+		expect(event.stopPropagation).toHaveBeenCalled();
+		expect(onInput).toHaveBeenCalledTimes(1);
+		expect(onInput).toHaveBeenCalledWith("\x1b\r", "keyboard");
+	});
+
+	it("does not re-send the meta-return sequence on the keyup that follows Shift+Enter", () => {
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const keyDown = {
+			type: "keydown",
+			key: "Enter",
+			metaKey: false,
+			ctrlKey: false,
+			shiftKey: true,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(keyDown)).toBe(false);
+		expect(onInput).toHaveBeenCalledTimes(1);
+
+		const keyUp = { ...keyDown, type: "keyup" } as unknown as KeyboardEvent;
+		expect(state.lastTerminal!.keyHandler!(keyUp)).toBe(true);
+		expect(onInput).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves plain Enter as normal terminal input rather than intercepting it", () => {
+		const onInput = vi.fn();
+		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
+
+		const event = {
+			type: "keydown",
+			key: "Enter",
+			metaKey: false,
+			ctrlKey: false,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent;
+		const allowed = state.lastTerminal!.keyHandler!(event);
+
+		expect(allowed).toBe(true);
+		expect(event.preventDefault).not.toHaveBeenCalled();
+		expect(event.stopPropagation).not.toHaveBeenCalled();
+		expect(onInput).not.toHaveBeenCalled();
+	});
+
 	it("forwards keyboard input from explicit key events", () => {
 		const onInput = vi.fn();
 		render(<XtermTerminal theme="dark" onReady={(terminal) => terminal.onUserInput(onInput)} />);
@@ -666,22 +740,22 @@ describe("XtermTerminal", () => {
 		expect(onInput).toHaveBeenLastCalledWith("\x1b[5~", "wheel");
 	});
 
-	it("opens terminal links externally and reports the clicked URL", () => {
+	it("routes web links to the AO browser and does not open the system browser", () => {
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		const onLinkOpen = vi.fn();
 		render(<XtermTerminal onLinkOpen={onLinkOpen} theme="dark" />);
 
-		// The default WebLinksAddon handler opens an empty window first, which the
-		// Electron main process denies; ours must pass the matched URL directly.
+		// A left-click on an http(s) link is reported to the parent (which shows it
+		// in the AO Browser panel); it must NOT spawn a system-browser window.
 		expect(state.linkHandler).toBeTypeOf("function");
 		state.linkHandler!({} as MouseEvent, "https://example.com");
 
-		expect(open).toHaveBeenCalledWith("https://example.com", "_blank", "noopener");
 		expect(onLinkOpen).toHaveBeenCalledWith("https://example.com");
+		expect(open).not.toHaveBeenCalled();
 		open.mockRestore();
 	});
 
-	it("opens OSC 8 links externally and reports the clicked URL", () => {
+	it("routes OSC 8 web links to the AO browser without a system-browser window", () => {
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		const onLinkOpen = vi.fn();
 		render(<XtermTerminal onLinkOpen={onLinkOpen} theme="dark" />);
@@ -691,8 +765,21 @@ describe("XtermTerminal", () => {
 
 		oscLinkHandler.activate({} as MouseEvent, "http://localhost:3000");
 
-		expect(open).toHaveBeenCalledWith("http://localhost:3000", "_blank", "noopener");
 		expect(onLinkOpen).toHaveBeenCalledWith("http://localhost:3000");
+		expect(open).not.toHaveBeenCalled();
+		open.mockRestore();
+	});
+
+	it("opens non-web links (mailto:) in the system browser, not the AO browser", () => {
+		const open = vi.spyOn(window, "open").mockReturnValue(null);
+		const onLinkOpen = vi.fn();
+		render(<XtermTerminal onLinkOpen={onLinkOpen} theme="dark" />);
+
+		expect(state.linkHandler).toBeTypeOf("function");
+		state.linkHandler!({} as MouseEvent, "mailto:dev@example.com");
+
+		expect(open).toHaveBeenCalledWith("mailto:dev@example.com", "_blank", "noopener");
+		expect(onLinkOpen).not.toHaveBeenCalled();
 		open.mockRestore();
 	});
 

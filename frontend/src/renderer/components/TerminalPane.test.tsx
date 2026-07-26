@@ -95,7 +95,7 @@ describe("TerminalPane empty states", () => {
 			expect(screen.getByText("Starting session")).toBeInTheDocument();
 			expect(
 				screen.getByText(
-					"Preparing the worker terminal. This can take a moment while AO creates the worktree and starts the agent.",
+					"Preparing the worker terminal. This can take a moment while AO creates the workspace and starts the agent.",
 				),
 			).toBeInTheDocument();
 			expect(screen.queryByText("No session selected. Pick a worker to attach its terminal.")).not.toBeInTheDocument();
@@ -110,7 +110,7 @@ describe("TerminalPane empty states", () => {
 			expect(screen.getByText("Starting session")).toBeInTheDocument();
 			expect(
 				screen.getByText(
-					"Preparing the orchestrator terminal. This can take a moment while AO creates the worktree and starts the agent.",
+					"Preparing the orchestrator terminal. This can take a moment while AO creates the workspace and starts the agent.",
 				),
 			).toBeInTheDocument();
 			expect(screen.queryByText(/worker terminal/i)).not.toBeInTheDocument();
@@ -139,6 +139,20 @@ describe("terminal restore", () => {
 				}),
 			);
 			expect(invalidate).toHaveBeenCalledWith({ queryKey: ["workspaces"] });
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("offers restore when a merged session is terminated", () => {
+		const view = renderPane({
+			...worker,
+			status: "merged",
+			isTerminated: true,
+			terminalHandleId: "term-1",
+		});
+		try {
+			expect(screen.getByRole("button", { name: "Restore session" })).toBeInTheDocument();
 		} finally {
 			view.restore();
 		}
@@ -185,10 +199,25 @@ describe("terminal link preview", () => {
 		},
 	);
 
-	it("does not mirror an external terminal link into the Browser preview", () => {
+	it("mirrors an external (non-loopback) terminal link into the Browser preview", async () => {
 		const view = renderPane(worker);
 		try {
-			act(() => terminalLinkHandler?.("https://example.com"));
+			act(() => terminalLinkHandler?.("https://example.com/pull/42"));
+			await waitFor(() =>
+				expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+					params: { path: { sessionId: "sess-1" } },
+					body: { url: "https://example.com/pull/42" },
+				}),
+			);
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("does not mirror a non-web (mailto:) link", () => {
+		const view = renderPane(worker);
+		try {
+			act(() => terminalLinkHandler?.("mailto:dev@example.com"));
 			expect(postMock).not.toHaveBeenCalled();
 		} finally {
 			view.restore();
@@ -217,6 +246,16 @@ describe("terminal link preview", () => {
 
 	it("does not mirror links for terminated workers because their Browser inspector is cleared", () => {
 		const view = renderPane({ ...worker, status: "terminated" });
+		try {
+			act(() => terminalLinkHandler?.("http://localhost:3000"));
+			expect(postMock).not.toHaveBeenCalled();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("does not mirror links for merged workers whose session is terminated", () => {
+		const view = renderPane({ ...worker, status: "merged", isTerminated: true });
 		try {
 			act(() => terminalLinkHandler?.("http://localhost:3000"));
 			expect(postMock).not.toHaveBeenCalled();

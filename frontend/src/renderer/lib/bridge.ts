@@ -14,12 +14,18 @@ export const aoBridge: AoBridge =
 			onNewSessionShortcut: () => () => undefined,
 			onKeyboardShortcutsHelp: () => () => undefined,
 			onNewShellTerminalShortcut: () => () => undefined,
+			onOpenSettingsShortcut: () => () => undefined,
+			onPreviousSessionShortcut: () => () => undefined,
+			onNextSessionShortcut: () => () => undefined,
+			onFocusTerminalShortcut: () => () => undefined,
 		},
 		terminal: {
 			saveDroppedFile: async () => "",
 		},
 		window: {
 			setOverlay: async () => undefined,
+			isFullScreen: async () => false,
+			onFullScreen: () => () => undefined,
 		},
 		theme: {
 			set: async () => undefined,
@@ -130,6 +136,7 @@ export const aoBridge: AoBridge =
 		updates: {
 			getStatus: async () => ({ state: "idle" }),
 			check: async () => undefined,
+			returnHome: async () => undefined,
 			download: async () => undefined,
 			install: async () => undefined,
 			onStatus: () => () => undefined,

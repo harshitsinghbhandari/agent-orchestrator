@@ -16,7 +16,7 @@ const adoptedTree = "/pipelines/run-a/workspace"
 // it as the session's own to remove.
 func TestSpawn_AdoptsProvidedWorkspace(t *testing.T) {
 	m, st, rt, ws := newManager()
-	s, err := m.Spawn(ctx, ports.SpawnConfig{
+	s, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     "mer",
 		Kind:          domain.KindWorker,
 		Harness:       domain.HarnessClaudeCode,
@@ -50,7 +50,7 @@ func TestSpawn_AdoptsProvidedWorkspace(t *testing.T) {
 // its own worktree on its own generated branch, and owns it.
 func TestSpawn_WithoutWorkspacePathCreatesItsOwnWorktree(t *testing.T) {
 	m, _, rt, ws := newManager()
-	s, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it"})
+	s, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestSpawn_WithoutWorkspacePathCreatesItsOwnWorktree(t *testing.T) {
 func TestSpawn_FailureNeverDestroysAnAdoptedWorkspace(t *testing.T) {
 	m, _, rt, ws := newManager()
 	rt.createErr = errors.New("boom")
-	_, err := m.Spawn(ctx, ports.SpawnConfig{
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     "mer",
 		Kind:          domain.KindWorker,
 		Harness:       domain.HarnessClaudeCode,

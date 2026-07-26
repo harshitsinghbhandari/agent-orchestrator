@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Mail } from "lucide-react";
 import { ConnectMobileModal } from "./ConnectMobileModal";
 import { PipelinesSection } from "./PipelinesSection";
+import { DeveloperModeSection } from "./settings/DeveloperModeSection";
 import { GeneralSettingsSection } from "./settings/GeneralSettingsSection";
 import { ReportProblemDialog } from "./settings/ReportProblemDialog";
 import { SettingsLinkRow } from "./settings/SettingsRow";
@@ -23,6 +24,7 @@ export function GlobalSettingsForm() {
 					<GeneralSettingsSection onConnectMobile={() => setMobileOpen(true)} />
 					<UpdatesSection />
 					<PipelinesSection />
+					<DeveloperModeSection />
 					<SettingsSection title="Get help">
 						<SettingsLinkRow icon={Mail} label="Report a problem" onClick={() => setReportProblemOpen(true)} />
 					</SettingsSection>

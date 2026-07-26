@@ -20,7 +20,9 @@ import (
 // Satisfied by *internal/service/session.Service, which spawns the same visible
 // sidebar sessions a human gets.
 type SessionCommander interface {
-	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, error)
+	// Spawn returns the session plus the prompt and system-prompt byte counts the
+	// session service reports for telemetry; the pipeline engine ignores both.
+	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error)
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	Send(ctx context.Context, id domain.SessionID, message string) error
 }
@@ -89,7 +91,7 @@ var (
 // agent is really in. Ownership of the tree stays with the run (spec section
 // 5.5): session teardown never destroys an adopted workspace.
 func (a *SessionAdapter) Spawn(ctx context.Context, req executors.SpawnRequest) (executors.SpawnedSession, error) {
-	sess, err := a.cmd.Spawn(ctx, ports.SpawnConfig{
+	sess, _, _, err := a.cmd.Spawn(ctx, ports.SpawnConfig{
 		ProjectID:     domain.ProjectID(req.ProjectID),
 		Kind:          domain.KindWorker,
 		Harness:       domain.AgentHarness(req.Harness),
