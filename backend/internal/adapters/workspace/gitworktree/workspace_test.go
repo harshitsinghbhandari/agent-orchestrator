@@ -250,7 +250,7 @@ func TestCreatePrunesMissingRegisteredWorktreeBeforeRecreating(t *testing.T) {
 				return []byte("worktree " + path + "\nbranch refs/heads/ao/proj-orchestrator\n"), nil
 			}
 			return []byte("worktree " + repo + "\nbranch refs/heads/main\n"), nil
-		case strings.Contains(joined, "worktree prune"):
+		case strings.Contains(joined, "worktree remove --force "+path):
 			stale = false
 			return nil, nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/ao/proj-orchestrator"):
@@ -271,8 +271,11 @@ func TestCreatePrunesMissingRegisteredWorktreeBeforeRecreating(t *testing.T) {
 		t.Fatalf("info = %#v, want path %q branch %q", info, path, cfg.Branch)
 	}
 	got := strings.Join(calls, "\n")
-	if !strings.Contains(got, "worktree prune") || !strings.Contains(got, "worktree add "+path+" "+cfg.Branch) {
-		t.Fatalf("Create did not prune and recreate missing worktree:\n%s", got)
+	if !strings.Contains(got, "worktree remove --force "+path) || !strings.Contains(got, "worktree add "+path+" "+cfg.Branch) {
+		t.Fatalf("Create did not remove and recreate missing worktree:\n%s", got)
+	}
+	if strings.Contains(got, "worktree prune") {
+		t.Fatalf("Create used repo-wide worktree prune instead of a target-specific remove:\n%s", got)
 	}
 }
 
@@ -314,7 +317,7 @@ func TestRestorePrunesMissingRegisteredWorktreeBeforeRecreating(t *testing.T) {
 				return []byte("worktree " + path + "\nbranch refs/heads/ao/proj-orchestrator\n"), nil
 			}
 			return []byte("worktree " + repo + "\nbranch refs/heads/main\n"), nil
-		case strings.Contains(joined, "worktree prune"):
+		case strings.Contains(joined, "worktree remove --force "+path):
 			stale = false
 			return nil, nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/ao/proj-orchestrator"):
@@ -335,8 +338,11 @@ func TestRestorePrunesMissingRegisteredWorktreeBeforeRecreating(t *testing.T) {
 		t.Fatalf("info = %#v, want path %q branch %q", info, path, cfg.Branch)
 	}
 	got := strings.Join(calls, "\n")
-	if !strings.Contains(got, "worktree prune") || !strings.Contains(got, "worktree add "+path+" "+cfg.Branch) {
-		t.Fatalf("Restore did not prune and recreate missing worktree:\n%s", got)
+	if !strings.Contains(got, "worktree remove --force "+path) || !strings.Contains(got, "worktree add "+path+" "+cfg.Branch) {
+		t.Fatalf("Restore did not remove and recreate missing worktree:\n%s", got)
+	}
+	if strings.Contains(got, "worktree prune") {
+		t.Fatalf("Restore used repo-wide worktree prune instead of a target-specific remove:\n%s", got)
 	}
 }
 
@@ -384,7 +390,7 @@ func TestRestoreRecreatesOnRegisteredBranchNotCfgBranch(t *testing.T) {
 				return []byte("worktree " + path + "\nbranch refs/heads/" + registeredBranch + "\n"), nil
 			}
 			return []byte("worktree " + repo + "\nbranch refs/heads/main\n"), nil
-		case strings.Contains(joined, "worktree prune"):
+		case strings.Contains(joined, "worktree remove --force "+path):
 			stale = false
 			return nil, nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/"+registeredBranch):
