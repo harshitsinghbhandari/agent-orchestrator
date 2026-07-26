@@ -43,7 +43,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("PipelineWorkbench", () => {
-	it("groups runs into the five loopState columns", () => {
+	it("groups runs into the five run-status columns", () => {
 		setRuns([
 			run({ runId: "r1", pipelineName: "review", loopState: "running" }),
 			run({ runId: "r2", pipelineName: "audit", loopState: "done" }),
@@ -52,20 +52,42 @@ describe("PipelineWorkbench", () => {
 		render(<PipelineWorkbench />);
 
 		expect(within(screen.getByLabelText("Running column")).getByText("review")).toBeInTheDocument();
-		expect(within(screen.getByLabelText("Done column")).getByText("audit")).toBeInTheDocument();
-		expect(within(screen.getByLabelText("Stalled column")).getByText("audit")).toBeInTheDocument();
+		expect(within(screen.getByLabelText("Succeeded column")).getByText("audit")).toBeInTheDocument();
+		expect(within(screen.getByLabelText("Failed column")).getByText("audit")).toBeInTheDocument();
 		// Empty columns render the placeholder.
-		expect(within(screen.getByLabelText("Terminated column")).getByText("Empty")).toBeInTheDocument();
+		expect(within(screen.getByLabelText("Queued column")).getByText("Empty")).toBeInTheDocument();
+		expect(within(screen.getByLabelText("Cancelled column")).getByText("Empty")).toBeInTheDocument();
 	});
 
-	it("renders card fields: pipeline name, rounds, and stage count", () => {
-		setRuns([run({ runId: "r1", pipelineName: "review", loopRounds: 3, stageCount: 2 })]);
+	it("renders card fields: pipeline name, run status, and stage count", () => {
+		setRuns([run({ runId: "r1", pipelineName: "review", loopState: "running", stageCount: 2 })]);
 		const { container } = render(<PipelineWorkbench />);
 
 		const card = container.querySelector('[data-run-id="r1"]') as HTMLElement;
 		expect(within(card).getByText("review")).toBeInTheDocument();
-		expect(within(card).getByText("rounds 3")).toBeInTheDocument();
+		expect(within(card).getByText("running")).toBeInTheDocument();
 		expect(within(card).getByText("2 stages")).toBeInTheDocument();
+	});
+
+	it("hints at unverified successes on the card and tones each stage dot by outcome", () => {
+		setRuns([
+			run({
+				runId: "r1",
+				stageCount: 3,
+				stageStatuses: { lint: "succeeded", review: "succeeded_unverified", test: "timed_out" },
+			}),
+		]);
+		const { container } = render(<PipelineWorkbench />);
+
+		const card = container.querySelector('[data-run-id="r1"]') as HTMLElement;
+		expect(within(card).getByText("· 1 unverified")).toBeInTheDocument();
+		expect(within(card).getByTitle("review: succeeded (unverified)")).toBeInTheDocument();
+		const dots = card.querySelectorAll('ul[aria-label="stage outcomes"] li span:first-child');
+		// lint solid success, review hollow success, test error: three distinct looks.
+		expect(dots[0].className).toContain("bg-success");
+		expect(dots[1].className).toContain("border-success");
+		expect(dots[1].className).not.toContain("bg-success");
+		expect(dots[2].className).toContain("bg-error");
 	});
 
 	it("filters the board to the selected pipeline names", async () => {

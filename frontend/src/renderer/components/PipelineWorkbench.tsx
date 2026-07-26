@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { cn } from "../lib/utils";
-import { KANBAN_COLUMNS, type LoopStateName } from "../lib/pipeline-display";
+import { KANBAN_COLUMNS, runStatusOf } from "../lib/pipeline-display";
+import type { RunStatus } from "../lib/pipeline-draft";
 import { usePipelineRuns, type PipelineRunSummary } from "../hooks/usePipelineRuns";
 import { DashboardSubhead } from "./DashboardSubhead";
 import { PipelineFilterBar } from "./PipelineFilterBar";
 import { PipelineRunCard } from "./PipelineRunCard";
 
-// Runs workbench: a 5-column Kanban grouped by loopState across all projects.
+// Runs workbench: a 5-column Kanban grouped by run status across all projects.
 // Runs stay live through the CDC event transport (pipeline_* → query
 // invalidation); the filter bar narrows to a subset of pipeline names.
 export function PipelineWorkbench() {
@@ -28,21 +29,21 @@ export function PipelineWorkbench() {
 	}, [runs, selectedPipelines]);
 
 	const columns = useMemo(() => {
-		const grouped = new Map<LoopStateName, PipelineRunSummary[]>();
-		for (const col of KANBAN_COLUMNS) grouped.set(col.state, []);
-		for (const run of filteredRuns) grouped.get(run.loopState as LoopStateName)?.push(run);
+		const grouped = new Map<RunStatus, PipelineRunSummary[]>();
+		for (const col of KANBAN_COLUMNS) grouped.set(col.status, []);
+		for (const run of filteredRuns) grouped.get(runStatusOf(run))?.push(run);
 		// Newest first within a column.
 		for (const list of grouped.values()) {
 			list.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
 		}
-		return KANBAN_COLUMNS.map((col) => ({ ...col, runs: grouped.get(col.state) ?? [] }));
+		return KANBAN_COLUMNS.map((col) => ({ ...col, runs: grouped.get(col.status) ?? [] }));
 	}, [filteredRuns]);
 
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-background text-foreground">
 			<DashboardSubhead
 				title="Pipeline runs"
-				subtitle="Live pipeline runs grouped by loop state across every project."
+				subtitle="Live pipeline runs grouped by run status across every project."
 				count={filteredRuns.length}
 			/>
 
@@ -60,9 +61,9 @@ export function PipelineWorkbench() {
 				<div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto p-4.5 md:grid-cols-5">
 					{columns.map((col) => (
 						<section
-							key={col.state}
+							key={col.status}
 							aria-label={`${col.title} column`}
-							data-loop-state={col.state}
+							data-run-status={col.status}
 							className={cn("flex min-h-40 flex-col rounded-md border-l-2 bg-surface p-2", col.borderClass)}
 						>
 							<header className="px-1 pb-2">
