@@ -132,6 +132,8 @@ func newPipelineCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newPipelineRunCommand(ctx))
 	cmd.AddCommand(newPipelineCancelCommand(ctx))
 	cmd.AddCommand(newPipelineResumeCommand(ctx))
+	cmd.AddCommand(newPipelineDoneCommand(ctx))
+	cmd.AddCommand(newPipelineFailCommand(ctx))
 	return cmd
 }
 
@@ -229,6 +231,36 @@ func newPipelineResumeCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&project, "project", "p", "", "Project id to scope to")
+	return cmd
+}
+
+func newPipelineDoneCommand(ctx *commandContext) *cobra.Command {
+	return &cobra.Command{
+		Use:   "done",
+		Short: "Settle the current pipeline stage as done (run from inside an agent stage)",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctx.pipelineSignal(cmd, "done", "")
+		},
+	}
+}
+
+func newPipelineFailCommand(ctx *commandContext) *cobra.Command {
+	var reason string
+	cmd := &cobra.Command{
+		Use:   "fail",
+		Short: "Settle the current pipeline stage as failed (run from inside an agent stage)",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// The reason is the whole point of the failure channel: it is what
+			// the run detail and the failure edge's AO_FAILED_* variables show.
+			if strings.TrimSpace(reason) == "" {
+				return usageError{fmt.Errorf("--reason is required: say why the stage failed")}
+			}
+			return ctx.pipelineSignal(cmd, "fail", reason)
+		},
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "Why the stage failed")
 	return cmd
 }
 
@@ -387,6 +419,46 @@ func (c *commandContext) pipelineLifecycle(cmd *cobra.Command, runID, project, a
 	}
 	_, err = fmt.Fprintln(cmd.OutOrStdout(), line)
 	return err
+}
+
+// pipelineSignal settles the stage the caller is running inside, by posting to
+// the signal endpoint. The target comes from the ambient stage environment
+// alone.
+func (c *commandContext) pipelineSignal(cmd *cobra.Command, status, reason string) error {
+	runID, stageID, err := stageSignalTarget()
+	if err != nil {
+		return err
+	}
+	body := map[string]string{"status": status}
+	if r := strings.TrimSpace(reason); r != "" {
+		body["reason"] = r
+	}
+	path := "pipelines/runs/" + url.PathEscape(runID) + "/stages/" + url.PathEscape(stageID) + "/signal"
+	if err := c.postJSON(cmd.Context(), path, body, nil); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "stage %s in run %s → %s\n", stageID, runID, status)
+	return err
+}
+
+// stageSignalTarget reads which stage is being settled from AO_RUN_ID and
+// AO_STAGE (spec section 6.3). A missing variable is an error naming it, never
+// a guess: an agent that shelled into another tree, or a nested session that
+// did not inherit the stage environment, must fail loudly instead of silently
+// settling somebody else's stage.
+func stageSignalTarget() (runID, stageID string, err error) {
+	runID = strings.TrimSpace(os.Getenv("AO_RUN_ID"))
+	stageID = strings.TrimSpace(os.Getenv("AO_STAGE"))
+	const hint = "run `ao pipeline done|fail` from inside the pipeline stage that set it"
+	switch {
+	case runID == "" && stageID == "":
+		return "", "", fmt.Errorf("AO_RUN_ID and AO_STAGE are not set: %s", hint)
+	case runID == "":
+		return "", "", fmt.Errorf("AO_RUN_ID is not set: %s", hint)
+	case stageID == "":
+		return "", "", fmt.Errorf("AO_STAGE is not set: %s", hint)
+	}
+	return runID, stageID, nil
 }
 
 // getPipelineRaw fetches a GET endpoint and returns the raw JSON body so --json
