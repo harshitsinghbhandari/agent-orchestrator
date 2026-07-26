@@ -29,8 +29,15 @@ type Plan struct {
 // plan for this subject.
 //
 // It returns an error when a reachable stage requires a session workspace the
-// subject cannot supply. Fail the run; never silently fall back.
-func ComputePlan(def *Pipeline, subject Subject) (*Plan, error) {
+// subject cannot supply, or when a reachable stage's credentials cannot be
+// injected: the subject is a fork PR (identity-only, decision D17), or the
+// project no longer defines a name the definition asks for. Fail the run;
+// never silently fall back.
+//
+// knownCreds answers whether the project defines a credential name; a nil
+// predicate skips that check, for callers with no credential store in hand
+// (see KnownCredentialSet).
+func ComputePlan(def *Pipeline, subject Subject, knownCreds func(string) bool) (*Plan, error) {
 	entry := def.EntryStage()
 	if entry == nil {
 		return nil, errors.New("pipeline declares no stages")
@@ -55,6 +62,9 @@ func ComputePlan(def *Pipeline, subject Subject) (*Plan, error) {
 		kind := resolveWorkspace(s.Workspace, viaSuccess[s.ID], subject)
 		if kind == WorkspaceSession && !subject.HasSession() {
 			return nil, fmt.Errorf("stage '%s' requires workspace 'session'; %s has no local session", s.ID, subject.describe())
+		}
+		if err := checkCredentials(s, subject, knownCreds); err != nil {
+			return nil, err
 		}
 		plan.Workspaces[s.ID] = kind
 	}
