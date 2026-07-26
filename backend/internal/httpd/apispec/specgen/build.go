@@ -76,7 +76,7 @@ func Build() ([]byte, error) {
 		*(&openapi31.Tag{Name: "dev"}).WithDescription(
 			"Developer-only maintenance operations"),
 		*(&openapi31.Tag{Name: "pipelines"}).WithDescription(
-			"Pipeline definitions, runs, manual triggers, and artifacts"),
+			"Pipeline definitions, runs, manual triggers, stage signals, logs and outputs"),
 		*(&openapi31.Tag{Name: "mobile"}).WithDescription(
 			"Connect Mobile LAN bridge control (loopback/desktop only)"),
 	}
@@ -225,7 +225,11 @@ var schemaNames = map[string]string{
 	"ControllersPipelineRunsQuery":                  "PipelineRunsQuery",
 	"ControllersPipelineIDParam":                    "PipelineIDParam",
 	"ControllersPipelineRunIDParam":                 "PipelineRunIDParam",
-	"ControllersPipelineArtifactIDParam":            "PipelineArtifactIDParam",
+	"ControllersPipelineStageIDParam":               "PipelineStageIDParam",
+	"ControllersPipelineOutputParam":                "PipelineOutputParam",
+	"ControllersPipelineStageLogQuery":              "PipelineStageLogQuery",
+	"ControllersPipelineStageLogResponse":           "PipelineStageLogResponse",
+	"ControllersPipelineProducedArtifact":           "PipelineProducedArtifact",
 	"ControllersPipelineDefinitionSummary":          "PipelineDefinitionSummary",
 	"ControllersListPipelineDefinitionsResponse":    "ListPipelineDefinitionsResponse",
 	"ControllersPipelineDefinitionResponse":         "PipelineDefinitionResponse",
@@ -241,9 +245,8 @@ var schemaNames = map[string]string{
 	"ControllersPipelineRunDetailResponse":          "PipelineRunDetailResponse",
 	"ControllersTriggerPipelineRunRequest":          "TriggerPipelineRunRequest",
 	"ControllersTriggerPipelineRunResponse":         "TriggerPipelineRunResponse",
-	"ControllersPipelineArtifactResponse":           "PipelineArtifactResponse",
-	// pipeline artifact wire shape (embedded in run detail + artifact fetch)
-	"ControllersPipelineArtifact": "PipelineArtifact",
+	"ControllersSignalPipelineStageRequest":         "SignalPipelineStageRequest",
+	"ControllersSignalPipelineStageResponse":        "SignalPipelineStageResponse",
 	// httpd/controllers: settings wire envelopes
 	"ControllersPipelinesSettingResponse":   "PipelinesSettingResponse",
 	"ControllersSetPipelinesSettingRequest": "SetPipelinesSettingRequest",
@@ -431,13 +434,11 @@ func settingsOperations() []operation {
 	}
 }
 
-// pipelineOperations declares the /pipelines operations (definitions CRUD, JSON
-// schema, runs list/detail, manual trigger, cancel/resume, artifact fetch).
-// Must stay 1:1 with the routes PipelinesController.Register mounts (enforced by
-// the parity test). A nil PipelinesController.Svc returns 501 on every route.
-
-// pipelineOperations declares the /pipelines operations (definitions CRUD, JSON
-// schema, runs list/detail, manual trigger, cancel/resume, artifact fetch).
+// pipelineOperations declares the /pipelines operations: definitions CRUD, the
+// JSON schema, runs list/detail, manual trigger, cancel, the stage signal, and
+// the run folder reads (stage log, declared output). There is no resume and no
+// artifact route: v2 has neither (spec sections 14.1 and 6.2).
+//
 // Must stay 1:1 with the routes PipelinesController.Register mounts (enforced by
 // the parity test). A nil PipelinesController.Svc returns 501 on every route.
 func pipelineOperations() []operation {
@@ -534,11 +535,11 @@ func pipelineOperations() []operation {
 			},
 		},
 		{
-			method: http.MethodPost, path: "/api/v1/pipelines/runs/{runId}/resume", id: "resumePipelineRun", tag: "pipelines",
-			summary:    "Resume a stalled or failed pipeline run",
-			pathParams: []any{controllers.PipelineRunIDParam{}, controllers.PipelineProjectQuery{}},
+			method: http.MethodGet, path: "/api/v1/pipelines/runs/{runId}/stages/{stageId}/log", id: "getPipelineStageLog", tag: "pipelines",
+			summary:    "Fetch a stage's captured stdout and stderr, optionally tailed",
+			pathParams: []any{controllers.PipelineStageIDParam{}, controllers.PipelineStageLogQuery{}},
 			resps: []respUnit{
-				{http.StatusOK, controllers.PipelineRunDetailResponse{}},
+				{http.StatusOK, controllers.PipelineStageLogResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
@@ -546,28 +547,16 @@ func pipelineOperations() []operation {
 			},
 		},
 		{
-			method: http.MethodGet, path: "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}", id: "getPipelineArtifact", tag: "pipelines",
-			summary:    "Fetch one pipeline run artifact by id",
-			pathParams: []any{controllers.PipelineArtifactIDParam{}},
+			method: http.MethodGet, path: "/api/v1/pipelines/runs/{runId}/outputs/{filename}", id: "getPipelineRunOutput", tag: "pipelines",
+			summary:    "Download one artifact a stage declared with produces",
+			pathParams: []any{controllers.PipelineOutputParam{}},
 			resps: []respUnit{
-				{http.StatusOK, controllers.PipelineArtifactResponse{}},
+				{http.StatusOK, ""},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status", id: "updatePipelineArtifactStatus", tag: "pipelines",
-			summary:    "Change a pipeline finding's lifecycle status (dismiss, reopen, resolve)",
-			pathParams: []any{controllers.PipelineArtifactIDParam{}, controllers.PipelineProjectQuery{}},
-			reqBody:    controllers.UpdatePipelineArtifactStatusRequest{},
-			resps: []respUnit{
-				{http.StatusOK, controllers.PipelineArtifactResponse{}},
-				{http.StatusBadRequest, envelope.APIError{}},
-				{http.StatusNotFound, envelope.APIError{}},
-				{http.StatusInternalServerError, envelope.APIError{}},
-				{http.StatusNotImplemented, envelope.APIError{}},
-			},
+			contentTypes: map[int]string{http.StatusOK: "text/plain"},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/pipelines/runs/{runId}/stages/{stageId}/signal", id: "signalPipelineStage", tag: "pipelines",

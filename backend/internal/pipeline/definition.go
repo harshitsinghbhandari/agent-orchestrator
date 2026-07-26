@@ -249,17 +249,29 @@ func (l *StageList) UnmarshalYAML(value *yaml.Node) error {
 // Unknown keys are rejected (strict decoding), and every validation rule
 // failure is collected into a single *ValidationError rather than stopping at
 // the first one, so an author sees every problem in one pass. Warnings are
-// dropped here; callers that want to surface them (the editor) call Validate
-// directly.
+// dropped here; callers that want to surface them (the editor) call
+// ParseDefinitionWithWarnings.
 func ParseDefinition(src []byte) (*Pipeline, error) {
+	p, _, err := ParseDefinitionWithWarnings(src)
+	return p, err
+}
+
+// ParseDefinitionWithWarnings is ParseDefinition keeping the warnings.
+//
+// Warnings travel separately from errors all the way to the wire because a
+// warned pipeline still saves and still runs: the editor renders the two
+// lists differently, and folding them together would make a save look
+// impossible when it is merely worth a second look.
+func ParseDefinitionWithWarnings(src []byte) (*Pipeline, []Issue, error) {
 	var p Pipeline
 	if err := decodeStrict(src, &p); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if _, err := Validate(&p); err != nil {
-		return nil, err
+	warnings, err := Validate(&p)
+	if err != nil {
+		return nil, warnings, err
 	}
-	return &p, nil
+	return &p, warnings, nil
 }
 
 // decodeStrict runs one strict yaml.v3 decode into out. An empty document is

@@ -370,17 +370,18 @@ func TestReadLogTail(t *testing.T) {
 	}
 
 	tests := []struct {
-		n    int
-		want string
+		n             int
+		want          string
+		wantTruncated bool
 	}{
-		{0, "one\ntwo\nthree\n"},
-		{-1, "one\ntwo\nthree\n"},
-		{2, "two\nthree\n"},
-		{99, "one\ntwo\nthree\n"},
-		{1, "three\n"},
+		{0, "one\ntwo\nthree\n", false},
+		{-1, "one\ntwo\nthree\n", false},
+		{2, "two\nthree\n", true},
+		{99, "one\ntwo\nthree\n", false},
+		{1, "three\n", true},
 	}
 	for _, tc := range tests {
-		got, exists, tailErr := f.ReadLogTail("review", tc.n)
+		got, exists, truncated, tailErr := f.ReadLogTail("review", tc.n)
 		if tailErr != nil {
 			t.Fatalf("ReadLogTail(%d): %v", tc.n, tailErr)
 		}
@@ -390,6 +391,9 @@ func TestReadLogTail(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("ReadLogTail(%d) = %q, want %q", tc.n, got, tc.want)
 		}
+		if truncated != tc.wantTruncated {
+			t.Errorf("ReadLogTail(%d) truncated = %v, want %v", tc.n, truncated, tc.wantTruncated)
+		}
 	}
 }
 
@@ -398,7 +402,7 @@ func TestReadLogTailMissingLogIsNotAnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRunFolder: %v", err)
 	}
-	content, exists, err := f.ReadLogTail("never-started", 10)
+	content, exists, _, err := f.ReadLogTail("never-started", 10)
 	if err != nil {
 		t.Fatalf("ReadLogTail: %v", err)
 	}

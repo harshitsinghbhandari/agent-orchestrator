@@ -787,11 +787,17 @@ paths:
         schema:
           description: Filter runs to one pipeline name.
           type: string
-      - description: Filter runs by loop state (running|awaiting_context|done|stalled|terminated).
+      - description: Filter runs by run status.
         in: query
         name: status
         schema:
-          description: Filter runs by loop state (running|awaiting_context|done|stalled|terminated).
+          description: Filter runs by run status.
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - cancelled
           type: string
       - description: Cap the number of runs returned (newest first).
         in: query
@@ -924,116 +930,6 @@ paths:
       summary: Fetch one pipeline run with its stages and findings
       tags:
       - pipelines
-  /api/v1/pipelines/runs/{runId}/artifacts/{artifactId}:
-    get:
-      operationId: getPipelineArtifact
-      parameters:
-      - description: Pipeline run identifier.
-        in: path
-        name: runId
-        required: true
-        schema:
-          description: Pipeline run identifier.
-          type: string
-      - description: Artifact identifier.
-        in: path
-        name: artifactId
-        required: true
-        schema:
-          description: Artifact identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PipelineArtifactResponse'
-          description: OK
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Fetch one pipeline run artifact by id
-      tags:
-      - pipelines
-  /api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status:
-    post:
-      operationId: updatePipelineArtifactStatus
-      parameters:
-      - description: Pipeline run identifier.
-        in: path
-        name: runId
-        required: true
-        schema:
-          description: Pipeline run identifier.
-          type: string
-      - description: Artifact identifier.
-        in: path
-        name: artifactId
-        required: true
-        schema:
-          description: Artifact identifier.
-          type: string
-      - description: Project id the pipeline belongs to (required).
-        in: query
-        name: project
-        schema:
-          description: Project id the pipeline belongs to (required).
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ControllersUpdatePipelineArtifactStatusRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PipelineArtifactResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Change a pipeline finding's lifecycle status (dismiss, reopen, resolve)
-      tags:
-      - pipelines
   /api/v1/pipelines/runs/{runId}/cancel:
     post:
       operationId: cancelPipelineRun
@@ -1085,9 +981,9 @@ paths:
       summary: Cancel an in-flight pipeline run
       tags:
       - pipelines
-  /api/v1/pipelines/runs/{runId}/resume:
-    post:
-      operationId: resumePipelineRun
+  /api/v1/pipelines/runs/{runId}/outputs/{filename}:
+    get:
+      operationId: getPipelineRunOutput
       parameters:
       - description: Pipeline run identifier.
         in: path
@@ -1096,18 +992,76 @@ paths:
         schema:
           description: Pipeline run identifier.
           type: string
-      - description: Project id the pipeline belongs to (required).
-        in: query
-        name: project
+      - description: Artifact filename. Only a name the run's frozen definition declares
+          as a stage's produces is served.
+        in: path
+        name: filename
+        required: true
         schema:
-          description: Project id the pipeline belongs to (required).
+          description: Artifact filename. Only a name the run's frozen definition
+            declares as a stage's produces is served.
           type: string
+      responses:
+        "200":
+          content:
+            text/plain:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Download one artifact a stage declared with produces
+      tags:
+      - pipelines
+  /api/v1/pipelines/runs/{runId}/stages/{stageId}/log:
+    get:
+      operationId: getPipelineStageLog
+      parameters:
+      - description: Pipeline run identifier.
+        in: path
+        name: runId
+        required: true
+        schema:
+          description: Pipeline run identifier.
+          type: string
+      - description: Stage id as declared in the pipeline definition.
+        in: path
+        name: stageId
+        required: true
+        schema:
+          description: Stage id as declared in the pipeline definition.
+          type: string
+      - description: Return only the last N lines. Omitted returns the whole log.
+        in: query
+        name: tail
+        schema:
+          description: Return only the last N lines. Omitted returns the whole log.
+          minimum: 1
+          type:
+          - "null"
+          - integer
       responses:
         "200":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PipelineRunDetailResponse'
+                $ref: '#/components/schemas/PipelineStageLogResponse'
           description: OK
         "400":
           content:
@@ -1133,7 +1087,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Resume a stalled or failed pipeline run
+      summary: Fetch a stage's captured stdout and stderr, optionally tailed
       tags:
       - pipelines
   /api/v1/pipelines/runs/{runId}/stages/{stageId}/signal:
@@ -1158,14 +1112,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ControllersSignalPipelineStageRequest'
+              $ref: '#/components/schemas/SignalPipelineStageRequest'
         required: true
       responses:
         "202":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ControllersSignalPipelineStageResponse'
+                $ref: '#/components/schemas/SignalPipelineStageResponse'
           description: Accepted
         "400":
           content:
@@ -2932,36 +2886,6 @@ components:
       - status
       - prs
       type: object
-    ControllersSignalPipelineStageRequest:
-      properties:
-        reason:
-          description: Why the stage failed. Carried on the failure edge and shown
-            in run detail.
-          type: string
-        status:
-          description: 'How the stage settled: done | fail.'
-          enum:
-          - done
-          - fail
-          type: string
-      required:
-      - status
-      type: object
-    ControllersSignalPipelineStageResponse:
-      properties:
-        accepted:
-          type: boolean
-      required:
-      - accepted
-      type: object
-    ControllersUpdatePipelineArtifactStatusRequest:
-      properties:
-        status:
-          description: 'New artifact status: open | resolved | dismissed.'
-          type: string
-      required:
-      - status
-      type: object
     DegradedProject:
       properties:
         id:
@@ -3430,70 +3354,6 @@ components:
       - targetSha
       - status
       type: object
-    PipelineArtifact:
-      properties:
-        anchorSignature:
-          type: string
-        artifactId:
-          type: string
-        belowConfidenceThreshold:
-          type: boolean
-        category:
-          type: string
-        confidence:
-          format: double
-          type: number
-        createdAt:
-          format: date-time
-          type: string
-        data:
-          additionalProperties: {}
-          type: object
-        description:
-          type: string
-        endLine:
-          type: integer
-        filePath:
-          type: string
-        fingerprint:
-          type: string
-        kind:
-          type: string
-        pipelineRunId:
-          type: string
-        sentToAgentAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        severity:
-          type: string
-        stageName:
-          type: string
-        stageRunId:
-          type: string
-        startLine:
-          type: integer
-        status:
-          type: string
-        title:
-          type: string
-      required:
-      - kind
-      - artifactId
-      - pipelineRunId
-      - stageRunId
-      - stageName
-      - status
-      - createdAt
-      type: object
-    PipelineArtifactResponse:
-      properties:
-        artifact:
-          $ref: '#/components/schemas/PipelineArtifact'
-      required:
-      - artifact
-      type: object
     PipelineDefinitionResponse:
       properties:
         definition:
@@ -3525,36 +3385,45 @@ components:
       - createdAt
       - updatedAt
       type: object
+    PipelineProducedArtifact:
+      properties:
+        exists:
+          type: boolean
+        name:
+          type: string
+      required:
+      - name
+      - exists
+      type: object
     PipelineRunDetail:
       properties:
-        blocksMerge:
-          type: boolean
+        cancelReason:
+          type: string
         createdAt:
           format: date-time
           type: string
-        findings:
-          items:
-            $ref: '#/components/schemas/PipelineArtifact'
-          type: array
-        hasOpenFindings:
-          type: boolean
         headSha:
-          type: string
-        loopRounds:
-          type: integer
-        loopState:
           type: string
         pipelineId:
           type: string
         pipelineName:
           type: string
+        prNumber:
+          type: integer
+        runDir:
+          type: string
         runId:
           type: string
         sessionId:
           type: string
+        settledAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         stageCount:
           type: integer
-        stageStatuses:
+        stageOutcomes:
           additionalProperties:
             type: string
           type:
@@ -3564,7 +3433,21 @@ components:
           items:
             $ref: '#/components/schemas/PipelineStageView'
           type: array
-        terminationReason:
+        status:
+          description: Run-level rollup of the stage outcomes.
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - cancelled
+          type: string
+        subjectKind:
+          description: What the run is about.
+          enum:
+          - session
+          - pr
+          - project
           type: string
         updatedAt:
           format: date-time
@@ -3573,18 +3456,13 @@ components:
       - runId
       - pipelineId
       - pipelineName
-      - sessionId
-      - loopState
-      - loopRounds
-      - headSha
+      - status
+      - subjectKind
       - stageCount
-      - stageStatuses
-      - hasOpenFindings
-      - blocksMerge
+      - stageOutcomes
       - createdAt
       - updatedAt
       - stages
-      - findings
       type: object
     PipelineRunDetailResponse:
       properties:
@@ -3595,36 +3473,51 @@ components:
       type: object
     PipelineRunSummary:
       properties:
-        blocksMerge:
-          type: boolean
+        cancelReason:
+          type: string
         createdAt:
           format: date-time
           type: string
-        hasOpenFindings:
-          type: boolean
         headSha:
-          type: string
-        loopRounds:
-          type: integer
-        loopState:
           type: string
         pipelineId:
           type: string
         pipelineName:
           type: string
+        prNumber:
+          type: integer
         runId:
           type: string
         sessionId:
           type: string
+        settledAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         stageCount:
           type: integer
-        stageStatuses:
+        stageOutcomes:
           additionalProperties:
             type: string
           type:
           - object
           - "null"
-        terminationReason:
+        status:
+          description: Run-level rollup of the stage outcomes.
+          enum:
+          - pending
+          - running
+          - succeeded
+          - failed
+          - cancelled
+          type: string
+        subjectKind:
+          description: What the run is about.
+          enum:
+          - session
+          - pr
+          - project
           type: string
         updatedAt:
           format: date-time
@@ -3633,59 +3526,82 @@ components:
       - runId
       - pipelineId
       - pipelineName
-      - sessionId
-      - loopState
-      - loopRounds
-      - headSha
+      - status
+      - subjectKind
       - stageCount
-      - stageStatuses
-      - hasOpenFindings
-      - blocksMerge
+      - stageOutcomes
       - createdAt
       - updatedAt
       type: object
+    PipelineStageLogResponse:
+      properties:
+        content:
+          type: string
+        runId:
+          type: string
+        stageId:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - runId
+      - stageId
+      - content
+      - truncated
+      type: object
     PipelineStageView:
       properties:
-        artifactIds:
-          items:
-            type: string
-          type: array
         attempt:
           type: integer
-        completedAt:
+        enteredVia:
+          description: Which edge started this stage.
+          enum:
+          - trigger
+          - success
+          - failure
+          type: string
+        failedStage:
+          type: string
+        outcome:
+          enum:
+          - pending
+          - running
+          - succeeded
+          - succeeded_unverified
+          - failed
+          - no_output
+          - no_signal
+          - timed_out
+          - cancelled
+          - skipped
+          type: string
+        outputTail:
+          type: string
+        producedArtifact:
+          $ref: '#/components/schemas/PipelineProducedArtifact'
+        reason:
+          type: string
+        sessionId:
+          type: string
+        settledAt:
           format: date-time
           type:
           - "null"
           - string
-        errorMessage:
-          type: string
-        notes:
-          items:
-            type: string
-          type: array
-        output:
-          type: string
-        sessionId:
-          type: string
-        stageName:
-          type: string
-        stageRunId:
+        stageId:
           type: string
         startedAt:
           format: date-time
           type:
           - "null"
           - string
-        status:
-          type: string
-        verdict:
+        workspaceKind:
           type: string
       required:
-      - stageName
-      - stageRunId
-      - status
+      - stageId
+      - outcome
       - attempt
-      - artifactIds
+      - enteredVia
       type: object
     PipelineValidationIssue:
       properties:
@@ -4394,6 +4310,28 @@ components:
       - title
       - createdAt
       type: object
+    SignalPipelineStageRequest:
+      properties:
+        reason:
+          description: Why the stage failed. Carried on the failure edge and shown
+            in run detail.
+          type: string
+        status:
+          description: 'How the stage settled: done | fail.'
+          enum:
+          - done
+          - fail
+          type: string
+      required:
+      - status
+      type: object
+    SignalPipelineStageResponse:
+      properties:
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      type: object
     SpawnOrchestratorRequest:
       properties:
         clean:
@@ -4512,14 +4450,15 @@ components:
       type: object
     TriggerPipelineRunRequest:
       properties:
-        headSha:
-          description: Head commit SHA to pin the run to.
-          type: string
         pipeline:
           description: 'Definition reference to run: its id or name.'
           type: string
+        prNumber:
+          description: Run against this tracked pull request as the subject.
+          minimum: 1
+          type: integer
         sessionId:
-          description: Session id to scope the run's loop key.
+          description: Run against this session as the subject.
           type: string
       required:
       - pipeline
@@ -4569,9 +4508,14 @@ components:
           type: array
         valid:
           type: boolean
+        warnings:
+          items:
+            $ref: '#/components/schemas/PipelineValidationIssue'
+          type: array
       required:
       - valid
       - issues
+      - warnings
       type: object
     WorkspaceFileResponse:
       properties:
@@ -4683,7 +4627,8 @@ tags:
   name: import
 - description: Developer-only maintenance operations
   name: dev
-- description: Pipeline definitions, runs, manual triggers, and artifacts
+- description: Pipeline definitions, runs, manual triggers, stage signals, logs and
+    outputs
   name: pipelines
 - description: Connect Mobile LAN bridge control (loopback/desktop only)
   name: mobile

@@ -134,20 +134,22 @@ func (f RunFolder) DeclaredOutput(p *Pipeline, filename string) (string, error) 
 
 // ReadLogTail returns the last n lines of a stage's log, or the whole log when
 // n <= 0. A missing log is not an error: a stage that has not started yet
-// simply has nothing to show, and the second return value says which it was.
+// simply has nothing to show, and exists says which it was. truncated reports
+// whether lines were dropped off the front.
 //
 // ponytail: reads the whole file, then keeps the tail. Stage logs are capped by
 // the executor, so this is bounded in practice; switch to a seek-from-end
 // reader if a stage ever streams gigabytes.
-func (f RunFolder) ReadLogTail(stageID string, n int) (content string, exists bool, err error) {
+func (f RunFolder) ReadLogTail(stageID string, n int) (content string, exists, truncated bool, err error) {
 	raw, err := os.ReadFile(f.LogPath(stageID))
 	if errors.Is(err, os.ErrNotExist) {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("read stage log %s: %w", stageID, err)
+		return "", false, false, fmt.Errorf("read stage log %s: %w", stageID, err)
 	}
-	return tailLines(string(raw), n), true, nil
+	tail := tailLines(string(raw), n)
+	return tail, true, len(tail) < len(raw), nil
 }
 
 // tailLines keeps the last n lines of s, preserving its trailing newline.
