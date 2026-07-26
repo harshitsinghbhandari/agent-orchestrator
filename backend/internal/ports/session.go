@@ -37,6 +37,16 @@ type SpawnConfig struct {
 	// pipelines. Empty for every human or orchestrator spawn.
 	PipelineRunID string
 
+	// WorkspacePath adopts an existing tree instead of creating a session
+	// worktree: the session runs there, and its lifecycle stays with whoever
+	// provisioned it. The pipeline driver sets it to the workspace it resolved
+	// for the stage, which is what makes `workspace: run` and `inherit` mean
+	// something for an agent stage. An adopted tree is never created, restored
+	// or destroyed by session teardown; the record carries
+	// SessionMetadata.WorkspaceAdopted so every teardown path can see that.
+	// Empty is the ordinary path: the session gets, and owns, its own worktree.
+	WorkspacePath string
+
 	// Env is extra environment for the spawned session, merged over the
 	// project's env vars (an entry here wins on collision, so a caller's
 	// ambient identity cannot be masked by project config). AO-internal vars

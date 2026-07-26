@@ -985,6 +985,38 @@ stages:
 	})
 }
 
+// A tree a spared session is still living in is not destroyed, even on a
+// successful run. Agent stages run in the resolved tree, so removing it under a
+// session `kill-on: []` deliberately kept would delete the working directory of
+// the pane the author asked to keep.
+func TestOwnedWorkspaceKeptWhileASparedSessionLivesInIt(t *testing.T) {
+	const yamlSrc = `
+name: keep-session-and-tree
+stages:
+  - id: review
+    executor: agent
+    agent: claude-code
+    prompt: review
+    workspace: run
+    session:
+      kill-on: []
+`
+	h := newHarness(t)
+	runID := h.trigger(t, yamlSrc, userSessionSubject())
+	h.execs.script(t, "review", executors.Poll{State: executors.PollSignaledDone})
+	h.engine.Tick()
+
+	if got := h.run(t, runID).Status; got != pipeline.RunSucceeded {
+		t.Fatalf("run status = %q, want succeeded", got)
+	}
+	if killed := h.sess.killedIDs(); len(killed) != 0 {
+		t.Fatalf("killed %v, want kill-on: [] to keep the session", killed)
+	}
+	if got := h.ws.destroyedPaths(); len(got) != 0 {
+		t.Fatalf("destroyed %v, want the tree kept while the spared session is in it", got)
+	}
+}
+
 // TestKillOnDisposition: the default kills on succeeded, an explicit empty list
 // never does.
 func TestKillOnDisposition(t *testing.T) {

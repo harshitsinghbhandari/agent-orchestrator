@@ -299,6 +299,28 @@ func TestMarkSpawnedStoresRuntimeMetadata(t *testing.T) {
 	}
 }
 
+// A session placed in a tree it does not own stays that way across relaunches:
+// the marker is what every teardown path reads before removing a worktree, and
+// a restore that dropped it would hand the run's tree to session cleanup.
+func TestMarkSpawnedKeepsTheAdoptedWorkspaceMarker(t *testing.T) {
+	m, st, _ := newManager()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTerminated: true}
+
+	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{WorkspacePath: "/runs/run-a/workspace", WorkspaceAdopted: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !st.sessions["mer-1"].Metadata.WorkspaceAdopted {
+		t.Fatal("spawn did not record the adopted tree")
+	}
+	// A restore re-marks the session spawned without restating provenance.
+	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{RuntimeHandleID: "h2"}); err != nil {
+		t.Fatal(err)
+	}
+	if !st.sessions["mer-1"].Metadata.WorkspaceAdopted {
+		t.Fatal("relaunch dropped the adopted marker")
+	}
+}
+
 // TestMarkSpawned_StampsUTCActivity locks the lifecycle clock to UTC so
 // activity-driven timestamps match the session manager's spawn timestamps. A
 // local clock here left `ao session get` showing created in UTC but updated in

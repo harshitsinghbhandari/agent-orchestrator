@@ -758,6 +758,45 @@ func TestSetSessionPreviewURLBumpsRevisionAndFiresCDCOnSameURL(t *testing.T) {
 	}
 }
 
+// A session that runs in a tree it does not own keeps that fact on the row.
+// Every teardown path reads it before removing a worktree, so losing it across
+// a daemon restart would hand a live pipeline run's workspace to session
+// cleanup.
+func TestSessionWorkspaceAdoptedRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+
+	rec := sampleRecord("mer")
+	rec.Metadata.WorkspaceAdopted = true
+	rec.Metadata.WorkspacePath = "/runs/run-a/workspace"
+	r, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, _, _ := s.GetSession(ctx, r.ID)
+	if !got.Metadata.WorkspaceAdopted {
+		t.Fatal("adopted marker did not survive the insert")
+	}
+
+	got.Metadata.RuntimeHandleID = "pane-2"
+	if err := s.UpdateSession(ctx, got); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	again, _, _ := s.GetSession(ctx, r.ID)
+	if !again.Metadata.WorkspaceAdopted {
+		t.Fatal("adopted marker did not survive an update")
+	}
+
+	plain, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create plain: %v", err)
+	}
+	if back, _, _ := s.GetSession(ctx, plain.ID); back.Metadata.WorkspaceAdopted {
+		t.Fatal("an ordinary session is marked as running in an adopted tree")
+	}
+}
+
 // A pipeline-spawned session carries its run id on the row so the session
 // trigger bridge's loop guard survives a daemon restart, and the orphan marker
 // round-trips whole through the JSON column.

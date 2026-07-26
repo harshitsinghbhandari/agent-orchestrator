@@ -742,5 +742,11 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	set(&base.AgentSessionID, in.AgentSessionID)
 	set(&base.Prompt, in.Prompt)
 	set(&base.PipelineRunID, in.PipelineRunID)
+	// Sticky, like every other field here: a relaunch restates the handles, not
+	// the provenance, and losing this marker would hand a tree the session never
+	// owned to session teardown.
+	if in.WorkspaceAdopted {
+		base.WorkspaceAdopted = true
+	}
 	return base
 }

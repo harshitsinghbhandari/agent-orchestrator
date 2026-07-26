@@ -28,8 +28,14 @@ type SessionMetadata struct {
 	Branch          string `json:"branch,omitempty"`
 	WorkspacePath   string `json:"workspacePath,omitempty"`
 	RuntimeHandleID string `json:"runtimeHandleId,omitempty"`
-	AgentSessionID  string `json:"agentSessionId,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
+	// WorkspaceAdopted marks a session that runs in a tree it does not own
+	// (spawned with SpawnConfig.WorkspacePath). Ownership stays with whoever
+	// provisioned the tree, today a pipeline run, which destroys it on success
+	// and keeps it otherwise. Every teardown path reads this before touching a
+	// worktree, so ownership is stated rather than inferred from ordering.
+	WorkspaceAdopted bool   `json:"workspaceAdopted,omitempty"`
+	AgentSessionID   string `json:"agentSessionId,omitempty"`
+	Prompt           string `json:"prompt,omitempty"`
 	// PreviewURL is the browser preview target the desktop app opens for this
 	// session. Set via `ao preview` (POST /sessions/{id}/preview); persisted so
 	// it survives a daemon restart. Empty means no preview has been requested.
