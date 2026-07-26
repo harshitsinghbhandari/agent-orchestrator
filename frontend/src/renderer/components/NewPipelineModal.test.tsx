@@ -25,13 +25,13 @@ describe("NewPipelineModal", () => {
 		await user.click(screen.getByRole("radio", { name: /From template/ }));
 		expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
 
-		await user.click(screen.getByRole("radio", { name: "PR review loop" }));
+		await user.click(screen.getByRole("radio", { name: "PR review" }));
 		expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
 
 		await user.click(screen.getByRole("button", { name: "Create" }));
 		const choice = onCreate.mock.calls[0][0] as NewPipelineChoice;
 		expect(choice.kind).toBe("template");
-		if (choice.kind === "template") expect(choice.template.id).toBe("pr-review-loop");
+		if (choice.kind === "template") expect(choice.template.id).toBe("pr-review");
 	});
 
 	it("clicking a template row while Blank canvas is active switches the path", async () => {
@@ -39,19 +39,19 @@ describe("NewPipelineModal", () => {
 		renderModal();
 
 		expect(screen.getByRole("radio", { name: /Blank canvas/ })).toHaveAttribute("aria-checked", "true");
-		await user.click(screen.getByRole("radio", { name: "PR review loop" }));
+		await user.click(screen.getByRole("radio", { name: "PR review" }));
 
 		expect(screen.getByRole("radio", { name: /From template/ })).toHaveAttribute("aria-checked", "true");
 		expect(screen.getByRole("radio", { name: /Blank canvas/ })).toHaveAttribute("aria-checked", "false");
-		expect(screen.getByRole("radio", { name: "PR review loop" })).toHaveAttribute("aria-checked", "true");
+		expect(screen.getByRole("radio", { name: "PR review" })).toHaveAttribute("aria-checked", "true");
 	});
 
 	it("shows each template's stage count", () => {
 		renderModal();
 
-		expect(screen.getByRole("radio", { name: "PR review loop" })).toHaveTextContent("8 stages");
-		expect(screen.getByRole("radio", { name: "Nightly triage sweep" })).toHaveTextContent("4 stages");
-		expect(screen.getByRole("radio", { name: "Release gate" })).toHaveTextContent("5 stages");
+		expect(screen.getByRole("radio", { name: "PR review" })).toHaveTextContent("3 stages");
+		expect(screen.getByRole("radio", { name: "Session idle triage" })).toHaveTextContent("1 stage");
+		expect(screen.getByRole("radio", { name: "Release gate" })).toHaveTextContent("6 stages");
 	});
 
 	it("imports pasted YAML through the Paste YAML path", async () => {

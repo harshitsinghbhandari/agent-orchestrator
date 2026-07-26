@@ -54,13 +54,13 @@ vi.mock("./PipelineCanvas", () => ({
 		selection,
 		stageIssues,
 	}: {
-		draft: { stages: { name: string }[] };
+		draft: { stages: { id: string }[] };
 		onDraftChange?: (next: unknown) => void;
 		selection?: { selectedStage: string | null; selectStage: (nodeId: string | null) => void };
 		stageIssues?: Record<string, string[]>;
 	}) => (
 		<div data-testid="pipeline-canvas">
-			<span data-testid="canvas-stages">{draft.stages.map((s) => s.name).join(",")}</span>
+			<span data-testid="canvas-stages">{draft.stages.map((s) => s.id).join(",")}</span>
 			<span data-testid="canvas-selected">{selection?.selectedStage ?? ""}</span>
 			<span data-testid="canvas-issues">{JSON.stringify(stageIssues ?? {})}</span>
 			<button onClick={() => selection?.selectStage(draft.stages.length > 0 ? "0" : null)}>mock-select-first</button>
@@ -69,7 +69,7 @@ vi.mock("./PipelineCanvas", () => ({
 				onClick={() =>
 					onDraftChange?.({
 						...draft,
-						stages: [...draft.stages, { name: "added", trigger: { on: ["manual"] }, executor: { kind: "agent" } }],
+						stages: [...draft.stages, { id: "added", executor: "agent" }],
 					})
 				}
 			>
@@ -77,17 +77,6 @@ vi.mock("./PipelineCanvas", () => ({
 			</button>
 		</div>
 	),
-}));
-
-// V4's builder internals are covered by PredicateBuilder.test.tsx; here only
-// the open/write-back wiring matters, so Done reports a fixed predicate.
-vi.mock("./PredicateBuilderModal", () => ({
-	PredicateBuilderModal: ({ open, onDone }: { open: boolean; onDone: (value: unknown) => void }) =>
-		open ? (
-			<div data-testid="predicate-builder-modal">
-				<button onClick={() => onDone({ kind: "no_open_findings" })}>mock-builder-done</button>
-			</div>
-		) : null,
 }));
 
 // The editor debounce-calls POST /pipelines/validate; branch that off the create
@@ -107,7 +96,7 @@ const def = (id: string, name: string, yamlSource: string) => ({
 	updatedAt: "2026-07-10T00:00:00Z",
 });
 
-const TWO_STAGE_YAML = "name: review\nstages:\n  - name: a\n  - name: b\n";
+const TWO_STAGE_YAML = "name: review\nstages:\n  - id: a\n    executor: agent\n  - id: b\n    executor: agent\n";
 
 function renderPage() {
 	const client = new QueryClient({
@@ -211,12 +200,10 @@ describe("PipelineDefinitionsPage", () => {
 
 		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
 		await user.click(screen.getByRole("radio", { name: /From template/ }));
-		await user.click(screen.getByRole("radio", { name: "PR review loop" }));
+		await user.click(screen.getByRole("radio", { name: "PR review" }));
 		await user.click(screen.getByRole("button", { name: "Create" }));
 
-		expect(screen.getByTestId("canvas-stages")).toHaveTextContent(
-			"review-correctness,review-security,review-style,compose-findings,triage,fix,verify,route",
-		);
+		expect(screen.getByTestId("canvas-stages")).toHaveTextContent("review,post-review,notify-failure");
 
 		await user.click(screen.getByRole("button", { name: "mock-add-stage" }));
 		await user.click(screen.getByRole("button", { name: "Save" }));
@@ -225,7 +212,7 @@ describe("PipelineDefinitionsPage", () => {
 			const call = postMock.mock.calls.find(([url]) => url === "/api/v1/pipelines");
 			expect(call).toBeDefined();
 			const body = (call as [string, { body: { yamlSource: string } }])[1].body;
-			expect(body.yamlSource).toContain("review-correctness");
+			expect(body.yamlSource).toContain("post-review");
 			expect(body.yamlSource).toContain("added");
 		});
 
@@ -237,7 +224,7 @@ describe("PipelineDefinitionsPage", () => {
 		renderPage();
 		await screen.findByText("review");
 		const user = userEvent.setup();
-		const pasted = "name: imported\nstages:\n  - name: one\n";
+		const pasted = "name: imported\nstages:\n  - id: one\n    executor: agent\n";
 
 		await user.click(screen.getByRole("button", { name: /New pipeline/ }));
 		await user.click(screen.getByRole("radio", { name: /Paste YAML/ }));
@@ -284,7 +271,7 @@ describe("PipelineDefinitionsPage", () => {
 		// YAML buffer.
 		expect(screen.queryByText("Pipeline settings")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Pipeline YAML")).toHaveValue(
-			"name: renamed\nstages:\n  - name: a\n    executor:\n      kind: agent\n  - name: b\n    executor:\n      kind: agent\n",
+			"name: renamed\nstages:\n  - id: a\n    executor: agent\n  - id: b\n    executor: agent\n",
 		);
 	});
 
@@ -381,7 +368,7 @@ describe("PipelineDefinitionsPage", () => {
 		expect(screen.getByTestId("canvas-stages")).toHaveTextContent("a,b");
 
 		fireEvent.change(screen.getByLabelText("Pipeline YAML"), {
-			target: { value: "name: review\nstages:\n  - name: zeta\n" },
+			target: { value: "name: review\nstages:\n  - id: zeta\n    executor: agent\n" },
 		});
 
 		await waitFor(() => expect(screen.getByTestId("canvas-stages")).toHaveTextContent(/^zeta$/), { timeout: 2000 });
@@ -412,7 +399,7 @@ describe("PipelineDefinitionsPage", () => {
 		postMock.mockImplementation((url: string) => {
 			if (url.endsWith("/validate")) {
 				return Promise.resolve({
-					data: { valid: false, issues: [{ path: "stages[0].executor.kind", message: "unknown executor kind" }] },
+					data: { valid: false, issues: [{ path: "stages[0].executor", message: "unknown executor kind" }] },
 					error: undefined,
 				});
 			}
@@ -425,7 +412,7 @@ describe("PipelineDefinitionsPage", () => {
 		await user.click(screen.getByRole("radio", { name: "Split" }));
 
 		const panel = await screen.findByTestId("problems-panel");
-		expect(within(panel).getByText("stages[0].executor.kind")).toBeInTheDocument();
+		expect(within(panel).getByText("stages[0].executor")).toBeInTheDocument();
 		expect(within(panel).getByText("unknown executor kind")).toBeInTheDocument();
 		expect(screen.getByText("1 problem")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
@@ -440,36 +427,14 @@ describe("PipelineDefinitionsPage", () => {
 		expect(screen.getByLabelText("Pipeline YAML")).toHaveAttribute("data-reveal-line", "3");
 	});
 
-	it("opens the predicate builder from the inspector and writes routes.when back", async () => {
-		renderPage();
-		const user = userEvent.setup();
-
-		await user.click(await screen.findByRole("button", { name: "Edit" }));
-		await user.click(screen.getByRole("radio", { name: "Canvas" }));
-
-		// Selecting a node mounts the inspector for that stage.
-		await user.click(screen.getByRole("button", { name: "mock-select-first" }));
-		const inspector = await screen.findByTestId("stage-inspector");
-		expect(within(inspector).getByText("Stage: a")).toBeInTheDocument();
-
-		// Edit condition opens V4's builder; Done writes the predicate into the
-		// selected stage's routes.when on the draft.
-		await user.click(within(inspector).getByRole("button", { name: /Edit condition/ }));
-		await user.click(screen.getByRole("button", { name: "mock-builder-done" }));
-
-		expect(within(inspector).getByTestId("routes-when-summary")).toHaveTextContent("no_open_findings");
-
-		// The draft edit reserialized into the YAML buffer.
-		await user.click(screen.getByRole("radio", { name: "YAML" }));
-		expect((screen.getByLabelText("Pipeline YAML") as HTMLTextAreaElement).value).toContain("no_open_findings");
-	});
-
 	it("opens the inspector for an unnamed stage and lets the user name it", async () => {
 		// stages[1] has no name: exactly the state the daemon rejects with
 		// "stage name must not be empty", which the user must be able to fix.
 		getMock.mockReset().mockResolvedValue({
 			data: {
-				definitions: [def("pl-1", "review", "name: review\nstages:\n  - name: a\n  - executor:\n      kind: agent\n")],
+				definitions: [
+					def("pl-1", "review", "name: review\nstages:\n  - id: a\n    executor: agent\n  - executor: agent\n"),
+				],
 			},
 			error: undefined,
 		});
@@ -485,7 +450,7 @@ describe("PipelineDefinitionsPage", () => {
 
 		// Naming it keeps the selection (index identity survives the rename and
 		// the debounced YAML re-parse) and lands in the draft.
-		await user.type(within(inspector).getByRole("textbox", { name: "Stage name" }), "fix");
+		await user.type(within(inspector).getByRole("textbox", { name: "Stage id" }), "fix");
 		await waitFor(() => expect(screen.getByTestId("canvas-stages")).toHaveTextContent("a,fix"), { timeout: 2000 });
 		expect(screen.getByTestId("canvas-selected")).toHaveTextContent("1");
 		expect(within(screen.getByTestId("stage-inspector")).getByText("Stage: fix")).toBeInTheDocument();
@@ -493,7 +458,15 @@ describe("PipelineDefinitionsPage", () => {
 
 	it("selects duplicate-named stages independently", async () => {
 		getMock.mockReset().mockResolvedValue({
-			data: { definitions: [def("pl-1", "review", "name: review\nstages:\n  - name: a\n  - name: a\n")] },
+			data: {
+				definitions: [
+					def(
+						"pl-1",
+						"review",
+						"name: review\nstages:\n  - id: a\n    executor: agent\n  - id: a\n    executor: agent\n",
+					),
+				],
+			},
 			error: undefined,
 		});
 		renderPage();
@@ -507,15 +480,19 @@ describe("PipelineDefinitionsPage", () => {
 		expect(screen.getByTestId("canvas-selected")).toHaveTextContent("1");
 
 		// Renaming edits the second stage only, resolving the duplicate.
-		await user.type(within(inspector).getByRole("textbox", { name: "Stage name" }), "2");
+		await user.type(within(inspector).getByRole("textbox", { name: "Stage id" }), "2");
 		await waitFor(() => expect(screen.getByTestId("canvas-stages")).toHaveTextContent("a,a2"), { timeout: 2000 });
 	});
 
-	it("deletes the selected stage from the inspector, scrubbing dependsOn", async () => {
+	it("deletes the selected stage from the inspector, scrubbing the routing keys", async () => {
 		getMock.mockReset().mockResolvedValue({
 			data: {
 				definitions: [
-					def("pl-1", "review", "name: review\nstages:\n  - name: a\n  - name: b\n    dependsOn:\n      - a\n"),
+					def(
+						"pl-1",
+						"review",
+						"name: review\nstages:\n  - id: a\n    executor: agent\n    on_success: b\n  - id: b\n    executor: agent\n",
+					),
 				],
 			},
 			error: undefined,
@@ -530,7 +507,7 @@ describe("PipelineDefinitionsPage", () => {
 
 		await user.click(screen.getByRole("button", { name: "Delete stage" }));
 
-		// The stage is gone from the draft, the survivor's dependsOn is
+		// The stage is gone from the draft, every routing key that named it is
 		// scrubbed, and the now-dangling selection is cleared (inspector closes).
 		expect(screen.getByTestId("canvas-stages")).toHaveTextContent(/^b$/);
 		expect(screen.queryByTestId("stage-inspector")).not.toBeInTheDocument();
@@ -538,8 +515,8 @@ describe("PipelineDefinitionsPage", () => {
 
 		await user.click(screen.getByRole("radio", { name: "YAML" }));
 		const yaml = (screen.getByLabelText("Pipeline YAML") as HTMLTextAreaElement).value;
-		expect(yaml).not.toContain("name: a");
-		expect(yaml).not.toContain("dependsOn");
+		expect(yaml).not.toContain("id: a");
+		expect(yaml).not.toContain("on_success");
 	});
 
 	it("keeps the selection stable across an unrelated YAML edit and re-parse", async () => {
@@ -554,7 +531,7 @@ describe("PipelineDefinitionsPage", () => {
 		// An edit elsewhere in the document (the pipeline name) triggers the
 		// debounced re-parse; the index identity must not churn.
 		fireEvent.change(screen.getByLabelText("Pipeline YAML"), {
-			target: { value: "name: renamed\nstages:\n  - name: a\n  - name: b\n" },
+			target: { value: "name: renamed\nstages:\n  - id: a\n    executor: agent\n  - id: b\n    executor: agent\n" },
 		});
 
 		await waitFor(() => expect(screen.getByTestId("yaml-parse-status")).toHaveTextContent("parsed"), {

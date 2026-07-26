@@ -118,7 +118,7 @@ export function NewPipelineModal({
 								rows={10}
 								value={yamlText}
 								onChange={(e) => setYamlText(e.target.value)}
-								placeholder={"name: my-pipeline\nstages:\n  - name: review\n    ..."}
+								placeholder={"name: my-pipeline\nstages:\n  - id: review\n    executor: agent\n    ..."}
 								className="w-full resize-y rounded-md border border-border bg-transparent px-3 py-2 font-mono text-caption leading-relaxed text-foreground outline-none transition placeholder:text-passive focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent-weak"
 							/>
 						</div>
@@ -152,7 +152,8 @@ export function NewPipelineModal({
 												<div className="truncate text-caption text-passive">{template.description}</div>
 											</div>
 											<span className="shrink-0 font-mono text-caption text-muted-foreground">
-												{TEMPLATE_STAGE_COUNTS[template.id]} stages
+												{TEMPLATE_STAGE_COUNTS[template.id]}{" "}
+												{TEMPLATE_STAGE_COUNTS[template.id] === 1 ? "stage" : "stages"}
 											</span>
 										</button>
 									);

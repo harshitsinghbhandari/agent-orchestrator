@@ -3,206 +3,256 @@ import type { PipelineDraft, StageDraft } from "./pipeline-draft";
 import {
 	addStage,
 	applyConnection,
-	cycleMembers,
+	cycleStageIds,
 	draftEdges,
+	effectiveDeadline,
 	findCycle,
 	isEdgeInCycle,
 	layoutPositions,
-	removeDependency,
+	reconcileNeeds,
+	removeConnection,
 	removeStage,
 	stageIndexFromNodeId,
 	stageNodeId,
 } from "./pipeline-graph";
 
-function stage(name: string, dependsOn?: string[]): StageDraft {
-	const s: StageDraft = {
-		name,
-		trigger: { on: ["manual"] },
-		executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-	};
-	if (dependsOn) s.dependsOn = dependsOn;
-	return s;
+function stage(id: string, extra: Partial<StageDraft> = {}): StageDraft {
+	return { id, executor: "command", run: "true", ...extra };
 }
 
-function draftOf(...stages: StageDraft[]): PipelineDraft {
-	return { name: "p", stages };
+function draftOf(stages: StageDraft[], rest: Partial<PipelineDraft> = {}): PipelineDraft {
+	return { name: "p", stages, ...rest };
 }
 
-describe("stageNodeId / stageIndexFromNodeId", () => {
-	it("round-trips the array index, independent of the stage name", () => {
-		expect(stageNodeId(0)).toBe("0");
+// A fan-out into a join, plus a failure route and a pipeline-level default:
+// the shape every v2 canvas feature has to handle.
+//
+//   a --success--> b --success--> d
+//     --success--> c --success--> d
+//   b --failure--> diag
+//   a, c, d, diag --default-failure--> notify
+function fanOutDraft(): PipelineDraft {
+	return draftOf(
+		[
+			stage("a", { onSuccess: ["b", "c"] }),
+			stage("b", { onSuccess: ["d"], onFailure: "diag" }),
+			stage("c", { onSuccess: ["d"] }),
+			stage("d", { needs: ["b", "c"] }),
+			stage("diag"),
+			stage("notify"),
+		],
+		{ defaults: { onFailure: "notify" } },
+	);
+}
+
+describe("stage node identity", () => {
+	it("round-trips index <-> node id and rejects garbage", () => {
 		expect(stageNodeId(3)).toBe("3");
-		expect(stageIndexFromNodeId(stageNodeId(3))).toBe(3);
-	});
-
-	it("rejects null and non-index ids", () => {
+		expect(stageIndexFromNodeId("3")).toBe(3);
+		expect(stageIndexFromNodeId("x")).toBe(-1);
 		expect(stageIndexFromNodeId(null)).toBe(-1);
-		expect(stageIndexFromNodeId(undefined)).toBe(-1);
-		expect(stageIndexFromNodeId("build")).toBe(-1);
-		expect(stageIndexFromNodeId("-1")).toBe(-1);
-		expect(stageIndexFromNodeId("")).toBe(-1);
 	});
 });
 
 describe("draftEdges", () => {
-	it("maps every dependsOn entry to a dependency -> dependent edge", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]), stage("c", ["a", "b"]));
-		expect(draftEdges(draft)).toEqual([
-			{ id: "0->1", source: "0", target: "1", dep: "a", dependent: "b" },
-			{ id: "0->2", source: "0", target: "2", dep: "a", dependent: "c" },
-			{ id: "1->2", source: "1", target: "2", dep: "b", dependent: "c" },
+	const edges = draftEdges(fanOutDraft());
+
+	it("derives success edges from onSuccess", () => {
+		const success = edges.filter((e) => e.kind === "success").map((e) => `${e.from}->${e.to}`);
+		expect(success).toEqual(["a->b", "a->c", "b->d", "c->d"]);
+	});
+
+	it("derives failure edges from onFailure", () => {
+		const failure = edges.filter((e) => e.kind === "failure").map((e) => `${e.from}->${e.to}`);
+		expect(failure).toEqual(["b->diag"]);
+	});
+
+	it("synthesizes a default-failure edge for every stage inheriting defaults.onFailure", () => {
+		const synthetic = edges.filter((e) => e.kind === "default-failure").map((e) => `${e.from}->${e.to}`);
+		// b routes explicitly so it is excluded, and notify (the default target)
+		// does not inherit the default: that self-edge would be a cycle (§9.4).
+		expect(synthetic).toEqual(["a->notify", "c->notify", "d->notify", "diag->notify"]);
+	});
+
+	it("carries node ids alongside stage ids", () => {
+		const edge = edges.find((e) => e.from === "a" && e.to === "c" && e.kind === "success");
+		expect(edge).toMatchObject({ source: "0", target: "2", id: "0-success->2" });
+	});
+
+	it("skips dangling references rather than guessing", () => {
+		expect(draftEdges(draftOf([stage("a", { onSuccess: ["ghost"], onFailure: "phantom" })]))).toEqual([]);
+	});
+
+	it("gives dagre every stage a position", () => {
+		const positions = layoutPositions(fanOutDraft());
+		expect(Object.keys(positions).sort()).toEqual(["0", "1", "2", "3", "4", "5"]);
+	});
+});
+
+describe("cycle detection", () => {
+	// A --fail--> B --fail--> A is expressible in a state machine and is an
+	// infinite loop; the server rejects it, and the canvas mirrors that.
+	const failureLoop = draftOf([stage("a", { onFailure: "b" }), stage("b", { onFailure: "a" })]);
+
+	it("flags both stages on a failure loop", () => {
+		expect(cycleStageIds(failureLoop)).toEqual(new Set(["a", "b"]));
+	});
+
+	it("flags the edges of a failure loop", () => {
+		for (const edge of draftEdges(failureLoop)) expect(isEdgeInCycle(failureLoop, edge)).toBe(true);
+	});
+
+	it("mixes success and failure edges in one cycle", () => {
+		const mixed = draftOf([stage("a", { onSuccess: ["b"] }), stage("b", { onFailure: "a" })]);
+		expect(cycleStageIds(mixed)).toEqual(new Set(["a", "b"]));
+	});
+
+	it("counts synthetic default-failure edges", () => {
+		// notify routes back into a, and a inherits notify as its failure target:
+		// the loop only exists because of the synthetic edge.
+		const looped = draftOf([stage("a"), stage("notify", { onSuccess: ["a"] })], {
+			defaults: { onFailure: "notify" },
+		});
+		expect(cycleStageIds(looped)).toEqual(new Set(["a", "notify"]));
+	});
+
+	it("leaves an acyclic draft clean", () => {
+		const draft = fanOutDraft();
+		expect(cycleStageIds(draft)).toEqual(new Set());
+		for (const edge of draftEdges(draft)) expect(isEdgeInCycle(draft, edge)).toBe(false);
+	});
+
+	it("reports the path a proposed edge would close", () => {
+		const draft = fanOutDraft();
+		expect(findCycle(draft, "d", "a")).toEqual(["a", "b", "d", "a"]);
+		expect(findCycle(draft, "a", "a")).toEqual(["a"]);
+		expect(findCycle(draft, "diag", "d")).toBeNull();
+	});
+});
+
+describe("needs auto-maintenance", () => {
+	it("adds needs when a second inbound success edge arrives", () => {
+		const before = draftOf([stage("a", { onSuccess: ["d"] }), stage("b"), stage("d")]);
+		expect(before.stages[2].needs).toBeUndefined();
+
+		const result = applyConnection(before, "1", "2", "success");
+		expect(result.kind).toBe("added");
+		if (result.kind !== "added") return;
+		expect(result.draft.stages[1].onSuccess).toEqual(["d"]);
+		expect(result.draft.stages[2].needs).toEqual(["a", "b"]);
+	});
+
+	it("drops needs when the count falls back to one", () => {
+		const joined = fanOutDraft();
+		expect(joined.stages[3].needs).toEqual(["b", "c"]);
+
+		const after = removeConnection(joined, 2, "d", "success");
+		expect(after.stages[2].onSuccess).toBeUndefined();
+		expect(after.stages[3].needs).toBeUndefined();
+	});
+
+	it("keeps needs in document order and never counts failure edges", () => {
+		const draft = draftOf([
+			stage("first", { onSuccess: ["join"] }),
+			stage("second", { onSuccess: ["join"] }),
+			stage("third", { onFailure: "join" }),
+			stage("join"),
 		]);
+		expect(reconcileNeeds(draft).stages[3].needs).toEqual(["first", "second"]);
 	});
 
-	it("skips dependsOn references to stages that do not exist", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a", "ghost"]));
-		expect(draftEdges(draft)).toEqual([{ id: "0->1", source: "0", target: "1", dep: "a", dependent: "b" }]);
+	it("rewrites a hand-authored needs that no longer matches the edges", () => {
+		const drifted = draftOf([
+			stage("a", { onSuccess: ["j"] }),
+			stage("b", { onSuccess: ["j"] }),
+			stage("j", { needs: ["a", "ghost"] }),
+		]);
+		expect(reconcileNeeds(drifted).stages[2].needs).toEqual(["a", "b"]);
 	});
 
-	it("keeps edges to duplicate-named dependents distinct", () => {
-		const draft = draftOf(stage("a"), stage("dup", ["a"]), stage("dup", ["a"]));
-		expect(draftEdges(draft).map((e) => e.id)).toEqual(["0->1", "0->2"]);
-	});
-});
-
-describe("removeDependency", () => {
-	it("removes a dependency from the exact stage index and drops the empty key", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]));
-		const next = removeDependency(draft, 1, "a");
-		expect(next.stages[1].dependsOn).toBeUndefined();
-		expect(draft.stages[1].dependsOn).toEqual(["a"]);
-	});
-
-	it("is a no-op for an out-of-range index", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]));
-		expect(removeDependency(draft, 9, "a")).toBe(draft);
-	});
-});
-
-describe("removeStage", () => {
-	it("removes the stage and scrubs it from other stages' dependsOn without mutating", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]), stage("c", ["a", "b"]));
-		const next = removeStage(draft, 0);
-		expect(next.stages.map((s) => s.name)).toEqual(["b", "c"]);
-		expect(next.stages[0].dependsOn).toBeUndefined();
-		expect(next.stages[1].dependsOn).toEqual(["b"]);
-		// Input untouched.
-		expect(draft.stages.map((s) => s.name)).toEqual(["a", "b", "c"]);
-		expect(draft.stages[1].dependsOn).toEqual(["a"]);
-		expect(draft.stages[2].dependsOn).toEqual(["a", "b"]);
-	});
-
-	it("removes an unnamed stage without touching other dependsOn lists", () => {
-		const draft = draftOf(stage("a"), stage(""), stage("b", ["a"]));
-		const next = removeStage(draft, 1);
-		expect(next.stages.map((s) => s.name)).toEqual(["a", "b"]);
-		expect(next.stages[1].dependsOn).toEqual(["a"]);
-	});
-
-	it("keeps dependsOn intact when a duplicate of the removed name survives", () => {
-		const draft = draftOf(stage("dup"), stage("dup"), stage("c", ["dup"]));
-		const next = removeStage(draft, 0);
-		expect(next.stages.map((s) => s.name)).toEqual(["dup", "c"]);
-		expect(next.stages[1].dependsOn).toEqual(["dup"]);
-	});
-
-	it("is a no-op for an out-of-range index", () => {
-		const draft = draftOf(stage("a"));
-		expect(removeStage(draft, 5)).toBe(draft);
-	});
-});
-
-describe("findCycle", () => {
-	it("flags a self-edge as a one-node cycle", () => {
-		expect(findCycle(draftOf(stage("a")), "a", "a")).toEqual(["a"]);
-	});
-
-	it("flags a direct two-stage cycle with its path", () => {
-		const draft = draftOf(stage("a", ["b"]), stage("b"));
-		// b already depends on nothing; a depends on b. Adding a to b's dependsOn
-		// closes b -> a -> b.
-		expect(findCycle(draft, "b", "a")).toEqual(["a", "b"]);
-	});
-
-	it("flags a transitive cycle through intermediate stages", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]), stage("c", ["b"]));
-		expect(findCycle(draft, "a", "c")).toEqual(["c", "b", "a"]);
-	});
-
-	it("returns null for an edge that keeps the graph acyclic", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]));
-		expect(findCycle(draft, "c", "b")).toBeNull();
+	it("returns the same draft when nothing needs changing", () => {
+		const draft = fanOutDraft();
+		expect(reconcileNeeds(draft)).toBe(draft);
 	});
 });
 
 describe("applyConnection", () => {
-	it("adds source to target's dependsOn (drawing dep -> dependent, by node id)", () => {
-		const result = applyConnection(draftOf(stage("a"), stage("b")), "0", "1");
-		expect(result.kind).toBe("added");
-		if (result.kind === "added") expect(result.draft.stages[1].dependsOn).toEqual(["a"]);
+	it("appends a success successor", () => {
+		const draft = draftOf([stage("a", { onSuccess: ["b"] }), stage("b"), stage("c")]);
+		const result = applyConnection(draft, "0", "2", "success");
+		expect(result.kind === "added" && result.draft.stages[0].onSuccess).toEqual(["b", "c"]);
 	});
 
-	it("blocks a self-edge as a cycle", () => {
-		const result = applyConnection(draftOf(stage("a")), "0", "0");
-		expect(result).toEqual({ kind: "cycle", path: ["a"] });
+	it("replaces the single failure successor", () => {
+		const draft = draftOf([stage("a", { onFailure: "b" }), stage("b"), stage("c")]);
+		const result = applyConnection(draft, "0", "2", "failure");
+		expect(result.kind === "added" && result.draft.stages[0].onFailure).toBe("c");
 	});
 
-	it("blocks an edge that would close a dependency cycle", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]), stage("c", ["b"]));
-		const result = applyConnection(draft, "2", "0");
-		expect(result).toEqual({ kind: "cycle", path: ["c", "b", "a"] });
+	it("blocks a self-edge and a closing edge, returning the path", () => {
+		const draft = draftOf([stage("a", { onSuccess: ["b"] }), stage("b")]);
+		expect(applyConnection(draft, "0", "0", "success")).toEqual({ kind: "cycle", path: ["a"] });
+		expect(applyConnection(draft, "1", "0", "failure")).toEqual({ kind: "cycle", path: ["a", "b", "a"] });
 	});
 
-	it("is a noop for an existing dependency, unknown endpoints, or unnamed stages", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]));
-		expect(applyConnection(draft, "0", "1")).toEqual({ kind: "noop" });
-		expect(applyConnection(draft, "9", "1")).toEqual({ kind: "noop" });
-		expect(applyConnection(draftOf(stage(""), stage("b")), "0", "1")).toEqual({ kind: "noop" });
-	});
-});
-
-describe("cycleMembers / isEdgeInCycle", () => {
-	it("marks the stages and edges on a cycle already present in the draft", () => {
-		const draft = draftOf(stage("intake"), stage("fix", ["verify", "intake"]), stage("verify", ["fix"]));
-		expect(cycleMembers(draft)).toEqual(new Set(["fix", "verify"]));
-		expect(isEdgeInCycle(draft, { id: "2->1", source: "2", target: "1", dep: "verify", dependent: "fix" })).toBe(true);
-		expect(isEdgeInCycle(draft, { id: "0->1", source: "0", target: "1", dep: "intake", dependent: "fix" })).toBe(false);
-	});
-
-	it("is empty for an acyclic draft", () => {
-		expect(cycleMembers(draftOf(stage("a"), stage("b", ["a"])))).toEqual(new Set());
+	it("is a no-op for an existing edge or an unnamed endpoint", () => {
+		const draft = draftOf([stage("a", { onSuccess: ["b"] }), stage("b"), stage("")]);
+		expect(applyConnection(draft, "0", "1", "success")).toEqual({ kind: "noop" });
+		expect(applyConnection(draft, "0", "2", "success")).toEqual({ kind: "noop" });
+		expect(applyConnection(draft, "0", "9", "success")).toEqual({ kind: "noop" });
 	});
 });
 
-describe("layoutPositions", () => {
-	it("assigns every stage a position with dependencies left of dependents", () => {
-		const draft = draftOf(stage("a"), stage("b", ["a"]), stage("c", ["b"]));
-		const positions = layoutPositions(draft);
-		expect(Object.keys(positions).sort()).toEqual(["0", "1", "2"]);
-		expect(positions["0"].x).toBeLessThan(positions["1"].x);
-		expect(positions["1"].x).toBeLessThan(positions["2"].x);
+describe("removeConnection", () => {
+	it("clears the failure successor", () => {
+		const after = removeConnection(draftOf([stage("a", { onFailure: "b" }), stage("b")]), 0, "b", "failure");
+		expect(after.stages[0].onFailure).toBeUndefined();
 	});
 
-	it("separates independent stages instead of stacking them at one point", () => {
-		const positions = layoutPositions(draftOf(stage("a"), stage("b")));
-		expect(positions["0"]).not.toEqual(positions["1"]);
+	it("leaves a synthetic default-failure edge alone", () => {
+		const draft = draftOf([stage("a"), stage("notify")], { defaults: { onFailure: "notify" } });
+		expect(removeConnection(draft, 0, "notify", "default-failure")).toBe(draft);
+	});
+});
+
+describe("removeStage", () => {
+	it("scrubs every reference to the removed stage", () => {
+		const after = removeStage(fanOutDraft(), 1); // b
+		expect(after.stages.map((s) => s.id)).toEqual(["a", "c", "d", "diag", "notify"]);
+		expect(after.stages[0].onSuccess).toEqual(["c"]);
+		// d is down to one inbound success edge, so its needs key goes away.
+		expect(after.stages[2].needs).toBeUndefined();
+	});
+
+	it("clears defaults.onFailure when its target is removed", () => {
+		const after = removeStage(fanOutDraft(), 5); // notify
+		expect(after.defaults).toBeUndefined();
+	});
+
+	it("keeps edges alive when a duplicate id remains", () => {
+		const draft = draftOf([stage("a", { onSuccess: ["dup"] }), stage("dup"), stage("dup")]);
+		expect(removeStage(draft, 2).stages[0].onSuccess).toEqual(["dup"]);
+	});
+
+	it("is a no-op out of range", () => {
+		const draft = fanOutDraft();
+		expect(removeStage(draft, 99)).toBe(draft);
 	});
 });
 
 describe("addStage", () => {
-	it("appends a default agent stage under the first unused stage-N name", () => {
-		const { draft, name } = addStage(draftOf(stage("a")));
-		expect(name).toBe("stage-2");
-		expect(draft.stages).toHaveLength(2);
-		expect(draft.stages[1]).toEqual({
-			name: "stage-2",
-			trigger: { on: ["manual"] },
-			executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-		});
+	it("appends an agent stage under the first unused id", () => {
+		const { draft, id } = addStage(draftOf([stage("stage-2")]));
+		expect(id).toBe("stage-3");
+		expect(draft.stages[1]).toMatchObject({ id: "stage-3", executor: "agent" });
 	});
+});
 
-	it("skips names already taken", () => {
-		const { name } = addStage(draftOf(stage("stage-2")));
-		expect(name).toBe("stage-3");
+describe("effectiveDeadline", () => {
+	it("prefers the stage, then the pipeline default, then the engine fallback", () => {
+		const draft = draftOf([stage("a", { deadline: "40m" }), stage("b")], { defaults: { deadline: "45m" } });
+		expect(effectiveDeadline(draft, draft.stages[0])).toBe("40m");
+		expect(effectiveDeadline(draft, draft.stages[1])).toBe("45m");
+		expect(effectiveDeadline(draftOf([stage("b")]), stage("b"))).toBe("30m");
 	});
 });

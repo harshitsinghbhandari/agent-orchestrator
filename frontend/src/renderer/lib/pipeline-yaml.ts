@@ -76,12 +76,15 @@ export function countStagesFromYaml(source: string): number | null {
 // Starter document offered when creating a new definition, so the editor is
 // never empty and authors get a valid-shaped skeleton to edit.
 export const DEFAULT_PIPELINE_YAML = `name: my-pipeline
+
 stages:
-  - name: review
-    trigger:
-      on: [manual]
-    executor:
-      kind: agent
-      plugin: claude-code
-      mode: review
+  - id: review
+    executor: agent
+    agent: claude-code
+    produces: review.md
+    deadline: 20m
+    prompt: |
+      Review the diff.
+      Write your review to $AO_OUTPUT, then \`ao pipeline done\`.
+      If the change cannot be reviewed, \`ao pipeline fail --reason "..."\`.
 `;

@@ -18,7 +18,6 @@ import { NewPipelineModal, type NewPipelineChoice } from "./NewPipelineModal";
 import { PipelineCanvas } from "./PipelineCanvas";
 import { PipelineProblemsPanel, type PipelineProblem } from "./PipelineProblemsPanel";
 import { PipelineSettingsModal } from "./PipelineSettingsModal";
-import { PredicateBuilderModal } from "./PredicateBuilderModal";
 import { StageInspector } from "./StageInspector";
 import { YamlEditor } from "./YamlEditor";
 import { Button } from "./ui/button";
@@ -241,7 +240,6 @@ function DefinitionEditor({
 	// on the next buffer change (they describe a buffer that no longer exists).
 	const [saveIssues, setSaveIssues] = useState<PipelineValidationIssue[] | null>(null);
 	const [genericError, setGenericError] = useState<string | null>(null);
-	const [conditionOpen, setConditionOpen] = useState(false);
 
 	useEffect(() => setSaveIssues(null), [yamlSource]);
 
@@ -249,21 +247,21 @@ function DefinitionEditor({
 	const isSaving = mutation.isPending;
 
 	// The selection holds the node id (the stage's index), so the lookup works
-	// for empty and duplicate names too; a YAML edit that shrank the stage list
+	// for empty and duplicate ids too; a YAML edit that shrank the stage list
 	// past the index just resolves to no stage (the inspector closes).
 	const selectedIndex = stageIndexFromNodeId(selection.selectedStage);
 	const selectedStageDraft = selectedIndex >= 0 ? (draft.stages[selectedIndex] ?? null) : null;
-	const stageNames = draft.stages.map((s) => s.name).filter(Boolean);
+	const stageIds = draft.stages.map((s) => s.id).filter(Boolean);
 
 	// Inspector edits replace the selected stage in place; a rename keeps the
-	// selection (the index identity is name-independent).
+	// selection (the index identity is id-independent).
 	const updateSelectedStage = (next: StageDraft) => {
 		if (!selectedStageDraft) return;
 		setDraft({ ...draft, stages: draft.stages.map((s, i) => (i === selectedIndex ? next : s)) });
 	};
 
-	// Delete from the inspector: drop the stage, scrub dependsOn (removeStage),
-	// and clear the now-dangling selection.
+	// Delete from the inspector: drop the stage, scrub the routing keys that
+	// named it (removeStage), and clear the now-dangling selection.
 	const deleteSelectedStage = () => {
 		if (!selectedStageDraft) return;
 		setDraft(removeStage(draft, selectedIndex));
@@ -291,15 +289,15 @@ function DefinitionEditor({
 	const blocked = problems.length > 0;
 
 	// Reveal + node select scroll the YAML pane to the stage's block (located by
-	// name; an unnamed stage has no block to target). The buffer and the name
-	// are read through refs so scrolling happens on selection changes only, not
-	// on every keystroke.
+	// id; a stage with an empty id has no block to target). The buffer and the
+	// id are read through refs so scrolling happens on selection changes only,
+	// not on every keystroke.
 	const yamlRef = useRef(yamlSource);
 	yamlRef.current = yamlSource;
-	const selectedNameRef = useRef(selectedStageDraft?.name ?? "");
-	selectedNameRef.current = selectedStageDraft?.name ?? "";
+	const selectedIdRef = useRef(selectedStageDraft?.id ?? "");
+	selectedIdRef.current = selectedStageDraft?.id ?? "";
 	const revealLine = useMemo(
-		() => (selection.selectedStage !== null ? stageYamlLine(yamlRef.current, selectedNameRef.current) : null),
+		() => (selection.selectedStage !== null ? stageYamlLine(yamlRef.current, selectedIdRef.current) : null),
 		[selection.selectedStage],
 	);
 
@@ -354,12 +352,11 @@ function DefinitionEditor({
 							<div className="w-80 shrink-0">
 								<StageInspector
 									// Remount per node id so field-local state never leaks
-									// between stages (duplicate names share no identity).
+									// between stages (duplicate ids share no identity).
 									key={selection.selectedStage}
 									stage={selectedStageDraft}
-									stageNames={stageNames}
+									stageIds={stageIds}
 									onChange={updateSelectedStage}
-									onEditCondition={() => setConditionOpen(true)}
 									onClose={() => selection.selectStage(null)}
 									onDelete={deleteSelectedStage}
 								/>
@@ -422,21 +419,6 @@ function DefinitionEditor({
 			)}
 
 			<PipelineProblemsPanel problems={problems} onReveal={(stage) => selection.selectStage(stage)} />
-
-			{selectedStageDraft && (
-				<PredicateBuilderModal
-					open={conditionOpen}
-					title={`Run condition · ${selectedStageDraft.name || "(unnamed)"}`}
-					value={selectedStageDraft.routes?.when}
-					stageNames={stageNames}
-					onCancel={() => setConditionOpen(false)}
-					onDone={(value) => {
-						setConditionOpen(false);
-						const { routes: _routes, ...rest } = selectedStageDraft;
-						updateSelectedStage(value ? { ...selectedStageDraft, routes: { when: value } } : rest);
-					}}
-				/>
-			)}
 		</div>
 	);
 }

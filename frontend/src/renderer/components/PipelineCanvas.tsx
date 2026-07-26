@@ -22,11 +22,11 @@ import type { ExecutorKind, PipelineDraft, StageDraft } from "../lib/pipeline-dr
 import {
 	addStage,
 	applyConnection,
-	cycleMembers,
+	cycleStageIds,
 	draftEdges,
 	isEdgeInCycle,
 	layoutPositions,
-	removeDependency,
+	removeConnection,
 	removeStage,
 	STAGE_NODE_HEIGHT,
 	STAGE_NODE_WIDTH,
@@ -34,22 +34,25 @@ import {
 	stageNodeId,
 	type StagePosition,
 } from "../lib/pipeline-graph";
-import { summarizePredicate } from "../lib/predicate-summary";
 import type { StageSelection } from "../hooks/useStageSelection";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
 // The node-graph canvas (mockup 1a): one card per StageDraft, edges rendered
-// dependency -> dependent (execution order). Every edit routes through the
+// in execution order (routing stage -> successor). Every edit routes through the
 // draft via onDraftChange (usePipelineDraft.setDraft), so serialization and
 // validation stay centralized. Selection flows through the editor shell's
 // useStageSelection instance (V3's shared hook): node clicks call selectStage
 // with the node id (the stage's index, see stageNodeId), and the inspector
 // binds to the same id, so empty- and duplicate-named stages stay selectable.
 //
-// Cycle handling (mockup 1d): a connect attempt that would close a dependency
+// Cycle handling (mockup 1d): a connect attempt that would close a routing
 // cycle is blocked and flashed as a red dashed edge; cycles already present in
 // the draft (authored in YAML mode) render the same persistent red treatment.
+//
+// ponytail: this is the v2 stub, not the v2 canvas. Connecting always draws a
+// success edge and the cards carry no produces/deadline/needs chips. Task 21
+// owns the real rewrite (two source handles, badges, edge treatments).
 
 export interface PipelineCanvasProps {
 	draft: PipelineDraft;
@@ -81,7 +84,7 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	const [positions, setPositions] = useState<Record<string, StagePosition>>(() => layoutPositions(draft));
 	const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
 	// The blocked connect attempt currently flashing red, if any: the endpoint
-	// node ids for the transient edge plus the cycle path as stage names.
+	// node ids for the transient edge plus the cycle path as stage ids.
 	const [flash, setFlash] = useState<{ sourceId: string; targetId: string; path: string[] } | null>(null);
 	const flashTimer = useRef<number | undefined>(undefined);
 
@@ -111,7 +114,7 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	useEffect(() => () => window.clearTimeout(flashTimer.current), []);
 
 	const nodes = useMemo<StageNodeType[]>(() => {
-		const persistent = cycleMembers(draft);
+		const persistent = cycleStageIds(draft);
 		// Index-based ids are unique by construction, so every stage renders,
 		// including duplicate-named ones (each independently selectable to fix).
 		return draft.stages.map((stage, i): StageNodeType => {
@@ -123,8 +126,8 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 				width: STAGE_NODE_WIDTH,
 				data: {
 					stage,
-					// Cycle membership is a config-level (name) property.
-					inCycle: persistent.has(stage.name) || (flash?.path.includes(stage.name) ?? false),
+					// Cycle membership is a config-level (stage id) property.
+					inCycle: persistent.has(stage.id) || (flash?.path.includes(stage.id) ?? false),
 					issues: stageIssues?.[id] ?? [],
 				},
 				selected: selected === id,
@@ -135,16 +138,22 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	const edges = useMemo<Edge[]>(() => {
 		const out: Edge[] = draftEdges(draft).map((edge) => {
 			const inCycle = isEdgeInCycle(draft, edge);
-			const stroke = inCycle ? "var(--color-error)" : "var(--color-border-strong)";
+			const failure = edge.kind !== "success";
+			const stroke = inCycle ? "var(--color-error)" : failure ? "var(--color-warning)" : "var(--color-border-strong)";
 			return {
 				id: edge.id,
 				source: edge.source,
 				target: edge.target,
-				data: { dep: edge.dep, dependent: edge.dependent },
+				data: { from: edge.from, to: edge.to, kind: edge.kind },
 				selected: selectedEdgeIds.has(edge.id),
-				style: { stroke, strokeWidth: 1.5, ...(inCycle ? { strokeDasharray: "6 4" } : {}) },
+				style: {
+					stroke,
+					strokeWidth: 1.5,
+					...(inCycle || failure ? { strokeDasharray: "6 4" } : {}),
+					...(edge.kind === "default-failure" ? { opacity: 0.5 } : {}),
+				},
 				markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: stroke },
-				...(inCycle ? { animated: true, ariaLabel: `Dependency cycle edge ${edge.id}` } : {}),
+				...(inCycle ? { animated: true, ariaLabel: `Routing cycle edge ${edge.id}` } : {}),
 			};
 		});
 		// The blocked attempt renders as a transient red dashed edge (mockup 1d);
@@ -226,7 +235,8 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 				} else if (change.type === "remove" && onDraftChange) {
 					const edge = draftEdges(next).find((e) => e.id === change.id);
 					if (!edge) continue;
-					next = removeDependency(next, stageIndexFromNodeId(edge.target), edge.dep);
+					// v2 routing keys live on the source stage, not the target.
+					next = removeConnection(next, stageIndexFromNodeId(edge.source), edge.to, edge.kind);
 					removed = true;
 				}
 			}
@@ -243,7 +253,9 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	const onConnect = useCallback(
 		(connection: Connection) => {
 			if (!onDraftChange || !connection.source || !connection.target) return;
-			const result = applyConnection(draftRef.current, connection.source, connection.target);
+			// Task 21 adds the second (failure) source handle; until then every
+			// drawn edge is a success edge.
+			const result = applyConnection(draftRef.current, connection.source, connection.target, "success");
 			if (result.kind === "added") {
 				draftRef.current = result.draft;
 				onDraftChange(result.draft);
@@ -340,35 +352,23 @@ function ZoomBar() {
 
 // --- stage node card ---------------------------------------------------------
 
-// Executor-kind treatments (mockup 1a: agent/command/builtin visually
-// distinct), restyled to the app tokens: agent = accent, command = warning,
-// builtin = purple.
+// Executor-kind treatments (mockup 1a), restyled to the app tokens: agent =
+// accent, command = warning. v2 has no builtin kind.
 const KIND_BADGE: Record<ExecutorKind, { letter: string; className: string; label: string }> = {
 	agent: { letter: "A", className: "bg-accent/15 text-accent", label: "Agent stage" },
 	command: { letter: "$", className: "bg-warning/15 text-warning", label: "Command stage" },
-	builtin: { letter: "f", className: "bg-purple-subtle text-purple-accent", label: "Builtin stage" },
 };
 
 function executorSubtitle(stage: StageDraft): string {
-	const ex = stage.executor;
-	switch (ex.kind) {
-		case "agent":
-			return [ex.plugin, ex.mode].filter(Boolean).join(" · ") || "agent";
-		case "command":
-			return [ex.command, ...(ex.args ?? [])].filter(Boolean).join(" ") || "command";
-		case "builtin":
-			return ex.name ?? "builtin";
-		default:
-			return "";
-	}
+	if (stage.executor === "agent") return stage.agent || "agent";
+	// The run script is a block scalar; the first line is what fits on a card.
+	return stage.run?.split("\n")[0]?.trim() || "command";
 }
 
 function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 	const { stage, inCycle, issues } = data;
-	const badge = KIND_BADGE[stage.executor.kind] ?? KIND_BADGE.agent;
-	const footer = [stage.workspace, stage.maxLoopRounds != null ? `${stage.maxLoopRounds} rounds` : null]
-		.filter(Boolean)
-		.join(" · ");
+	const badge = KIND_BADGE[stage.executor] ?? KIND_BADGE.agent;
+	const footer = [stage.workspace, stage.produces].filter(Boolean).join(" · ");
 
 	return (
 		<div
@@ -380,7 +380,7 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 						? "border-accent ring-1 ring-accent/40"
 						: "border-border hover:border-border-strong",
 			)}
-			data-stage-name={stage.name}
+			data-stage-id={stage.id}
 			data-in-cycle={inCycle || undefined}
 			data-issue-count={issues.length || undefined}
 		>
@@ -396,7 +396,7 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 					{badge.letter}
 				</span>
 				<span className="min-w-0 flex-1 truncate text-control font-semibold text-foreground">
-					{stage.name || "(unnamed)"}
+					{stage.id || "(unnamed)"}
 				</span>
 				{issues.length > 0 && (
 					<span
@@ -410,22 +410,10 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 			</div>
 			<p className="mt-1 truncate font-mono text-micro text-muted-foreground">{executorSubtitle(stage)}</p>
 			{issues.length > 0 && <p className="mt-1.5 truncate text-micro text-error">{issues[0]}</p>}
-			{stage.routes?.when && (
+			{inCycle && <p className="mt-1.5 text-micro text-error">in routing cycle</p>}
+			{footer && (
 				<p className="mt-1.5">
-					<span className="inline-block max-w-full truncate rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 font-mono text-micro text-warning">
-						when: {summarizePredicate(stage.routes.when)}
-					</span>
-				</p>
-			)}
-			{inCycle && <p className="mt-1.5 text-micro text-error">in dependency cycle</p>}
-			{(footer || stage.policy?.blocksMerge) && (
-				<p className="mt-1.5 flex items-center gap-1.5">
-					{footer && <span className="truncate text-micro text-passive">{footer}</span>}
-					{stage.policy?.blocksMerge && (
-						<span className="shrink-0 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 font-mono text-micro text-warning">
-							blocks merge
-						</span>
-					)}
+					<span className="truncate text-micro text-passive">{footer}</span>
 				</p>
 			)}
 			<Handle type="source" position={Position.Right} className="!size-2 !border-border-strong !bg-raised" />

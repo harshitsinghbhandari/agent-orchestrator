@@ -5,17 +5,12 @@ import { PipelineCanvas } from "./PipelineCanvas";
 import type { StageSelection } from "../hooks/useStageSelection";
 import type { PipelineDraft, StageDraft } from "../lib/pipeline-draft";
 
-function stage(name: string, overrides?: Partial<StageDraft>): StageDraft {
-	return {
-		name,
-		trigger: { on: ["manual"] },
-		executor: { kind: "agent", plugin: "claude-code", mode: "review" },
-		...overrides,
-	};
+function stage(id: string, overrides?: Partial<StageDraft>): StageDraft {
+	return { id, executor: "agent", agent: "claude-code", ...overrides };
 }
 
 function draftOf(...stages: StageDraft[]): PipelineDraft {
-	return { name: "pr-review-loop", stages };
+	return { name: "pr-review", stages };
 }
 
 function nodeX(container: HTMLElement, id: string): number {
@@ -32,31 +27,21 @@ function selectionOf(selectedStage: string | null = null) {
 describe("PipelineCanvas", () => {
 	it("renders one card per stage with executor-kind details", () => {
 		const draft = draftOf(
-			stage("review", {
-				routes: { when: { kind: "not", predicate: { kind: "no_open_findings" } } },
-				workspace: "isolated-rw",
-				maxLoopRounds: 5,
-			}),
-			stage("tests", { executor: { kind: "command", command: "npm", args: ["test"] } }),
-			stage("triage", { executor: { kind: "builtin", name: "compose" } }),
+			stage("review", { workspace: "stage", produces: "review.md" }),
+			stage("tests", { executor: "command", agent: undefined, run: "npm test\nnpm run lint" }),
 		);
 		render(<PipelineCanvas draft={draft} />);
 
 		expect(screen.getByText("review")).toBeInTheDocument();
-		expect(screen.getByText("claude-code · review")).toBeInTheDocument();
+		expect(screen.getByText("claude-code")).toBeInTheDocument();
 		expect(screen.getByLabelText("Agent stage")).toHaveTextContent("A");
 
 		expect(screen.getByText("tests")).toBeInTheDocument();
+		// A block-scalar run script shows its first line on the card.
 		expect(screen.getByText("npm test")).toBeInTheDocument();
 		expect(screen.getByLabelText("Command stage")).toHaveTextContent("$");
 
-		expect(screen.getByText("triage")).toBeInTheDocument();
-		expect(screen.getByText("compose")).toBeInTheDocument();
-		expect(screen.getByLabelText("Builtin stage")).toHaveTextContent("f");
-
-		// Routes chip + workspace/rounds footer (mockup 1a).
-		expect(screen.getByText("when: not( no_open_findings )")).toBeInTheDocument();
-		expect(screen.getByText("isolated-rw · 5 rounds")).toBeInTheDocument();
+		expect(screen.getByText("stage · review.md")).toBeInTheDocument();
 	});
 
 	it("appends a default stage through the draft on Add stage", async () => {
@@ -68,8 +53,8 @@ describe("PipelineCanvas", () => {
 
 		expect(onDraftChange).toHaveBeenCalledTimes(1);
 		const next = onDraftChange.mock.calls[0][0] as PipelineDraft;
-		expect(next.stages.map((s) => s.name)).toEqual(["review", "stage-2"]);
-		expect(next.stages[1].executor.kind).toBe("agent");
+		expect(next.stages.map((s) => s.id)).toEqual(["review", "stage-2"]);
+		expect(next.stages[1].executor).toBe("agent");
 		// The new stage's node id (its index) becomes the selection.
 		expect(selection.selectStage).toHaveBeenCalledWith("1");
 	});
@@ -99,7 +84,7 @@ describe("PipelineCanvas", () => {
 		expect(document.querySelector('.react-flow__node[data-id="0"]')).not.toHaveClass("selected");
 	});
 
-	it("renders empty- and duplicate-named stages as distinct selectable nodes", () => {
+	it("renders empty- and duplicate-id stages as distinct selectable nodes", () => {
 		const selection = selectionOf();
 		render(
 			<PipelineCanvas
@@ -119,11 +104,11 @@ describe("PipelineCanvas", () => {
 		expect(selection.selectStage).toHaveBeenLastCalledWith("2");
 	});
 
-	it("auto-layouts dependencies left of dependents", () => {
+	it("auto-layouts a stage left of its successors", () => {
 		const draft = draftOf(
-			stage("intake"),
-			stage("review", { dependsOn: ["intake"] }),
-			stage("fix", { dependsOn: ["review"] }),
+			stage("intake", { onSuccess: ["review"] }),
+			stage("review", { onSuccess: ["fix"] }),
+			stage("fix"),
 		);
 		const { container } = render(<PipelineCanvas draft={draft} />);
 
@@ -133,7 +118,7 @@ describe("PipelineCanvas", () => {
 
 	it("re-runs layout from the Auto-layout button", async () => {
 		const { container } = render(
-			<PipelineCanvas draft={draftOf(stage("a"), stage("b", { dependsOn: ["a"] }))} onDraftChange={vi.fn()} />,
+			<PipelineCanvas draft={draftOf(stage("a", { onSuccess: ["b"] }), stage("b"))} onDraftChange={vi.fn()} />,
 		);
 
 		await userEvent.setup().click(screen.getByRole("button", { name: /Auto-layout/ }));
@@ -144,7 +129,7 @@ describe("PipelineCanvas", () => {
 	it("removes the selected stage from the draft on Delete/Backspace", async () => {
 		const onDraftChange = vi.fn();
 		const selection = selectionOf("0");
-		const draft = draftOf(stage("review"), stage("fix", { dependsOn: ["review"] }));
+		const draft = draftOf(stage("review", { onSuccess: ["fix"] }), stage("fix"));
 		render(<PipelineCanvas draft={draft} onDraftChange={onDraftChange} selection={selection} />);
 
 		fireEvent.keyDown(document.querySelector(".react-flow")!, { key: "Backspace" });
@@ -153,9 +138,7 @@ describe("PipelineCanvas", () => {
 		// react-flow emits a remove for the connected edge too; the last draft
 		// carries the final state (edge scrub folded into the stage removal).
 		const next = onDraftChange.mock.calls.at(-1)![0] as PipelineDraft;
-		expect(next.stages.map((s) => s.name)).toEqual(["fix"]);
-		// The removed stage is scrubbed from the survivor's dependsOn.
-		expect(next.stages[0].dependsOn).toBeUndefined();
+		expect(next.stages.map((s) => s.id)).toEqual(["fix"]);
 		// The selection no longer points at anything.
 		expect(selection.selectStage).toHaveBeenCalledWith(null);
 	});
@@ -164,47 +147,33 @@ describe("PipelineCanvas", () => {
 	// a real browser; the draft -> edge mapping (add, remove, cycle styling) is
 	// covered by pipeline-graph.test.ts.
 
-	it("marks stages on an existing dependency cycle (mockup 1d)", () => {
+	it("marks stages on an existing routing cycle (mockup 1d)", () => {
 		const draft = draftOf(
-			stage("intake"),
-			stage("fix", { dependsOn: ["verify", "intake"] }),
-			stage("verify", { dependsOn: ["fix"] }),
+			stage("intake", { onSuccess: ["fix"] }),
+			stage("fix", { onSuccess: ["verify"] }),
+			stage("verify", { onFailure: "fix" }),
 		);
 		render(<PipelineCanvas draft={draft} />);
 
-		expect(screen.getAllByText("in dependency cycle")).toHaveLength(2);
-		expect(document.querySelector('[data-stage-name="fix"]')).toHaveAttribute("data-in-cycle");
-		expect(document.querySelector('[data-stage-name="verify"]')).toHaveAttribute("data-in-cycle");
-		expect(document.querySelector('[data-stage-name="intake"]')).not.toHaveAttribute("data-in-cycle");
+		expect(screen.getAllByText("in routing cycle")).toHaveLength(2);
+		expect(document.querySelector('[data-stage-id="fix"]')).toHaveAttribute("data-in-cycle");
+		expect(document.querySelector('[data-stage-id="verify"]')).toHaveAttribute("data-in-cycle");
+		expect(document.querySelector('[data-stage-id="intake"]')).not.toHaveAttribute("data-in-cycle");
 	});
 
 	it("renders validation badges on affected nodes (mockup 1d)", () => {
 		render(
 			<PipelineCanvas
 				draft={draftOf(stage("review"), stage("fix"))}
-				stageIssues={{ "0": ["task.prompt is required", "unknown plugin"] }}
+				stageIssues={{ "0": ["prompt is required", "unknown agent"] }}
 			/>,
 		);
 
 		expect(screen.getByLabelText("2 validation problems")).toBeInTheDocument();
 		// The first message renders inline on the card.
-		expect(screen.getByText("task.prompt is required")).toBeInTheDocument();
-		expect(document.querySelector('[data-stage-name="review"]')).toHaveAttribute("data-issue-count", "2");
-		expect(document.querySelector('[data-stage-name="fix"]')).not.toHaveAttribute("data-issue-count");
-	});
-
-	it("shows a blocks-merge badge for a stage whose policy.blocksMerge is true", () => {
-		const draft = draftOf(
-			stage("review", { policy: { blocksMerge: true } }),
-			stage("fix", { policy: { blocksMerge: false } }),
-			stage("triage"),
-		);
-		render(<PipelineCanvas draft={draft} />);
-
-		expect(screen.getAllByText("blocks merge")).toHaveLength(1);
-		expect(document.querySelector('[data-stage-name="review"] span.text-warning')).toHaveTextContent("blocks merge");
-		expect(document.querySelector('[data-stage-name="fix"]')).not.toHaveTextContent("blocks merge");
-		expect(document.querySelector('[data-stage-name="triage"]')).not.toHaveTextContent("blocks merge");
+		expect(screen.getByText("prompt is required")).toBeInTheDocument();
+		expect(document.querySelector('[data-stage-id="review"]')).toHaveAttribute("data-issue-count", "2");
+		expect(document.querySelector('[data-stage-id="fix"]')).not.toHaveAttribute("data-issue-count");
 	});
 
 	it("shows the zoom indicator and view controls", () => {
