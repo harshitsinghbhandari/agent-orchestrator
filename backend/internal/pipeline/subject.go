@@ -47,6 +47,11 @@ type PRRef struct {
 // the one thing that decides whether `workspace: session` is possible.
 func (s Subject) HasSession() bool { return s.SessionID != "" }
 
+// FromForkPR reports whether the subject is a pull request from a fork, the
+// one condition that forces identity-only env for the whole run (spec section
+// 8, decision D17).
+func (s Subject) FromForkPR() bool { return s.PR != nil && s.PR.FromFork }
+
 // DefaultScope is the subject's natural concurrency scope, used when the
 // pipeline declares none (spec section 10).
 func (s Subject) DefaultScope() ConcurrencyScope {

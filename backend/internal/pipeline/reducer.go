@@ -97,7 +97,7 @@ func reduceTriggerFired(run RunState, e TriggerFired) (RunState, []Effect) {
 	next.UpdatedAt = e.Now
 	next.Stages = map[string]*StageState{}
 
-	plan, err := ComputePlan(&next.Def, e.Subject)
+	plan, err := ComputePlan(&next.Def, e.Subject, KnownCredentialSet(e.KnownCredentials))
 	if err != nil {
 		return failAtPlanTime(next, err, e.Now)
 	}

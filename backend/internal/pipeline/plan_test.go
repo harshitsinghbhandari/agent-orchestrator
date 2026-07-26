@@ -18,7 +18,7 @@ func prSubject(number int) Subject {
 func TestComputePlan_ReleaseExampleReachesEveryStage(t *testing.T) {
 	def := mustParse(t, releaseYAML(t))
 
-	plan, err := ComputePlan(def, prSubject(412))
+	plan, err := ComputePlan(def, prSubject(412), nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestComputePlan_ReleaseExampleReachesEveryStage(t *testing.T) {
 func TestComputePlan_EffectiveDeadlines(t *testing.T) {
 	def := mustParse(t, releaseYAML(t))
 
-	plan, err := ComputePlan(def, prSubject(412))
+	plan, err := ComputePlan(def, prSubject(412), nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -73,7 +73,7 @@ stages:
     run: "true"
     deadline: 5m
 `))
-	plan, err := ComputePlan(def, Subject{Kind: SubjectProject, ProjectID: "proj"})
+	plan, err := ComputePlan(def, Subject{Kind: SubjectProject, ProjectID: "proj"}, nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -88,7 +88,7 @@ stages:
 func TestComputePlan_ReleaseExampleWorkspaces(t *testing.T) {
 	def := mustParse(t, releaseYAML(t))
 
-	plan, err := ComputePlan(def, prSubject(412))
+	plan, err := ComputePlan(def, prSubject(412), nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -131,7 +131,7 @@ stages:
 `))
 
 	t.Run("subject with a session", func(t *testing.T) {
-		plan, err := ComputePlan(def, Subject{Kind: SubjectSession, ProjectID: "proj", SessionID: "sess-1"})
+		plan, err := ComputePlan(def, Subject{Kind: SubjectSession, ProjectID: "proj", SessionID: "sess-1"}, nil)
 		if err != nil {
 			t.Fatalf("ComputePlan: %v", err)
 		}
@@ -144,7 +144,7 @@ stages:
 	})
 
 	t.Run("subject without a session", func(t *testing.T) {
-		plan, err := ComputePlan(def, prSubject(412))
+		plan, err := ComputePlan(def, prSubject(412), nil)
 		if err != nil {
 			t.Fatalf("ComputePlan: %v", err)
 		}
@@ -168,7 +168,7 @@ stages:
     prompt: hi
     workspace: session
 `))
-	_, err := ComputePlan(def, prSubject(412))
+	_, err := ComputePlan(def, prSubject(412), nil)
 	if err == nil {
 		t.Fatal("expected ComputePlan to fail, got nil")
 	}
@@ -190,7 +190,7 @@ stages:
 `))
 	subject := prSubject(412)
 	subject.SessionID = "sess-1"
-	plan, err := ComputePlan(def, subject)
+	plan, err := ComputePlan(def, subject, nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -212,7 +212,7 @@ stages:
     run: "true"
     workspace: session
 `))
-	plan, err := ComputePlan(def, prSubject(412))
+	plan, err := ComputePlan(def, prSubject(412), nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}
@@ -225,7 +225,7 @@ stages:
 }
 
 func TestComputePlan_NoStages(t *testing.T) {
-	_, err := ComputePlan(&Pipeline{Name: "p"}, prSubject(1))
+	_, err := ComputePlan(&Pipeline{Name: "p"}, prSubject(1), nil)
 	if err == nil || !strings.Contains(err.Error(), "no stages") {
 		t.Fatalf("error = %v, want a no-stages error", err)
 	}
@@ -247,7 +247,7 @@ stages:
     executor: command
     run: "true"
 `))
-	plan, err := ComputePlan(def, prSubject(412))
+	plan, err := ComputePlan(def, prSubject(412), nil)
 	if err != nil {
 		t.Fatalf("ComputePlan: %v", err)
 	}

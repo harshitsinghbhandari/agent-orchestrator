@@ -29,7 +29,12 @@ type TriggerFired struct {
 	Subject Subject
 	RunID   RunID
 	RunDir  string
-	Now     time.Time
+	// KnownCredentials names the credentials the project defines, stamped by
+	// the driver the same way Now is, so the pure reducer can plan without
+	// reaching for the credential store. Nil means the driver did not supply
+	// them and the plan-time unknown-credential check is skipped.
+	KnownCredentials []string
+	Now              time.Time
 }
 
 // When implements Event.
