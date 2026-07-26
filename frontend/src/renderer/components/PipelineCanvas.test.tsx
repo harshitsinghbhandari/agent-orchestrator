@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { PipelineCanvas } from "./PipelineCanvas";
+import { edgeAppearance, PipelineCanvas } from "./PipelineCanvas";
 import type { StageSelection } from "../hooks/useStageSelection";
 import type { PipelineDraft, StageDraft } from "../lib/pipeline-draft";
 
@@ -41,7 +41,57 @@ describe("PipelineCanvas", () => {
 		expect(screen.getByText("npm test")).toBeInTheDocument();
 		expect(screen.getByLabelText("Command stage")).toHaveTextContent("$");
 
-		expect(screen.getByText("stage · review.md")).toBeInTheDocument();
+		// Explicit workspace and the declared artifact each get their own chip.
+		expect(screen.getByText("stage")).toBeInTheDocument();
+		expect(screen.getByText("review.md")).toBeInTheDocument();
+	});
+
+	it("shows the effective deadline on every card (spec §13.1)", () => {
+		const draft: PipelineDraft = {
+			name: "release",
+			defaults: { deadline: "45m" },
+			stages: [stage("build", { deadline: "10m" }), stage("sign")],
+		};
+		render(<PipelineCanvas draft={draft} />);
+
+		// The stage's own deadline wins; the other inherits the pipeline default.
+		expect(screen.getByText("10m")).toBeInTheDocument();
+		expect(screen.getByText("45m")).toBeInTheDocument();
+	});
+
+	it("falls back to the engine default deadline when nothing declares one", () => {
+		render(<PipelineCanvas draft={draftOf(stage("review"))} />);
+		expect(screen.getByText("30m")).toBeInTheDocument();
+	});
+
+	it("shows a needs chip on join nodes only", () => {
+		render(<PipelineCanvas draft={draftOf(stage("gate", { needs: ["review", "tests"] }), stage("review"))} />);
+
+		expect(screen.getByText("needs 2")).toBeInTheDocument();
+		expect(document.querySelector('[data-stage-id="review"]')).not.toHaveTextContent("needs");
+	});
+
+	it("warns on workspace session under a pr trigger (spec §5.3)", () => {
+		const withPr: PipelineDraft = {
+			name: "pr-review",
+			on: { pr: ["created"] },
+			stages: [stage("review", { workspace: "session" })],
+		};
+		const { unmount } = render(<PipelineCanvas draft={withPr} />);
+		expect(screen.getByLabelText(/no session/i)).toBeInTheDocument();
+		unmount();
+
+		// Same stage without a pr.* trigger: the subject always has a session.
+		render(<PipelineCanvas draft={draftOf(stage("review", { workspace: "session" }))} />);
+		expect(screen.queryByLabelText(/no session/i)).not.toBeInTheDocument();
+	});
+
+	it("offers a success and a failure source handle per stage", () => {
+		render(<PipelineCanvas draft={draftOf(stage("review"))} onDraftChange={vi.fn()} />);
+
+		// Which handle an edge leaves picks its kind (plan Task 21).
+		expect(document.querySelector('[data-handleid="success"]')).toBeInTheDocument();
+		expect(document.querySelector('[data-handleid="failure"]')).toBeInTheDocument();
 	});
 
 	it("appends a default stage through the draft on Add stage", async () => {
@@ -183,5 +233,37 @@ describe("PipelineCanvas", () => {
 		expect(screen.getByRole("button", { name: "Zoom in" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Zoom out" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Fit view" })).toBeInTheDocument();
+	});
+});
+
+// Edge DOM rendering needs measured node dimensions React Flow only gets in a
+// real browser, so the three treatments are asserted on the pure style mapping.
+describe("edgeAppearance", () => {
+	it("draws success solid accent, failure dashed destructive, defaults dashed faint", () => {
+		const success = edgeAppearance("success", false);
+		const failure = edgeAppearance("failure", false);
+		const synthetic = edgeAppearance("default-failure", false);
+
+		expect(success.strokeDasharray).toBeUndefined();
+		expect(success.stroke).toBe("var(--color-accent)");
+
+		expect(failure.strokeDasharray).toBeTruthy();
+		expect(failure.stroke).toBe("var(--color-destructive)");
+
+		// Synthetic defaults.on_failure edges: same tone, dashed, visibly fainter.
+		// Faintness rides on the stroke color, not opacity, so the arrowhead fades
+		// with the line instead of staying solid.
+		expect(synthetic.strokeDasharray).toBeTruthy();
+		expect(synthetic.stroke).toContain("var(--color-destructive)");
+		expect(synthetic.stroke).toContain("transparent");
+
+		const fingerprint = (a: ReturnType<typeof edgeAppearance>) => JSON.stringify(a);
+		expect(new Set([success, failure, synthetic].map(fingerprint)).size).toBe(3);
+	});
+
+	it("overrides every kind with the cycle treatment", () => {
+		for (const kind of ["success", "failure", "default-failure"] as const) {
+			expect(edgeAppearance(kind, true).stroke).toBe("var(--color-error)");
+		}
 	});
 });

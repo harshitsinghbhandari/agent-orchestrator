@@ -17,13 +17,14 @@ import {
 	type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { AlertCircle, Maximize, Minus, Plus, Sparkles } from "lucide-react";
+import { AlertCircle, AlertTriangle, Clock, FileText, GitMerge, Maximize, Minus, Plus, Sparkles } from "lucide-react";
 import type { ExecutorKind, PipelineDraft, StageDraft } from "../lib/pipeline-draft";
 import {
 	addStage,
 	applyConnection,
 	cycleStageIds,
 	draftEdges,
+	effectiveDeadline,
 	isEdgeInCycle,
 	layoutPositions,
 	removeConnection,
@@ -32,9 +33,12 @@ import {
 	STAGE_NODE_WIDTH,
 	stageIndexFromNodeId,
 	stageNodeId,
+	type ConnectableEdgeKind,
+	type EdgeKind,
 	type StagePosition,
 } from "../lib/pipeline-graph";
 import type { StageSelection } from "../hooks/useStageSelection";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
@@ -50,9 +54,10 @@ import { cn } from "../lib/utils";
 // cycle is blocked and flashed as a red dashed edge; cycles already present in
 // the draft (authored in YAML mode) render the same persistent red treatment.
 //
-// ponytail: this is the v2 stub, not the v2 canvas. Connecting always draws a
-// success edge and the cards carry no produces/deadline/needs chips. Task 21
-// owns the real rewrite (two source handles, badges, edge treatments).
+// v2 routing is a state machine with two edge kinds, so every card carries two
+// source handles: right = on_success, bottom = on_failure. Which handle the
+// drag leaves picks the kind, so there is no modifier key to discover and the
+// drawn edge reads the same as the rendered one.
 
 export interface PipelineCanvasProps {
 	draft: PipelineDraft;
@@ -67,7 +72,24 @@ export interface PipelineCanvasProps {
 
 const CYCLE_FLASH_MS = 1800;
 
-type StageNodeType = Node<{ stage: StageDraft; inCycle: boolean; issues: string[] }, "stage">;
+type StageNodeData = {
+	stage: StageDraft;
+	inCycle: boolean;
+	issues: string[];
+	// The bound the engine will actually enforce, inherited or explicit (spec
+	// §13.1: deadlines are defaulted, so the card is where they stay visible).
+	deadline: string;
+	// Spec §5.3: `workspace: session` under a `pr.*` trigger cannot be rejected
+	// at edit time (the PR may or may not have a session) but fails the run at
+	// plan time, so the card warns.
+	sessionUnderPr: boolean;
+};
+
+type StageNodeType = Node<StageNodeData, "stage">;
+
+// The source handle ids double as the edge kind a drag off them produces.
+const SUCCESS_HANDLE: ConnectableEdgeKind = "success";
+const FAILURE_HANDLE: ConnectableEdgeKind = "failure";
 
 export function PipelineCanvas({ draft, onDraftChange, selection, stageIssues }: PipelineCanvasProps) {
 	return (
@@ -85,7 +107,12 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
 	// The blocked connect attempt currently flashing red, if any: the endpoint
 	// node ids for the transient edge plus the cycle path as stage ids.
-	const [flash, setFlash] = useState<{ sourceId: string; targetId: string; path: string[] } | null>(null);
+	const [flash, setFlash] = useState<{
+		sourceId: string;
+		targetId: string;
+		kind: ConnectableEdgeKind;
+		path: string[];
+	} | null>(null);
 	const flashTimer = useRef<number | undefined>(undefined);
 
 	// The handlers read the latest draft through a ref so their identity stays
@@ -115,6 +142,7 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 
 	const nodes = useMemo<StageNodeType[]>(() => {
 		const persistent = cycleStageIds(draft);
+		const prTriggered = (draft.on?.pr?.length ?? 0) > 0;
 		// Index-based ids are unique by construction, so every stage renders,
 		// including duplicate-named ones (each independently selectable to fix).
 		return draft.stages.map((stage, i): StageNodeType => {
@@ -129,6 +157,8 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 					// Cycle membership is a config-level (stage id) property.
 					inCycle: persistent.has(stage.id) || (flash?.path.includes(stage.id) ?? false),
 					issues: stageIssues?.[id] ?? [],
+					deadline: effectiveDeadline(draft, stage),
+					sessionUnderPr: prTriggered && stage.workspace === "session",
 				},
 				selected: selected === id,
 			};
@@ -138,37 +168,37 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	const edges = useMemo<Edge[]>(() => {
 		const out: Edge[] = draftEdges(draft).map((edge) => {
 			const inCycle = isEdgeInCycle(draft, edge);
-			const failure = edge.kind !== "success";
-			const stroke = inCycle ? "var(--color-error)" : failure ? "var(--color-warning)" : "var(--color-border-strong)";
+			const style = edgeAppearance(edge.kind, inCycle);
 			return {
 				id: edge.id,
 				source: edge.source,
 				target: edge.target,
+				// The kind decides which source handle the edge leaves, so the drawn
+				// gesture and the rendered edge use the same geometry.
+				sourceHandle: edge.kind === "success" ? SUCCESS_HANDLE : FAILURE_HANDLE,
 				data: { from: edge.from, to: edge.to, kind: edge.kind },
 				selected: selectedEdgeIds.has(edge.id),
-				style: {
-					stroke,
-					strokeWidth: 1.5,
-					...(inCycle || failure ? { strokeDasharray: "6 4" } : {}),
-					...(edge.kind === "default-failure" ? { opacity: 0.5 } : {}),
-				},
-				markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: stroke },
-				...(inCycle ? { animated: true, ariaLabel: `Routing cycle edge ${edge.id}` } : {}),
+				ariaLabel: `${EDGE_KIND_LABEL[edge.kind]} edge from ${edge.from} to ${edge.to}`,
+				style,
+				markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: style.stroke },
+				...(inCycle ? { animated: true } : {}),
 			};
 		});
 		// The blocked attempt renders as a transient red dashed edge (mockup 1d);
 		// a blocked self-edge shows only the node highlight.
 		if (flash && flash.sourceId !== flash.targetId) {
+			const style = edgeAppearance(flash.kind, true);
 			out.push({
 				id: "__cycle-flash",
 				source: flash.sourceId,
 				target: flash.targetId,
+				sourceHandle: flash.kind === "success" ? SUCCESS_HANDLE : FAILURE_HANDLE,
 				animated: true,
 				selectable: false,
 				deletable: false,
 				ariaLabel: "Blocked cycle edge",
-				style: { stroke: "var(--color-error)", strokeWidth: 1.5, strokeDasharray: "6 4" },
-				markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "var(--color-error)" },
+				style,
+				markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: style.stroke },
 			});
 		}
 		return out;
@@ -253,14 +283,15 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 	const onConnect = useCallback(
 		(connection: Connection) => {
 			if (!onDraftChange || !connection.source || !connection.target) return;
-			// Task 21 adds the second (failure) source handle; until then every
-			// drawn edge is a success edge.
-			const result = applyConnection(draftRef.current, connection.source, connection.target, "success");
+			// The handle the drag left picks the edge kind: right = on_success,
+			// bottom = on_failure.
+			const kind: ConnectableEdgeKind = connection.sourceHandle === FAILURE_HANDLE ? "failure" : "success";
+			const result = applyConnection(draftRef.current, connection.source, connection.target, kind);
 			if (result.kind === "added") {
 				draftRef.current = result.draft;
 				onDraftChange(result.draft);
 			} else if (result.kind === "cycle") {
-				setFlash({ sourceId: connection.source, targetId: connection.target, path: result.path });
+				setFlash({ sourceId: connection.source, targetId: connection.target, kind, path: result.path });
 				window.clearTimeout(flashTimer.current);
 				flashTimer.current = window.setTimeout(() => setFlash(null), CYCLE_FLASH_MS);
 			}
@@ -350,6 +381,38 @@ function ZoomBar() {
 	);
 }
 
+// --- edge treatments ---------------------------------------------------------
+
+const EDGE_KIND_LABEL: Record<EdgeKind, string> = {
+	success: "Success",
+	failure: "Failure",
+	"default-failure": "Default failure",
+};
+
+// edgeAppearance is the three-way visual split the graph's edge kinds need:
+// on_success solid in the accent, on_failure dashed in the destructive tone,
+// and the synthetic defaults.on_failure edge dashed in a faded version of the
+// same tone (it is inherited boilerplate, so it must not compete with the
+// routes the author actually wrote). A cycle overrides all three: the edge is
+// already invalid, so what kind it was stops mattering.
+//
+// The synthetic edge fades through its color rather than through `opacity` so
+// that its arrowhead marker, which does not inherit path opacity, fades with
+// the line instead of staying solid.
+export function edgeAppearance(
+	kind: EdgeKind,
+	inCycle: boolean,
+): { stroke: string; strokeWidth: number; strokeDasharray?: string } {
+	if (inCycle) return { stroke: "var(--color-error)", strokeWidth: 2, strokeDasharray: "6 4" };
+	if (kind === "success") return { stroke: "var(--color-accent)", strokeWidth: 2 };
+	if (kind === "failure") return { stroke: "var(--color-destructive)", strokeWidth: 1.75, strokeDasharray: "6 4" };
+	return {
+		stroke: "color-mix(in oklab, var(--color-destructive) 45%, transparent)",
+		strokeWidth: 1.5,
+		strokeDasharray: "3 5",
+	};
+}
+
 // --- stage node card ---------------------------------------------------------
 
 // Executor-kind treatments (mockup 1a), restyled to the app tokens: agent =
@@ -365,10 +428,17 @@ function executorSubtitle(stage: StageDraft): string {
 	return stage.run?.split("\n")[0]?.trim() || "command";
 }
 
+// A join carries the `needs` set the graph lib maintains; below two inbound
+// success edges there is no join and the key is dropped (spec §9.2).
+function joinCount(stage: StageDraft): number {
+	const n = stage.needs?.length ?? 0;
+	return n > 1 ? n : 0;
+}
+
 function StageNode({ data, selected }: NodeProps<StageNodeType>) {
-	const { stage, inCycle, issues } = data;
+	const { stage, inCycle, issues, deadline, sessionUnderPr } = data;
 	const badge = KIND_BADGE[stage.executor] ?? KIND_BADGE.agent;
-	const footer = [stage.workspace, stage.produces].filter(Boolean).join(" · ");
+	const needs = joinCount(stage);
 
 	return (
 		<div
@@ -398,6 +468,12 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 				<span className="min-w-0 flex-1 truncate text-control font-semibold text-foreground">
 					{stage.id || "(unnamed)"}
 				</span>
+				{sessionUnderPr && (
+					<AlertTriangle
+						className="size-icon-xs shrink-0 text-warning"
+						aria-label="Warning: workspace session, a PR may have no session"
+					/>
+				)}
 				{issues.length > 0 && (
 					<span
 						className="flex shrink-0 items-center gap-0.5 text-error"
@@ -411,12 +487,51 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 			<p className="mt-1 truncate font-mono text-micro text-muted-foreground">{executorSubtitle(stage)}</p>
 			{issues.length > 0 && <p className="mt-1.5 truncate text-micro text-error">{issues[0]}</p>}
 			{inCycle && <p className="mt-1.5 text-micro text-error">in routing cycle</p>}
-			{footer && (
-				<p className="mt-1.5">
-					<span className="truncate text-micro text-passive">{footer}</span>
-				</p>
-			)}
-			<Handle type="source" position={Position.Right} className="!size-2 !border-border-strong !bg-raised" />
+			<div className="mt-1.5 flex flex-wrap items-center gap-1">
+				{/* The effective deadline rides on every card: spec §13.1 defaults it
+				    rather than requiring it, so visibility is what makes that safe. */}
+				<Badge variant="neutral" title={`Deadline ${deadline}`}>
+					<Clock className="size-icon-xs" aria-hidden="true" />
+					{deadline}
+				</Badge>
+				{stage.produces && (
+					<Badge variant="outline" className="max-w-full" title={`Produces ${stage.produces}`}>
+						<FileText className="size-icon-xs shrink-0" aria-hidden="true" />
+						<span className="truncate">{stage.produces}</span>
+					</Badge>
+				)}
+				{/* Only an explicit workspace is shown; the inherited default is not a
+				    property of this stage (spec §5.4). */}
+				{stage.workspace && (
+					<Badge
+						variant={sessionUnderPr ? "warning" : "neutral"}
+						title={`Workspace ${stage.workspace}`}
+					>
+						{stage.workspace}
+					</Badge>
+				)}
+				{needs > 0 && (
+					<Badge variant="neutral" title={`Joins ${stage.needs?.join(", ")}`}>
+						<GitMerge className="size-icon-xs" aria-hidden="true" />
+						needs {needs}
+					</Badge>
+				)}
+			</div>
+			{/* Two source handles, so the drag itself picks the routing key. */}
+			<Handle
+				id={SUCCESS_HANDLE}
+				type="source"
+				position={Position.Right}
+				title="Route on success"
+				className="!size-2 !border-accent-dim !bg-accent"
+			/>
+			<Handle
+				id={FAILURE_HANDLE}
+				type="source"
+				position={Position.Bottom}
+				title="Route on failure"
+				className="!size-2 !border-destructive/60 !bg-destructive"
+			/>
 		</div>
 	);
 }
