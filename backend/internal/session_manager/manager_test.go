@@ -379,6 +379,7 @@ func (missingAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return nil
 type fakeWorkspace struct {
 	createErr         error
 	destroyErr        error
+	created           int
 	destroyed         int
 	lastCfg           ports.WorkspaceConfig
 	projectErr        error
@@ -406,6 +407,7 @@ func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (po
 	if w.createErr != nil {
 		return ports.WorkspaceInfo{}, w.createErr
 	}
+	w.created++
 	w.lastCfg = cfg
 	path := w.path
 	if path == "" {
