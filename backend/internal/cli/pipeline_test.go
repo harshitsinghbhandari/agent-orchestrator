@@ -38,6 +38,38 @@ func pipelineServer(t *testing.T, status int, respBody string) (*httptest.Server
 	return srv, capture
 }
 
+// TestPipelineVerbSet pins the v2 surface: resume is gone with the semantics
+// behind it, and the credential verbs are here.
+func TestPipelineVerbSet(t *testing.T) {
+	cmd := newPipelineCommand(&commandContext{})
+	got := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		got[sub.Name()] = true
+	}
+	for _, want := range []string{"list", "runs", "show", "run", "cancel", "credential", "done", "fail"} {
+		if !got[want] {
+			t.Errorf("verb %q is missing", want)
+		}
+	}
+	if got["resume"] {
+		t.Error("resume is still registered: v2 has no resume, a failed run is dead")
+	}
+
+	credentialVerbs := map[string]bool{}
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "credential" {
+			for _, verb := range sub.Commands() {
+				credentialVerbs[verb.Name()] = true
+			}
+		}
+	}
+	for _, want := range []string{"set", "ls", "rm"} {
+		if !credentialVerbs[want] {
+			t.Errorf("credential verb %q is missing", want)
+		}
+	}
+}
+
 func TestPipelineList_Human(t *testing.T) {
 	cfg := setConfigEnv(t)
 	body := `{"definitions":[{"id":"pl-1","projectId":"proj","name":"review","yamlSource":"name: review\nstages:\n  - name: a\n    trigger: {on: [manual]}\n  - name: b\n    trigger: {on: [manual]}\n","createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T01:00:00Z"}]}`
@@ -95,7 +127,9 @@ func TestPipelineList_Empty(t *testing.T) {
 
 func TestPipelineRuns_HumanAndFilters(t *testing.T) {
 	cfg := setConfigEnv(t)
-	body := `{"runs":[{"runId":"run-1","pipelineName":"review","loopState":"running","createdAt":"2026-07-15T00:00:00Z"},{"runId":"run-2","pipelineName":"review","loopState":"stalled","terminationReason":"retry_exhausted","createdAt":"2026-07-14T00:00:00Z"}]}`
+	body := `{"runs":[` +
+		`{"runId":"run-1","pipelineName":"review","status":"running","subjectKind":"session","sessionId":"sess-7","stageCount":3,"createdAt":"2026-07-15T00:00:00Z"},` +
+		`{"runId":"run-2","pipelineName":"review","status":"cancelled","subjectKind":"pr","prNumber":42,"cancelReason":"head moved","stageCount":3,"createdAt":"2026-07-14T00:00:00Z"}]}`
 	srv, capture := pipelineServer(t, http.StatusOK, body)
 	writeRunFileFor(t, cfg, srv)
 
@@ -113,15 +147,16 @@ func TestPipelineRuns_HumanAndFilters(t *testing.T) {
 			t.Fatalf("query %q missing %q", q, want)
 		}
 	}
-	if !strings.Contains(out, "run-1") || !strings.Contains(out, "running") ||
-		!strings.Contains(out, "stalled (retry_exhausted)") {
-		t.Fatalf("stdout = %q", out)
+	for _, want := range []string{"run-1", "running", "session sess-7", "cancelled (head moved)", "pr #42"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q\nstdout=%s", want, out)
+		}
 	}
 }
 
 func TestPipelineRuns_JSON(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, _ := pipelineServer(t, http.StatusOK, `{"runs":[{"runId":"run-1","pipelineName":"review","loopState":"done"}]}`)
+	srv, _ := pipelineServer(t, http.StatusOK, `{"runs":[{"runId":"run-1","pipelineName":"review","status":"succeeded"}]}`)
 	writeRunFileFor(t, cfg, srv)
 
 	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "runs", "--project", "proj", "--json")
@@ -137,10 +172,45 @@ func TestPipelineRuns_JSON(t *testing.T) {
 	}
 }
 
-func TestPipelineShow_Human(t *testing.T) {
+// settledRunBody is a settled v2 run with one nudged stage: `review` was idle
+// with `produces` declared, got its one nudge (attempt 2), still wrote nothing,
+// and settled no_output, which routed the failure edge to `notify`.
+const settledRunBody = `{"run":{"runId":"run-1","pipelineId":"pl-1","pipelineName":"review",` +
+	`"status":"failed","subjectKind":"pr","sessionId":"sess-7","prNumber":42,"headSha":"abc1234",` +
+	`"stageCount":3,"stageOutcomes":{"build":"succeeded","review":"no_output","notify":"succeeded"},` +
+	`"createdAt":"2026-07-26T12:00:00Z","updatedAt":"2026-07-26T12:30:00Z","settledAt":"2026-07-26T12:30:00Z",` +
+	`"runDir":"/data/pipelines/proj/run-1","stages":[` +
+	`{"stageId":"build","outcome":"succeeded","attempt":1,"enteredVia":"trigger","workspaceKind":"run",` +
+	`"startedAt":"2026-07-26T12:00:00Z","settledAt":"2026-07-26T12:05:00Z"},` +
+	`{"stageId":"review","outcome":"no_output","attempt":2,"enteredVia":"success","sessionId":"sess-9",` +
+	`"workspaceKind":"stage","startedAt":"2026-07-26T12:05:00Z","settledAt":"2026-07-26T12:25:00Z",` +
+	`"reason":"no review.md after the nudge","producedArtifact":{"name":"review.md","exists":false}},` +
+	`{"stageId":"notify","outcome":"succeeded","attempt":1,"enteredVia":"failure","failedStage":"review",` +
+	`"workspaceKind":"run","startedAt":"2026-07-26T12:25:00Z","settledAt":"2026-07-26T12:30:00Z"}]}}`
+
+// The golden view of a settled run. The attempt column says a stage was nudged
+// and the outcome column says it produced nothing, so the two are distinct at a
+// glance instead of collapsing into one "failed" line.
+const settledRunGolden = `Run run-1
+  pipeline: review
+  status:   failed
+  subject:  pr #42 abc1234
+  session:  sess-7
+  runDir:   /data/pipelines/proj/run-1
+  created:  2026-07-26T12:00:00Z
+  updated:  2026-07-26T12:30:00Z
+  settled:  2026-07-26T12:30:00Z
+
+Stages:
+  STAGE   OUTCOME    ATTEMPT     VIA              ARTIFACT             REASON
+  build   succeeded  1           trigger          -                    -
+  review  no_output  2 (nudged)  success          review.md (missing)  no review.md after the nudge
+  notify  succeeded  1           failure(review)  -                    -
+`
+
+func TestPipelineShow_GoldenSettledRunWithNudgedStage(t *testing.T) {
 	cfg := setConfigEnv(t)
-	body := `{"run":{"runId":"run-1","pipelineName":"review","sessionId":"sess","loopState":"stalled","terminationReason":"retry_exhausted","loopRounds":2,"headSha":"abc123","createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T02:00:00Z","stages":[{"stageName":"lint","stageRunId":"sr-1","status":"failed","attempt":1,"errorMessage":"boom","artifactIds":["a1"]}],"findings":[{"artifactId":"a1","kind":"finding","stageName":"lint","title":"bad import","filePath":"x.go","severity":"high","status":"open"}]}}`
-	srv, capture := pipelineServer(t, http.StatusOK, body)
+	srv, capture := pipelineServer(t, http.StatusOK, settledRunBody)
 	writeRunFileFor(t, cfg, srv)
 
 	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "show", "run-1")
@@ -150,17 +220,14 @@ func TestPipelineShow_Human(t *testing.T) {
 	if capture.path != "/api/v1/pipelines/runs/run-1" {
 		t.Fatalf("path = %q", capture.path)
 	}
-	for _, want := range []string{"Run run-1", "pipeline:", "review", "state:", "stalled",
-		"lint", "failed", "attempt=1", "artifacts=1", "error: boom", "Findings: 1 open, 1 total", "bad import"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("stdout missing %q\nstdout=%s", want, out)
-		}
+	if out != settledRunGolden {
+		t.Fatalf("stdout mismatch\n--- got ---\n%s\n--- want ---\n%s", out, settledRunGolden)
 	}
 }
 
 func TestPipelineShow_JSON(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, _ := pipelineServer(t, http.StatusOK, `{"run":{"runId":"run-1","pipelineName":"review","loopState":"done","stages":[],"findings":[]}}`)
+	srv, _ := pipelineServer(t, http.StatusOK, settledRunBody)
 	writeRunFileFor(t, cfg, srv)
 
 	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "show", "run-1", "--json")
@@ -171,7 +238,7 @@ func TestPipelineShow_JSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
 		t.Fatalf("stdout is not raw JSON: %v\nstdout=%s", err, out)
 	}
-	if res.Run.RunID != "run-1" {
+	if res.Run.RunID != "run-1" || len(res.Run.Stages) != 3 {
 		t.Fatalf("run = %+v", res.Run)
 	}
 }
@@ -199,7 +266,7 @@ func TestPipelineRun_Human(t *testing.T) {
 	writeRunFileFor(t, cfg, srv)
 
 	out, errOut, err := executeCLI(t, aliveDeps(),
-		"pipeline", "run", "review", "--project", "proj", "--session", "sess", "--head-sha", "deadbeef")
+		"pipeline", "run", "review", "--project", "proj", "--session", "sess")
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
 	}
@@ -209,15 +276,35 @@ func TestPipelineRun_Human(t *testing.T) {
 	if capture.query != "project=proj" {
 		t.Fatalf("query = %q", capture.query)
 	}
-	var reqBody map[string]string
+	var reqBody map[string]any
 	if err := json.Unmarshal([]byte(capture.body), &reqBody); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if reqBody["pipeline"] != "review" || reqBody["sessionId"] != "sess" || reqBody["headSha"] != "deadbeef" {
+	if reqBody["pipeline"] != "review" || reqBody["sessionId"] != "sess" {
 		t.Fatalf("body = %+v", reqBody)
 	}
 	if !strings.Contains(out, "run-9") {
 		t.Fatalf("stdout = %q", out)
+	}
+}
+
+// The subject is resolved server-side from a PR number: v2 has no --head-sha,
+// because the head SHA and the fork flag come from the PR the daemon knows.
+func TestPipelineRun_PRSubject(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusCreated, `{"runId":"run-9"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "run", "review", "--project", "proj", "--pr", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var reqBody map[string]any
+	if err := json.Unmarshal([]byte(capture.body), &reqBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if reqBody["prNumber"] != float64(42) {
+		t.Fatalf("body = %+v", reqBody)
 	}
 }
 
@@ -255,7 +342,8 @@ func TestPipelineRun_PipelineNotFound(t *testing.T) {
 
 func TestPipelineCancel_Human(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := pipelineServer(t, http.StatusOK, `{"run":{"runId":"run-1","loopState":"terminated","terminationReason":"manual_cancel"}}`)
+	srv, capture := pipelineServer(t, http.StatusOK,
+		`{"run":{"runId":"run-1","status":"cancelled","cancelReason":"manual"}}`)
 	writeRunFileFor(t, cfg, srv)
 
 	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "cancel", "run-1", "--project", "proj")
@@ -268,25 +356,165 @@ func TestPipelineCancel_Human(t *testing.T) {
 	if capture.query != "project=proj" {
 		t.Fatalf("query = %q", capture.query)
 	}
-	if !strings.Contains(out, "run run-1 → terminated (manual_cancel)") {
+	if !strings.Contains(out, "run run-1 → cancelled (manual)") {
 		t.Fatalf("stdout = %q", out)
 	}
 }
 
-func TestPipelineResume_Human(t *testing.T) {
+// v2 deleted resume with the semantics behind it. Like every other unknown
+// verb under a command group, it falls through to the group's help; what must
+// not happen is the CLI reaching for a resume route that no longer exists.
+func TestPipelineResume_IsGone(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, capture := pipelineServer(t, http.StatusOK, `{"run":{"runId":"run-1","loopState":"running"}}`)
+	srv, capture := pipelineServer(t, http.StatusOK, `{}`)
 	writeRunFileFor(t, cfg, srv)
 
-	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "resume", "run-1", "--project", "proj")
+	out, _, _ := executeCLI(t, aliveDeps(), "pipeline", "resume", "run-1")
+	if strings.Contains(capture.path, "resume") {
+		t.Fatalf("CLI called a resume route: %s %s", capture.method, capture.path)
+	}
+	if strings.Contains(out, "resume") {
+		t.Fatalf("help still advertises resume:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Credentials (decision D13)
+// ---------------------------------------------------------------------------
+
+func TestPipelineCredentialSet_PutsEnvAndPrintsKeysOnly(t *testing.T) {
+	cfg := setConfigEnv(t)
+	const secret = "s3cret-value"
+	srv, capture := pipelineServer(t, http.StatusOK, `{"name":"npm","keys":["NPM_SCOPE","NPM_TOKEN"]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"pipeline", "credential", "set", "npm", "NPM_TOKEN="+secret, "NPM_SCOPE=@ao", "--project", "proj")
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
 	}
-	if capture.path != "/api/v1/pipelines/runs/run-1/resume" {
-		t.Fatalf("path = %q", capture.path)
+	if capture.method != http.MethodPut || capture.path != "/api/v1/pipelines/credentials/npm" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
 	}
-	if !strings.Contains(out, "run run-1 → running") {
+	if capture.query != "project=proj" {
+		t.Fatalf("query = %q", capture.query)
+	}
+	var body struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Env["NPM_TOKEN"] != secret || body.Env["NPM_SCOPE"] != "@ao" {
+		t.Fatalf("env = %+v", body.Env)
+	}
+	if strings.Contains(out+errOut, secret) {
+		t.Fatalf("set echoed the value back: stdout=%q stderr=%q", out, errOut)
+	}
+	if !strings.Contains(out, "NPM_TOKEN") || !strings.Contains(out, "npm") {
 		t.Fatalf("stdout = %q", out)
+	}
+}
+
+// A KEY=VALUE that is not one must not be echoed: the mistyped argument may be
+// the secret itself.
+func TestPipelineCredentialSet_MalformedPairNeverEchoesIt(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusOK, `{"name":"npm","keys":[]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "credential", "set", "npm", "oops-a-bare-secret", "--project", "proj")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+	if strings.Contains(err.Error()+errOut, "oops-a-bare-secret") {
+		t.Fatalf("the malformed argument was echoed: %v / %s", err, errOut)
+	}
+	if strings.Contains(capture.path, "credentials") {
+		t.Fatalf("CLI sent the credential anyway: %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineCredentialSet_RequiresAPair(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "credential", "set", "npm", "--project", "proj")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+}
+
+// `ls` is names only. Even if a daemon somehow answered with values attached,
+// nothing the CLI prints may carry one.
+func TestPipelineCredentialLs_PrintsNoValueBytes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	const secret = "s3cret-value"
+	srv, capture := pipelineServer(t, http.StatusOK,
+		`{"names":["apple","npm"],"env":{"NPM_TOKEN":"`+secret+`"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "credential", "ls", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/pipelines/credentials" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	if strings.Contains(out+errOut, secret) {
+		t.Fatalf("ls printed a value: stdout=%q stderr=%q", out, errOut)
+	}
+	for _, want := range []string{"Credentials for proj:", "apple", "npm"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q\nstdout=%s", want, out)
+		}
+	}
+}
+
+func TestPipelineCredentialLs_Empty(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusOK, `{"names":[]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "credential", "ls", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "(no credentials for proj)") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestPipelineCredentialRm_Human(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusOK, `{"name":"npm","deleted":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "credential", "rm", "npm", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/pipelines/credentials/npm" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	if capture.query != "project=proj" {
+		t.Fatalf("query = %q", capture.query)
+	}
+	if !strings.Contains(out, "credential npm removed") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestPipelineCredentialRm_NotFound(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusNotFound,
+		`{"message":"no credential \"nope\" in this project","code":"PIPELINE_CREDENTIAL_NOT_FOUND"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "credential", "rm", "nope", "--project", "proj")
+	if err == nil {
+		t.Fatal("expected error for 404 credential")
+	}
+	if !strings.Contains(err.Error(), "PIPELINE_CREDENTIAL_NOT_FOUND") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
