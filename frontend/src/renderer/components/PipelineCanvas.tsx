@@ -24,6 +24,7 @@ import {
 	applyConnection,
 	cycleStageIds,
 	draftEdges,
+	edgeAppearance,
 	effectiveDeadline,
 	isEdgeInCycle,
 	layoutPositions,
@@ -388,30 +389,6 @@ const EDGE_KIND_LABEL: Record<EdgeKind, string> = {
 	failure: "Failure",
 	"default-failure": "Default failure",
 };
-
-// edgeAppearance is the three-way visual split the graph's edge kinds need:
-// on_success solid in the accent, on_failure dashed in the destructive tone,
-// and the synthetic defaults.on_failure edge dashed in a faded version of the
-// same tone (it is inherited boilerplate, so it must not compete with the
-// routes the author actually wrote). A cycle overrides all three: the edge is
-// already invalid, so what kind it was stops mattering.
-//
-// The synthetic edge fades through its color rather than through `opacity` so
-// that its arrowhead marker, which does not inherit path opacity, fades with
-// the line instead of staying solid.
-export function edgeAppearance(
-	kind: EdgeKind,
-	inCycle: boolean,
-): { stroke: string; strokeWidth: number; strokeDasharray?: string } {
-	if (inCycle) return { stroke: "var(--color-error)", strokeWidth: 2, strokeDasharray: "6 4" };
-	if (kind === "success") return { stroke: "var(--color-accent)", strokeWidth: 2 };
-	if (kind === "failure") return { stroke: "var(--color-destructive)", strokeWidth: 1.75, strokeDasharray: "6 4" };
-	return {
-		stroke: "color-mix(in oklab, var(--color-destructive) 45%, transparent)",
-		strokeWidth: 1.5,
-		strokeDasharray: "3 5",
-	};
-}
 
 // --- stage node card ---------------------------------------------------------
 
