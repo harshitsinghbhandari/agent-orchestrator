@@ -114,7 +114,9 @@ export function PipelineSettingsModal({ open, value, onCancel, onDone }: Pipelin
 							/>
 						</div>
 						{!draft.on?.pr?.length && !draft.on?.session?.length && (
-							<span className="text-caption text-passive">No triggers: the pipeline runs only when started by hand.</span>
+							<span className="text-caption text-passive">
+								No triggers: the pipeline runs only when started by hand.
+							</span>
 						)}
 					</div>
 

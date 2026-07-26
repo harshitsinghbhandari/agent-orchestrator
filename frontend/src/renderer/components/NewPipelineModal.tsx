@@ -152,7 +152,8 @@ export function NewPipelineModal({
 												<div className="truncate text-caption text-passive">{template.description}</div>
 											</div>
 											<span className="shrink-0 font-mono text-caption text-muted-foreground">
-												{TEMPLATE_STAGE_COUNTS[template.id]} {TEMPLATE_STAGE_COUNTS[template.id] === 1 ? "stage" : "stages"}
+												{TEMPLATE_STAGE_COUNTS[template.id]}{" "}
+												{TEMPLATE_STAGE_COUNTS[template.id] === 1 ? "stage" : "stages"}
 											</span>
 										</button>
 									);

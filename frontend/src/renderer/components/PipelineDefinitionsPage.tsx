@@ -419,7 +419,6 @@ function DefinitionEditor({
 			)}
 
 			<PipelineProblemsPanel problems={problems} onReveal={(stage) => selection.selectStage(stage)} />
-
 		</div>
 	);
 }

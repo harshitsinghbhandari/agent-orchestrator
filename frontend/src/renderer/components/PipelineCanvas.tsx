@@ -139,11 +139,7 @@ function CanvasInner({ draft, onDraftChange, selection, stageIssues }: PipelineC
 		const out: Edge[] = draftEdges(draft).map((edge) => {
 			const inCycle = isEdgeInCycle(draft, edge);
 			const failure = edge.kind !== "success";
-			const stroke = inCycle
-				? "var(--color-error)"
-				: failure
-					? "var(--color-warning)"
-					: "var(--color-border-strong)";
+			const stroke = inCycle ? "var(--color-error)" : failure ? "var(--color-warning)" : "var(--color-border-strong)";
 			return {
 				id: edge.id,
 				source: edge.source,

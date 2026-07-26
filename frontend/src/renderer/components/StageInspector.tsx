@@ -175,9 +175,7 @@ export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }:
 										);
 									})}
 								</div>
-								{killOn.length === 0 && (
-									<p className="mt-1.5 text-caption text-passive">Never kills the session.</p>
-								)}
+								{killOn.length === 0 && <p className="mt-1.5 text-caption text-passive">Never kills the session.</p>}
 							</>
 						)}
 					</Section>

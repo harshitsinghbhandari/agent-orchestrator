@@ -432,7 +432,9 @@ describe("PipelineDefinitionsPage", () => {
 		// "stage name must not be empty", which the user must be able to fix.
 		getMock.mockReset().mockResolvedValue({
 			data: {
-				definitions: [def("pl-1", "review", "name: review\nstages:\n  - id: a\n    executor: agent\n  - executor: agent\n")],
+				definitions: [
+					def("pl-1", "review", "name: review\nstages:\n  - id: a\n    executor: agent\n  - executor: agent\n"),
+				],
 			},
 			error: undefined,
 		});
@@ -457,7 +459,13 @@ describe("PipelineDefinitionsPage", () => {
 	it("selects duplicate-named stages independently", async () => {
 		getMock.mockReset().mockResolvedValue({
 			data: {
-				definitions: [def("pl-1", "review", "name: review\nstages:\n  - id: a\n    executor: agent\n  - id: a\n    executor: agent\n")],
+				definitions: [
+					def(
+						"pl-1",
+						"review",
+						"name: review\nstages:\n  - id: a\n    executor: agent\n  - id: a\n    executor: agent\n",
+					),
+				],
 			},
 			error: undefined,
 		});

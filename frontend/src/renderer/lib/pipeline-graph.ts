@@ -251,9 +251,7 @@ export function reconcileNeeds(draft: PipelineDraft): PipelineDraft {
 // A stage carries at most one failure edge, so connecting one replaces it.
 // Stages with an empty id stay unconnectable: routing refers to stages by id.
 export type ConnectionResult =
-	| { kind: "added"; draft: PipelineDraft }
-	| { kind: "cycle"; path: string[] }
-	| { kind: "noop" };
+	{ kind: "added"; draft: PipelineDraft } | { kind: "cycle"; path: string[] } | { kind: "noop" };
 
 export function applyConnection(
 	draft: PipelineDraft,
