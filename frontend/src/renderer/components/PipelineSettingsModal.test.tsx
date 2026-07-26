@@ -111,6 +111,76 @@ describe("PipelineSettingsModal", () => {
 		expect(committed).toEqual(baseDraft());
 	});
 
+	// The §10 guidance copy: the modal has to state what "Subject default"
+	// resolves to and steer cancel-in-progress, because both are decisions a
+	// user gets exactly one shot at before a run misbehaves.
+	describe("concurrency guidance (spec §10)", () => {
+		it("names what the subject default resolves to, per trigger kind", async () => {
+			const user = userEvent.setup();
+			render(<Harness initial={{ ...baseDraft(), on: { pr: ["created"] } }} />);
+			expect(screen.getByText(/serializes per PR number/)).toBeInTheDocument();
+
+			await user.click(screen.getByRole("button", { name: "idle" }));
+			expect(screen.getByText(/a session event per session/)).toBeInTheDocument();
+
+			await user.click(screen.getByRole("button", { name: "created" }));
+			expect(screen.getByText(/serializes per session/)).toBeInTheDocument();
+		});
+
+		it("falls back to per-project for a manual-only pipeline", () => {
+			render(<Harness initial={baseDraft()} />);
+			expect(screen.getByText(/hand-started run serializes per project/)).toBeInTheDocument();
+		});
+
+		it("describes an explicitly chosen scope instead of the default", async () => {
+			render(<Harness initial={baseDraft()} />);
+			await chooseOption(screen.getByRole("combobox", { name: "Concurrency scope" }), "project");
+			expect(screen.getByText(/One bucket for the whole project/)).toBeInTheDocument();
+			expect(screen.queryByText(/Subject default/)).not.toBeInTheDocument();
+		});
+
+		it("warns that pr.merged would serialize per PR, not per project", async () => {
+			render(<Harness initial={{ ...baseDraft(), on: { pr: ["merged"] } }} />);
+			expect(screen.getByText(/two merges publish at the same time/)).toBeInTheDocument();
+
+			await chooseOption(screen.getByRole("combobox", { name: "Concurrency scope" }), "project");
+			expect(screen.queryByText(/two merges publish at the same time/)).not.toBeInTheDocument();
+		});
+
+		it("pushes cancel-in-progress on for a pr.updated review pipeline", async () => {
+			const user = userEvent.setup();
+			render(<Harness initial={{ ...baseDraft(), on: { pr: ["created", "updated"] } }} />);
+
+			expect(screen.getByText(/reviewing a commit nobody is looking at/)).toBeInTheDocument();
+			await user.click(screen.getByRole("switch", { name: "Cancel in progress" }));
+			expect(screen.queryByText(/reviewing a commit nobody is looking at/)).not.toBeInTheDocument();
+			expect(screen.getByText(/Recommended for pr.updated/)).toBeInTheDocument();
+		});
+
+		it("pushes cancel-in-progress off for a release-shaped pipeline", async () => {
+			const user = userEvent.setup();
+			render(
+				<Harness
+					initial={{
+						...baseDraft(),
+						on: { pr: ["merged"] },
+						concurrency: { scope: "project", cancelInProgress: true },
+					}}
+				/>,
+			);
+
+			expect(screen.getByText(/partial release with no rollback/)).toBeInTheDocument();
+			await user.click(screen.getByRole("switch", { name: "Cancel in progress" }));
+			expect(screen.queryByText(/partial release with no rollback/)).not.toBeInTheDocument();
+			expect(screen.getByText(/an in-flight release finishes/)).toBeInTheDocument();
+		});
+
+		it("explains the queue behaviour whatever the setting", () => {
+			render(<Harness initial={baseDraft()} />);
+			expect(screen.getByText(/queue depth is 1/)).toBeInTheDocument();
+		});
+	});
+
 	it("discards edits on Cancel and reseeds on reopen", async () => {
 		const user = userEvent.setup();
 		render(<Harness initial={baseDraft()} />);
