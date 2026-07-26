@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { SETTLED_OUTCOMES, type StageOutcome } from "./pipeline-draft";
 import {
 	formatStageDuration,
-	KANBAN_COLUMNS,
+	RUN_STATUSES,
+	runStatusLabel,
 	runStatusOf,
 	runStatusTone,
 	stageOutcomeDotTone,
@@ -13,18 +14,13 @@ import {
 
 const ALL_OUTCOMES: StageOutcome[] = ["pending", "running", ...SETTLED_OUTCOMES];
 
-describe("KANBAN_COLUMNS", () => {
-	it("is the five D11 run statuses in lifecycle order, with pending labelled Queued", () => {
-		expect(KANBAN_COLUMNS.map((col) => col.status)).toEqual(["pending", "running", "succeeded", "failed", "cancelled"]);
-		expect(KANBAN_COLUMNS[0].title).toBe("Queued");
+describe("RUN_STATUSES", () => {
+	it("is the five D11 run statuses in lifecycle order", () => {
+		expect(RUN_STATUSES).toEqual(["pending", "running", "succeeded", "failed", "cancelled"]);
 	});
 
-	it("gives every column a title, a description and a left-border tone", () => {
-		for (const col of KANBAN_COLUMNS) {
-			expect(col.title).not.toBe("");
-			expect(col.description).not.toBe("");
-			expect(col.borderClass).toMatch(/^border-l-/);
-		}
+	it("labels every status with the GitHub Actions wording, none of them blank", () => {
+		expect(RUN_STATUSES.map(runStatusLabel)).toEqual(["Queued", "In progress", "Success", "Failure", "Cancelled"]);
 	});
 });
 
