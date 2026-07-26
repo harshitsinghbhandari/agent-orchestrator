@@ -8,6 +8,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline/executors"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline/triggers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -78,6 +79,7 @@ var (
 	_ executors.SessionSpawner   = (*SessionAdapter)(nil)
 	_ executors.SessionMessenger = (*SessionAdapter)(nil)
 	_ SessionDisposer            = (*SessionAdapter)(nil)
+	_ triggers.SessionSpawnCheck = (*SessionAdapter)(nil)
 )
 
 // Spawn starts the stage's worker session.
@@ -90,12 +92,16 @@ var (
 // pipeline-owned tree, which is a session-lifecycle change, not an engine one.
 func (a *SessionAdapter) Spawn(ctx context.Context, req executors.SpawnRequest) (executors.SpawnedSession, error) {
 	sess, err := a.cmd.Spawn(ctx, ports.SpawnConfig{
-		ProjectID:   domain.ProjectID(req.ProjectID),
-		Kind:        domain.KindWorker,
-		Harness:     domain.AgentHarness(req.Harness),
-		Prompt:      req.Prompt,
-		DisplayName: req.DisplayName,
-		Env:         req.Env,
+		ProjectID: domain.ProjectID(req.ProjectID),
+		Kind:      domain.KindWorker,
+		Harness:   domain.AgentHarness(req.Harness),
+		Prompt:    req.Prompt,
+		// The run id lands on the session's metadata: it is the marker the
+		// session trigger bridge reads as its loop guard, so it has to be set
+		// here, at spawn, and not once the stage settles.
+		PipelineRunID: req.RunID,
+		DisplayName:   req.DisplayName,
+		Env:           req.Env,
 	})
 	if err != nil {
 		return executors.SpawnedSession{}, err
@@ -156,6 +162,18 @@ func (a *SessionAdapter) Alive(ctx context.Context, sessionID string) (bool, err
 // Send delivers the nudge into the live session.
 func (a *SessionAdapter) Send(ctx context.Context, sessionID, message string) error {
 	return a.cmd.Send(ctx, domain.SessionID(sessionID), message)
+}
+
+// IsPipelineSpawned implements the session trigger bridge's loop guard over the
+// marker Spawn wrote. An unknown session is not pipeline-spawned; a read failure
+// propagates, because the bridge's fail-safe (skip the session) is only correct
+// when it knows the provenance is unknown.
+func (a *SessionAdapter) IsPipelineSpawned(ctx context.Context, sessionID domain.SessionID) (bool, error) {
+	rec, ok, err := a.reader.GetSession(ctx, sessionID)
+	if err != nil || !ok {
+		return false, err
+	}
+	return rec.Metadata.PipelineRunID != "", nil
 }
 
 // GetPath implements the workspace resolver's session seam: where the subject

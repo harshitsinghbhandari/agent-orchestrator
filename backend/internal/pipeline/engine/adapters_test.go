@@ -98,6 +98,51 @@ func TestSessionAdapterSpawnCarriesEnvAndPrompt(t *testing.T) {
 	}
 }
 
+// Every pipeline-spawned session carries its run id into the spawn config, and
+// the adapter reads that marker back as the session trigger bridge's loop guard.
+func TestSessionAdapterMarksAndDetectsPipelineSpawnedSessions(t *testing.T) {
+	cmd := newFakeCommander()
+	adapter := NewSessionAdapter(cmd, fakeSessionRows{}, nil, nil)
+
+	if _, err := adapter.Spawn(context.Background(), executors.SpawnRequest{
+		ProjectID: "proj-1",
+		RunID:     "run-a",
+		Prompt:    "review",
+	}); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if cmd.spawned.PipelineRunID != "run-a" {
+		t.Fatalf("spawn config pipeline run id = %q, want run-a: the loop guard has nothing to read without it", cmd.spawned.PipelineRunID)
+	}
+
+	rows := fakeSessionRows{rows: map[domain.SessionID]domain.SessionRecord{
+		"sess-pipeline": {ID: "sess-pipeline", Metadata: domain.SessionMetadata{PipelineRunID: "run-a"}},
+		"sess-human":    {ID: "sess-human"},
+	}}
+	guard := NewSessionAdapter(cmd, rows, nil, nil)
+
+	spawned, err := guard.IsPipelineSpawned(context.Background(), "sess-pipeline")
+	if err != nil || !spawned {
+		t.Fatalf("IsPipelineSpawned(pipeline session) = %v, %v; want true", spawned, err)
+	}
+	spawned, err = guard.IsPipelineSpawned(context.Background(), "sess-human")
+	if err != nil || spawned {
+		t.Fatalf("IsPipelineSpawned(human session) = %v, %v; want false", spawned, err)
+	}
+	// An unknown session is not pipeline-spawned, and is not an error: the
+	// bridge's own fail-safe covers reads it cannot answer.
+	spawned, err = guard.IsPipelineSpawned(context.Background(), "sess-gone")
+	if err != nil || spawned {
+		t.Fatalf("IsPipelineSpawned(missing session) = %v, %v; want false, nil", spawned, err)
+	}
+	// A read failure propagates, so the bridge can take its fail-safe path
+	// instead of treating an unreadable session as human-spawned.
+	if _, err := NewSessionAdapter(cmd, fakeSessionRows{err: errors.New("db down")}, nil, nil).
+		IsPipelineSpawned(context.Background(), "sess-pipeline"); err == nil {
+		t.Fatal("loop guard swallowed a store failure, want the error surfaced")
+	}
+}
+
 func TestSessionAdapterInterruptKeepsTheSession(t *testing.T) {
 	cmd := newFakeCommander()
 	runtime := &fakeRuntime{}

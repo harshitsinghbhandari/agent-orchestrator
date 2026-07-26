@@ -31,6 +31,12 @@ type SpawnConfig struct {
 	// session id in the read model (e.g. orchestrator sessions).
 	DisplayName string
 
+	// PipelineRunID marks the session as spawned by a pipeline run. It lands on
+	// the session's metadata and is read as the pipeline session trigger bridge's
+	// loop guard: a pipeline agent going idle must not fire the session
+	// pipelines. Empty for every human or orchestrator spawn.
+	PipelineRunID string
+
 	// Env is extra environment for the spawned session, merged over the
 	// project's env vars (an entry here wins on collision, so a caller's
 	// ambient identity cannot be masked by project config). AO-internal vars
