@@ -148,7 +148,7 @@ sql:
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
-          - column: "pipeline_artifacts.project_id"
+          - column: "pipeline_credentials.project_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
