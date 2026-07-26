@@ -89,6 +89,29 @@ func TestValidateCredentials_UnknownNameFlagsTheExactPath(t *testing.T) {
 	}
 }
 
+// The starter templates declare credentials, so this message is the first thing
+// a new user sees after clicking a template and saving. It has to be the fix,
+// not just the diagnosis.
+func TestValidateCredentials_UnknownNameNamesTheFixingCommand(t *testing.T) {
+	def := credsPipeline(t)
+	err := ValidateCredentials(context.Background(), def, "proj-7", newMemResolver(nil))
+
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("error = %T (%v), want *ValidationError", err, err)
+	}
+	msg := verr.Issues[0].Message
+	for _, want := range []string{
+		`unknown credential "apple-signing"`,
+		"ao pipeline credential set apple-signing",
+		"--project proj-7",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message = %q, want it to contain %q", msg, want)
+		}
+	}
+}
+
 func TestValidateCredentials_EveryNameKnownIsClean(t *testing.T) {
 	def := credsPipeline(t)
 	resolver := newMemResolver(map[string]map[string]string{
