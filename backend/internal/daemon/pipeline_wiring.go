@@ -19,9 +19,10 @@ import (
 // per-project engine supervisor plus the CDC trigger bridges. It is built only
 // when AO_PIPELINES resolves on, so everything below it stays inert otherwise.
 type pipelineStack struct {
-	supervisor *engine.Supervisor
-	prBridge   *triggers.PRBridge
-	svc        *pipelinesvc.Service
+	supervisor    *engine.Supervisor
+	prBridge      *triggers.PRBridge
+	sessionBridge *triggers.SessionBridge
+	svc           *pipelinesvc.Service
 }
 
 // pipelineDeps is what the pipelines stack needs from the rest of the daemon.
@@ -71,6 +72,11 @@ func buildPipelineStack(ctx context.Context, deps pipelineDeps, log *slog.Logger
 	workspaces := executors.NewWorkspaceResolver(trees, sessions.SessionWorkspaces(), engine.NewCheckoutAdapter(deps.Store))
 	credentials := engine.NewCredentialAdapter(deps.Store)
 
+	// The reaper bounds the sessions the kill-on rule spares: cap 3 per pipeline,
+	// 24h TTL. Its ledger is the marker on the session rows, so the bounds hold
+	// for sessions a previous daemon kept alive too.
+	orphans := engine.NewOrphanRegistry(deps.Store, sessions, log)
+
 	// The service is built first because it is the agent executor's signal
 	// reader, and it gets its engines last, once the supervisor those executors
 	// feed exists. That is the whole cycle, broken at the one seam where late
@@ -83,6 +89,7 @@ func buildPipelineStack(ctx context.Context, deps pipelineDeps, log *slog.Logger
 		Executors:   execs,
 		Workspaces:  workspaces,
 		Sessions:    sessions,
+		Orphans:     orphans,
 		Messenger:   sessions,
 		Credentials: credentials,
 		Projects:    deps.Store,
@@ -94,11 +101,6 @@ func buildPipelineStack(ctx context.Context, deps pipelineDeps, log *slog.Logger
 	}
 
 	// The PR bridge turns CDC pull-request events into runs with a PR subject.
-	//
-	// The session bridge is deliberately not started yet: its loop guard is the
-	// pipeline-spawned marker on session metadata, and without that marker a
-	// pipeline agent going idle would fire the session pipelines, whose agents
-	// go idle, forever. It is wired the moment the marker lands.
 	prBridge := triggers.NewPRBridge(triggers.PRConfig{
 		Broadcaster: deps.Broadcaster,
 		Defs:        deps.Store,
@@ -108,9 +110,22 @@ func buildPipelineStack(ctx context.Context, deps pipelineDeps, log *slog.Logger
 	})
 	prBridge.Start(ctx)
 
+	// The session bridge turns session activity transitions into runs. Its loop
+	// guard is the session adapter, which reads the pipeline-spawned marker every
+	// pipeline session now carries: without it a pipeline agent going idle would
+	// fire the session pipelines, whose agents go idle, forever.
+	sessionBridge := triggers.NewSessionBridge(triggers.SessionConfig{
+		Broadcaster: deps.Broadcaster,
+		Defs:        deps.Store,
+		Engines:     supervisor.Engines(),
+		Spawned:     sessions,
+		Logger:      log,
+	})
+	sessionBridge.Start(ctx)
+
 	svc.SetEngines(pipelinesvc.SupervisorEngines(supervisor))
 
-	return &pipelineStack{supervisor: supervisor, prBridge: prBridge, svc: svc}, nil
+	return &pipelineStack{supervisor: supervisor, prBridge: prBridge, sessionBridge: sessionBridge, svc: svc}, nil
 }
 
 // Manager is the service the HTTP API and the lifecycle merge gate mount. A nil
@@ -130,6 +145,9 @@ func (p *pipelineStack) Stop(ctx context.Context) {
 	}
 	if p.prBridge != nil {
 		p.prBridge.Stop()
+	}
+	if p.sessionBridge != nil {
+		p.sessionBridge.Stop()
 	}
 	if p.supervisor != nil {
 		_ = p.supervisor.Stop(ctx)

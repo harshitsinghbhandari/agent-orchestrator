@@ -258,6 +258,8 @@ type Session struct {
 	FirstSignalAt   sql.NullTime
 	PreviewURL      string
 	PreviewRevision int64
+	PipelineRunID   string
+	PipelineOrphan  string
 }
 
 type SessionWorktree struct {

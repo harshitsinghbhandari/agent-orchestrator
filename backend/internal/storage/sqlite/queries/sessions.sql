@@ -6,33 +6,36 @@ INSERT INTO sessions (
     id, project_id, num, issue_id, kind, harness, display_name,
     activity_state, activity_last_at, first_signal_at, is_terminated,
     branch, workspace_path, runtime_handle_id, agent_session_id, prompt,
-    preview_url, preview_revision, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    preview_url, preview_revision, pipeline_run_id, pipeline_orphan, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateSession :exec
 UPDATE sessions SET
     issue_id = ?, kind = ?, harness = ?, display_name = ?,
     activity_state = ?, activity_last_at = ?, first_signal_at = ?, is_terminated = ?,
     branch = ?, workspace_path = ?, runtime_handle_id = ?, agent_session_id = ?, prompt = ?,
-    preview_url = ?, preview_revision = ?, updated_at = ?
+    preview_url = ?, preview_revision = ?, pipeline_run_id = ?, pipeline_orphan = ?, updated_at = ?
 WHERE id = ?;
 
 -- name: GetSession :one
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt, created_at, updated_at, display_name, first_signal_at, preview_url, preview_revision
+    runtime_handle_id, agent_session_id, prompt, created_at, updated_at, display_name, first_signal_at, preview_url, preview_revision,
+    pipeline_run_id, pipeline_orphan
 FROM sessions WHERE id = ?;
 
 -- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt, created_at, updated_at, display_name, first_signal_at, preview_url, preview_revision
+    runtime_handle_id, agent_session_id, prompt, created_at, updated_at, display_name, first_signal_at, preview_url, preview_revision,
+    pipeline_run_id, pipeline_orphan
 FROM sessions WHERE project_id = ? ORDER BY num;
 
 -- name: ListAllSessions :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,
-    runtime_handle_id, agent_session_id, prompt, created_at, updated_at, display_name, first_signal_at, preview_url, preview_revision
+    runtime_handle_id, agent_session_id, prompt, created_at, updated_at, display_name, first_signal_at, preview_url, preview_revision,
+    pipeline_run_id, pipeline_orphan
 FROM sessions ORDER BY project_id, num;
 
 
@@ -44,6 +47,14 @@ UPDATE sessions SET display_name = ?, updated_at = ? WHERE id = ?;
 -- so a repeated `ao preview <same-url>` still trips the sessions_cdc_update
 -- trigger and the desktop browser panel re-navigates / refreshes.
 UPDATE sessions SET preview_url = ?, preview_revision = preview_revision + 1, updated_at = ? WHERE id = ?;
+
+-- name: SetSessionPipelineOrphan :execrows
+-- Writes the pipeline-orphan marker only, or clears it when handed an empty
+-- string. A targeted
+-- UPDATE rather than a read-modify-write of the whole row: the pipeline engine
+-- marks a session the session manager may be updating at the same moment, and
+-- the marker must not carry a stale copy of the rest of the row back with it.
+UPDATE sessions SET pipeline_orphan = ?, updated_at = ? WHERE id = ?;
 
 -- name: SessionIsSeed :one
 -- SessionIsSeed reports whether the session id matches a row still in seed

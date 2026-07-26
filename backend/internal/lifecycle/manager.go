@@ -741,5 +741,6 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	set(&base.RuntimeHandleID, in.RuntimeHandleID)
 	set(&base.AgentSessionID, in.AgentSessionID)
 	set(&base.Prompt, in.Prompt)
+	set(&base.PipelineRunID, in.PipelineRunID)
 	return base
 }

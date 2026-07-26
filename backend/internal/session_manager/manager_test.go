@@ -740,6 +740,37 @@ func TestSpawn_AssignsIDAndGoesIdle(t *testing.T) {
 	}
 }
 
+// A pipeline-spawned session is marked at spawn: the pipeline session trigger
+// bridge reads that marker as its loop guard, so without it a pipeline agent
+// going idle would fire the session pipelines, whose agents go idle, forever.
+func TestSpawn_MarksPipelineSpawnedSessions(t *testing.T) {
+	m, st, _, _ := newManager()
+	s, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:     "mer",
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessClaudeCode,
+		Prompt:        "review the diff",
+		PipelineRunID: "run-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Metadata.PipelineRunID != "run-a" {
+		t.Fatalf("spawned metadata pipeline run id = %q, want run-a", s.Metadata.PipelineRunID)
+	}
+	if got := st.sessions["mer-1"].Metadata.PipelineRunID; got != "run-a" {
+		t.Fatalf("persisted pipeline run id = %q, want run-a", got)
+	}
+
+	plain, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Metadata.PipelineRunID != "" {
+		t.Fatalf("a human spawn carries a pipeline run id: %q", plain.Metadata.PipelineRunID)
+	}
+}
+
 func TestSpawn_DeliversPromptAfterStartWhenAgentRequestsIt(t *testing.T) {
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}

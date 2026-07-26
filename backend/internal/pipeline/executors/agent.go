@@ -16,6 +16,10 @@ import (
 // onto ports.SpawnConfig.
 type SpawnRequest struct {
 	ProjectID string
+	// RunID marks the session as pipeline-spawned on its own metadata, which is
+	// what the session trigger bridge reads as its loop guard: a pipeline agent
+	// going idle must not fire the session pipelines.
+	RunID string
 	// Harness is the stage's `agent:` key. Empty lets the project default pick.
 	Harness string
 	// Prompt is the v2 preamble followed by the stage's own prompt.
@@ -133,6 +137,7 @@ func (e *AgentExecutor) Start(ctx context.Context, in StartInput) (Handle, error
 
 	session, err := e.sessions.Spawn(ctx, SpawnRequest{
 		ProjectID:     in.ProjectID,
+		RunID:         string(in.RunID),
 		Harness:       in.Stage.Agent,
 		Prompt:        buildAgentPrompt(in),
 		WorkspacePath: in.WorkspacePath,
