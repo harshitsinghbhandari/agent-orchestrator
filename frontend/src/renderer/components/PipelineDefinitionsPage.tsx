@@ -173,7 +173,7 @@ function DefinitionRow({
 						Edit
 					</Button>
 					<Button
-						variant="ghost"
+								variant="ghost"
 						className="h-6 px-2 text-caption text-destructive hover:text-destructive"
 						onClick={() => setConfirmOpen(true)}
 						aria-label={`Delete ${def.name || def.id}`}
@@ -197,7 +197,7 @@ function DefinitionRow({
 					destructive
 					busy={remove.isPending}
 					error={remove.isError ? apiErrorMessage(remove.error) : null}
-					onConfirm={() =>
+						onConfirm={() =>
 						remove.mutate(def.id, {
 							onSuccess: () => setConfirmOpen(false),
 						})

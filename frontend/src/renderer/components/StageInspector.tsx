@@ -595,14 +595,16 @@ function EnvTextarea({
 							}}
 							onMouseMove={() => setActive(i)}
 							className={cn(
+								// bg-surface is the same token as bg-popover, so the
+								// highlight is the accent wash the kill-on chips use.
 								"cursor-default rounded-md px-2 py-1.5 transition-colors",
-								i === activeIndex && "bg-surface",
+								i === activeIndex && "bg-accent-weak",
 								!isAvailable(v) && "opacity-60",
 							)}
 						>
 							<div className="flex items-baseline justify-between gap-2">
-								<span className="font-mono text-caption text-foreground">${v.name}</span>
-								{v.note && <span className="shrink-0 text-micro text-passive">{v.note}</span>}
+								<span className="shrink-0 font-mono text-caption text-foreground">${v.name}</span>
+								{v.note && <span className="text-right text-micro text-passive">{v.note}</span>}
 							</div>
 							<p className="text-micro text-passive">{v.description}</p>
 						</li>
@@ -643,8 +645,8 @@ function EnvReference({ vars, executor }: { vars: StageEnvVar[]; executor: Execu
 						{vars.map((v) => (
 							<li key={v.name} className={cn(!isAvailable(v) && "opacity-60")}>
 								<div className="flex items-baseline justify-between gap-2">
-									<span className="font-mono text-caption text-foreground">${v.name}</span>
-									{v.note && <span className="shrink-0 text-micro text-passive">{v.note}</span>}
+									<span className="shrink-0 font-mono text-caption text-foreground">${v.name}</span>
+									{v.note && <span className="text-right text-micro text-passive">{v.note}</span>}
 								</div>
 								<p className="text-micro text-passive">{v.description}</p>
 								<p className="truncate font-mono text-micro text-passive/80" title={v.example}>
