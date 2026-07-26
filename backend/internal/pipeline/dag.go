@@ -1,75 +1,44 @@
 package pipeline
 
-// FindFirstStageCycle finds the first cycle in the graph formed by every
-// stage's DependsOn edges unioned with its Routes.When.ReferencedStages()
-// edges, and returns it as [a, b, ..., a] (first and last element equal).
-// Returns nil when the graph is acyclic.
+// FindFirstCycle finds the first cycle in the directed graph described by an
+// explicit edge list and returns it as [a, b, ..., a] (first and last element
+// equal). It returns nil when the graph is acyclic.
 //
-// Both edge kinds contribute because the scheduler (a later task) waits for
-// either kind of reference to reach a terminal state before evaluating a
-// stage, so a cycle in either graph deadlocks the run identically. A
-// routes-only cycle is just as fatal as a dependsOn-only cycle.
+// order lists every node in declaration order; edges maps a node to the nodes
+// it points at. Edges naming a node absent from order are followed anyway, so
+// the caller keeps ownership of the "unknown stage id" error.
 //
-// Trivial self-loops ([x, x]) are skipped: the explicit self-reference
-// validation in config.go owns that error with a clearer message. Only
-// multi-node cycles are reported here.
+// Trivial self-loops ([x, x]) are skipped: the explicit self-reference rule in
+// the validator owns that error with a clearer message. Only multi-node cycles
+// are reported here.
 //
-// Traversal order is deterministic: stages are visited in declaration order,
-// and each stage's edges are visited dependsOn-first then routes-refs,
-// deduplicated preserving first-seen order (matching the old TypeScript
-// implementation's Set-based edge union). This makes the returned cycle's
-// path stable and readable ("a -> b -> c -> a") rather than dependent on map
-// iteration order.
-func FindFirstStageCycle(stages []Stage) []string {
-	adjacency := make(map[string][]string, len(stages))
-	for _, stage := range stages {
-		var routesRefs []string
-		if stage.Routes != nil {
-			routesRefs = stage.Routes.When.ReferencedStages()
-		}
-		seen := make(map[string]bool, len(stage.DependsOn)+len(routesRefs))
-		edges := make([]string, 0, len(stage.DependsOn)+len(routesRefs))
-		for _, dep := range stage.DependsOn {
-			if !seen[dep] {
-				seen[dep] = true
-				edges = append(edges, dep)
-			}
-		}
-		for _, ref := range routesRefs {
-			if !seen[ref] {
-				seen[ref] = true
-				edges = append(edges, ref)
-			}
-		}
-		adjacency[stage.Name] = edges
-	}
-
+// Traversal is deterministic: nodes are visited in order, and each node's
+// edges in the order given, so the returned path is stable and readable
+// ("a -> b -> c -> a") rather than dependent on map iteration order.
+func FindFirstCycle(order []string, edges map[string][]string) []string {
 	const (
 		white = 0
 		gray  = 1
 		black = 2
 	)
-	color := make(map[string]int, len(stages))
-	for _, stage := range stages {
-		color[stage.Name] = white
-	}
+	color := make(map[string]int, len(order))
 
 	type frame struct {
 		node string
 		iter int
 	}
 
-	for _, start := range stages {
-		if color[start.Name] != white {
+	for _, start := range order {
+		if color[start] != white {
 			continue
 		}
-		stack := []frame{{node: start.Name, iter: 0}}
-		path := []string{start.Name}
-		color[start.Name] = gray
+		stack := []frame{{node: start}}
+		path := []string{start}
+		color[start] = gray
 
 		for len(stack) > 0 {
 			top := &stack[len(stack)-1]
-			neighbors := adjacency[top.node]
+			neighbors := edges[top.node]
 			if top.iter >= len(neighbors) {
 				color[top.node] = black
 				stack = stack[:len(stack)-1]
@@ -83,15 +52,16 @@ func FindFirstStageCycle(stages []Stage) []string {
 			case gray:
 				cycleStart := indexOf(path, next)
 				if cycleStart == len(path)-1 {
-					// Trivial self-loop; owned by explicit self-ref validation.
+					// Trivial self-loop; owned by the self-reference rule.
 					continue
 				}
-				cycle := append([]string{}, path[cycleStart:]...)
+				cycle := make([]string, 0, len(path)-cycleStart+1)
+				cycle = append(cycle, path[cycleStart:]...)
 				return append(cycle, next)
 			case white:
 				color[next] = gray
 				path = append(path, next)
-				stack = append(stack, frame{node: next, iter: 0})
+				stack = append(stack, frame{node: next})
 			}
 		}
 	}

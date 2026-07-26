@@ -242,8 +242,8 @@ var schemaNames = map[string]string{
 	"ControllersTriggerPipelineRunRequest":          "TriggerPipelineRunRequest",
 	"ControllersTriggerPipelineRunResponse":         "TriggerPipelineRunResponse",
 	"ControllersPipelineArtifactResponse":           "PipelineArtifactResponse",
-	// internal/pipeline domain artifact (embedded in run detail + artifact fetch)
-	"PipelineArtifact": "PipelineArtifact",
+	// pipeline artifact wire shape (embedded in run detail + artifact fetch)
+	"ControllersPipelineArtifact": "PipelineArtifact",
 	// httpd/controllers: settings wire envelopes
 	"ControllersPipelinesSettingResponse":   "PipelinesSettingResponse",
 	"ControllersSetPipelinesSettingRequest": "SetPipelinesSettingRequest",
