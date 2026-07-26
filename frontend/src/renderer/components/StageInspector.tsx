@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { AlertTriangle, Trash2, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_OPTIONS } from "../lib/agent-options";
@@ -216,23 +217,15 @@ export function StageInspector({
 				<Section label="On success">
 					<div className="flex flex-wrap gap-1.5">
 						{onSuccess.map((id) => (
-							<span
+							<Chip
 								key={id}
-								className="inline-flex items-center gap-1 rounded-md border border-border bg-raised px-2 py-0.5 font-mono text-caption text-foreground"
-							>
-								{id}
-								<button
-									type="button"
-									aria-label={`Remove successor ${id}`}
-									onClick={() => {
-										const next = onSuccess.filter((s) => s !== id);
-										update({ onSuccess: next.length ? next : undefined });
-									}}
-									className="text-passive transition-colors hover:text-foreground"
-								>
-									<X className="size-icon-xs" aria-hidden="true" />
-								</button>
-							</span>
+								label={id}
+								removeLabel={`Remove successor ${id}`}
+								onRemove={() => {
+									const next = onSuccess.filter((s) => s !== id);
+									update({ onSuccess: next.length ? next : undefined });
+								}}
+							/>
 						))}
 						{successCandidates.map((id) => (
 							<button
@@ -379,6 +372,21 @@ function AgentFields({ stage, update }: FieldsProps) {
 }
 
 function CommandFields({ stage, update }: FieldsProps) {
+	const credentials = stage.credentials ?? [];
+	// The pending chip text. The inspector is remounted per selected node, so
+	// this never leaks between stages.
+	const [pending, setPending] = useState("");
+
+	// ponytail: free text, because there is no credentials catalog endpoint yet.
+	// Swap the input for a picker once one exists; the daemon rejects unknown
+	// names either way (spec §13).
+	const commit = () => {
+		const name = pending.trim();
+		setPending("");
+		if (!name || credentials.includes(name)) return;
+		update({ credentials: [...credentials, name] });
+	};
+
 	return (
 		<div className="flex flex-col gap-2.5">
 			<LabeledControl label="Run">
@@ -391,22 +399,37 @@ function CommandFields({ stage, update }: FieldsProps) {
 					placeholder="npm test"
 				/>
 			</LabeledControl>
-			<LabeledControl label="Credentials (one name per line)">
-				<textarea
-					key={`credentials-${stage.id}`}
-					aria-label="Credentials"
-					className={textareaClass}
-					rows={2}
-					defaultValue={(stage.credentials ?? []).join("\n")}
-					onChange={(e) => {
-						const names = e.target.value
-							.split("\n")
-							.map((line) => line.trim())
-							.filter(Boolean);
-						update({ credentials: names.length ? names : undefined });
+			<LabeledControl label="Credentials">
+				{credentials.length > 0 && (
+					<div className="flex flex-wrap gap-1.5">
+						{credentials.map((name) => (
+							<Chip
+								key={name}
+								label={name}
+								removeLabel={`Remove credential ${name}`}
+								onRemove={() => {
+									const kept = credentials.filter((c) => c !== name);
+									update({ credentials: kept.length ? kept : undefined });
+								}}
+							/>
+						))}
+					</div>
+				)}
+				<Input
+					aria-label="Add credential"
+					value={pending}
+					onChange={(e) => setPending(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key !== "Enter" && e.key !== ",") return;
+						e.preventDefault();
+						commit();
 					}}
+					onBlur={commit}
 					placeholder="github-release"
 				/>
+				<span className="text-caption text-passive">
+					Injected into this stage's environment only. Agent stages cannot declare credentials.
+				</span>
 			</LabeledControl>
 		</div>
 	);
@@ -416,6 +439,24 @@ function CommandFields({ stage, update }: FieldsProps) {
 
 const textareaClass =
 	"w-full resize-y rounded-md border border-border bg-transparent px-3 py-2 font-mono text-caption leading-relaxed text-foreground outline-none transition placeholder:text-passive focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent-weak";
+
+// Chip is a removable mono pill, the shape every stage-id-ish list in this
+// panel uses (successors, credentials).
+function Chip({ label, removeLabel, onRemove }: { label: string; removeLabel: string; onRemove: () => void }) {
+	return (
+		<span className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-raised px-2 py-0.5 font-mono text-caption text-foreground">
+			<span className="truncate">{label}</span>
+			<button
+				type="button"
+				aria-label={removeLabel}
+				onClick={onRemove}
+				className="shrink-0 text-passive transition-colors hover:text-foreground"
+			>
+				<X className="size-icon-xs" aria-hidden="true" />
+			</button>
+		</span>
+	);
+}
 
 // Warning is the edit-time caution for states the daemon accepts but a run may
 // not survive; it never blocks saving.

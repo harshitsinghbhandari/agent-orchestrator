@@ -69,9 +69,29 @@ describe("StageInspector", () => {
 
 		await userEvent.type(screen.getByRole("textbox", { name: "Run" }), "x");
 		expect(last().run).toBe("npm testx");
+	});
 
-		await userEvent.type(screen.getByRole("textbox", { name: "Credentials" }), "github-release\ndiscord");
+	it("adds and removes credential chips on a command stage", async () => {
+		const { last } = renderInspector({ id: "tests", executor: "command", run: "npm test" });
+		const input = screen.getByRole("textbox", { name: "Add credential" });
+
+		await userEvent.type(input, "github-release{Enter}");
+		expect(last().credentials).toEqual(["github-release"]);
+		// The committed name leaves the input, so the next one starts clean.
+		expect(input).toHaveValue("");
+
+		await userEvent.type(input, "discord{Enter}");
 		expect(last().credentials).toEqual(["github-release", "discord"]);
+
+		// A duplicate is a no-op rather than a second identical chip.
+		await userEvent.type(input, "discord{Enter}");
+		expect(last().credentials).toEqual(["github-release", "discord"]);
+
+		await userEvent.click(screen.getByRole("button", { name: "Remove credential github-release" }));
+		expect(last().credentials).toEqual(["discord"]);
+
+		await userEvent.click(screen.getByRole("button", { name: "Remove credential discord" }));
+		expect(last().credentials).toBeUndefined();
 	});
 
 	it("drops the other kind's fields when switching executor", async () => {
