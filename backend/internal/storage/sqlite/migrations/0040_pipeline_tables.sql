@@ -40,6 +40,8 @@ DROP TRIGGER IF EXISTS pr_cdc_update;
 DROP TRIGGER IF EXISTS pr_session_cdc_update;
 DROP TRIGGER IF EXISTS pr_checks_cdc_insert;
 DROP TRIGGER IF EXISTS pr_checks_cdc_update;
+DROP TRIGGER IF EXISTS session_cleanup_facts_cdc_update;
+DROP TRIGGER IF EXISTS session_cleanup_facts_cdc_insert;
 
 CREATE TABLE change_log_new (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,6 +229,35 @@ BEGIN
         NEW.updated_at);
 END;
 -- +goose StatementEnd
+
+-- 0030's cleanup-facts triggers also write into change_log, so they are dropped
+-- with the rest before the table is rebuilt (SQLite re-parses every trigger body
+-- on ALTER TABLE ... RENAME TO, and one naming the dropped change_log aborts the
+-- migration) and recreated verbatim here.
+-- +goose StatementBegin
+CREATE TRIGGER session_cleanup_facts_cdc_insert
+AFTER INSERT ON session_cleanup_facts
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'session_updated',
+        json_object('id', NEW.session_id),
+        datetime('now'));
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER session_cleanup_facts_cdc_update
+AFTER UPDATE ON session_cleanup_facts
+WHEN OLD.workspace_disposition <> NEW.workspace_disposition
+    OR (OLD.runtime_released_at IS NULL) <> (NEW.runtime_released_at IS NULL)
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'session_updated',
+        json_object('id', NEW.session_id),
+        datetime('now'));
+END;
+-- +goose StatementEnd
+
 
 -- +goose StatementBegin
 CREATE TABLE pipeline_definitions (
@@ -496,6 +527,8 @@ DROP TRIGGER IF EXISTS pr_cdc_update;
 DROP TRIGGER IF EXISTS pr_session_cdc_update;
 DROP TRIGGER IF EXISTS pr_checks_cdc_insert;
 DROP TRIGGER IF EXISTS pr_checks_cdc_update;
+DROP TRIGGER IF EXISTS session_cleanup_facts_cdc_update;
+DROP TRIGGER IF EXISTS session_cleanup_facts_cdc_insert;
 
 CREATE TABLE change_log_old (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -679,3 +712,32 @@ BEGIN
         NEW.updated_at);
 END;
 -- +goose StatementEnd
+
+-- 0030's cleanup-facts triggers also write into change_log, so they are dropped
+-- with the rest before the table is rebuilt (SQLite re-parses every trigger body
+-- on ALTER TABLE ... RENAME TO, and one naming the dropped change_log aborts the
+-- migration) and recreated verbatim here.
+-- +goose StatementBegin
+CREATE TRIGGER session_cleanup_facts_cdc_insert
+AFTER INSERT ON session_cleanup_facts
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'session_updated',
+        json_object('id', NEW.session_id),
+        datetime('now'));
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER session_cleanup_facts_cdc_update
+AFTER UPDATE ON session_cleanup_facts
+WHEN OLD.workspace_disposition <> NEW.workspace_disposition
+    OR (OLD.runtime_released_at IS NULL) <> (NEW.runtime_released_at IS NULL)
+BEGIN
+    INSERT INTO change_log (project_id, session_id, event_type, payload, created_at)
+    VALUES ((SELECT project_id FROM sessions WHERE id = NEW.session_id), NEW.session_id, 'session_updated',
+        json_object('id', NEW.session_id),
+        datetime('now'));
+END;
+-- +goose StatementEnd
+
