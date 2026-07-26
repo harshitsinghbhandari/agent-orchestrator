@@ -1147,26 +1147,32 @@ function PipelineOrphanKillButton({ orphan, session }: { orphan: PipelineOrphanI
 			>
 				Kill
 			</button>
-			<ConfirmDialog
-				busy={kill.isPending}
-				confirmLabel="Kill session"
-				description={
-					<p className="text-xs leading-5 text-muted-foreground">
-						Stage <span className="font-mono text-foreground">{orphan.stage}</span> of{" "}
-						<span className="font-mono text-foreground">{orphan.runId}</span> ({orphan.pipeline}) ended{" "}
-						{stageOutcomeLabel(orphan.outcome as StageOutcome)}, which is why this session is still here. Killing it
-						tears down the agent and its kept workspace. This cannot be undone.
-					</p>
-				}
-				destructive
-				error={error}
-				onConfirm={() => kill.mutate()}
-				onOpenChange={(open) => {
-					if (!open) setConfirming(false);
-				}}
-				open={confirming}
-				title="Kill this pipeline stage session?"
-			/>
+			{/* The card root is itself clickable (it opens the session). React
+			    replays synthetic events through a portal's React tree, not the
+			    DOM tree, so without this a click inside the dialog would open
+			    the session sitting behind it. */}
+			<div onClick={(event) => event.stopPropagation()}>
+				<ConfirmDialog
+					busy={kill.isPending}
+					confirmLabel="Kill session"
+					description={
+						<p className="text-xs leading-5 text-muted-foreground">
+							Stage <span className="font-mono text-foreground">{orphan.stage}</span> of{" "}
+							<span className="font-mono text-foreground">{orphan.runId}</span> ({orphan.pipeline}) ended{" "}
+							{stageOutcomeLabel(orphan.outcome as StageOutcome)}, which is why this session is still here. Killing
+							it tears down the agent and its kept workspace. This cannot be undone.
+						</p>
+					}
+					destructive
+					error={error}
+					onConfirm={() => kill.mutate()}
+					onOpenChange={(open) => {
+						if (!open) setConfirming(false);
+					}}
+					open={confirming}
+					title="Kill this pipeline stage session?"
+				/>
+			</div>
 		</>
 	);
 }
