@@ -1136,6 +1136,71 @@ paths:
       summary: Resume a stalled or failed pipeline run
       tags:
       - pipelines
+  /api/v1/pipelines/runs/{runId}/stages/{stageId}/signal:
+    post:
+      operationId: signalPipelineStage
+      parameters:
+      - description: Pipeline run identifier.
+        in: path
+        name: runId
+        required: true
+        schema:
+          description: Pipeline run identifier.
+          type: string
+      - description: Stage id as declared in the pipeline definition.
+        in: path
+        name: stageId
+        required: true
+        schema:
+          description: Stage id as declared in the pipeline definition.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSignalPipelineStageRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersSignalPipelineStageResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: 'Settle a running agent stage: `ao pipeline done` or `ao pipeline fail
+        --reason`'
+      tags:
+      - pipelines
   /api/v1/pipelines/schema:
     get:
       operationId: getPipelineConfigSchema
@@ -2864,6 +2929,28 @@ components:
       - updatedAt
       - status
       - prs
+      type: object
+    ControllersSignalPipelineStageRequest:
+      properties:
+        reason:
+          description: Why the stage failed. Carried on the failure edge and shown
+            in run detail.
+          type: string
+        status:
+          description: 'How the stage settled: done | fail.'
+          enum:
+          - done
+          - fail
+          type: string
+      required:
+      - status
+      type: object
+    ControllersSignalPipelineStageResponse:
+      properties:
+        accepted:
+          type: boolean
+      required:
+      - accepted
       type: object
     ControllersUpdatePipelineArtifactStatusRequest:
       properties:

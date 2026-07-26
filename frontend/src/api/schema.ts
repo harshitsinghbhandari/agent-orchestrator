@@ -417,6 +417,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipelines/runs/{runId}/stages/{stageId}/signal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle a running agent stage: `ao pipeline done` or `ao pipeline fail --reason` */
+        post: operations["signalPipelineStage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pipelines/schema": {
         parameters: {
             query?: never;
@@ -1030,6 +1047,18 @@ export interface components {
             terminalHandleId?: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        ControllersSignalPipelineStageRequest: {
+            /** @description Why the stage failed. Carried on the failure edge and shown in run detail. */
+            reason?: string;
+            /**
+             * @description How the stage settled: done | fail.
+             * @enum {string}
+             */
+            status: "done" | "fail";
+        };
+        ControllersSignalPipelineStageResponse: {
+            accepted: boolean;
         };
         ControllersUpdatePipelineArtifactStatusRequest: {
             /** @description New artifact status: open | resolved | dismissed. */
@@ -3133,6 +3162,80 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    signalPipelineStage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline run identifier. */
+                runId: string;
+                /** @description Stage id as declared in the pipeline definition. */
+                stageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersSignalPipelineStageRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersSignalPipelineStageResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -570,6 +570,20 @@ func pipelineOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/pipelines/runs/{runId}/stages/{stageId}/signal", id: "signalPipelineStage", tag: "pipelines",
+			summary:    "Settle a running agent stage: `ao pipeline done` or `ao pipeline fail --reason`",
+			pathParams: []any{controllers.PipelineStageIDParam{}},
+			reqBody:    controllers.SignalPipelineStageRequest{},
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.SignalPipelineStageResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodPut, path: "/api/v1/pipelines/{id}", id: "updatePipelineDefinition", tag: "pipelines",
 			summary:    "Update a pipeline definition's YAML",
 			pathParams: []any{controllers.PipelineIDParam{}},

@@ -290,6 +290,125 @@ func TestPipelineResume_Human(t *testing.T) {
 	}
 }
 
+// stageEnv sets (or clears, with "") the ambient stage variables the signal
+// verbs read.
+func stageEnv(t *testing.T, runID, stageID string) {
+	t.Helper()
+	t.Setenv("AO_RUN_ID", runID)
+	t.Setenv("AO_STAGE", stageID)
+}
+
+func TestPipelineDone_PostsSignal(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusAccepted, `{"accepted":true}`)
+	writeRunFileFor(t, cfg, srv)
+	stageEnv(t, "run-1", "review")
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "done")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v1/pipelines/runs/run-1/stages/review/signal" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["status"] != "done" || len(body) != 1 {
+		t.Fatalf("body = %+v", body)
+	}
+	if !strings.Contains(out, "review") || !strings.Contains(out, "run-1") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestPipelineFail_PostsReason(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusAccepted, `{"accepted":true}`)
+	writeRunFileFor(t, cfg, srv)
+	stageEnv(t, "run-1", "review")
+
+	_, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "fail", "--reason", "upstream API is down")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.path != "/api/v1/pipelines/runs/run-1/stages/review/signal" {
+		t.Fatalf("path = %q", capture.path)
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["status"] != "fail" || body["reason"] != "upstream API is down" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+// Spec section 6.3: a missing stage variable errors by name, never guesses.
+func TestPipelineSignal_MissingEnvErrorsByName(t *testing.T) {
+	tests := []struct {
+		name    string
+		runID   string
+		stageID string
+		args    []string
+		want    []string
+	}{
+		{"done without run id", "", "review", []string{"pipeline", "done"}, []string{"AO_RUN_ID"}},
+		{"done without stage", "run-1", "", []string{"pipeline", "done"}, []string{"AO_STAGE"}},
+		{"fail without run id", "", "review", []string{"pipeline", "fail", "--reason", "x"}, []string{"AO_RUN_ID"}},
+		{"fail without stage", "run-1", "", []string{"pipeline", "fail", "--reason", "x"}, []string{"AO_STAGE"}},
+		{"neither set", "", "", []string{"pipeline", "done"}, []string{"AO_RUN_ID", "AO_STAGE"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, capture := pipelineServer(t, http.StatusAccepted, `{"accepted":true}`)
+			writeRunFileFor(t, cfg, srv)
+			stageEnv(t, tc.runID, tc.stageID)
+
+			_, _, err := executeCLI(t, aliveDeps(), tc.args...)
+			if err == nil {
+				t.Fatal("expected an error when the stage environment is incomplete")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q does not name %s", err, want)
+				}
+			}
+			// The telemetry ping is the only call an aborted verb may make.
+			if strings.Contains(capture.path, "/signal") {
+				t.Fatalf("CLI signalled anyway: %s %s", capture.method, capture.path)
+			}
+		})
+	}
+}
+
+func TestPipelineFail_MissingReasonIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	stageEnv(t, "run-1", "review")
+	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "fail")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+}
+
+func TestPipelineDone_StageNotRunningSurfacesConflict(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusConflict,
+		`{"message":"Pipeline stage is not running","code":"PIPELINE_STAGE_NOT_RUNNING"}`)
+	writeRunFileFor(t, cfg, srv)
+	stageEnv(t, "run-1", "review")
+
+	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "done")
+	if err == nil {
+		t.Fatal("expected error for 409")
+	}
+	if !strings.Contains(err.Error(), "PIPELINE_STAGE_NOT_RUNNING") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestPipelineShow_MissingRunIDIsUsageError(t *testing.T) {
 	setConfigEnv(t)
 	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "show")
