@@ -732,10 +732,7 @@ func (e *Engine) settleSession(runID pipeline.RunID, eff pipeline.SettleSession)
 	if def == nil {
 		return
 	}
-	for _, killOn := range def.EffectiveKillOn() {
-		if killOn != eff.Outcome {
-			continue
-		}
+	if def.KillsOn(eff.Outcome) {
 		if e.sessions == nil {
 			e.log.Warn("pipeline session kill skipped: no session seam wired", "run", runID, "stage", eff.Stage)
 			return

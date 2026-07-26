@@ -1015,6 +1015,25 @@ stages:
 	if killed := h2.sess.killedIDs(); len(killed) != 0 {
 		t.Fatalf("killed %v, want kill-on: [] to never kill", killed)
 	}
+
+	// A stage with no `produces:` settles succeeded_unverified and can never
+	// settle succeeded, so the default kill-on has to cover it or every clean
+	// run of an unverified stage leaks its session.
+	const unverifiedYAML = `
+name: unverified-session
+stages:
+  - id: review
+    executor: agent
+    agent: claude-code
+    prompt: review
+`
+	h3 := newHarness(t)
+	h3.trigger(t, unverifiedYAML, userSessionSubject())
+	h3.execs.script(t, "review", executors.Poll{State: executors.PollSignaledDone})
+	h3.engine.Tick()
+	if killed := h3.sess.killedIDs(); len(killed) != 1 || killed[0] != "sess-review" {
+		t.Fatalf("killed %v, want the session killed on succeeded_unverified", killed)
+	}
 }
 
 // TestKeptSessionIsMarkedPipelineOrphaned: the kept half of the kill-on rule.

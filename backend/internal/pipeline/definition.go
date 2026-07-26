@@ -421,3 +421,20 @@ func (s *Stage) EffectiveKillOn() []Outcome {
 	copy(out, s.Session.KillOn)
 	return out
 }
+
+// KillsOn reports whether this stage's disposition kills its session for the
+// given outcome.
+//
+// The list is matched literally with one exception: `succeeded` also covers
+// `succeeded_unverified`. The two differ by whether there was an artifact to
+// verify, not by whether the agent finished, so a stage with no `produces:`
+// would otherwise keep its session alive after every clean run. That is the
+// same subsumption Outcome.IsSuccess makes for the on_success edge.
+func (s *Stage) KillsOn(outcome Outcome) bool {
+	for _, killOn := range s.EffectiveKillOn() {
+		if killOn == outcome || (killOn == OutcomeSucceeded && outcome == OutcomeSucceededUnverified) {
+			return true
+		}
+	}
+	return false
+}
