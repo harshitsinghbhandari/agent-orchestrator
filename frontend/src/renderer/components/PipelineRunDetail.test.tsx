@@ -94,9 +94,7 @@ function setApi({
 } = {}) {
 	getMock.mockImplementation((url: string, opts: { params: { path: Record<string, string> } }) => {
 		if (url === LOG_URL) {
-			return Promise.resolve(
-				log ? { data: log, error: undefined } : { data: undefined, error: { message: "no log" } },
-			);
+			return Promise.resolve(log ? { data: log, error: undefined } : { data: undefined, error: { message: "no log" } });
 		}
 		if (url === SESSION_URL) {
 			const found = sessions[opts.params.path.sessionId];
@@ -117,7 +115,9 @@ function renderDetail(project?: string) {
 }
 
 function row(stageId: string): HTMLElement {
-	return screen.getByText(stageId).closest("[data-stage]") as HTMLElement;
+	const found = document.querySelector(`[data-stage="${stageId}"]`);
+	if (!found) throw new Error(`no row for stage ${stageId}`);
+	return found as HTMLElement;
 }
 
 beforeEach(() => {
@@ -329,9 +329,7 @@ describe("PipelineRunDetail stage log", () => {
 
 describe("PipelineRunDetail artifacts", () => {
 	it("links a produced artifact through the outputs endpoint", () => {
-		setRun(
-			detail({ stages: [stage({ stageId: "audit", producedArtifact: { name: "audit.md", exists: true } })] }),
-		);
+		setRun(detail({ stages: [stage({ stageId: "audit", producedArtifact: { name: "audit.md", exists: true } })] }));
 		renderDetail("proj-1");
 
 		expect(within(row("audit")).getByRole("link", { name: "audit.md" })).toHaveAttribute(
@@ -397,9 +395,7 @@ describe("PipelineRunDetail sessions", () => {
 	});
 
 	it("marks a kept session and offers to kill it", async () => {
-		setRun(
-			detail({ stages: [stage({ stageId: "review", outcome: "no_signal", sessionId: "sess-kept" })] }),
-		);
+		setRun(detail({ stages: [stage({ stageId: "review", outcome: "no_signal", sessionId: "sess-kept" })] }));
 		setApi({
 			sessions: {
 				"sess-kept": sessionView({
@@ -425,15 +421,35 @@ describe("PipelineRunDetail sessions", () => {
 		});
 	});
 
+	// A session an earlier run kept is not this run's business. The marker waits
+	// on the sibling stage's badge, so the session lookups have demonstrably
+	// resolved before the absence is asserted.
 	it("does not mark a session another run kept", async () => {
-		setRun(detail({ stages: [stage({ stageId: "review", sessionId: "sess-other" })] }));
+		setRun(
+			detail({
+				stages: [
+					stage({ stageId: "mine", outcome: "no_output", sessionId: "sess-mine" }),
+					stage({ stageId: "theirs", sessionId: "sess-other" }),
+				],
+			}),
+		);
 		setApi({
 			sessions: {
+				"sess-mine": sessionView({
+					id: "sess-mine",
+					pipelineOrphan: {
+						runId: "run-1",
+						stage: "mine",
+						outcome: "no_output",
+						pipeline: "review",
+						keptAt: "2026-07-15T00:02:00Z",
+					},
+				}),
 				"sess-other": sessionView({
 					id: "sess-other",
 					pipelineOrphan: {
 						runId: "run-99",
-						stage: "review",
+						stage: "theirs",
 						outcome: "no_output",
 						pipeline: "review",
 						keptAt: "2026-07-15T00:02:00Z",
@@ -443,9 +459,9 @@ describe("PipelineRunDetail sessions", () => {
 		});
 		renderDetail("proj-1");
 
-		await waitFor(() => expect(getMock).toHaveBeenCalledWith(SESSION_URL, expect.anything()));
-		expect(within(row("review")).queryByText("kept")).not.toBeInTheDocument();
-		expect(within(row("review")).queryByRole("button", { name: "Kill session" })).not.toBeInTheDocument();
+		await within(row("mine")).findByText("kept");
+		expect(within(row("theirs")).queryByText("kept")).not.toBeInTheDocument();
+		expect(within(row("theirs")).queryByRole("button", { name: "Kill session" })).not.toBeInTheDocument();
 	});
 });
 

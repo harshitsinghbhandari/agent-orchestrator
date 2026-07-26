@@ -248,7 +248,11 @@ function StageArtifact({
 		);
 	}
 	if (outcome === "no_output") {
-		return <span className="text-warning">{artifact.name} is missing: the agent signalled done and the file was not there.</span>;
+		return (
+			<span className="text-warning">
+				{artifact.name} is missing: the agent signalled done and the file was not there.
+			</span>
+		);
 	}
 	if (outcome === "pending" || outcome === "running") {
 		return <span>produces {artifact.name}</span>;
@@ -323,9 +327,12 @@ function StageLog({ runId, stageId, live }: { runId: string; stageId: string; li
 
 	if (isLoading) return <p className="mt-1.5 font-mono text-micro text-passive">Loading log…</p>;
 	if (error) {
-		return <p className="mt-1.5 font-mono text-micro text-error">{apiErrorMessage(error, "Could not read the stage log")}</p>;
+		return (
+			<p className="mt-1.5 font-mono text-micro text-error">{apiErrorMessage(error, "Could not read the stage log")}</p>
+		);
 	}
-	if (!data?.content) return <p className="mt-1.5 font-mono text-micro text-passive">No log was captured for this stage.</p>;
+	if (!data?.content)
+		return <p className="mt-1.5 font-mono text-micro text-passive">No log was captured for this stage.</p>;
 
 	return (
 		<div className="mt-1.5">
