@@ -217,22 +217,41 @@ CDC event bus: `pr.opened`, `pr.updated`, `pr.merge_ready`, `pr.merged`.
 
 ```
 ao pipeline list [--project ID] [--json]
-ao pipeline runs [--project ID] [--pipeline NAME] [--status STATE] [--limit N] [--json]
+ao pipeline runs [--project ID] [--pipeline NAME] [--status STATUS] [--limit N] [--json]
 ao pipeline show <runId> [--project ID] [--json]
-ao pipeline run <pipeline-ref> [--project ID] [--session ID] [--head-sha SHA] [--json]
+ao pipeline run <pipeline-ref> [--project ID] [--session ID] [--pr N] [--json]
 ao pipeline cancel <runId> [--project ID]
-ao pipeline resume <runId> [--project ID]
+ao pipeline credential set <name> KEY=VALUE... [--project ID]
+ao pipeline credential ls [--project ID]
+ao pipeline credential rm <name> [--project ID]
+ao pipeline done
+ao pipeline fail --reason "..."
 ```
 
 `--project` falls back to `AO_PROJECT_ID`, then the CLI's usual
-cwd/session-based project resolution. `--status` filters `runs` by loop
-state (`running`, `awaiting_context`, `done`, `stalled`, `terminated`).
-`pipeline run` accepts either a pipeline id or its name.
+cwd/session-based project resolution. `--status` filters `runs` by run
+status (`pending`, `running`, `succeeded`, `failed`, `cancelled`).
+`pipeline run` accepts either a pipeline id or its name, and resolves the
+subject from `--session` or `--pr` (the PR's head SHA and fork provenance
+come from the daemon, so there is no `--head-sha`).
+
+There is no `resume`: a settled run is final, and re-running means
+triggering a new one.
+
+`done` and `fail` settle the stage the caller is running inside; they read
+`AO_RUN_ID` and `AO_STAGE` from the ambient stage environment and error by
+name if either is missing.
+
+Credential values live in the daemon and are injected into a command
+stage's process environment at exec time. No command prints one back: `ls`
+lists names, and `set` acknowledges the variable names it stored. Setting a
+name again replaces its whole environment, so dropping a `KEY=VALUE`
+removes that variable.
 
 ```bash
-ao pipeline runs --pipeline pr-review --status stalled
-ao pipeline run pr-review --head-sha abc1234
-ao pipeline resume run_01hz...
+ao pipeline runs --pipeline pr-review --status failed
+ao pipeline run pr-review --pr 42
+ao pipeline credential set npm NPM_TOKEN=... NPM_SCOPE=@ao
 ```
 
 ## Where findings land

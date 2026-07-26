@@ -487,6 +487,41 @@ func pipelineOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/pipelines/credentials", id: "listPipelineCredentials", tag: "pipelines",
+			summary:    "List a project's pipeline credential names (never their values)",
+			pathParams: []any{controllers.PipelineProjectQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ListPipelineCredentialsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPut, path: "/api/v1/pipelines/credentials/{name}", id: "setPipelineCredential", tag: "pipelines",
+			summary:    "Create or replace a pipeline credential",
+			pathParams: []any{controllers.PipelineCredentialNameParam{}, controllers.PipelineProjectQuery{}},
+			reqBody:    controllers.SetPipelineCredentialRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.PipelineCredentialResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/pipelines/credentials/{name}", id: "deletePipelineCredential", tag: "pipelines",
+			summary:    "Delete a pipeline credential",
+			pathParams: []any{controllers.PipelineCredentialNameParam{}, controllers.PipelineProjectQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.DeletePipelineCredentialResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/pipelines/runs", id: "listPipelineRuns", tag: "pipelines",
 			summary:    "List a project's pipeline runs, newest first",
 			pathParams: []any{controllers.PipelineRunsQuery{}},

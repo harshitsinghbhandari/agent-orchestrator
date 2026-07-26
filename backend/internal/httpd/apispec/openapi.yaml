@@ -771,6 +771,145 @@ paths:
       summary: Update a pipeline definition's YAML
       tags:
       - pipelines
+  /api/v1/pipelines/credentials:
+    get:
+      operationId: listPipelineCredentials
+      parameters:
+      - description: Project id the pipeline belongs to (required).
+        in: query
+        name: project
+        schema:
+          description: Project id the pipeline belongs to (required).
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersListPipelineCredentialsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a project's pipeline credential names (never their values)
+      tags:
+      - pipelines
+  /api/v1/pipelines/credentials/{name}:
+    delete:
+      operationId: deletePipelineCredential
+      parameters:
+      - description: Credential name as stages reference it in credentials:.
+        in: path
+        name: name
+        required: true
+        schema:
+          description: Credential name as stages reference it in credentials:.
+          type: string
+      - description: Project id the pipeline belongs to (required).
+        in: query
+        name: project
+        schema:
+          description: Project id the pipeline belongs to (required).
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersDeletePipelineCredentialResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Delete a pipeline credential
+      tags:
+      - pipelines
+    put:
+      operationId: setPipelineCredential
+      parameters:
+      - description: Credential name as stages reference it in credentials:.
+        in: path
+        name: name
+        required: true
+        schema:
+          description: Credential name as stages reference it in credentials:.
+          type: string
+      - description: Project id the pipeline belongs to (required).
+        in: query
+        name: project
+        schema:
+          description: Project id the pipeline belongs to (required).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSetPipelineCredentialRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersPipelineCredentialResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Create or replace a pipeline credential
+      tags:
+      - pipelines
   /api/v1/pipelines/runs:
     get:
       operationId: listPipelineRuns
@@ -2820,6 +2959,39 @@ components:
       - sessionId
       - reason
       type: object
+    ControllersDeletePipelineCredentialResponse:
+      properties:
+        deleted:
+          type: boolean
+        name:
+          type: string
+      required:
+      - name
+      - deleted
+      type: object
+    ControllersListPipelineCredentialsResponse:
+      properties:
+        names:
+          items:
+            type: string
+          type: array
+      required:
+      - names
+      type: object
+    ControllersPipelineCredentialResponse:
+      properties:
+        keys:
+          description: Names of the environment variables stored, sorted. Never their
+            values.
+          items:
+            type: string
+          type: array
+        name:
+          type: string
+      required:
+      - name
+      - keys
+      type: object
     ControllersSessionView:
       properties:
         activity:
@@ -2885,6 +3057,19 @@ components:
       - updatedAt
       - status
       - prs
+      type: object
+    ControllersSetPipelineCredentialRequest:
+      properties:
+        env:
+          additionalProperties:
+            type: string
+          description: 'Environment variables the credential injects, keyed by variable
+            name. Values are write-only: no read path returns them.'
+          type:
+          - object
+          - "null"
+      required:
+      - env
       type: object
     DegradedProject:
       properties:

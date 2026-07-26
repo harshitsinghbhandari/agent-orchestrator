@@ -49,6 +49,12 @@ type PipelineOutputParam struct {
 	Filename string `path:"filename" description:"Artifact filename. Only a name the run's frozen definition declares as a stage's produces is served."`
 }
 
+// PipelineCredentialNameParam is the {name} path parameter of the credential
+// write routes.
+type PipelineCredentialNameParam struct {
+	Name string `path:"name" description:"Credential name as stages reference it in credentials:."`
+}
+
 // PipelineProjectQuery is the shared `project` scoping query for the collection
 // and lifecycle routes.
 type PipelineProjectQuery struct {
@@ -248,6 +254,34 @@ type SignalPipelineStageResponse struct {
 	Accepted bool `json:"accepted"`
 }
 
+// SetPipelineCredentialRequest is the body of the credential upsert: the whole
+// environment the credential stands for. It replaces any previous environment
+// under that name rather than merging, so a variable can be removed.
+type SetPipelineCredentialRequest struct {
+	Env map[string]string `json:"env" description:"Environment variables the credential injects, keyed by variable name. Values are write-only: no read path returns them."`
+}
+
+// PipelineCredentialResponse acknowledges a stored credential by name and the
+// variable names it carries. Values are never in a response body (decision
+// D13): they exist to be injected into a command stage's process env, and that
+// is the only place they go.
+type PipelineCredentialResponse struct {
+	Name string   `json:"name"`
+	Keys []string `json:"keys" description:"Names of the environment variables stored, sorted. Never their values."`
+}
+
+// ListPipelineCredentialsResponse is the body of GET /api/v1/pipelines/credentials.
+// Names only, by design.
+type ListPipelineCredentialsResponse struct {
+	Names []string `json:"names"`
+}
+
+// DeletePipelineCredentialResponse is the body of the credential delete.
+type DeletePipelineCredentialResponse struct {
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
@@ -269,6 +303,10 @@ func (c *PipelinesController) Register(r chi.Router) {
 	r.Post("/pipelines", c.createDefinition)
 	r.Post("/pipelines/validate", c.validateDefinition)
 	r.Get("/pipelines/schema", c.schema)
+
+	r.Get("/pipelines/credentials", c.listCredentials)
+	r.Put("/pipelines/credentials/{name}", c.setCredential)
+	r.Delete("/pipelines/credentials/{name}", c.deleteCredential)
 
 	r.Get("/pipelines/runs", c.listRuns)
 	r.Post("/pipelines/runs", c.triggerRun)
@@ -645,6 +683,85 @@ func (c *PipelinesController) cancelRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, PipelineRunDetailResponse{Run: runDetail(run)})
+}
+
+// ---------------------------------------------------------------------------
+// Credentials
+// ---------------------------------------------------------------------------
+
+const (
+	credentialsPath     = "/api/v1/pipelines/credentials"
+	credentialNamePath  = "/api/v1/pipelines/credentials/{name}"
+	credentialNameParam = "name"
+)
+
+// listCredentials answers with the project's credential names. There is no
+// route that returns a value: a credential leaves the daemon only as an
+// environment variable inside a command stage's process (decision D13).
+func (c *PipelinesController) listCredentials(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", credentialsPath)
+		return
+	}
+	projectID, ok := requirePipelineProject(w, r)
+	if !ok {
+		return
+	}
+	names, err := c.Svc.ListCredentialNames(r.Context(), projectID)
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	if names == nil {
+		names = []string{}
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListPipelineCredentialsResponse{Names: names})
+}
+
+// setCredential creates or replaces one credential. The receipt echoes the
+// variable names that landed, never their values.
+func (c *PipelinesController) setCredential(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PUT", credentialNamePath)
+		return
+	}
+	projectID, ok := requirePipelineProject(w, r)
+	if !ok {
+		return
+	}
+	var in SetPipelineCredentialRequest
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	name := chi.URLParam(r, credentialNameParam)
+	if err := c.Svc.SetCredential(r.Context(), projectID, name, in.Env); err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	keys := make([]string, 0, len(in.Env))
+	for key := range in.Env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	envelope.WriteJSON(w, http.StatusOK, PipelineCredentialResponse{Name: name, Keys: keys})
+}
+
+func (c *PipelinesController) deleteCredential(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "DELETE", credentialNamePath)
+		return
+	}
+	projectID, ok := requirePipelineProject(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, credentialNameParam)
+	if err := c.Svc.DeleteCredential(r.Context(), projectID, name); err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, DeletePipelineCredentialResponse{Name: name, Deleted: true})
 }
 
 // ---------------------------------------------------------------------------
