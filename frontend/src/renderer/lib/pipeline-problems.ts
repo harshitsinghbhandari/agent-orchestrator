@@ -7,10 +7,13 @@ import type { PipelineDraft } from "./pipeline-draft";
 import { stageNodeId } from "./pipeline-graph";
 import type { PipelineValidationIssue } from "./pipeline-yaml";
 
-// Issue paths from the daemon address stages positionally: `stages[2].name`.
-// Returns that stage's canvas node id (the index-based stage identity), or
-// null when the path is not stage-scoped or points past the stage list.
-// Unnamed stages resolve too: "name must not be empty" needs a Reveal target.
+// Issue paths from the daemon address stages positionally, then name the key:
+// `stages[2].id`, `stages[2].onSuccess`, `stages[2].needs`. Only the index is
+// load-bearing here, so the match stays anchored on the prefix and every v2 key
+// resolves without a per-key list. Returns that stage's canvas node id (the
+// index-based stage identity), or null when the path is not stage-scoped or
+// points past the stage list. Stages with an empty id resolve too: "id must not
+// be empty" needs a Reveal target.
 export function issueStageNodeId(draft: PipelineDraft, issue: PipelineValidationIssue): string | null {
 	const match = /^stages\[(\d+)\]/.exec(issue.path);
 	if (!match) return null;
@@ -29,13 +32,13 @@ export function stageIssueMessages(draft: PipelineDraft, issues: PipelineValidat
 	return out;
 }
 
-// stageYamlLine finds the 1-based line of `name: <stage>` inside the stages
-// block. Best-effort text scan (per spec); exotic quoting or a name split
-// across lines just means the caller does not scroll.
-export function stageYamlLine(source: string, stageName: string): number | null {
-	if (!stageName) return null;
-	const escaped = stageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const nameLine = new RegExp(`^\\s*-?\\s*name:\\s*["']?${escaped}["']?\\s*(#.*)?$`);
+// stageYamlLine finds the 1-based line of `id: <stage>` inside the stages
+// block. Best-effort text scan (per spec); exotic quoting or an id split across
+// lines just means the caller does not scroll.
+export function stageYamlLine(source: string, stageId: string): number | null {
+	if (!stageId) return null;
+	const escaped = stageId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const idLine = new RegExp(`^\\s*-?\\s*id:\\s*["']?${escaped}["']?\\s*(#.*)?$`);
 	const lines = source.split("\n");
 	let inStages = false;
 	for (let i = 0; i < lines.length; i++) {
@@ -44,10 +47,10 @@ export function stageYamlLine(source: string, stageName: string): number | null 
 			inStages = true;
 			continue;
 		}
-		// A new top-level key ends the stages block (so the pipeline-level
-		// `name:` never matches a stage of the same name).
+		// A new top-level key ends the stages block, so a stray `id:` outside it
+		// never matches.
 		if (inStages && /^\S/.test(line)) inStages = false;
-		if (inStages && nameLine.test(line)) return i + 1;
+		if (inStages && idLine.test(line)) return i + 1;
 	}
 	return null;
 }
