@@ -331,7 +331,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, fmt.Errorf("spawn %s: no agent adapter for harness %q", id, cfg.Harness)
 	}
 	agentConfig := effectiveAgentConfig(cfg.Kind, project.Config)
-	env := m.runtimeEnv(id, cfg.ProjectID, cfg.IssueID, project.Config.Env)
+	env := m.runtimeEnv(id, cfg.ProjectID, cfg.IssueID, project.Config.Env, cfg.Env)
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		m.destroySpawnWorkspace(ctx, ws, workspaceProject)
@@ -866,7 +866,7 @@ func (m *Manager) relaunchRestoredSession(ctx context.Context, rec domain.Sessio
 	// Restore re-applies the project's resolved agent config so a configured
 	// model/permissions carry across a restore, matching fresh spawn.
 	agentConfig := effectiveAgentConfig(rec.Kind, project.Config)
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, nil)
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		return RestoreResult{}, fmt.Errorf("restore %s: %w", rec.ID, err)
@@ -2137,11 +2137,16 @@ func workspaceRepoList(repos []domain.WorkspaceRepoRecord) string {
 }
 
 // spawnEnv builds the runtime environment: the per-project env vars first, then
-// the AO-internal vars last so they always win (a project cannot override
-// AO_SESSION_ID and friends).
-func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string) map[string]string {
-	env := make(map[string]string, len(projectEnv)+4)
+// the spawn config's extra env (a spawn-config entry wins on collision, so a
+// caller's ambient identity cannot be masked by project config), then the
+// AO-internal vars last so they always win (neither a project nor a spawn
+// config can override AO_SESSION_ID and friends).
+func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv, extraEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(projectEnv)+len(extraEnv)+4)
 	for k, v := range projectEnv {
+		env[k] = v
+	}
+	for k, v := range extraEnv {
 		env[k] = v
 	}
 	env[EnvSessionID] = string(id)
@@ -2158,9 +2163,11 @@ func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueI
 // command, which fails every callback and silently kills activity tracking).
 // When the pin cannot be applied the inherited PATH is kept and a warning is
 // logged so the degradation isn't silent.
-func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
-	env := spawnEnv(id, project, issue, m.dataDir, projectEnv)
-	path, err := HookPATH(m.executable, os.Getenv, projectEnv)
+func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv, extraEnv map[string]string) map[string]string {
+	env := spawnEnv(id, project, issue, m.dataDir, projectEnv, extraEnv)
+	// The PATH pin is applied over the merged env, so a PATH set by the spawn
+	// config is the base the daemon dir is prepended to, same as a project PATH.
+	path, err := HookPATH(m.executable, os.Getenv, env)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
 			"session", id, "error", err)
@@ -2171,13 +2178,13 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 }
 
 // HookPATH builds the PATH value pinned into a spawned session: the daemon
-// executable's directory prepended to the base PATH (the project's PATH
-// override when set, else the daemon's inherited PATH — matching what the
+// executable's directory prepended to the base PATH (the PATH override from
+// baseEnv when set, else the daemon's inherited PATH, matching what the
 // runtime would have exported anyway). An error means the pin cannot be
 // applied: the executable is unresolvable, or is not named "ao", in which case
 // prepending its directory would not change what `ao` resolves to. Exported so
 // the reviewer launcher can pin its pane's PATH the same way.
-func HookPATH(executable func() (string, error), getenv func(string) string, projectEnv map[string]string) (string, error) {
+func HookPATH(executable func() (string, error), getenv func(string) string, baseEnv map[string]string) (string, error) {
 	exe, err := executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve daemon executable: %w", err)
@@ -2189,7 +2196,7 @@ func HookPATH(executable func() (string, error), getenv func(string) string, pro
 	if name != hookBinaryName {
 		return "", fmt.Errorf("daemon executable %s is not named %q", exe, hookBinaryName)
 	}
-	base := projectEnv["PATH"]
+	base := baseEnv["PATH"]
 	if base == "" {
 		base = getenv("PATH")
 	}
@@ -2364,9 +2371,9 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 	if !ok {
 		return
 	}
-	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil)
+	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil, nil)
 	if project, err := m.loadProject(ctx, rec.ProjectID); err == nil {
-		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, nil)
 	} else {
 		m.logger.Warn("workspace cleanup: project env unavailable; agent cleanup using AO env only",
 			"sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)
