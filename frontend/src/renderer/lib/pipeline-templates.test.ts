@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	ALL_CONCURRENCY_SCOPES,
@@ -17,6 +19,28 @@ import { PIPELINE_TEMPLATES } from "./pipeline-templates";
 // sees them until a user hits Save. This suite mirrors the edit-time rules of
 // backend/internal/pipeline (spec §13) closely enough that a template violating
 // them fails here instead of at /validate in front of a user.
+//
+// The mirror is a copy of the rules, not the rules, so it is backed by the real
+// thing: every template's serialized YAML is committed as
+// backend/internal/pipeline/testdata/templates/<id>.yaml, and
+// TestStarterTemplatesValidate over there runs the actual ParseDefinition +
+// Validate against each file. This suite pins the two sides together by
+// asserting the fixture is byte-identical to what the serializer emits today,
+// so editing a template without regenerating its fixture fails here and a
+// template that stops satisfying a Go rule fails there.
+
+// Vitest's root is frontend/ (vite.renderer.config.ts), which is also where
+// `npm test` runs from.
+const TEMPLATE_FIXTURE_DIR = resolve(process.cwd(), "../backend/internal/pipeline/testdata/templates");
+
+function fixtureYaml(id: string): string {
+	const path = resolve(TEMPLATE_FIXTURE_DIR, `${id}.yaml`);
+	try {
+		return readFileSync(path, "utf8");
+	} catch {
+		throw new Error(`missing template fixture ${path}; regenerate it from serializeToYaml(template.draft())`);
+	}
+}
 
 const KNOWN_EXECUTORS = new Set<string>(ALL_EXECUTOR_KINDS);
 const KNOWN_WORKSPACES = new Set<string>(ALL_WORKSPACE_KINDS);
@@ -119,6 +143,10 @@ describe("PIPELINE_TEMPLATES", () => {
 				expect(a).toEqual(b);
 			});
 
+			it("matches the YAML fixture the Go validator runs against", () => {
+				expect(serializeToYaml(template.draft())).toBe(fixtureYaml(template.id));
+			});
+
 			it("round-trips through the codec unchanged", () => {
 				const draft = template.draft();
 				const parsed = parseYamlToDraft(serializeToYaml(draft));
@@ -135,4 +163,59 @@ describe("PIPELINE_TEMPLATES", () => {
 			});
 		});
 	}
+
+	// The shape of each starter, pinned. These are the properties that make the
+	// template worth shipping rather than incidental details of the YAML.
+	function byId(id: string) {
+		return PIPELINE_TEMPLATES.find((t) => t.id === id)!.draft();
+	}
+
+	it("pr-review reviews with an agent and posts with a command", () => {
+		const draft = byId("pr-review");
+		expect(draft.on).toEqual({ pr: ["created", "updated"] });
+		expect(draft.concurrency).toEqual({ scope: "pr", cancelInProgress: true });
+
+		const review = draft.stages.find((s) => s.executor === "agent");
+		expect(review?.produces).toBe("review.md");
+		expect(review?.credentials).toBeUndefined();
+
+		// The §6.4 split: the agent produces the file, a command performs the
+		// unverifiable action with the credential.
+		const post = draft.stages.find((s) => s.id === "post-review");
+		expect(post?.executor).toBe("command");
+		expect(post?.run).toContain("agent-outputs/review.md");
+		expect(post?.credentials).toEqual(["github-review"]);
+		expect(review?.onSuccess).toEqual(["post-review"]);
+	});
+
+	it("session-idle-triage is one agent stage that never kills the session", () => {
+		const draft = byId("session-idle-triage");
+		expect(draft.on).toEqual({ session: ["idle"] });
+		expect(draft.stages).toHaveLength(1);
+		expect(draft.stages[0].executor).toBe("agent");
+		// An explicit empty list, not an absent block: the engine default would
+		// kill the human's own session (§7.2).
+		expect(draft.stages[0].session).toEqual({ killOn: [] });
+	});
+
+	it("release-gate fans out, joins on needs, and routes failure through defaults", () => {
+		const draft = byId("release-gate");
+		expect(draft.stages).toHaveLength(6);
+		expect(draft.concurrency).toEqual({ scope: "project", group: "release", cancelInProgress: false });
+		expect(draft.defaults?.onFailure).toBe("notify-failure");
+
+		const prepare = draft.stages.find((s) => s.id === "prepare");
+		expect(prepare?.onSuccess).toEqual(["build", "release-notes"]);
+		// Concurrent stages get a tree each; three parallel npm ci in one tree is
+		// a corrupt node_modules (§5.2).
+		expect(draft.stages.find((s) => s.id === "build")?.workspace).toBe("stage");
+		expect(draft.stages.find((s) => s.id === "release-notes")?.workspace).toBe("stage");
+
+		const publish = draft.stages.find((s) => s.id === "publish");
+		expect(publish?.needs).toEqual(["release-notes", "verify"]);
+		expect(publish?.credentials).toEqual(["github-release"]);
+
+		// Every stage relies on defaults.on_failure; none repeats the key.
+		expect(draft.stages.filter((s) => s.onFailure)).toEqual([]);
+	});
 });
