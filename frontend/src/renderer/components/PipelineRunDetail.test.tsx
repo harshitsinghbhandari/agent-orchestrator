@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelineRunDetail } from "./PipelineRunDetail";
 import type { PipelineRunDetail as RunDetail } from "../hooks/usePipelineRuns";
+import type { WorkspaceSession } from "../types/workspace";
 import type { components } from "../../api/schema";
 
-const { usePipelineRunMock, getMock, postMock, navigateMock } = vi.hoisted(() => ({
+const { usePipelineRunMock, workspacesMock, getMock, postMock, navigateMock } = vi.hoisted(() => ({
 	usePipelineRunMock: vi.fn(),
+	workspacesMock: vi.fn(),
 	getMock: vi.fn(),
 	postMock: vi.fn(),
 	navigateMock: vi.fn(),
@@ -31,12 +33,14 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => navigateMock,
 }));
+vi.mock("../hooks/useWorkspaceQuery", () => ({
+	useWorkspaceQuery: () => ({ data: workspacesMock() }),
+	workspaceQueryKey: ["workspaces"],
+}));
 
 type StageView = RunDetail["stages"][number];
-type SessionView = components["schemas"]["ControllersSessionView"];
 
 const LOG_URL = "/api/v1/pipelines/runs/{runId}/stages/{stageId}/log";
-const SESSION_URL = "/api/v1/sessions/{sessionId}";
 
 function stage(overrides: Partial<StageView> & { stageId: string }): StageView {
 	return {
@@ -67,18 +71,28 @@ function detail(overrides: Partial<RunDetail>): RunDetail {
 	};
 }
 
-function sessionView(overrides: Partial<SessionView> & { id: string }): SessionView {
+function sessionView(overrides: Partial<WorkspaceSession> & { id: string }): WorkspaceSession {
 	return {
-		activity: { lastActivityAt: "2026-07-15T00:00:00Z", state: "idle" },
-		createdAt: "2026-07-15T00:00:00Z",
-		isTerminated: false,
-		kind: "worker",
-		projectId: "proj-1",
-		prs: [],
+		workspaceId: "proj-1",
+		workspaceName: "proj-1",
+		title: overrides.id,
+		provider: "claude",
+		branch: `session/${overrides.id}`,
 		status: "idle",
+		createdAt: "2026-07-15T00:00:00Z",
 		updatedAt: "2026-07-15T00:00:00Z",
+		activity: { state: "idle", lastActivityAt: "2026-07-15T00:00:00Z" },
+		prs: [],
 		...overrides,
 	};
+}
+
+// The sessions the shell's workspace query has loaded, which is where run detail
+// reads orphan markers and PR urls from.
+function setSessions(sessions: WorkspaceSession[]) {
+	workspacesMock.mockReturnValue([
+		{ id: "proj-1", name: "proj-1", kind: "single_repo", path: "/tmp/proj-1", sessions },
+	]);
 }
 
 function setRun(run: RunDetail) {
@@ -90,22 +104,14 @@ function setRun(run: RunDetail) {
 function setApi({
 	log,
 	logError,
-	sessions = {},
 }: {
 	log?: components["schemas"]["PipelineStageLogResponse"];
 	logError?: { code?: string; message: string };
-	sessions?: Record<string, SessionView>;
 } = {}) {
-	getMock.mockImplementation((url: string, opts: { params: { path: Record<string, string> } }) => {
+	getMock.mockImplementation((url: string) => {
 		if (url === LOG_URL) {
 			if (logError) return Promise.resolve({ data: undefined, error: logError });
 			return Promise.resolve(log ? { data: log, error: undefined } : { data: undefined, error: { message: "no log" } });
-		}
-		if (url === SESSION_URL) {
-			const found = sessions[opts.params.path.sessionId];
-			return Promise.resolve(
-				found ? { data: { session: found }, error: undefined } : { data: undefined, error: { message: "no session" } },
-			);
 		}
 		throw new Error(`unexpected GET ${url}`);
 	});
@@ -127,6 +133,8 @@ function row(stageId: string): HTMLElement {
 
 beforeEach(() => {
 	usePipelineRunMock.mockReset();
+	workspacesMock.mockReset();
+	setSessions([]);
 	getMock.mockReset();
 	postMock.mockReset().mockResolvedValue({ error: undefined });
 	navigateMock.mockReset();
@@ -171,25 +179,23 @@ describe("PipelineRunDetail header", () => {
 
 	it("links a PR subject out to the PR when the tracked session knows its url", async () => {
 		setRun(detail({ subjectKind: "pr", prNumber: 12, sessionId: "sess-pr" }));
-		setApi({
-			sessions: {
-				"sess-pr": sessionView({
-					id: "sess-pr",
-					prs: [
-						{
-							number: 12,
-							url: "https://github.com/acme/repo/pull/12",
-							state: "open",
-							ci: "passing",
-							mergeability: "mergeable",
-							review: "approved",
-							reviewComments: false,
-							updatedAt: "2026-07-15T00:00:00Z",
-						},
-					],
-				}),
-			},
-		});
+		setSessions([
+			sessionView({
+				id: "sess-pr",
+				prs: [
+					{
+						number: 12,
+						url: "https://github.com/acme/repo/pull/12",
+						state: "open",
+						ci: "passing",
+						mergeability: "mergeable",
+						review: "approved",
+						reviewComments: false,
+						updatedAt: "2026-07-15T00:00:00Z",
+					},
+				],
+			}),
+		]);
 		renderDetail("proj-1");
 
 		const link = await screen.findByRole("link", { name: "PR #12" });
@@ -424,20 +430,18 @@ describe("PipelineRunDetail sessions", () => {
 
 	it("marks a kept session and offers to kill it", async () => {
 		setRun(detail({ stages: [stage({ stageId: "review", outcome: "no_signal", sessionId: "sess-kept" })] }));
-		setApi({
-			sessions: {
-				"sess-kept": sessionView({
-					id: "sess-kept",
-					pipelineOrphan: {
-						runId: "run-1",
-						stage: "review",
-						outcome: "no_signal",
-						pipeline: "review",
-						keptAt: "2026-07-15T00:02:00Z",
-					},
-				}),
-			},
-		});
+		setSessions([
+			sessionView({
+				id: "sess-kept",
+				pipelineOrphan: {
+					runId: "run-1",
+					stage: "review",
+					outcome: "no_signal",
+					pipeline: "review",
+					keptAt: "2026-07-15T00:02:00Z",
+				},
+			}),
+		]);
 		renderDetail("proj-1");
 
 		expect(await within(row("review")).findByText("kept")).toBeInTheDocument();
@@ -466,17 +470,10 @@ describe("PipelineRunDetail sessions", () => {
 			pipeline: "review",
 			keptAt: "2026-07-15T00:02:00Z",
 		};
-		setApi({
-			sessions: {
-				"sess-alive": sessionView({ id: "sess-alive", pipelineOrphan: { ...orphan, stage: "alive" } }),
-				"sess-dead": sessionView({
-					id: "sess-dead",
-					isTerminated: true,
-					status: "terminated",
-					pipelineOrphan: { ...orphan, stage: "dead" },
-				}),
-			},
-		});
+		setSessions([
+			sessionView({ id: "sess-alive", pipelineOrphan: { ...orphan, stage: "alive" } }),
+			sessionView({ id: "sess-dead", status: "terminated", pipelineOrphan: { ...orphan, stage: "dead" } }),
+		]);
 		renderDetail("proj-1");
 
 		await within(row("alive")).findByText("kept");
@@ -496,30 +493,28 @@ describe("PipelineRunDetail sessions", () => {
 				],
 			}),
 		);
-		setApi({
-			sessions: {
-				"sess-mine": sessionView({
-					id: "sess-mine",
-					pipelineOrphan: {
-						runId: "run-1",
-						stage: "mine",
-						outcome: "no_output",
-						pipeline: "review",
-						keptAt: "2026-07-15T00:02:00Z",
-					},
-				}),
-				"sess-other": sessionView({
-					id: "sess-other",
-					pipelineOrphan: {
-						runId: "run-99",
-						stage: "theirs",
-						outcome: "no_output",
-						pipeline: "review",
-						keptAt: "2026-07-15T00:02:00Z",
-					},
-				}),
-			},
-		});
+		setSessions([
+			sessionView({
+				id: "sess-mine",
+				pipelineOrphan: {
+					runId: "run-1",
+					stage: "mine",
+					outcome: "no_output",
+					pipeline: "review",
+					keptAt: "2026-07-15T00:02:00Z",
+				},
+			}),
+			sessionView({
+				id: "sess-other",
+				pipelineOrphan: {
+					runId: "run-99",
+					stage: "theirs",
+					outcome: "no_output",
+					pipeline: "review",
+					keptAt: "2026-07-15T00:02:00Z",
+				},
+			}),
+		]);
 		renderDetail("proj-1");
 
 		await within(row("mine")).findByText("kept");

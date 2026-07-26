@@ -11,15 +11,16 @@ import {
 	stageOutcomeDotTone,
 	stageOutcomeLabel,
 } from "../lib/pipeline-display";
+import { useKillSession } from "../hooks/useKillSession";
 import { pipelineRunQueryKey, usePipelineRun } from "../hooks/usePipelineRuns";
-import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import type { RunStatus, StageOutcome } from "../lib/pipeline-draft";
+import type { WorkspaceSession } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 
 type PipelineStageView = components["schemas"]["PipelineStageView"];
-type SessionView = components["schemas"]["ControllersSessionView"];
 
 // How much of a stage log the viewer asks for. The log is the main debugging
 // surface for a command stage that failed, and the interesting part of a failure
@@ -138,7 +139,7 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 // first-class (spec section 4), so the number renders as plain text rather than
 // as a link to a guessed url.
 function RunSubject({ run }: { run: components["schemas"]["PipelineRunDetail"] }) {
-	const session = useSessionView(run.sessionId);
+	const session = useSessionFacts(run.sessionId);
 	if (run.subjectKind === "pr" && run.prNumber) {
 		const prUrl = session?.prs?.find((pr) => pr.number === run.prNumber)?.url;
 		return (
@@ -271,30 +272,21 @@ function StageArtifact({
 // human can look at it (spec section 7.2), and the bound on that is a visible
 // marker and a kill button, not a silent reaper.
 function StageSession({ runId, stageId, sessionId }: { runId: string; stageId: string; sessionId: string }) {
-	const queryClient = useQueryClient();
-	const session = useSessionView(sessionId);
+	const session = useSessionFacts(sessionId);
 	const [killError, setKillError] = useState<string | null>(null);
 	const orphan = session?.pipelineOrphan;
 	// `pipelineOrphan` survives on the DTO after the session is killed, so the
 	// terminated check is what makes the marker mean "still alive, go look at
 	// it" rather than "was spared once". Without it the kill button stays after
 	// it has done its job.
-	const keptHere = orphan?.runId === runId && orphan?.stage === stageId && !session?.isTerminated;
+	const keptHere = orphan?.runId === runId && orphan?.stage === stageId && session?.status !== "terminated";
 
-	const kill = useMutation({
-		mutationFn: async () => {
-			const { error: apiError } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
-				params: { path: { sessionId } },
-			});
-			if (apiError) throw new Error(apiErrorMessage(apiError));
-		},
-		onSuccess: () => {
-			setKillError(null);
-			void queryClient.invalidateQueries({ queryKey: sessionViewQueryKey(sessionId) });
-			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
-		},
-		onError: (e: unknown) => setKillError(e instanceof Error ? e.message : "Kill failed"),
-	});
+	// The shared kill mutation: one endpoint, one set of telemetry events, and a
+	// workspace refetch that is also what refreshes the marker on this row.
+	const kill = useKillSession(
+		{ id: sessionId, workspaceId: session?.workspaceId ?? "" },
+		{ onKilled: () => setKillError(null), onError: setKillError },
+	);
 
 	return (
 		<span className="flex items-center gap-2">
@@ -374,29 +366,19 @@ function SessionLink({ sessionId }: { sessionId: string }) {
 	);
 }
 
-function sessionViewQueryKey(sessionId: string) {
-	return ["pipeline-session", sessionId] as const;
-}
-
-// One session's DTO, for the two things run detail reads off it: the orphan
-// marker (`pipelineOrphan`, added with the kill-on disposition) and the PR url a
-// PR-subject run needs and does not carry itself. Shared query key, so several
-// stages on one session cost one request.
-function useSessionView(sessionId: string | undefined): SessionView | undefined {
-	const { data } = useQuery({
-		queryKey: sessionViewQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId),
-		queryFn: async () => {
-			const { data: body, error: apiError } = await apiClient.GET("/api/v1/sessions/{sessionId}", {
-				params: { path: { sessionId: sessionId as string } },
-			});
-			if (apiError) throw new Error(apiErrorMessage(apiError, "Could not load the session"));
-			return body?.session;
-		},
-		retry: 1,
-		refetchInterval: 15_000,
-	});
-	return data;
+// The two things run detail reads off a session: the orphan marker
+// (`pipelineOrphan`) and the PR url a PR-subject run needs and does not carry
+// itself. Both ride the workspace query the shell has already loaded, so this
+// screen adds no request of its own and sees the same session facts as the
+// board.
+function useSessionFacts(sessionId: string | undefined): WorkspaceSession | undefined {
+	const workspaces = useWorkspaceQuery().data;
+	if (!sessionId) return undefined;
+	for (const workspace of workspaces ?? []) {
+		const found = workspace.sessions.find((session) => session.id === sessionId);
+		if (found) return found;
+	}
+	return undefined;
 }
 
 function absoluteTime(iso: string): string {
