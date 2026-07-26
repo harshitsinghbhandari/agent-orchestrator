@@ -22,7 +22,9 @@ vi.mock("../lib/api-client", () => ({
 		GET: (...args: unknown[]) => getMock(...args),
 		POST: (...args: unknown[]) => postMock(...args),
 	},
-	apiErrorMessage: (e: unknown) => (e instanceof Error ? e.message : "error"),
+	apiErrorCode: (e: unknown) => (e as { code?: string } | undefined)?.code,
+	apiErrorMessage: (e: unknown, fallback = "Request failed") =>
+		e instanceof Error ? e.message : ((e as { message?: string } | undefined)?.message ?? fallback),
 	getApiBaseUrl: () => "http://127.0.0.1:3001",
 	hasTrustedApiBaseUrl: () => true,
 }));
@@ -87,13 +89,16 @@ function setRun(run: RunDetail) {
 // behind the orphan marker. Anything else is an unexpected call and fails loudly.
 function setApi({
 	log,
+	logError,
 	sessions = {},
 }: {
 	log?: components["schemas"]["PipelineStageLogResponse"];
+	logError?: { code?: string; message: string };
 	sessions?: Record<string, SessionView>;
 } = {}) {
 	getMock.mockImplementation((url: string, opts: { params: { path: Record<string, string> } }) => {
 		if (url === LOG_URL) {
+			if (logError) return Promise.resolve({ data: undefined, error: logError });
 			return Promise.resolve(log ? { data: log, error: undefined } : { data: undefined, error: { message: "no log" } });
 		}
 		if (url === SESSION_URL) {
@@ -317,6 +322,27 @@ describe("PipelineRunDetail stage log", () => {
 
 		await userEvent.setup().click(within(row("lint")).getByRole("button", { name: "Log" }));
 		expect(await within(row("lint")).findByText("No log was captured for this stage.")).toBeInTheDocument();
+	});
+
+	// The daemon 404s a stage with no log file on disk. That is the empty case,
+	// not a failure, and showing a raw error code for it reads as a broken viewer.
+	it("treats a missing log file as an empty log, not as an error", async () => {
+		setRun(detail({ stages: [stage({ stageId: "review", outcome: "no_signal" })] }));
+		setApi({ logError: { code: "PIPELINE_STAGE_LOG_NOT_FOUND", message: "Pipeline stage has no log yet" } });
+		renderDetail("proj-1");
+
+		await userEvent.setup().click(within(row("review")).getByRole("button", { name: "Log" }));
+		expect(await within(row("review")).findByText("No log was captured for this stage.")).toBeInTheDocument();
+		expect(within(row("review")).queryByText(/PIPELINE_STAGE_LOG_NOT_FOUND/)).not.toBeInTheDocument();
+	});
+
+	it("surfaces a log the daemon could not read", async () => {
+		setRun(detail({ stages: [stage({ stageId: "lint" })] }));
+		setApi({ logError: { code: "INTERNAL", message: "disk on fire" } });
+		renderDetail("proj-1");
+
+		await userEvent.setup().click(within(row("lint")).getByRole("button", { name: "Log" }));
+		expect(await within(row("lint")).findByText(/disk on fire/)).toBeInTheDocument();
 	});
 
 	it("offers no log for a stage that never ran", () => {

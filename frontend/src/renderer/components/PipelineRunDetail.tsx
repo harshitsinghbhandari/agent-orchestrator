@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { cn } from "../lib/utils";
 import { formatTimeCompact } from "../lib/format-time";
-import { apiClient, apiErrorMessage, getApiBaseUrl } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorMessage, getApiBaseUrl } from "../lib/api-client";
 import {
 	formatStageDuration,
 	runStatusTone,
@@ -25,6 +25,10 @@ type SessionView = components["schemas"]["ControllersSessionView"];
 // surface for a command stage that failed, and the interesting part of a failure
 // is the end of it.
 const LOG_TAIL_LINES = 200;
+
+// The daemon's code for "this stage has no log file", which the viewer renders
+// as an empty log rather than as a failure.
+const LOG_NOT_FOUND_CODE = "PIPELINE_STAGE_LOG_NOT_FOUND";
 
 // Read-only detail for one pipeline run. Its job is to make the outcome taxonomy
 // (spec section 7) legible: which stage settled how, whether it was nudged,
@@ -157,7 +161,9 @@ function RunSubject({ run }: { run: components["schemas"]["PipelineRunDetail"] }
 		);
 	}
 	if (run.sessionId) return <SessionLink sessionId={run.sessionId} />;
-	return <span>{run.subjectKind} subject</span>;
+	// A project subject (a manual trigger) has neither a PR nor a session to
+	// point at, and saying so is the whole of it.
+	return <span>{run.subjectKind}</span>;
 }
 
 // One stage row: how it settled, how long it took, why it was entered, what it
@@ -298,7 +304,7 @@ function StageSession({ runId, stageId, sessionId }: { runId: string; stageId: s
 					>
 						kept
 					</Badge>
-					<Button size="sm" variant="ghost" disabled={kill.isPending} onClick={() => kill.mutate()}>
+					<Button size="sm" variant="outline" disabled={kill.isPending} onClick={() => kill.mutate()}>
 						{kill.isPending ? "Killing…" : "Kill session"}
 					</Button>
 				</>
@@ -318,6 +324,10 @@ function StageLog({ runId, stageId, live }: { runId: string; stageId: string; li
 				"/api/v1/pipelines/runs/{runId}/stages/{stageId}/log",
 				{ params: { path: { runId, stageId }, query: { tail: LOG_TAIL_LINES } } },
 			);
+			// A stage with no log file on disk is the empty case, not an error:
+			// showing an error code for "nothing was written" reads as a bug in
+			// the viewer rather than as the fact it is.
+			if (apiErrorCode(apiError) === LOG_NOT_FOUND_CODE) return { content: "", truncated: false };
 			if (apiError) throw new Error(apiErrorMessage(apiError, "Could not read the stage log"));
 			return body;
 		},
