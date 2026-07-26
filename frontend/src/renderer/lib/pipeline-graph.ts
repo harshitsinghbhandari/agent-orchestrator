@@ -16,9 +16,11 @@ import dagre from "dagre";
 import { DEFAULT_STAGE_DEADLINE, type PipelineDraft, type StageDraft } from "./pipeline-draft";
 
 // Fixed card footprint the layout assumes; the rendered card is w-52 with a
-// content-dependent height this estimate stays close enough to for spacing.
+// content-dependent height this estimate stays close enough to for spacing. The
+// height covers a card with a wrapped chip row (deadline, produces, workspace,
+// needs), which is the tallest ordinary case.
 export const STAGE_NODE_WIDTH = 208;
-export const STAGE_NODE_HEIGHT = 96;
+export const STAGE_NODE_HEIGHT = 124;
 
 export interface StagePosition {
 	x: number;

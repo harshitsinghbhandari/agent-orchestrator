@@ -69,9 +69,29 @@ describe("StageInspector", () => {
 
 		await userEvent.type(screen.getByRole("textbox", { name: "Run" }), "x");
 		expect(last().run).toBe("npm testx");
+	});
 
-		await userEvent.type(screen.getByRole("textbox", { name: "Credentials" }), "github-release\ndiscord");
+	it("adds and removes credential chips on a command stage", async () => {
+		const { last } = renderInspector({ id: "tests", executor: "command", run: "npm test" });
+		const input = screen.getByRole("textbox", { name: "Add credential" });
+
+		await userEvent.type(input, "github-release{Enter}");
+		expect(last().credentials).toEqual(["github-release"]);
+		// The committed name leaves the input, so the next one starts clean.
+		expect(input).toHaveValue("");
+
+		await userEvent.type(input, "discord{Enter}");
 		expect(last().credentials).toEqual(["github-release", "discord"]);
+
+		// A duplicate is a no-op rather than a second identical chip.
+		await userEvent.type(input, "discord{Enter}");
+		expect(last().credentials).toEqual(["github-release", "discord"]);
+
+		await userEvent.click(screen.getByRole("button", { name: "Remove credential github-release" }));
+		expect(last().credentials).toEqual(["discord"]);
+
+		await userEvent.click(screen.getByRole("button", { name: "Remove credential discord" }));
+		expect(last().credentials).toBeUndefined();
 	});
 
 	it("drops the other kind's fields when switching executor", async () => {
@@ -127,10 +147,51 @@ describe("StageInspector", () => {
 		expect(last().workspace).toBeUndefined();
 	});
 
-	it("binds the deadline field", async () => {
-		const { last } = renderInspector(agentStage());
+	it("binds the deadline field and shows the inherited one as the placeholder", async () => {
+		const { last } = renderInspector(agentStage(), { defaultDeadline: "45m" });
+		// Spec §13.1: the effective bound must be visible, not just the override.
+		expect(screen.getByRole("textbox", { name: "Deadline" })).toHaveAttribute("placeholder", "45m");
+
 		await userEvent.type(screen.getByRole("textbox", { name: "Deadline" }), "40m");
 		expect(last().deadline).toBe("40m");
+	});
+
+	it("falls back to the engine default deadline placeholder", () => {
+		renderInspector(agentStage());
+		expect(screen.getByRole("textbox", { name: "Deadline" })).toHaveAttribute("placeholder", "30m");
+	});
+
+	it("rejects a produces filename carrying a path separator", async () => {
+		const { last } = renderInspector(agentStage());
+		const produces = screen.getByRole("textbox", { name: "Produces" });
+		expect(produces).toHaveAttribute("aria-invalid", "false");
+
+		await userEvent.type(produces, "docs/review.md");
+		// The edit still binds (the daemon is authoritative); the field flags it.
+		expect(last().produces).toBe("docs/review.md");
+		expect(produces).toHaveAttribute("aria-invalid", "true");
+		expect(screen.getByText(/bare filename/i)).toBeInTheDocument();
+	});
+
+	it("rejects a windows path separator in produces too", async () => {
+		renderInspector({ ...agentStage(), produces: "docs\\review.md" });
+		expect(screen.getByRole("textbox", { name: "Produces" })).toHaveAttribute("aria-invalid", "true");
+	});
+
+	it("warns on workspace session under a pr.* trigger (spec §5.3)", () => {
+		renderInspector({ ...agentStage(), workspace: "session" }, { prTriggered: true });
+		expect(screen.getByText(/no local session/i)).toBeInTheDocument();
+	});
+
+	it("does not warn on workspace session without a pr.* trigger", () => {
+		renderInspector({ ...agentStage(), workspace: "session" });
+		expect(screen.queryByText(/no local session/i)).not.toBeInTheDocument();
+	});
+
+	it("never offers credentials on an agent stage", () => {
+		renderInspector(agentStage(), { prTriggered: true });
+		// Credentials-on-agent is impossible by construction, not by validation.
+		expect(screen.queryByRole("textbox", { name: "Credentials" })).not.toBeInTheDocument();
 	});
 
 	it("overrides session kill-on, including the never-kill empty list", async () => {

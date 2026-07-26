@@ -356,6 +356,10 @@ function DefinitionEditor({
 									key={selection.selectedStage}
 									stage={selectedStageDraft}
 									stageIds={stageIds}
+									// Pipeline-level context the stage warnings need: the
+									// pr.* trigger (spec §5.3) and the inherited deadline.
+									prTriggered={(draft.on?.pr?.length ?? 0) > 0}
+									defaultDeadline={draft.defaults?.deadline}
 									onChange={updateSelectedStage}
 									onClose={() => selection.selectStage(null)}
 									onDelete={deleteSelectedStage}
