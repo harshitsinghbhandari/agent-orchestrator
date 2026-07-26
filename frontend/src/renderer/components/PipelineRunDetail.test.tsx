@@ -447,6 +447,41 @@ describe("PipelineRunDetail sessions", () => {
 		});
 	});
 
+	// The daemon leaves pipelineOrphan on the DTO after a kill, so a terminated
+	// session would otherwise keep offering a kill button that has already run.
+	it("drops the marker once the session is terminated", async () => {
+		setRun(
+			detail({
+				stages: [
+					stage({ stageId: "alive", outcome: "no_output", sessionId: "sess-alive" }),
+					stage({ stageId: "dead", outcome: "no_output", sessionId: "sess-dead" }),
+				],
+			}),
+		);
+		const orphan = {
+			runId: "run-1",
+			outcome: "no_output",
+			pipeline: "review",
+			keptAt: "2026-07-15T00:02:00Z",
+		};
+		setApi({
+			sessions: {
+				"sess-alive": sessionView({ id: "sess-alive", pipelineOrphan: { ...orphan, stage: "alive" } }),
+				"sess-dead": sessionView({
+					id: "sess-dead",
+					isTerminated: true,
+					status: "terminated",
+					pipelineOrphan: { ...orphan, stage: "dead" },
+				}),
+			},
+		});
+		renderDetail("proj-1");
+
+		await within(row("alive")).findByText("kept");
+		expect(within(row("dead")).queryByText("kept")).not.toBeInTheDocument();
+		expect(within(row("dead")).queryByRole("button", { name: "Kill session" })).not.toBeInTheDocument();
+	});
+
 	// A session an earlier run kept is not this run's business. The marker waits
 	// on the sibling stage's badge, so the session lookups have demonstrably
 	// resolved before the absence is asserted.

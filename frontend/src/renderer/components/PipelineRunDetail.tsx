@@ -275,7 +275,11 @@ function StageSession({ runId, stageId, sessionId }: { runId: string; stageId: s
 	const session = useSessionView(sessionId);
 	const [killError, setKillError] = useState<string | null>(null);
 	const orphan = session?.pipelineOrphan;
-	const keptHere = orphan?.runId === runId && orphan?.stage === stageId;
+	// `pipelineOrphan` survives on the DTO after the session is killed, so the
+	// terminated check is what makes the marker mean "still alive, go look at
+	// it" rather than "was spared once". Without it the kill button stays after
+	// it has done its job.
+	const keptHere = orphan?.runId === runId && orphan?.stage === stageId && !session?.isTerminated;
 
 	const kill = useMutation({
 		mutationFn: async () => {
