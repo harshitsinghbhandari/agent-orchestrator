@@ -649,7 +649,9 @@ describe("SessionsBoard", () => {
 
 	it("does not badge ordinary sessions as pipeline-orphaned", async () => {
 		workspaceQueryMock.mockReturnValue({
-			data: [workspaceWithSessions([orphanedSession({ id: "s-plain", title: "plain worker", pipelineOrphan: undefined })])],
+			data: [
+				workspaceWithSessions([orphanedSession({ id: "s-plain", title: "plain worker", pipelineOrphan: undefined })]),
+			],
 			isError: false,
 			isSuccess: true,
 		});
