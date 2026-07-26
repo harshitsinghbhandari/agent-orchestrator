@@ -38,6 +38,28 @@ type SessionMetadata struct {
 	// even when PreviewURL is unchanged. The desktop browser panel keys
 	// navigation on it so a repeated `ao preview <same-url>` still refreshes.
 	PreviewRevision int64 `json:"previewRevision,omitempty"`
+	// PipelineRunID is the pipeline run that spawned this session, empty for
+	// every session a human or the orchestrator started. It is the pipeline
+	// session trigger bridge's loop guard: without it a pipeline agent going
+	// idle would fire the session pipelines, whose agents go idle, forever.
+	PipelineRunID string `json:"pipelineRunId,omitempty"`
+	// PipelineOrphan is set when a pipeline stage settled on an outcome its
+	// kill-on rule spares (no_output, no_signal, timed_out) and kept the session
+	// alive so a human can see what the agent was doing. Nil for every other
+	// session.
+	PipelineOrphan *PipelineOrphanInfo `json:"pipelineOrphan,omitempty"`
+}
+
+// PipelineOrphanInfo describes why a pipeline left a session alive: the run and
+// stage that owned it, the outcome that spared it, and when it was kept. It is
+// what the session list renders as the pipeline-orphaned badge, next to the kill
+// action (spec section 7.3).
+type PipelineOrphanInfo struct {
+	RunID    string    `json:"runId"`
+	Stage    string    `json:"stage"`
+	Outcome  string    `json:"outcome"`
+	KeptAt   time.Time `json:"keptAt"`
+	Pipeline string    `json:"pipeline"`
 }
 
 // SessionRecord is the persistence shape. It intentionally stores only durable
