@@ -1,8 +1,7 @@
-// Package pipeline holds the domain vocabulary for the pipelines feature: the
-// stage/predicate/event/effect shapes, YAML config parsing and validation,
-// and DAG cycle detection. It intentionally contains no reducer, scheduler,
-// predicate evaluator, executors, store, engine, HTTP, or CLI code; those
-// land in later tasks that build on this contract.
+// Package pipeline holds the domain vocabulary for the pipelines feature. The
+// v1 semantics layer (predicates, loops, findings) has been stripped ahead of
+// the v2 rebuild; what remains is the typed ids, the cycle detector, the
+// embedded JSON schema, and the store envelope types.
 package pipeline
 
 // These ID types are distinct string types, mirroring the domain package's
@@ -12,9 +11,4 @@ type (
 	ID string
 	// RunID identifies one execution of a pipeline.
 	RunID string
-	// StageRunID identifies one execution attempt of a stage within a run.
-	StageRunID string
-	// ArtifactID identifies one artifact (finding or JSON blob) produced by a
-	// stage run.
-	ArtifactID string
 )

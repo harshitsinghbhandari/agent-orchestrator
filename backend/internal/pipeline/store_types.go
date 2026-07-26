@@ -3,16 +3,18 @@ package pipeline
 import "time"
 
 // Definition is a persisted pipeline definition. It carries BOTH the raw YAML
-// as authored (YAMLSource) and the validated, normalized config snapshot
-// (Config), per spec §4b: humans and agents edit YAML, while runs snapshot the
-// normalized JSON form. The envelope fields (ID, timestamps) are assigned by
-// the store on create.
+// as authored (YAMLSource) and the parsed config snapshot (Config): humans and
+// agents edit YAML, while runs snapshot the normalized form. The envelope
+// fields (ID, timestamps) are assigned by the store on create.
+//
+// Config is a placeholder `any` until the v2 Pipeline type lands; the store
+// round-trips it through JSON either way.
 type Definition struct {
 	ID         ID        `json:"id"`
 	ProjectID  string    `json:"projectId"`
 	Name       string    `json:"name"`
 	YAMLSource string    `json:"yamlSource"`
-	Config     Pipeline  `json:"config"`
+	Config     any       `json:"config"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
@@ -22,6 +24,6 @@ type Definition struct {
 // Limit <= 0 means no limit.
 type RunFilter struct {
 	PipelineName string
-	Status       LoopStateName
+	Status       string
 	Limit        int
 }

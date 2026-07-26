@@ -152,18 +152,17 @@ func Run() error {
 	}
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, log)
 
-	// Pipelines v1 (spec §4b T5/T11/T12): one actor-loop engine per project,
-	// driving the pure reducer + executors + store. Enablement resolves from the
-	// AO_PIPELINES env override (dev/CI) falling through to the persisted
-	// "pipelines.enabled" app-setting the Settings UI writes: see
-	// resolvePipelinesEnabled. When off, no engines and no CDC trigger bridge
-	// start, and Pipelines stays nil below so every API route returns 501.
+	// Pipelines: enablement resolves from the AO_PIPELINES env override (dev/CI)
+	// falling through to the persisted "pipelines.enabled" app-setting the
+	// Settings UI writes: see resolvePipelinesEnabled. The v1 engine was
+	// stripped ahead of the v2 rebuild, so starting the stack is currently a
+	// no-op and every /api/v1/pipelines route answers 501 either way.
 	// pipelineStk.Stop is nil-safe, so teardown needs no extra guard.
 	var pipelineStk *pipelineStack
 	var pipelinesSvc pipelinesvc.Manager
 	if resolvePipelinesEnabled(ctx, cfg, store, log) {
-		pipelineStk = startPipelineEngine(ctx, store, sessionSvc, cdcPipe.Broadcaster, log)
-		pipelinesSvc = pipelinesvc.New(store, pipelinesvc.SupervisorEngines(pipelineStk.supervisor))
+		pipelineStk = startPipelineEngine(ctx, log)
+		pipelinesSvc = pipelinesvc.New()
 		// Let the lifecycle merge-readiness path veto a ready-to-merge PR whose
 		// latest settled pipeline run blocks merge. Only wired when pipelines are
 		// enabled, so the gate stays a no-op otherwise.

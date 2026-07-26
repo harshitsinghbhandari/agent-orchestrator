@@ -1,20 +1,19 @@
 package controllers
 
 import (
-	"errors"
 	"net/http"
-	"sort"
-	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
 	pipelinesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/pipeline"
 )
+
+// The v1 pipelines semantics layer has been stripped ahead of the v2 rebuild.
+// Routes and wire shapes stay frozen so the OpenAPI document and the generated
+// frontend client do not churn, but every handler answers 501 until the v2
+// engine is wired back in.
 
 // ---------------------------------------------------------------------------
 // Path / query params (reflected into the OpenAPI spec by apispec.Build)
@@ -56,7 +55,7 @@ type PipelineRunsQuery struct {
 
 // PipelineDefinitionSummary is the wire shape for a stored definition: identity,
 // name, raw YAML as authored, and timestamps. The normalized config is not
-// surfaced here — the editor works from the YAML plus the JSON schema endpoint.
+// surfaced here; the editor works from the YAML plus the JSON schema endpoint.
 type PipelineDefinitionSummary struct {
 	ID         string    `json:"id"`
 	ProjectID  string    `json:"projectId"`
@@ -132,9 +131,7 @@ type ListPipelineRunsResponse struct {
 	Runs []PipelineRunSummary `json:"runs"`
 }
 
-// PipelineStageView is one stage's state within a run detail. Artifact bodies
-// are referenced by id (fetch one via the artifact route); materialized
-// findings are included inline at the run level.
+// PipelineStageView is one stage's state within a run detail.
 type PipelineStageView struct {
 	StageName    string     `json:"stageName"`
 	StageRunID   string     `json:"stageRunId"`
@@ -148,12 +145,43 @@ type PipelineStageView struct {
 	// stages only), empty otherwise.
 	Output string `json:"output,omitempty"`
 	// SessionID is the AO session the stage ran in (agent stages only), so the UI
-	// can link straight to it. Empty for command and builtin stages.
+	// can link straight to it.
 	SessionID string `json:"sessionId,omitempty"`
-	// Notes are human-relevant one-line annotations for the stage (fork skip,
-	// findings truncated, exit-mode fallback, unknown status fingerprint).
+	// Notes are human-relevant one-line annotations for the stage.
 	Notes       []string `json:"notes,omitempty"`
 	ArtifactIDs []string `json:"artifactIds"`
+}
+
+// PipelineArtifact is the wire shape for one artifact (a finding or a free-form
+// JSON blob) attached to a run. The v2 rebuild replaces it with the `produces`
+// output contract; it is kept here, frozen, only so the OpenAPI document stays
+// stable while the engine is rebuilt.
+type PipelineArtifact struct {
+	Kind string `json:"kind"`
+
+	FilePath        string         `json:"filePath,omitempty"`
+	StartLine       int            `json:"startLine,omitempty"`
+	EndLine         int            `json:"endLine,omitempty"`
+	Title           string         `json:"title,omitempty"`
+	Description     string         `json:"description,omitempty"`
+	Category        string         `json:"category,omitempty"`
+	Severity        string         `json:"severity,omitempty"`
+	Confidence      float64        `json:"confidence,omitempty"`
+	AnchorSignature string         `json:"anchorSignature,omitempty"`
+	Data            map[string]any `json:"data,omitempty"`
+
+	ArtifactID    string `json:"artifactId"`
+	PipelineRunID string `json:"pipelineRunId"`
+	StageRunID    string `json:"stageRunId"`
+	StageName     string `json:"stageName"`
+
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Status      string `json:"status"`
+
+	CreatedAt     time.Time  `json:"createdAt"`
+	SentToAgentAt *time.Time `json:"sentToAgentAt,omitempty"`
+
+	BelowConfidenceThreshold bool `json:"belowConfidenceThreshold,omitempty"`
 }
 
 // PipelineRunDetail is the full reconstructed run: the summary plus per-stage
@@ -161,7 +189,7 @@ type PipelineStageView struct {
 type PipelineRunDetail struct {
 	PipelineRunSummary
 	Stages   []PipelineStageView `json:"stages"`
-	Findings []pipeline.Artifact `json:"findings"`
+	Findings []PipelineArtifact  `json:"findings"`
 }
 
 // PipelineRunDetailResponse is the body of GET /api/v1/pipelines/runs/{runId},
@@ -185,12 +213,11 @@ type TriggerPipelineRunResponse struct {
 // PipelineArtifactResponse is the body of the artifact-fetch and
 // artifact-status routes.
 type PipelineArtifactResponse struct {
-	Artifact pipeline.Artifact `json:"artifact"`
+	Artifact PipelineArtifact `json:"artifact"`
 }
 
 // UpdatePipelineArtifactStatusRequest is the body of the artifact-status route:
-// the new lifecycle status for one finding (e.g. "dismissed" to hide a false
-// positive, "open" to reopen it).
+// the new lifecycle status for one finding.
 type UpdatePipelineArtifactStatusRequest struct {
 	Status string `json:"status" description:"New artifact status: open | resolved | dismissed."`
 }
@@ -199,8 +226,8 @@ type UpdatePipelineArtifactStatusRequest struct {
 // Controller
 // ---------------------------------------------------------------------------
 
-// PipelinesController owns the /pipelines routes (definitions CRUD, runs, manual
-// trigger, artifacts). A nil Svc keeps routes registered but returns 501.
+// PipelinesController owns the /pipelines routes. Every handler returns 501
+// while the v2 engine is being rebuilt.
 type PipelinesController struct {
 	Svc pipelinesvc.Manager
 }
@@ -208,387 +235,26 @@ type PipelinesController struct {
 // Register mounts the pipeline routes. Static run/schema segments are declared
 // before the {id} definition routes so chi matches them ahead of the param.
 func (c *PipelinesController) Register(r chi.Router) {
-	r.Get("/pipelines", c.listDefinitions)
-	r.Post("/pipelines", c.createDefinition)
-	r.Post("/pipelines/validate", c.validateDefinition)
-	r.Get("/pipelines/schema", c.schema)
+	r.Get("/pipelines", notImplementedHandler("GET", "/api/v1/pipelines"))
+	r.Post("/pipelines", notImplementedHandler("POST", "/api/v1/pipelines"))
+	r.Post("/pipelines/validate", notImplementedHandler("POST", "/api/v1/pipelines/validate"))
+	r.Get("/pipelines/schema", notImplementedHandler("GET", "/api/v1/pipelines/schema"))
 
-	r.Get("/pipelines/runs", c.listRuns)
-	r.Post("/pipelines/runs", c.triggerRun)
-	r.Get("/pipelines/runs/{runId}", c.getRun)
-	r.Post("/pipelines/runs/{runId}/cancel", c.cancelRun)
-	r.Post("/pipelines/runs/{runId}/resume", c.resumeRun)
-	r.Get("/pipelines/runs/{runId}/artifacts/{artifactId}", c.getArtifact)
-	r.Post("/pipelines/runs/{runId}/artifacts/{artifactId}/status", c.updateArtifactStatus)
+	r.Get("/pipelines/runs", notImplementedHandler("GET", "/api/v1/pipelines/runs"))
+	r.Post("/pipelines/runs", notImplementedHandler("POST", "/api/v1/pipelines/runs"))
+	r.Get("/pipelines/runs/{runId}", notImplementedHandler("GET", "/api/v1/pipelines/runs/{runId}"))
+	r.Post("/pipelines/runs/{runId}/cancel", notImplementedHandler("POST", "/api/v1/pipelines/runs/{runId}/cancel"))
+	r.Post("/pipelines/runs/{runId}/resume", notImplementedHandler("POST", "/api/v1/pipelines/runs/{runId}/resume"))
+	r.Get("/pipelines/runs/{runId}/artifacts/{artifactId}", notImplementedHandler("GET", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}"))
+	r.Post("/pipelines/runs/{runId}/artifacts/{artifactId}/status", notImplementedHandler("POST", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status"))
 
-	r.Put("/pipelines/{id}", c.updateDefinition)
-	r.Delete("/pipelines/{id}", c.deleteDefinition)
+	r.Put("/pipelines/{id}", notImplementedHandler("PUT", "/api/v1/pipelines/{id}"))
+	r.Delete("/pipelines/{id}", notImplementedHandler("DELETE", "/api/v1/pipelines/{id}"))
 }
 
-func (c *PipelinesController) listDefinitions(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/pipelines")
-		return
+// notImplementedHandler answers the locked 501 envelope for one operation.
+func notImplementedHandler(method, path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apispec.NotImplemented(w, r, method, path)
 	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	defs, err := c.Svc.ListDefinitions(r.Context(), projectID)
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	out := make([]PipelineDefinitionSummary, 0, len(defs))
-	for _, d := range defs {
-		out = append(out, definitionSummary(d))
-	}
-	envelope.WriteJSON(w, http.StatusOK, ListPipelineDefinitionsResponse{Definitions: out})
-}
-
-func (c *PipelinesController) createDefinition(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines")
-		return
-	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	var in SavePipelineDefinitionRequest
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	def, err := c.Svc.CreateDefinition(r.Context(), projectID, in.YAMLSource)
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusCreated, PipelineDefinitionResponse{Definition: definitionSummary(def)})
-}
-
-func (c *PipelinesController) updateDefinition(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "PUT", "/api/v1/pipelines/{id}")
-		return
-	}
-	var in SavePipelineDefinitionRequest
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	def, err := c.Svc.UpdateDefinition(r.Context(), pipeline.ID(chi.URLParam(r, "id")), in.YAMLSource)
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, PipelineDefinitionResponse{Definition: definitionSummary(def)})
-}
-
-func (c *PipelinesController) deleteDefinition(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "DELETE", "/api/v1/pipelines/{id}")
-		return
-	}
-	id := chi.URLParam(r, "id")
-	if err := c.Svc.DeleteDefinition(r.Context(), pipeline.ID(id)); err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, DeletePipelineDefinitionResponse{ID: id, Deleted: true})
-}
-
-// validateDefinition dry-runs YAML through the pipeline parser and returns the
-// outcome as data: 200 {valid, issues}. A validation failure is NOT a 4xx — the
-// editor wants the issue list as a result, not an error envelope. Only a
-// malformed JSON request body is a 400. Persists nothing.
-func (c *PipelinesController) validateDefinition(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines/validate")
-		return
-	}
-	var in ValidatePipelineDefinitionRequest
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	valid, issues, err := c.Svc.ValidateDefinition(r.Context(), in.YAMLSource)
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	out := make([]PipelineValidationIssue, 0, len(issues))
-	for _, is := range issues {
-		out = append(out, PipelineValidationIssue{Path: is.Path, Message: is.Message})
-	}
-	envelope.WriteJSON(w, http.StatusOK, ValidatePipelineDefinitionResponse{Valid: valid, Issues: out})
-}
-
-func (c *PipelinesController) schema(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/pipelines/schema")
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(c.Svc.ConfigSchema())
-}
-
-func (c *PipelinesController) listRuns(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/pipelines/runs")
-		return
-	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	filter := pipeline.RunFilter{
-		PipelineName: r.URL.Query().Get("pipeline"),
-		Status:       pipeline.LoopStateName(r.URL.Query().Get("status")),
-	}
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 {
-			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_LIMIT", "limit must be a non-negative integer", nil)
-			return
-		}
-		filter.Limit = n
-	}
-	runs, err := c.Svc.ListRuns(r.Context(), projectID, filter)
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	out := make([]PipelineRunSummary, 0, len(runs))
-	for _, run := range runs {
-		out = append(out, runSummary(run))
-	}
-	envelope.WriteJSON(w, http.StatusOK, ListPipelineRunsResponse{Runs: out})
-}
-
-func (c *PipelinesController) getRun(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/pipelines/runs/{runId}")
-		return
-	}
-	run, err := c.Svc.GetRun(r.Context(), pipeline.RunID(chi.URLParam(r, "runId")))
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, PipelineRunDetailResponse{Run: runDetail(run)})
-}
-
-func (c *PipelinesController) triggerRun(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines/runs")
-		return
-	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	var in TriggerPipelineRunRequest
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	runID, err := c.Svc.TriggerRun(r.Context(), projectID, pipelinesvc.TriggerInput{
-		Ref:       in.Pipeline,
-		SessionID: in.SessionID,
-		HeadSHA:   in.HeadSHA,
-	})
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusCreated, TriggerPipelineRunResponse{RunID: string(runID)})
-}
-
-func (c *PipelinesController) cancelRun(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines/runs/{runId}/cancel")
-		return
-	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	run, err := c.Svc.CancelRun(r.Context(), projectID, pipeline.RunID(chi.URLParam(r, "runId")))
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, PipelineRunDetailResponse{Run: runDetail(run)})
-}
-
-func (c *PipelinesController) resumeRun(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines/runs/{runId}/resume")
-		return
-	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	run, err := c.Svc.ResumeRun(r.Context(), projectID, pipeline.RunID(chi.URLParam(r, "runId")))
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, PipelineRunDetailResponse{Run: runDetail(run)})
-}
-
-func (c *PipelinesController) getArtifact(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "GET", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}")
-		return
-	}
-	art, err := c.Svc.GetArtifact(r.Context(), pipeline.ArtifactID(chi.URLParam(r, "artifactId")))
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, PipelineArtifactResponse{Artifact: art})
-}
-
-// updateArtifactStatus changes one finding's lifecycle status (dismiss / reopen /
-// resolve) on a run. Project-scoped like the other lifecycle routes so the
-// service can reach the project engine. A nil Svc returns 501.
-func (c *PipelinesController) updateArtifactStatus(w http.ResponseWriter, r *http.Request) {
-	if c.Svc == nil {
-		apispec.NotImplemented(w, r, "POST", "/api/v1/pipelines/runs/{runId}/artifacts/{artifactId}/status")
-		return
-	}
-	projectID, ok := requireProject(w, r)
-	if !ok {
-		return
-	}
-	var in UpdatePipelineArtifactStatusRequest
-	if err := decodeJSONStrict(r, &in); err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
-		return
-	}
-	art, err := c.Svc.UpdateArtifactStatus(r.Context(), projectID,
-		pipeline.RunID(chi.URLParam(r, "runId")),
-		pipeline.ArtifactID(chi.URLParam(r, "artifactId")),
-		pipeline.ArtifactStatus(in.Status))
-	if err != nil {
-		writePipelineError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, PipelineArtifactResponse{Artifact: art})
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// requireProject reads the mandatory `project` query param, writing a 400 and
-// returning ok=false when it is absent.
-func requireProject(w http.ResponseWriter, r *http.Request) (domain.ProjectID, bool) {
-	project := r.URL.Query().Get("project")
-	if project == "" {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROJECT_REQUIRED", "project query parameter is required", nil)
-		return "", false
-	}
-	return domain.ProjectID(project), true
-}
-
-// writePipelineError renders a service error. A *pipeline.ValidationError is
-// unpacked into the locked envelope's details as the full issue list (path +
-// message per issue) so the editor can surface every problem at once; every
-// other error goes through the standard apierr → status mapping.
-func writePipelineError(w http.ResponseWriter, r *http.Request, err error) {
-	var verr *pipeline.ValidationError
-	if errors.As(err, &verr) {
-		issues := make([]map[string]string, 0, len(verr.Issues))
-		for _, issue := range verr.Issues {
-			issues = append(issues, map[string]string{"path": issue.Path, "message": issue.Message})
-		}
-		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PIPELINE_VALIDATION_FAILED",
-			"pipeline definition is invalid", map[string]any{"issues": issues})
-		return
-	}
-	envelope.WriteError(w, r, err)
-}
-
-func definitionSummary(d pipeline.Definition) PipelineDefinitionSummary {
-	return PipelineDefinitionSummary{
-		ID:         string(d.ID),
-		ProjectID:  d.ProjectID,
-		Name:       d.Name,
-		YAMLSource: d.YAMLSource,
-		CreatedAt:  d.CreatedAt,
-		UpdatedAt:  d.UpdatedAt,
-	}
-}
-
-func runSummary(run pipeline.RunState) PipelineRunSummary {
-	statuses := make(map[string]string, len(run.Stages))
-	for name, st := range run.Stages {
-		statuses[name] = string(st.Status)
-	}
-	return PipelineRunSummary{
-		RunID:             string(run.RunID),
-		PipelineID:        string(run.PipelineID),
-		PipelineName:      run.PipelineName,
-		SessionID:         run.SessionID,
-		LoopState:         string(run.LoopState),
-		TerminationReason: string(run.TerminationReason),
-		LoopRounds:        run.LoopRounds,
-		HeadSHA:           run.HeadSHA,
-		StageCount:        len(run.Stages),
-		StageStatuses:     statuses,
-		HasOpenFindings:   hasOpenFindings(run),
-		BlocksMerge:       run.BlocksMerge,
-		CreatedAt:         run.CreatedAt,
-		UpdatedAt:         run.UpdatedAt,
-	}
-}
-
-func runDetail(run pipeline.RunState) PipelineRunDetail {
-	stages := make([]PipelineStageView, 0, len(run.Stages))
-	for name, st := range run.Stages {
-		ids := make([]string, 0, len(st.Artifacts))
-		for _, id := range st.Artifacts {
-			ids = append(ids, string(id))
-		}
-		stages = append(stages, PipelineStageView{
-			StageName:    name,
-			StageRunID:   string(st.StageRunID),
-			Status:       string(st.Status),
-			Attempt:      st.Attempt,
-			Verdict:      string(st.Verdict),
-			StartedAt:    st.StartedAt,
-			CompletedAt:  st.CompletedAt,
-			ErrorMessage: st.ErrorMessage,
-			Output:       st.Output,
-			SessionID:    st.SessionID,
-			Notes:        st.Notes,
-			ArtifactIDs:  ids,
-		})
-	}
-	sort.Slice(stages, func(i, j int) bool { return stages[i].StageName < stages[j].StageName })
-
-	findings := run.Findings
-	if findings == nil {
-		findings = []pipeline.Artifact{}
-	}
-	return PipelineRunDetail{
-		PipelineRunSummary: runSummary(run),
-		Stages:             stages,
-		Findings:           findings,
-	}
-}
-
-func hasOpenFindings(run pipeline.RunState) bool {
-	for _, a := range run.Findings {
-		if a.Kind == pipeline.ArtifactKindFinding && a.Status == pipeline.ArtifactStatusOpen {
-			return true
-		}
-	}
-	return false
 }
