@@ -503,10 +503,7 @@ function StageNode({ data, selected }: NodeProps<StageNodeType>) {
 				{/* Only an explicit workspace is shown; the inherited default is not a
 				    property of this stage (spec §5.4). */}
 				{stage.workspace && (
-					<Badge
-						variant={sessionUnderPr ? "warning" : "neutral"}
-						title={`Workspace ${stage.workspace}`}
-					>
+					<Badge variant={sessionUnderPr ? "warning" : "neutral"} title={`Workspace ${stage.workspace}`}>
 						{stage.workspace}
 					</Badge>
 				)}

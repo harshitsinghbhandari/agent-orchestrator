@@ -1,9 +1,10 @@
-import { Trash2, X } from "lucide-react";
+import { AlertTriangle, Trash2, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_OPTIONS } from "../lib/agent-options";
 import {
 	ALL_EXECUTOR_KINDS,
 	ALL_WORKSPACE_KINDS,
+	DEFAULT_STAGE_DEADLINE,
 	SETTLED_OUTCOMES,
 	type ExecutorKind,
 	type StageDraft,
@@ -23,10 +24,15 @@ import { Switch } from "./ui/switch";
 // `needs` is not editable here: the graph lib maintains it from the inbound
 // success edges (spec §9.2), so it renders read-only.
 //
-// ponytail: this is the v2 stub, not the v2 inspector. It covers every v2 key
-// but skips the warning states (workspace: session under a pr.* trigger,
-// produces filename validation) and the DESIGN.md polish pass. Task 21 owns
-// the real rewrite.
+// The form is split per executor kind, and `credentials` renders only under
+// `command`. Credentials on an agent stage is therefore impossible to express
+// rather than merely rejected: the tier separation (spec §6.2) is enforced by
+// the shape of the UI, not by a validation message after the fact.
+//
+// Two states the daemon cannot settle at edit time are warned about here:
+// `produces` with a path separator (spec §13), and `workspace: session` under a
+// `pr.*` trigger, which is legal but fails at plan time when the PR has no
+// local session (spec §5.3).
 
 export interface StageInspectorProps {
 	stage: StageDraft;
@@ -37,6 +43,21 @@ export interface StageInspectorProps {
 	// Removes the inspected stage from the draft (the parent scrubs the routing
 	// keys and clears the selection). The delete button renders only when wired.
 	onDelete?: () => void;
+	// The pipeline declares an `on.pr` trigger, which is what makes
+	// `workspace: session` a warning rather than a certainty (spec §5.3).
+	prTriggered?: boolean;
+	// `defaults.deadline`, shown as the deadline placeholder so the effective
+	// bound is visible even when this stage does not override it (spec §13.1).
+	defaultDeadline?: string;
+}
+
+// A `produces` value names a file inside the stage's output directory, so a
+// path separator is rejected (spec §13). Checked live here; the daemon's
+// /validate stays authoritative.
+export function producesError(produces: string | undefined): string | null {
+	if (!produces) return null;
+	if (produces.includes("/") || produces.includes("\\")) return "Must be a bare filename, no path separators.";
+	return null;
 }
 
 const WORKSPACE_OPTIONS: { value: WorkspaceKind | "default"; label: string }[] = [
@@ -52,7 +73,15 @@ const EXECUTOR_SUBTITLE: Record<ExecutorKind, string> = {
 // The engine kills the session on these outcomes when `session` is absent.
 const DEFAULT_KILL_ON: StageOutcome[] = ["succeeded", "failed"];
 
-export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }: StageInspectorProps) {
+export function StageInspector({
+	stage,
+	stageIds,
+	onChange,
+	onClose,
+	onDelete,
+	prTriggered,
+	defaultDeadline,
+}: StageInspectorProps) {
 	const update = (patch: Partial<StageDraft>) => onChange({ ...stage, ...patch });
 
 	// Swapping executor kind drops the other kind's fields so nothing the daemon
@@ -75,6 +104,7 @@ export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }:
 	const onSuccess = stage.onSuccess ?? [];
 	const successCandidates = stageIds.filter((id) => id !== stage.id && !onSuccess.includes(id));
 	const killOn = stage.session?.killOn;
+	const sessionUnderPr = stage.workspace === "session" && !!prTriggered;
 
 	return (
 		<div
@@ -127,6 +157,8 @@ export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }:
 						{stage.executor === "agent" ? (
 							<AgentFields stage={stage} update={update} />
 						) : (
+							// `credentials` lives here and nowhere else, so an agent stage
+							// cannot express it at all (spec §6.2).
 							<CommandFields stage={stage} update={update} />
 						)}
 					</div>
@@ -272,6 +304,12 @@ export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }:
 							))}
 						</SelectContent>
 					</Select>
+					{sessionUnderPr && (
+						<Warning>
+							This pipeline triggers on pull requests. A PR with no local session fails the run at plan time, before any
+							stage starts.
+						</Warning>
+					)}
 				</Section>
 
 				<Section label="Deadline">
@@ -279,7 +317,9 @@ export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }:
 						aria-label="Deadline"
 						value={stage.deadline ?? ""}
 						onChange={(e) => update({ deadline: e.target.value || undefined })}
-						placeholder="(pipeline default)"
+						// Every stage has a bound; the placeholder is the one it
+						// inherits, so the effective deadline is always on screen.
+						placeholder={defaultDeadline || DEFAULT_STAGE_DEADLINE}
 					/>
 				</Section>
 			</div>
@@ -292,6 +332,7 @@ export function StageInspector({ stage, stageIds, onChange, onClose, onDelete }:
 type FieldsProps = { stage: StageDraft; update: (patch: Partial<StageDraft>) => void };
 
 function AgentFields({ stage, update }: FieldsProps) {
+	const producesIssue = producesError(stage.produces);
 	return (
 		<div className="flex flex-col gap-2.5">
 			<LabeledControl label="Agent">
@@ -318,13 +359,20 @@ function AgentFields({ stage, update }: FieldsProps) {
 					placeholder="What this stage should do."
 				/>
 			</LabeledControl>
-			<LabeledControl label="Produces (bare filename)">
+			<LabeledControl label="Produces">
 				<Input
 					aria-label="Produces"
 					value={stage.produces ?? ""}
 					onChange={(e) => update({ produces: e.target.value || undefined })}
 					placeholder="review.md"
+					aria-invalid={producesIssue !== null}
+					className={cn(producesIssue && "border-destructive focus-visible:border-destructive")}
 				/>
+				{producesIssue ? (
+					<span className="text-caption text-destructive">{producesIssue}</span>
+				) : (
+					<span className="text-caption text-passive">Written to $AO_OUTPUT and verified when the stage signals.</span>
+				)}
 			</LabeledControl>
 		</div>
 	);
@@ -368,6 +416,17 @@ function CommandFields({ stage, update }: FieldsProps) {
 
 const textareaClass =
 	"w-full resize-y rounded-md border border-border bg-transparent px-3 py-2 font-mono text-caption leading-relaxed text-foreground outline-none transition placeholder:text-passive focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent-weak";
+
+// Warning is the edit-time caution for states the daemon accepts but a run may
+// not survive; it never blocks saving.
+function Warning({ children }: { children: React.ReactNode }) {
+	return (
+		<p className="mt-1.5 flex items-start gap-1.5 text-caption text-warning">
+			<AlertTriangle className="mt-0.5 size-icon-xs shrink-0" aria-hidden="true" />
+			<span>{children}</span>
+		</p>
+	);
+}
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
 	return (
