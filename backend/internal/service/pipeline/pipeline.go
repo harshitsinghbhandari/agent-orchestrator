@@ -18,10 +18,9 @@ type Manager interface {
 	// PR blocks it from merging.
 	PRBlocksMerge(ctx context.Context, projectID domain.ProjectID, prURL, headSHA string) (bool, error)
 	// SignalStage records one `ao pipeline done|fail` against a running stage.
+	// The read side is not here: the agent executor polls the concrete Service
+	// through executors.SignalReader, not through this HTTP-facing seam.
 	SignalStage(ctx context.Context, runID pipeline.RunID, stageID string, kind pipeline.SignalKind, reason string) error
-	// LatestStageSignal returns the newest signal for a (run, stage), which is
-	// what the agent executor polls to decide whether a stage settled itself.
-	LatestStageSignal(ctx context.Context, runID pipeline.RunID, stageID string) (pipeline.StageSignal, bool, error)
 }
 
 // Service is the concrete Manager.

@@ -34,10 +34,6 @@ func (f *fakePipelineService) SignalStage(_ context.Context, runID pipeline.RunI
 	return f.signalErr
 }
 
-func (f *fakePipelineService) LatestStageSignal(context.Context, pipeline.RunID, string) (pipeline.StageSignal, bool, error) {
-	return pipeline.StageSignal{}, false, nil
-}
-
 func newPipelineTestServer(t *testing.T, svc pipelinesvc.Manager) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

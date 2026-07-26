@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline/executors"
 )
 
 // Signal path errors. The controller maps them onto the wire contract for
@@ -78,4 +79,19 @@ func (s *Service) LatestStageSignal(ctx context.Context, runID pipeline.RunID, s
 		return pipeline.StageSignal{}, false, ErrStoreUnavailable
 	}
 	return s.store.LatestPipelineStageSignal(ctx, runID, stageID)
+}
+
+// The agent executor polls the Service for signals.
+var _ executors.SignalReader = (*Service)(nil)
+
+// LatestSignal is LatestStageSignal in the shape the agent executor's poll
+// loop wants. That contract has no error channel, so a failed read is reported
+// as "not signalled yet": the stage then settles on idle, exit or its deadline
+// rather than on a read that did not happen.
+func (s *Service) LatestSignal(runID pipeline.RunID, stageID string) (pipeline.StageSignal, bool) {
+	sig, ok, err := s.LatestStageSignal(context.Background(), runID, stageID)
+	if err != nil {
+		return pipeline.StageSignal{}, false
+	}
+	return sig, ok
 }
