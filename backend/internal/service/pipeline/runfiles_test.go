@@ -68,7 +68,7 @@ func newRunFilesService(t *testing.T) (*pipelinesvc.Service, pipeline.RunFolder)
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := store.SavePipelineRun(ctx, run); err != nil {
+	if err := store.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
 	return pipelinesvc.New(store), folder

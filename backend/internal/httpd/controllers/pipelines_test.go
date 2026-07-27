@@ -236,7 +236,7 @@ func newPipelineV2Server(t *testing.T) (*httptest.Server, pipeline.RunFolder) {
 		UpdatedAt: now.Add(2 * time.Minute),
 		SettledAt: now.Add(2 * time.Minute),
 	}
-	if err := store.SavePipelineRun(ctx, run); err != nil {
+	if err := store.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
 

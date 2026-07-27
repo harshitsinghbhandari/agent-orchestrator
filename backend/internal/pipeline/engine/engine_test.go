@@ -178,25 +178,36 @@ func (p *fakeProvisioner) destroyedPaths() []string {
 
 // fakeStore is an in-memory stand-in for the SQLite pipeline store.
 type fakeStore struct {
-	mu      sync.Mutex
-	runs    map[pipeline.RunID]pipeline.RunState
-	hydra   []pipeline.RunState
-	saves   int
-	saveErr error
+	mu sync.Mutex
+	// counters is the per-pipeline run number sequence, keyed the way the real
+	// store keys it: by pipeline name.
+	counters map[string]int
+	runs     map[pipeline.RunID]pipeline.RunState
+	hydra    []pipeline.RunState
+	saves    int
+	saveErr  error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{runs: map[pipeline.RunID]pipeline.RunState{}}
+	return &fakeStore{runs: map[pipeline.RunID]pipeline.RunState{}, counters: map[string]int{}}
 }
 
-func (s *fakeStore) SavePipelineRun(_ context.Context, run pipeline.RunState) error {
+func (s *fakeStore) SavePipelineRun(_ context.Context, run *pipeline.RunState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.saves++
 	if s.saveErr != nil {
 		return s.saveErr
 	}
-	s.runs[run.RunID] = run
+	// Same contract as the SQLite store: the row owns the run number, the
+	// insert allocates it, and a re-save keeps whatever the row already had.
+	if prev, ok := s.runs[run.RunID]; ok {
+		run.RunNumber = prev.RunNumber
+	} else {
+		s.counters[run.PipelineName]++
+		run.RunNumber = s.counters[run.PipelineName]
+	}
+	s.runs[run.RunID] = *run
 	return nil
 }
 

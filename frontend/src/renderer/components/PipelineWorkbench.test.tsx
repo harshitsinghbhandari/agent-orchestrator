@@ -33,6 +33,7 @@ function run(overrides: Partial<PipelineRunSummary> & { runId: string }): Pipeli
 	return {
 		pipelineId: "def-1",
 		pipelineName: "review",
+		runNumber: 7,
 		status: "running",
 		subjectKind: "session",
 		sessionId: "sess-1",
@@ -129,10 +130,38 @@ describe("PipelineWorkbench", () => {
 		// Title falls back to the subject the session names, the way GitHub shows the PR title.
 		expect(within(row).getByText("fix: preserve scratch workspaces")).toBeInTheDocument();
 		expect(
-			within(row).getByText("review #abc1234: Pull request #3136 in session fix: preserve scratch workspaces"),
+			within(row).getByText("review #7: Pull request #3136 in session fix: preserve scratch workspaces"),
 		).toBeInTheDocument();
 		expect(within(row).getByText("fix/scratch-retry")).toBeInTheDocument();
 		expect(within(row).getByText("29s")).toBeInTheDocument();
+	});
+
+	it("shows the daemon's run number, and keeps it when the list is filtered", async () => {
+		setRuns([
+			run({ runId: "run-1111aaaa-0000", pipelineName: "review", runNumber: 12 }),
+			run({ runId: "run-2222bbbb-0000", pipelineName: "audit", runNumber: 3 }),
+		]);
+		renderWorkbench();
+		const user = userEvent.setup();
+
+		const list = screen.getByRole("list", { name: "Pipeline runs" });
+		expect(within(list).getByText(/^review #12: /)).toBeInTheDocument();
+		expect(within(list).getByText(/^audit #3: /)).toBeInTheDocument();
+
+		// Numbering client-side would renumber these to #1 and #2 the moment a
+		// filter hid one of them. The daemon's number does not move.
+		await user.click(
+			within(screen.getByRole("navigation", { name: "Pipelines" })).getByRole("button", { name: "audit" }),
+		);
+		expect(within(screen.getByRole("list", { name: "Pipeline runs" })).getByText(/^audit #3: /)).toBeInTheDocument();
+	});
+
+	it("falls back to the run id prefix for a run the daemon never numbered", () => {
+		setRuns([run({ runId: "run-abc1234-0000", pipelineName: "review", runNumber: 0 })]);
+		const { container } = renderWorkbench();
+
+		const row = container.querySelector('[data-run-id="run-abc1234-0000"]') as HTMLElement;
+		expect(within(row).getByText(/^review #abc1234: /)).toBeInTheDocument();
 	});
 
 	it("says what a live run is doing instead of showing a duration that never ticks", () => {

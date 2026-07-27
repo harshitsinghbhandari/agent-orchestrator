@@ -182,7 +182,7 @@ func TestPipelineRunSaveGetRoundTripPRSubject(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	want := prRun(now)
-	if err := s.SavePipelineRun(ctx, want); err != nil {
+	if err := s.SavePipelineRun(ctx, &want); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	got, ok, err := s.GetPipelineRun(ctx, want.RunID)
@@ -200,7 +200,7 @@ func TestPipelineRunSaveGetRoundTripPRSubject(t *testing.T) {
 	want.Stages["pending"].Outcome = pipeline.OutcomeCancelled
 	want.Stages["pending"].SettledAt = now.Add(3 * time.Minute)
 	want.UpdatedAt = now.Add(3 * time.Minute)
-	if err := s.SavePipelineRun(ctx, want); err != nil {
+	if err := s.SavePipelineRun(ctx, &want); err != nil {
 		t.Fatalf("re-save: %v", err)
 	}
 	got, _, _ = s.GetPipelineRun(ctx, want.RunID)
@@ -235,7 +235,7 @@ func TestPipelineRunSaveGetRoundTripSessionAndProjectSubjects(t *testing.T) {
 			},
 			CreatedAt: now, UpdatedAt: now,
 		}
-		if err := s.SavePipelineRun(ctx, want); err != nil {
+		if err := s.SavePipelineRun(ctx, &want); err != nil {
 			t.Fatalf("save %s: %v", id, err)
 		}
 		got, ok, err := s.GetPipelineRun(ctx, want.RunID)
@@ -267,7 +267,7 @@ func TestPipelineListRunsFilters(t *testing.T) {
 			Stages:    map[string]*pipeline.StageState{"entry": {ID: "entry", Outcome: pipeline.OutcomePending}},
 			CreatedAt: at, UpdatedAt: at,
 		}
-		if err := s.SavePipelineRun(ctx, run); err != nil {
+		if err := s.SavePipelineRun(ctx, &run); err != nil {
 			t.Fatalf("save %s: %v", id, err)
 		}
 	}
@@ -329,7 +329,7 @@ func TestPipelineHydrateReturnsUnsettledRunsOnly(t *testing.T) {
 		if status == pipeline.RunSucceeded || status == pipeline.RunFailed || status == pipeline.RunCancelled {
 			run.SettledAt = at
 		}
-		if err := s.SavePipelineRun(ctx, run); err != nil {
+		if err := s.SavePipelineRun(ctx, &run); err != nil {
 			t.Fatalf("save %s: %v", id, err)
 		}
 	}
@@ -397,7 +397,7 @@ func TestPipelineStageSignalLatestWins(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	run := prRun(now)
-	if err := s.SavePipelineRun(ctx, run); err != nil {
+	if err := s.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("save run: %v", err)
 	}
 
@@ -525,7 +525,7 @@ func TestPipelineCDCTriggersEmitProjectLevelEvents(t *testing.T) {
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.SavePipelineRun(ctx, run); err != nil {
+	if err := s.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("save run: %v", err)
 	}
 
@@ -535,7 +535,7 @@ func TestPipelineCDCTriggersEmitProjectLevelEvents(t *testing.T) {
 	run.UpdatedAt = now.Add(time.Minute)
 	run.Stages["review"].Outcome = pipeline.OutcomeSucceeded
 	run.Stages["review"].Attempt = 2
-	if err := s.SavePipelineRun(ctx, run); err != nil {
+	if err := s.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("settle run: %v", err)
 	}
 
