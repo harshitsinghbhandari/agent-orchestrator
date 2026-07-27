@@ -141,22 +141,29 @@ func (s *Store) DeletePipelineDefinition(ctx context.Context, id pipeline.ID) (b
 // transaction (the engine's persist effect). Stage rows are never deleted
 // here: the plan-at-start walk enumerates every reachable stage before
 // anything runs, so the stage set of a run does not shrink.
-func (s *Store) SavePipelineRun(ctx context.Context, run pipeline.RunState) error {
-	params, err := runUpsertParams(run)
+//
+// It takes a pointer because the run row is where RunNumber is assigned: the
+// insert allocates the next per-pipeline number and returns it, and the caller
+// needs it back before it writes run.json. On a later save the returned number
+// is the one the row already carried, so the write-back is a no-op.
+func (s *Store) SavePipelineRun(ctx context.Context, run *pipeline.RunState) error {
+	params, err := runUpsertParams(*run)
 	if err != nil {
 		return err
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "save pipeline run", func(q *gen.Queries) error {
-		if err := q.UpsertPipelineRun(ctx, params); err != nil {
+		number, err := q.UpsertPipelineRun(ctx, params)
+		if err != nil {
 			return err
 		}
+		run.RunNumber = int(number)
 		for id, st := range run.Stages {
 			if st == nil {
 				continue
 			}
-			if err := q.UpsertPipelineStageRun(ctx, stageUpsertParams(run, id, st)); err != nil {
+			if err := q.UpsertPipelineStageRun(ctx, stageUpsertParams(*run, id, st)); err != nil {
 				return err
 			}
 		}
@@ -363,6 +370,7 @@ func hydrateRun(ctx context.Context, q *gen.Queries, row gen.PipelineRun) (pipel
 		RunID:        pipeline.RunID(row.ID),
 		ProjectID:    string(row.ProjectID),
 		PipelineID:   pipeline.ID(row.PipelineID),
+		RunNumber:    int(row.RunNumber),
 		PipelineName: row.PipelineName,
 		Subject:      subjectFromRow(row),
 		Status:       pipeline.RunStatus(row.Status),

@@ -1344,6 +1344,8 @@ export interface components {
             prNumber?: number;
             runDir?: string;
             runId: string;
+            /** @description Per-pipeline run counter, allocated at trigger time and stable forever. */
+            runNumber: number;
             sessionId?: string;
             /** Format: date-time */
             settledAt?: null | string;
@@ -1377,6 +1379,8 @@ export interface components {
             pipelineName: string;
             prNumber?: number;
             runId: string;
+            /** @description Per-pipeline run counter, allocated at trigger time and stable forever. */
+            runNumber: number;
             sessionId?: string;
             /** Format: date-time */
             settledAt?: null | string;

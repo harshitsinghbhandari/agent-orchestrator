@@ -3843,6 +3843,11 @@ components:
           type: string
         runId:
           type: string
+        runNumber:
+          description: Per-pipeline run counter, allocated at trigger time and stable
+            forever.
+          minimum: 1
+          type: integer
         sessionId:
           type: string
         settledAt:
@@ -3884,6 +3889,7 @@ components:
       required:
       - runId
       - pipelineId
+      - runNumber
       - pipelineName
       - status
       - subjectKind
@@ -3917,6 +3923,11 @@ components:
           type: integer
         runId:
           type: string
+        runNumber:
+          description: Per-pipeline run counter, allocated at trigger time and stable
+            forever.
+          minimum: 1
+          type: integer
         sessionId:
           type: string
         settledAt:
@@ -3954,6 +3965,7 @@ components:
       required:
       - runId
       - pipelineId
+      - runNumber
       - pipelineName
       - status
       - subjectKind

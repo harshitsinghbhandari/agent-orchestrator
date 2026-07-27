@@ -26,13 +26,29 @@ DELETE FROM pipeline_definitions WHERE id = ?;
 
 -- Pipeline runs --------------------------------------------------------------
 
--- name: UpsertPipelineRun :exec
+-- name: UpsertPipelineRun :one
+-- run_number is allocated here, in the statement that inserts the run, so two
+-- triggers racing on one pipeline cannot both compute the same next number:
+-- the MAX(...)+1 subquery is evaluated inside the insert, and the unique index
+-- on (project_id, pipeline_name, run_number) is the backstop. It is absent
+-- from the DO UPDATE list on purpose. A number is assigned once and never
+-- reassigned, because humans refer to runs by it. RETURNING gives the caller
+-- the number on both paths (freshly allocated, or the one the row already had).
 INSERT INTO pipeline_runs (
-    id, project_id, pipeline_id, pipeline_name, subject_kind, session_id,
+    id, project_id, pipeline_id, pipeline_name, run_number, subject_kind, session_id,
     pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch,
     from_fork, status, run_dir, definition_json, cancel_reason,
     created_at, updated_at, settled_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (
+    sqlc.arg('id'), sqlc.arg('project_id'), sqlc.arg('pipeline_id'), sqlc.arg('pipeline_name'),
+    (SELECT COALESCE(MAX(r.run_number), 0) + 1 FROM pipeline_runs r
+      WHERE r.project_id = sqlc.arg('project_id') AND r.pipeline_name = sqlc.arg('pipeline_name')),
+    sqlc.arg('subject_kind'), sqlc.arg('session_id'),
+    sqlc.arg('pr_number'), sqlc.arg('pr_repo'), sqlc.arg('pr_url'), sqlc.arg('head_sha'),
+    sqlc.arg('pr_head_branch'), sqlc.arg('pr_base_branch'),
+    sqlc.arg('from_fork'), sqlc.arg('status'), sqlc.arg('run_dir'),
+    sqlc.arg('definition_json'), sqlc.arg('cancel_reason'),
+    sqlc.arg('created_at'), sqlc.arg('updated_at'), sqlc.arg('settled_at'))
 ON CONFLICT (id) DO UPDATE SET
     pipeline_name = excluded.pipeline_name,
     subject_kind = excluded.subject_kind,
@@ -49,7 +65,8 @@ ON CONFLICT (id) DO UPDATE SET
     definition_json = excluded.definition_json,
     cancel_reason = excluded.cancel_reason,
     updated_at = excluded.updated_at,
-    settled_at = excluded.settled_at;
+    settled_at = excluded.settled_at
+RETURNING run_number;
 
 -- name: GetPipelineRun :one
 SELECT * FROM pipeline_runs WHERE id = ?;

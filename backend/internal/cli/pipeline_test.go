@@ -128,8 +128,8 @@ func TestPipelineList_Empty(t *testing.T) {
 func TestPipelineRuns_HumanAndFilters(t *testing.T) {
 	cfg := setConfigEnv(t)
 	body := `{"runs":[` +
-		`{"runId":"run-1","pipelineName":"review","status":"running","subjectKind":"session","sessionId":"sess-7","stageCount":3,"createdAt":"2026-07-15T00:00:00Z"},` +
-		`{"runId":"run-2","pipelineName":"review","status":"cancelled","subjectKind":"pr","prNumber":42,"cancelReason":"head moved","stageCount":3,"createdAt":"2026-07-14T00:00:00Z"}]}`
+		`{"runId":"run-1","pipelineName":"review","runNumber":8,"status":"running","subjectKind":"session","sessionId":"sess-7","stageCount":3,"createdAt":"2026-07-15T00:00:00Z"},` +
+		`{"runId":"run-2","pipelineName":"review","runNumber":7,"status":"cancelled","subjectKind":"pr","prNumber":42,"cancelReason":"head moved","stageCount":3,"createdAt":"2026-07-14T00:00:00Z"}]}`
 	srv, capture := pipelineServer(t, http.StatusOK, body)
 	writeRunFileFor(t, cfg, srv)
 
@@ -147,7 +147,7 @@ func TestPipelineRuns_HumanAndFilters(t *testing.T) {
 			t.Fatalf("query %q missing %q", q, want)
 		}
 	}
-	for _, want := range []string{"run-1", "running", "session sess-7", "cancelled (head moved)", "pr #42"} {
+	for _, want := range []string{"run-1", "review #8", "review #7", "running", "session sess-7", "cancelled (head moved)", "pr #42"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stdout missing %q\nstdout=%s", want, out)
 		}
@@ -175,7 +175,7 @@ func TestPipelineRuns_JSON(t *testing.T) {
 // settledRunBody is a settled v2 run with one nudged stage: `review` was idle
 // with `produces` declared, got its one nudge (attempt 2), still wrote nothing,
 // and settled no_output, which routed the failure edge to `notify`.
-const settledRunBody = `{"run":{"runId":"run-1","pipelineId":"pl-1","pipelineName":"review",` +
+const settledRunBody = `{"run":{"runId":"run-1","pipelineId":"pl-1","pipelineName":"review","runNumber":7,` +
 	`"status":"failed","subjectKind":"pr","sessionId":"sess-7","prNumber":42,"headSha":"abc1234",` +
 	`"stageCount":3,"stageOutcomes":{"build":"succeeded","review":"no_output","notify":"succeeded"},` +
 	`"createdAt":"2026-07-26T12:00:00Z","updatedAt":"2026-07-26T12:30:00Z","settledAt":"2026-07-26T12:30:00Z",` +
@@ -191,8 +191,8 @@ const settledRunBody = `{"run":{"runId":"run-1","pipelineId":"pl-1","pipelineNam
 // The golden view of a settled run. The attempt column says a stage was nudged
 // and the outcome column says it produced nothing, so the two are distinct at a
 // glance instead of collapsing into one "failed" line.
-const settledRunGolden = `Run run-1
-  pipeline: review
+const settledRunGolden = `Run review #7
+  runId:    run-1
   status:   failed
   subject:  pr #42 abc1234
   session:  sess-7
