@@ -269,6 +269,14 @@ func TestPipelineRuns_ListDTOShape(t *testing.T) {
 	if got.PRNumber != 412 || got.HeadSHA != "deadbeef" || got.SessionID != "sess-1" {
 		t.Fatalf("subject fields = %+v", got)
 	}
+	// The run number the store allocated, carried through to the list row that
+	// renders it. It is the first run of "review" in this project, so #1.
+	if got.RunNumber != 1 {
+		t.Fatalf("runNumber = %d, want 1", got.RunNumber)
+	}
+	if !strings.Contains(string(body), `"runNumber":1`) {
+		t.Errorf("runNumber missing from the wire: %s", body)
+	}
 	if got.StageCount != 3 || got.StageOutcomes["review"] != "no_output" || got.StageOutcomes["publish"] != "skipped" {
 		t.Fatalf("stage rollup = %+v", got)
 	}
@@ -307,6 +315,11 @@ func TestPipelineRuns_DetailDTOShape(t *testing.T) {
 	}
 	if res.Run.RunDir != folder.Dir {
 		t.Errorf("runDir = %q, want %q", res.Run.RunDir, folder.Dir)
+	}
+	// Detail inherits the summary, so the run number the header shows comes
+	// from the same field the list row reads.
+	if res.Run.RunNumber != 1 {
+		t.Errorf("runNumber = %d, want 1", res.Run.RunNumber)
 	}
 
 	review := res.Run.Stages[0]

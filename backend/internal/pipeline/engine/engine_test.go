@@ -552,9 +552,18 @@ func TestHappyPathRunSettlesSucceeded(t *testing.T) {
 		t.Fatalf("Context.md = %q, want it to contain %q", ctxRaw, want)
 	}
 
-	// run.json is the on-disk projection, and the store is the record.
-	if _, err := os.Stat(filepath.Join(h.base, "proj-1", string(runID), "run.json")); err != nil {
+	// run.json is the on-disk projection, and the store is the record. The run
+	// number is allocated by the store, so its presence here is what proves the
+	// engine took it back before writing the projection humans read.
+	runJSON, err := os.ReadFile(filepath.Join(h.base, "proj-1", string(runID), "run.json"))
+	if err != nil {
 		t.Fatalf("run.json: %v", err)
+	}
+	if !strings.Contains(string(runJSON), `"runNumber": 1`) {
+		t.Fatalf("run.json carries no run number: %s", runJSON)
+	}
+	if run.RunNumber != 1 {
+		t.Fatalf("engine run number = %d, want 1", run.RunNumber)
 	}
 	saved, ok := h.store.saved(runID)
 	if !ok || saved.Status != pipeline.RunSucceeded {

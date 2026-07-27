@@ -3,12 +3,15 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/cdc"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pipeline"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 )
 
 // samplePipelineV2 returns a small but real-shaped v2 definition: one agent
@@ -247,6 +250,162 @@ func TestPipelineRunSaveGetRoundTripSessionAndProjectSubjects(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s run did not round-trip:\n got %s\nwant %s", id, mustJSON(t, got), mustJSON(t, want))
+		}
+	}
+}
+
+// numberedRun is the smallest run that can carry a run number: the counter is
+// keyed by (project, pipeline name), so those and the run id are all that
+// varies between the cases below.
+func numberedRun(id, project, name string, at time.Time) pipeline.RunState {
+	return pipeline.RunState{
+		RunID: pipeline.RunID(id), ProjectID: project, PipelineID: pipeline.ID("pl-" + name),
+		PipelineName: name, Subject: pipeline.Subject{Kind: pipeline.SubjectProject, ProjectID: project},
+		Status: pipeline.RunPending, Def: samplePipelineV2(name),
+		Stages:    map[string]*pipeline.StageState{"entry": {ID: "entry", Outcome: pipeline.OutcomePending}},
+		CreatedAt: at, UpdatedAt: at,
+	}
+}
+
+// Run numbers are what a human says out loud ("review #3 failed"), so they
+// count per pipeline rather than per project, and each pipeline's sequence
+// starts at 1 regardless of what the others have done.
+func TestPipelineRunNumberIsPerPipelineAndMonotonic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	seedProject(t, s, "other")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	cases := []struct {
+		id, project, name string
+		want              int
+	}{
+		{"run-a1", "mer", "review", 1},
+		{"run-a2", "mer", "review", 2},
+		{"run-b1", "mer", "audit", 1},
+		{"run-a3", "mer", "review", 3},
+		{"run-b2", "mer", "audit", 2},
+		// Same pipeline name, different project: a separate sequence.
+		{"run-c1", "other", "review", 1},
+	}
+	for _, c := range cases {
+		run := numberedRun(c.id, c.project, c.name, now)
+		if err := s.SavePipelineRun(ctx, &run); err != nil {
+			t.Fatalf("save %s: %v", c.id, err)
+		}
+		if run.RunNumber != c.want {
+			t.Fatalf("%s/%s %s run number = %d, want %d", c.project, c.name, c.id, run.RunNumber, c.want)
+		}
+	}
+}
+
+// The number is assigned once. Every later save of the same run is an upsert
+// that must leave it alone, and hydration must read back the number the row
+// holds rather than an engine's in-memory guess.
+func TestPipelineRunNumberIsStableAcrossResavesAndHydration(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	first := numberedRun("run-1", "mer", "review", now)
+	if err := s.SavePipelineRun(ctx, &first); err != nil {
+		t.Fatalf("save run-1: %v", err)
+	}
+	second := numberedRun("run-2", "mer", "review", now)
+	if err := s.SavePipelineRun(ctx, &second); err != nil {
+		t.Fatalf("save run-2: %v", err)
+	}
+	if first.RunNumber != 1 || second.RunNumber != 2 {
+		t.Fatalf("run numbers = %d, %d, want 1, 2", first.RunNumber, second.RunNumber)
+	}
+
+	// Re-save run-1 the way the engine does on every state change, including
+	// one that lies about the number. The row wins.
+	first.Status = pipeline.RunSucceeded
+	first.SettledAt = now.Add(time.Minute)
+	first.RunNumber = 99
+	if err := s.SavePipelineRun(ctx, &first); err != nil {
+		t.Fatalf("re-save run-1: %v", err)
+	}
+	if first.RunNumber != 1 {
+		t.Fatalf("re-save changed the run number to %d, want 1", first.RunNumber)
+	}
+
+	got, ok, err := s.GetPipelineRun(ctx, "run-1")
+	if err != nil || !ok {
+		t.Fatalf("get run-1: ok=%v err=%v", ok, err)
+	}
+	if got.RunNumber != 1 {
+		t.Fatalf("hydrated run number = %d, want 1", got.RunNumber)
+	}
+	// And a fresh run after the re-save still gets 3, not 100: the bogus 99
+	// never reached the column the allocator maxes over.
+	third := numberedRun("run-3", "mer", "review", now)
+	if err := s.SavePipelineRun(ctx, &third); err != nil {
+		t.Fatalf("save run-3: %v", err)
+	}
+	if third.RunNumber != 3 {
+		t.Fatalf("run-3 number = %d, want 3", third.RunNumber)
+	}
+}
+
+// The engine actor is per project, but one project has many pipelines and the
+// concurrency table admits runs in parallel, so two triggers for one definition
+// really can land at the same time. Allocation happens inside the insert, so
+// they cannot both compute the same next number.
+//
+// The writers are split across two Store handles on one database on purpose:
+// a single Store serializes its writes behind a mutex, which would let a
+// read-max-then-add-one implementation pass. Two handles put the guarantee
+// where it belongs, in SQLite.
+func TestPipelineRunNumberConcurrentTriggersGetDistinctNumbers(t *testing.T) {
+	dir := t.TempDir()
+	writers := make([]*sqlite.Store, 2)
+	for i := range writers {
+		s, err := sqlite.Open(dir)
+		if err != nil {
+			t.Fatalf("open store %d: %v", i, err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		writers[i] = s
+	}
+	ctx := context.Background()
+	seedProject(t, writers[0], "mer")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	const n = 24
+	numbers := make([]int, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			run := numberedRun(fmt.Sprintf("run-%02d", i), "mer", "review", now)
+			<-start
+			errs[i] = writers[i%len(writers)].SavePipelineRun(ctx, &run)
+			numbers[i] = run.RunNumber
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	seen := make(map[int]int, n)
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent save %d: %v", i, err)
+		}
+		if prev, dup := seen[numbers[i]]; dup {
+			t.Fatalf("runs %d and %d were both numbered #%d", prev, i, numbers[i])
+		}
+		seen[numbers[i]] = i
+	}
+	for want := 1; want <= n; want++ {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("run number %d was never handed out (got %v)", want, seen)
 		}
 	}
 }
