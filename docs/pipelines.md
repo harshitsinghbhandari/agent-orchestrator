@@ -823,6 +823,14 @@ no `--head-sha`); with neither, the subject is the project.
 **There is no `resume`.** A settled run is final; re-running means triggering a
 new one.
 
+**Every run gets a number within its pipeline** the moment it is triggered, the
+way GitHub Actions numbers workflow runs: `pr-review #1`, `#2`, `#3`. That is
+the handle to use when talking about a run ("pr-review #3 failed"); the run id
+is what `show` and `cancel` take. The counter is keyed by pipeline name, so a
+definition deleted and recreated under the same name carries on from where it
+stopped instead of reissuing numbers older runs already answer to. Numbers are
+never reassigned.
+
 ```bash
 ao pipeline runs --pipeline pr-review --status failed
 ao pipeline run pr-review --pr 42
