@@ -531,7 +531,7 @@ func TestPipelineStageRunRoundTripsPGID(t *testing.T) {
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := s.SavePipelineRun(ctx, run); err != nil {
+	if err := s.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
