@@ -472,6 +472,7 @@ func stageUpsertParams(run pipeline.RunState, stageID string, st *pipeline.Stage
 		Reason:        st.Reason,
 		OutputTail:    st.OutputTail,
 		Nudged:        boolToInt64(run.Nudged[stageID]),
+		Pgid:          int64(st.PGID),
 	}
 }
 
@@ -492,6 +493,7 @@ func stageStateFromRow(r gen.PipelineStageRun) pipeline.StageState {
 		SettledAt:     timeFromNullTime(r.SettledAt),
 		Reason:        r.Reason,
 		OutputTail:    r.OutputTail,
+		PGID:          int(r.Pgid),
 	}
 }
 

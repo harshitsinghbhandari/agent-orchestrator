@@ -358,7 +358,7 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 }
 
 const listPipelineStageRunsByRun = `-- name: ListPipelineStageRunsByRun :many
-SELECT run_id, project_id, stage_id, outcome, attempt, entered_via, prev_stage, failed_stage, failed_outcome, session_id, workspace_kind, workspace_path, deadline_at, started_at, settled_at, reason, output_tail, nudged FROM pipeline_stage_runs WHERE run_id = ? ORDER BY stage_id ASC
+SELECT run_id, project_id, stage_id, outcome, attempt, entered_via, prev_stage, failed_stage, failed_outcome, session_id, workspace_kind, workspace_path, deadline_at, started_at, settled_at, reason, output_tail, nudged, pgid FROM pipeline_stage_runs WHERE run_id = ? ORDER BY stage_id ASC
 `
 
 func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) ([]PipelineStageRun, error) {
@@ -389,6 +389,7 @@ func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) 
 			&i.Reason,
 			&i.OutputTail,
 			&i.Nudged,
+			&i.Pgid,
 		); err != nil {
 			return nil, err
 		}
@@ -594,8 +595,8 @@ const upsertPipelineStageRun = `-- name: UpsertPipelineStageRun :exec
 INSERT INTO pipeline_stage_runs (
     run_id, project_id, stage_id, outcome, attempt, entered_via, prev_stage,
     failed_stage, failed_outcome, session_id, workspace_kind, workspace_path,
-    deadline_at, started_at, settled_at, reason, output_tail, nudged
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    deadline_at, started_at, settled_at, reason, output_tail, nudged, pgid
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (run_id, stage_id) DO UPDATE SET
     outcome = excluded.outcome,
     attempt = excluded.attempt,
@@ -611,7 +612,8 @@ ON CONFLICT (run_id, stage_id) DO UPDATE SET
     settled_at = excluded.settled_at,
     reason = excluded.reason,
     output_tail = excluded.output_tail,
-    nudged = excluded.nudged
+    nudged = excluded.nudged,
+    pgid = excluded.pgid
 `
 
 type UpsertPipelineStageRunParams struct {
@@ -633,6 +635,7 @@ type UpsertPipelineStageRunParams struct {
 	Reason        string
 	OutputTail    string
 	Nudged        int64
+	Pgid          int64
 }
 
 // Pipeline stage runs --------------------------------------------------------
@@ -656,6 +659,7 @@ func (q *Queries) UpsertPipelineStageRun(ctx context.Context, arg UpsertPipeline
 		arg.Reason,
 		arg.OutputTail,
 		arg.Nudged,
+		arg.Pgid,
 	)
 	return err
 }

@@ -155,6 +155,7 @@ func reduceStageLaunched(run RunState, e StageLaunched) (RunState, []Effect) {
 	st.Outcome = OutcomeRunning
 	st.StartedAt = e.Now
 	st.SessionID = e.SessionID
+	st.PGID = e.PGID
 	st.WorkspacePath = e.WorkspacePath
 	if st.Attempt == 0 {
 		st.Attempt = 1

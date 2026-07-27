@@ -44,8 +44,12 @@ func (TriggerFired) isEvent()          {}
 // StageLaunched reports that the driver provisioned the stage's workspace and
 // started its executor.
 type StageLaunched struct {
-	Stage         string
-	SessionID     string
+	Stage     string
+	SessionID string
+	// PGID is the process group a command stage was started in, 0 when it has
+	// none. It is carried on the same event as Now so the stage's recorded
+	// start time always describes the process the group id names.
+	PGID          int
 	WorkspacePath string
 	Now           time.Time
 }

@@ -85,6 +85,12 @@ type Config struct {
 	// plan-time unknown-name check is skipped and a stage declaring
 	// credentials fails to launch.
 	Credentials Credentials
+	// ProcessGroups reaps the process group of a command stage a previous
+	// daemon left running, so restart reconciliation does not settle a stage
+	// and leak its work. Defaults to the OS reaper: a nil here would make the
+	// leak come back silently, and the OS reaper is safe to run against a
+	// stage that recorded no group.
+	ProcessGroups executors.ProcessGroupReaper
 	// BaseDir is the run-folder root, <AO_DATA_DIR>/pipelines. No app state
 	// ever lands anywhere else.
 	BaseDir string
@@ -121,6 +127,7 @@ type Engine struct {
 	orphans     *OrphanRegistry
 	messenger   executors.SessionMessenger
 	creds       Credentials
+	procGroups  executors.ProcessGroupReaper
 	baseDir     string
 	concurrency *ConcurrencyTable
 	startQueued func(pendingTrigger)
@@ -164,6 +171,7 @@ func New(cfg Config) *Engine {
 		orphans:      cfg.Orphans,
 		messenger:    cfg.Messenger,
 		creds:        cfg.Credentials,
+		procGroups:   cfg.ProcessGroups,
 		baseDir:      cfg.BaseDir,
 		concurrency:  cfg.Concurrency,
 		startQueued:  cfg.StartQueued,
@@ -190,6 +198,9 @@ func New(cfg Config) *Engine {
 	}
 	if e.concurrency == nil {
 		e.concurrency = &ConcurrencyTable{}
+	}
+	if e.procGroups == nil {
+		e.procGroups = executors.NewProcessGroupReaper()
 	}
 	if e.tickInterval <= 0 {
 		e.tickInterval = defaultTickInterval
@@ -575,9 +586,16 @@ func (e *Engine) startStage(runID pipeline.RunID, eff pipeline.StartStage) {
 	if holder, ok := handle.(executors.SessionHolder); ok {
 		sessionID = holder.SessionID()
 	}
+	// The process group is what a later daemon reaps by: this handle is the
+	// only other thing that can stop the work, and it dies with this process.
+	pgid := 0
+	if holder, ok := handle.(executors.ProcessGroupHolder); ok {
+		pgid = holder.ProcessGroup()
+	}
 	e.dispatch(runID, pipeline.StageLaunched{
 		Stage:         eff.Stage,
 		SessionID:     sessionID,
+		PGID:          pgid,
 		WorkspacePath: path,
 		Now:           e.now(),
 	})
@@ -958,24 +976,32 @@ func (e *Engine) reconcileLostStages() {
 			if _, live := e.inflight[stageKey{RunID: runID, Stage: stageID}]; live {
 				continue
 			}
-			e.dispatch(runID, lostStageEvent(run.Def.StageByID(stageID), stageID, e.now()))
+			e.dispatch(runID, e.lostStageEvent(run.Def.StageByID(stageID), stageID, st))
 		}
 	}
 }
 
 // lostStageEvent is the honest settlement for a stage whose handle died with
-// the previous process.
-func lostStageEvent(def *pipeline.Stage, stageID string, now time.Time) pipeline.Event {
+// the previous process. A command stage's process group is reaped before it
+// settles, because settling a stage while its work keeps running is the one
+// outcome worse than either: the reap's finding goes into the reason so the
+// stage says what actually happened to its process.
+func (e *Engine) lostStageEvent(def *pipeline.Stage, stageID string, st *pipeline.StageState) pipeline.Event {
+	now := e.now()
 	if def != nil && def.Executor == pipeline.ExecutorAgent {
 		// no_signal: the session may well still be alive, but nothing in this
-		// process is listening to it any more.
+		// process is listening to it any more. Agent stages are not reaped
+		// here; session teardown owns them.
 		return pipeline.SessionGone{Stage: stageID, Now: now}
 	}
-	return pipeline.StageLaunchFailed{
-		Stage:  stageID,
-		Reason: "the pipeline engine restarted while this stage was running; its process handle is lost",
-		Now:    now,
+	reason := "the pipeline engine restarted while this stage was running; its process handle is lost"
+	if clause, leaked := e.procGroups.Reap(st.PGID, st.StartedAt); clause != "" {
+		reason += "; " + clause
+		if leaked {
+			e.log.Error("pipeline stage process group left running", "stage", stageID, "pgid", st.PGID, "detail", clause)
+		}
 	}
+	return pipeline.StageLaunchFailed{Stage: stageID, Reason: reason, Now: now}
 }
 
 // pruneInflight drops handles for stages that have settled, so a later poll
