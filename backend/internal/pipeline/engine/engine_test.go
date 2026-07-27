@@ -36,6 +36,18 @@ func (h *fakeHandle) StageID() string       { return h.in.Stage.ID }
 func (h *fakeHandle) Attempt() int          { return h.in.Attempt }
 func (h *fakeHandle) SessionID() string     { return "sess-" + h.in.Stage.ID }
 
+// fakeHandlePGID is the group every fake command stage claims to run in.
+const fakeHandlePGID = 7331
+
+// ProcessGroup mirrors the real handles: a command stage runs in a process
+// group of its own, an agent stage runs in a session and has none.
+func (h *fakeHandle) ProcessGroup() int {
+	if h.in.Stage.Executor == pipeline.ExecutorCommand {
+		return fakeHandlePGID
+	}
+	return 0
+}
+
 // fakeExecutor records every Start and replays scripted poll results.
 type fakeExecutor struct {
 	mu      sync.Mutex
@@ -239,6 +251,34 @@ func (s *fakeSessions) Kill(_ context.Context, sessionID string) error {
 	defer s.mu.Unlock()
 	s.killed = append(s.killed, sessionID)
 	return nil
+}
+
+// fakeReaper records every process group reconciliation asked it about, so a
+// test can assert what was reaped without a real process anywhere near it.
+// The clause it returns stands in for whatever the OS reaper would have found.
+type fakeReaper struct {
+	mu     sync.Mutex
+	calls  []reapCall
+	clause string
+	leaked bool
+}
+
+type reapCall struct {
+	pgid      int
+	startedAt time.Time
+}
+
+func (r *fakeReaper) Reap(pgid int, startedAt time.Time) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, reapCall{pgid: pgid, startedAt: startedAt})
+	return r.clause, r.leaked
+}
+
+func (r *fakeReaper) reaped() []reapCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]reapCall(nil), r.calls...)
 }
 
 // fakeCredentials serves engine-held credentials from a map.
@@ -785,6 +825,139 @@ func TestRestartSettlesLostCommandStageAsFailed(t *testing.T) {
 	}
 	if ids := execs.startedIDs(); len(ids) != 1 || ids[0] != "diagnose" {
 		t.Fatalf("started %v, want the failure target", ids)
+	}
+}
+
+// A launched command stage records the process group it runs in. That id is
+// the only thing a later daemon can find the work by, so it has to be on the
+// stage before anything else can go wrong.
+func TestLaunchedCommandStageRecordsItsProcessGroup(t *testing.T) {
+	h := newHarness(t)
+	runID := h.trigger(t, failureRouteYAML, userSessionSubject())
+
+	run, _ := h.engine.Run(runID)
+	if got := run.Stages["build"].PGID; got != fakeHandlePGID {
+		t.Fatalf("build pgid = %d, want %d from the command handle", got, fakeHandlePGID)
+	}
+	if run.Stages["build"].StartedAt.IsZero() {
+		t.Fatal("a recorded pgid with no start time cannot be identity checked")
+	}
+}
+
+// The leak this fixes: reconciliation settled the stage and left its process
+// running. The reap goes first, and its finding is in the reason, so the stage
+// says what actually happened to the work it was doing.
+func TestRestartReapsALostCommandStageProcessGroup(t *testing.T) {
+	base := t.TempDir()
+	store := newFakeStore()
+	cfg, err := pipeline.ParseDefinition([]byte(failureRouteYAML))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	launchedAt := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
+	store.hydra = []pipeline.RunState{{
+		RunID:        "run-lost",
+		ProjectID:    "proj-1",
+		PipelineName: cfg.Name,
+		Subject:      userSessionSubject(),
+		Status:       pipeline.RunRunning,
+		RunDir:       filepath.Join(base, "pipelines", "proj-1", "run-lost"),
+		Def:          *cfg,
+		Stages: map[string]*pipeline.StageState{
+			"build":    {ID: "build", Outcome: pipeline.OutcomeRunning, Attempt: 1, StartedAt: launchedAt, PGID: 48211},
+			"diagnose": {ID: "diagnose", Outcome: pipeline.OutcomePending},
+		},
+	}}
+	if err := os.MkdirAll(filepath.Join(base, "pipelines", "proj-1", "run-lost"), 0o750); err != nil {
+		t.Fatalf("seed run dir: %v", err)
+	}
+
+	reaper := &fakeReaper{clause: "its process group 48211 was still alive and has been killed"}
+	eng := New(Config{
+		ProjectID:     "proj-1",
+		Store:         store,
+		Executors:     newFakeExecutor(),
+		Workspaces:    newFakeProvisioner(filepath.Join(base, "trees")),
+		Sessions:      &fakeSessions{},
+		Messenger:     &fakeMessenger{},
+		ProcessGroups: reaper,
+		BaseDir:       filepath.Join(base, "pipelines"),
+		TickInterval:  time.Hour,
+	})
+	if err := eng.Start(context.Background()); err != nil {
+		t.Fatalf("start engine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Stop(context.Background()) })
+
+	calls := reaper.reaped()
+	if len(calls) != 1 {
+		t.Fatalf("reaped %d groups, want exactly the lost command stage's", len(calls))
+	}
+	// The pair the identity check runs on: the persisted group and the moment
+	// the stage recorded launching it.
+	if calls[0].pgid != 48211 || !calls[0].startedAt.Equal(launchedAt) {
+		t.Fatalf("reaped (%d, %s), want (48211, %s)", calls[0].pgid, calls[0].startedAt, launchedAt)
+	}
+
+	run, _ := eng.Run("run-lost")
+	if got := run.Stages["build"].Outcome; got != pipeline.OutcomeFailed {
+		t.Fatalf("build outcome = %q, want failed", got)
+	}
+	if got := run.Stages["build"].Reason; !strings.Contains(got, reaper.clause) {
+		t.Fatalf("build reason = %q, want it to carry what the reap found", got)
+	}
+}
+
+// An agent stage is a session, and session teardown already owns it: a reap
+// keyed on a stage that never recorded a process group has nothing right to
+// kill.
+func TestRestartDoesNotReapALostAgentStage(t *testing.T) {
+	base := t.TempDir()
+	store := newFakeStore()
+	cfg, err := pipeline.ParseDefinition([]byte(failureRouteYAML))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	store.hydra = []pipeline.RunState{{
+		RunID:        "run-lost",
+		ProjectID:    "proj-1",
+		PipelineName: cfg.Name,
+		Subject:      userSessionSubject(),
+		Status:       pipeline.RunRunning,
+		RunDir:       filepath.Join(base, "pipelines", "proj-1", "run-lost"),
+		Def:          *cfg,
+		Stages: map[string]*pipeline.StageState{
+			"build":    {ID: "build", Outcome: pipeline.OutcomeSucceeded, Attempt: 1},
+			"diagnose": {ID: "diagnose", Outcome: pipeline.OutcomeRunning, Attempt: 1, SessionID: "sess-old"},
+		},
+	}}
+	if err := os.MkdirAll(filepath.Join(base, "pipelines", "proj-1", "run-lost"), 0o750); err != nil {
+		t.Fatalf("seed run dir: %v", err)
+	}
+
+	reaper := &fakeReaper{}
+	eng := New(Config{
+		ProjectID:     "proj-1",
+		Store:         store,
+		Executors:     newFakeExecutor(),
+		Workspaces:    newFakeProvisioner(filepath.Join(base, "trees")),
+		Sessions:      &fakeSessions{},
+		Messenger:     &fakeMessenger{},
+		ProcessGroups: reaper,
+		BaseDir:       filepath.Join(base, "pipelines"),
+		TickInterval:  time.Hour,
+	})
+	if err := eng.Start(context.Background()); err != nil {
+		t.Fatalf("start engine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Stop(context.Background()) })
+
+	if calls := reaper.reaped(); len(calls) != 0 {
+		t.Fatalf("reaped %+v, want nothing for an agent stage", calls)
+	}
+	run, _ := eng.Run("run-lost")
+	if got := run.Stages["diagnose"].Outcome; got != pipeline.OutcomeNoSignal {
+		t.Fatalf("diagnose outcome = %q, want no_signal", got)
 	}
 }
 
