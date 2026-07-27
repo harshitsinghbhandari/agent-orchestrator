@@ -3,6 +3,7 @@
 package executors
 
 import (
+	"errors"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -22,15 +23,25 @@ func startGroup(t *testing.T) (pgid int, startedAt time.Time) {
 		t.Fatalf("start group: %v", err)
 	}
 	pgid = processGroupID(cmd)
+	// Reap the child as it exits, the way the real runner's wait goroutine
+	// does. Without it a killed child lingers as a zombie, which still answers
+	// signal 0 on Linux and would read as a group that survived the reap.
+	waited := make(chan struct{})
+	go func() { defer close(waited); _ = cmd.Wait() }()
 	t.Cleanup(func() {
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		_ = cmd.Wait()
+		<-waited
 	})
 	return pgid, startedAt
 }
 
-// groupAlive reports whether any member of the process group is still around.
-func groupAlive(pgid int) bool { return syscall.Kill(-pgid, 0) == nil }
+// groupAlive reports whether any member of the process group is still around,
+// on the same terms the reaper reads: EPERM means it exists and is somebody
+// else's, which is still alive.
+func groupAlive(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
 
 // waitGroupGone polls for the group to disappear. The reaper's SIGTERM is
 // asynchronous, so the assertion has to wait for the signal to land.
