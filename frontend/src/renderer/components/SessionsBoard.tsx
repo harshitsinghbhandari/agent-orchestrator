@@ -334,8 +334,11 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						spawnError={visibleSpawnError}
 					/>
 				) : (
-					<div className="h-full overflow-x-auto overflow-y-hidden">
-						<div className="grid h-full min-w-[64rem] grid-cols-4 gap-2 xl:min-w-0">
+					<div className="h-full overflow-hidden">
+						{/* The 4 zone columns share the width and shrink to fit — no
+						    horizontal scroll on a narrow window (each column is min-w-0,
+						    cards truncate/wrap). */}
+						<div className="grid h-full grid-cols-4 gap-2">
 							{COLUMNS.map((col) => (
 								<BoardColumn
 									key={`${projectId ?? "all"}:${col.zone}`}
@@ -956,7 +959,7 @@ function ArchiveSessionItem({
 				<div className="min-h-0 flex-1 px-3 pb-2 pt-1.5 text-left">
 					<div className="line-clamp-2 text-control font-medium leading-snug text-foreground">{session.title}</div>
 					<div className="mt-1 flex min-w-0 items-center gap-2">
-						<span className="shrink-0 font-mono text-2xs text-passive">{agentLabel(session.provider)}</span>
+						<AgentAvatar provider={session.provider} />
 						{issueId && (
 							<span className="max-w-branch-chip truncate rounded-sm bg-accent/12 px-1.5 py-0.5 font-mono text-micro text-accent">
 								{issueId}
@@ -989,8 +992,8 @@ function ArchiveSessionItem({
 								{issueId}
 							</span>
 						)}
-						<span className="ml-auto hidden shrink-0 font-mono text-2xs text-passive md:inline">
-							{agentLabel(session.provider)}
+						<span className="ml-auto hidden shrink-0 md:inline-flex">
+							<AgentAvatar provider={session.provider} />
 						</span>
 						<span className="w-15 shrink-0 text-right font-mono text-2xs text-passive">
 							{formatTimeCompact(session.updatedAt)}
@@ -1279,15 +1282,4 @@ function sameLabel(a: string, b: string): boolean {
 			.replace(/^(feat|fix|chore|refactor|session)\//, "")
 			.replace(/[^a-z0-9]+/g, "");
 	return normalize(a) === normalize(b);
-}
-
-function agentLabel(provider: WorkspaceSession["provider"]): string {
-	switch (provider) {
-		case "claude-code":
-			return "Claude";
-		case "opencode":
-			return "OpenCode";
-		default:
-			return provider;
-	}
 }
