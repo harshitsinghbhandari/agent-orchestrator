@@ -11,6 +11,10 @@ import (
 // exec.CommandContext already terminates the child on ctx cancel.
 func configureProcAttr(cmd *exec.Cmd) {}
 
+// processGroupID returns 0 on Windows: configureProcAttr puts the child in no
+// group of its own, so there is none to record and none to reap later.
+func processGroupID(cmd *exec.Cmd) int { return 0 }
+
 // killProcessTree kills the child process. Best-effort.
 //
 // ponytail: single-process kill; a Job Object would be needed to reap a full

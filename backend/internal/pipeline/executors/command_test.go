@@ -16,15 +16,18 @@ import (
 // what it wrote, and observes whether it was killed.
 type fakeProcess struct {
 	done chan struct{}
+	pgid int
 
 	mu     sync.Mutex
 	result CommandResult
 	kills  int
 }
 
-func newFakeProcess() *fakeProcess { return &fakeProcess{done: make(chan struct{})} }
+func newFakeProcess() *fakeProcess { return &fakeProcess{done: make(chan struct{}), pgid: 4242} }
 
 func (p *fakeProcess) Done() <-chan struct{} { return p.done }
+
+func (p *fakeProcess) PGID() int { return p.pgid }
 
 func (p *fakeProcess) Result() CommandResult {
 	p.mu.Lock()

@@ -75,8 +75,8 @@ ORDER BY created_at ASC, id ASC;
 INSERT INTO pipeline_stage_runs (
     run_id, project_id, stage_id, outcome, attempt, entered_via, prev_stage,
     failed_stage, failed_outcome, session_id, workspace_kind, workspace_path,
-    deadline_at, started_at, settled_at, reason, output_tail, nudged
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    deadline_at, started_at, settled_at, reason, output_tail, nudged, pgid
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (run_id, stage_id) DO UPDATE SET
     outcome = excluded.outcome,
     attempt = excluded.attempt,
@@ -92,7 +92,8 @@ ON CONFLICT (run_id, stage_id) DO UPDATE SET
     settled_at = excluded.settled_at,
     reason = excluded.reason,
     output_tail = excluded.output_tail,
-    nudged = excluded.nudged;
+    nudged = excluded.nudged,
+    pgid = excluded.pgid;
 
 -- name: ListPipelineStageRunsByRun :many
 SELECT * FROM pipeline_stage_runs WHERE run_id = ? ORDER BY stage_id ASC;

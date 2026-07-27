@@ -47,6 +47,8 @@ func (p *osProcess) Result() CommandResult {
 	return p.result
 }
 
+func (p *osProcess) PGID() int { return processGroupID(p.cmd) }
+
 func (p *osProcess) Kill() {
 	// Terminate the process group (SIGTERM then SIGKILL) so a shell's children
 	// die with it. Best-effort: a race with natural exit is benign.

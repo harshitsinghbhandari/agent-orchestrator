@@ -49,6 +49,11 @@ type commandHandle struct {
 	log   *stageLog
 }
 
+// ProcessGroup returns the group the command was started in, so the driver can
+// persist it against the stage. Restart reconciliation is the only reader: it
+// is the one thing that can still find this work after the handle is gone.
+func (h *commandHandle) ProcessGroup() int { return h.child.PGID() }
+
 // OutputTail returns the capped copy of the stage's output.
 func (h *commandHandle) OutputTail() (string, bool) {
 	if h.log == nil {

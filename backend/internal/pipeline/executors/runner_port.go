@@ -39,6 +39,10 @@ type CommandProcess interface {
 	Done() <-chan struct{}
 	Result() CommandResult
 	Kill()
+	// PGID is the id of the process group the command runs in, or 0 where the
+	// platform gave it none. It is persisted with the stage so a later daemon
+	// can reap a group this one would otherwise leak on restart.
+	PGID() int
 }
 
 // CommandRunner starts a subprocess for a command stage. The production impl

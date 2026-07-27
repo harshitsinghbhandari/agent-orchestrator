@@ -88,6 +88,11 @@ type OutputTailer interface {
 	OutputTail() (text string, truncated bool)
 }
 
+// ProcessGroupHolder is implemented by handles whose stage runs in an OS
+// process group of its own. An agent stage runs in a session and implements
+// nothing here: session teardown already owns it.
+type ProcessGroupHolder interface{ ProcessGroup() int }
+
 // stageIdentity is embedded in every concrete handle to satisfy the Handle
 // accessors without repetition.
 type stageIdentity struct {
@@ -153,6 +158,16 @@ func (h setHandle) SessionID() string {
 		return holder.SessionID()
 	}
 	return ""
+}
+
+// ProcessGroup forwards to the wrapped handle when the stage runs in one, so
+// the driver can persist it from StageLaunched without unwrapping the routing
+// layer. An agent stage has no process group and returns 0.
+func (h setHandle) ProcessGroup() int {
+	if holder, ok := h.inner.(ProcessGroupHolder); ok {
+		return holder.ProcessGroup()
+	}
+	return 0
 }
 
 func (s *Set) executorFor(kind pipeline.ExecutorKind) (StageExecutor, error) {

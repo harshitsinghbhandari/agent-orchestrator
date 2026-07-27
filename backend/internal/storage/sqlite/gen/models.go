@@ -190,6 +190,7 @@ type PipelineStageRun struct {
 	Reason        string
 	OutputTail    string
 	Nudged        int64
+	Pgid          int64
 }
 
 type PipelineStageSignal struct {

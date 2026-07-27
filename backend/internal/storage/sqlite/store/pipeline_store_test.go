@@ -130,6 +130,7 @@ func prRun(now time.Time) pipeline.RunState {
 			WorkspacePath: "/runs/run-1/workspace",
 			DeadlineAt:    now.Add(20 * time.Minute),
 			StartedAt:     started,
+			PGID:          9000 + i,
 			Reason:        "because " + string(outcome),
 			OutputTail:    "tail for " + string(outcome),
 		}
@@ -349,6 +350,43 @@ func TestPipelineHydrateReturnsUnsettledRunsOnly(t *testing.T) {
 	}
 	if len(runs[0].Stages) != 1 || runs[0].Stages["entry"].Outcome != pipeline.OutcomeRunning {
 		t.Fatalf("hydrated run lost its stages: %+v", runs[0].Stages)
+	}
+}
+
+// A restart is the only reader of a stage's pgid, and by then the engine has
+// nothing but the row: if hydration drops it, reconciliation settles the stage
+// and leaks the process it was still running.
+func TestPipelineStageRunRoundTripsPGID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	now := time.Now().UTC().Truncate(time.Second)
+
+	run := pipeline.RunState{
+		RunID: "run-pgid", ProjectID: "mer", PipelineID: "pl-review", PipelineName: "review",
+		Subject: pipeline.Subject{Kind: pipeline.SubjectProject, ProjectID: "mer"},
+		Status:  pipeline.RunRunning, Def: samplePipelineV2("review"),
+		Stages: map[string]*pipeline.StageState{
+			"build":  {ID: "build", Outcome: pipeline.OutcomeRunning, Attempt: 1, StartedAt: now, PGID: 48211},
+			"review": {ID: "review", Outcome: pipeline.OutcomeRunning, Attempt: 1, StartedAt: now, SessionID: "mer-1"},
+		},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.SavePipelineRun(ctx, run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	hydrated, err := s.HydratePipelineEngineState(ctx, "mer")
+	if err != nil || len(hydrated) != 1 {
+		t.Fatalf("hydrate: %d runs, err=%v", len(hydrated), err)
+	}
+	if got := hydrated[0].Stages["build"].PGID; got != 48211 {
+		t.Fatalf("build pgid = %d, want 48211", got)
+	}
+	// An agent stage records none, and a zero must stay a zero: a reap keyed on
+	// a bogus group id is exactly what the identity check exists to prevent.
+	if got := hydrated[0].Stages["review"].PGID; got != 0 {
+		t.Fatalf("review pgid = %d, want 0 for a stage that runs in a session", got)
 	}
 }
 

@@ -37,6 +37,13 @@ type StageState struct {
 	FailedOutcome Outcome `json:"failedOutcome,omitempty"`
 
 	SessionID string `json:"sessionId,omitempty"`
+	// PGID is the OS process group a command stage was launched in, 0 for an
+	// agent stage and on a platform that gives a command none. It is persisted
+	// because a daemon restart drops the handle that could stop the work:
+	// without the group id, reconciliation settles the stage and leaves its
+	// process running. Read together with StartedAt, which the same event
+	// stamps: the pair is what makes a reap safe against pid reuse.
+	PGID int `json:"pgid,omitempty"`
 	// WorkspaceKind is the resolved tree kind, never "auto", "inherit" or
 	// unset: those are plan-time symbols, resolved to a concrete kind by the
 	// time the stage launches.
