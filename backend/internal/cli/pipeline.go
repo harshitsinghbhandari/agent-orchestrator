@@ -39,8 +39,11 @@ type listPipelineDefinitionsResponse struct {
 // pipelineRunSummary is v2's run shape: a run status rollup and the subject the
 // run is about, in place of v1's loop state and termination reason.
 type pipelineRunSummary struct {
-	RunID         string            `json:"runId"`
-	PipelineID    string            `json:"pipelineId"`
+	RunID      string `json:"runId"`
+	PipelineID string `json:"pipelineId"`
+	// RunNumber is the per-pipeline counter a human refers to a run by
+	// ("inform #3"), allocated at trigger time and never reassigned.
+	RunNumber     int               `json:"runNumber"`
 	PipelineName  string            `json:"pipelineName"`
 	Status        string            `json:"status"`
 	SubjectKind   string            `json:"subjectKind"`
@@ -720,12 +723,23 @@ func writePipelineRuns(cmd *cobra.Command, projectID string, runs []pipelineRunS
 			status += fmt.Sprintf(" (%s)", run.CancelReason)
 		}
 		if _, err := fmt.Fprintf(out, "  %s  %s  %s  %s  %s\n",
-			run.RunID, run.PipelineName, status, describePipelineSubject(run),
+			run.RunID, pipelineRunLabel(run), status, describePipelineSubject(run),
 			formatPipelineTime(run.CreatedAt)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// pipelineRunLabel is how a human refers to a run out loud: "inform #3", the
+// same shape GitHub Actions uses. A run number of 0 means the daemon predates
+// the counter, so the label degrades to the bare pipeline name rather than
+// printing a "#0" nobody can look up.
+func pipelineRunLabel(run pipelineRunSummary) string {
+	if run.RunNumber <= 0 {
+		return run.PipelineName
+	}
+	return fmt.Sprintf("%s #%d", run.PipelineName, run.RunNumber)
 }
 
 // describePipelineSubject names what the run is about, which is what tells two
@@ -757,7 +771,7 @@ func describePipelineSubject(run pipelineRunSummary) string {
 func writePipelineRunDetail(cmd *cobra.Command, run pipelineRunDetail) error {
 	out := cmd.OutOrStdout()
 	fields := [][2]string{
-		{"pipeline", run.PipelineName},
+		{"runId", run.RunID},
 		{"status", run.Status},
 		{"subject", describePipelineSubject(run.pipelineRunSummary)},
 		{"session", run.SessionID},
@@ -767,7 +781,9 @@ func writePipelineRunDetail(cmd *cobra.Command, run pipelineRunDetail) error {
 		{"updated", formatPipelineTime(run.UpdatedAt)},
 		{"settled", formatPipelineTimePtr(run.SettledAt)},
 	}
-	if _, err := fmt.Fprintf(out, "Run %s\n", run.RunID); err != nil {
+	// The heading is the human handle ("review #7"); the run id it resolves to
+	// moves into the field list, because that is what `show` and `cancel` take.
+	if _, err := fmt.Fprintf(out, "Run %s\n", pipelineRunLabel(run.pipelineRunSummary)); err != nil {
 		return err
 	}
 	for _, f := range fields {

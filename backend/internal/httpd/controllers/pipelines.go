@@ -142,8 +142,12 @@ type ValidatePipelineDefinitionResponse struct {
 // It is what one Kanban card needs: the run status column, the subject it is
 // about, and the stage outcome map the card's progress strip renders.
 type PipelineRunSummary struct {
-	RunID        string `json:"runId"`
-	PipelineID   string `json:"pipelineId"`
+	RunID      string `json:"runId"`
+	PipelineID string `json:"pipelineId"`
+	// RunNumber is the per-pipeline counter humans refer to a run by, the way
+	// GitHub Actions numbers workflow runs: pipeline "inform" run #3. It is
+	// allocated once at trigger time and never reassigned.
+	RunNumber    int    `json:"runNumber" minimum:"1" description:"Per-pipeline run counter, allocated at trigger time and stable forever."`
 	PipelineName string `json:"pipelineName"`
 	Status       string `json:"status" enum:"pending,running,succeeded,failed,cancelled" description:"Run-level rollup of the stage outcomes."`
 	SubjectKind  string `json:"subjectKind" enum:"session,pr,project" description:"What the run is about."`
@@ -816,6 +820,7 @@ func runSummary(run pipeline.RunState) PipelineRunSummary {
 	out := PipelineRunSummary{
 		RunID:         string(run.RunID),
 		PipelineID:    string(run.PipelineID),
+		RunNumber:     run.RunNumber,
 		PipelineName:  run.PipelineName,
 		Status:        string(run.Status),
 		SubjectKind:   string(run.Subject.Kind),

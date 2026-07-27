@@ -69,9 +69,14 @@ type StageState struct {
 // Def is a frozen snapshot taken when the run was triggered: editing the
 // definition mid-run never changes a run in flight.
 type RunState struct {
-	RunID        RunID     `json:"runId"`
-	ProjectID    string    `json:"projectId"`
-	PipelineID   ID        `json:"pipelineId"`
+	RunID      RunID  `json:"runId"`
+	ProjectID  string `json:"projectId"`
+	PipelineID ID     `json:"pipelineId"`
+	// RunNumber is the per-pipeline counter humans refer to a run by,
+	// GitHub Actions style: "inform #3 failed". The store allocates it in the
+	// insert that creates the run and never reassigns it, so the reducer never
+	// touches it and a run built in memory carries 0 until it is first saved.
+	RunNumber    int       `json:"runNumber,omitempty"`
 	PipelineName string    `json:"pipelineName"`
 	Subject      Subject   `json:"subject"`
 	Status       RunStatus `json:"status"`

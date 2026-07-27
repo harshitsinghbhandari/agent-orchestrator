@@ -178,25 +178,36 @@ func (p *fakeProvisioner) destroyedPaths() []string {
 
 // fakeStore is an in-memory stand-in for the SQLite pipeline store.
 type fakeStore struct {
-	mu      sync.Mutex
-	runs    map[pipeline.RunID]pipeline.RunState
-	hydra   []pipeline.RunState
-	saves   int
-	saveErr error
+	mu sync.Mutex
+	// counters is the per-pipeline run number sequence, keyed the way the real
+	// store keys it: by pipeline name.
+	counters map[string]int
+	runs     map[pipeline.RunID]pipeline.RunState
+	hydra    []pipeline.RunState
+	saves    int
+	saveErr  error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{runs: map[pipeline.RunID]pipeline.RunState{}}
+	return &fakeStore{runs: map[pipeline.RunID]pipeline.RunState{}, counters: map[string]int{}}
 }
 
-func (s *fakeStore) SavePipelineRun(_ context.Context, run pipeline.RunState) error {
+func (s *fakeStore) SavePipelineRun(_ context.Context, run *pipeline.RunState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.saves++
 	if s.saveErr != nil {
 		return s.saveErr
 	}
-	s.runs[run.RunID] = run
+	// Same contract as the SQLite store: the row owns the run number, the
+	// insert allocates it, and a re-save keeps whatever the row already had.
+	if prev, ok := s.runs[run.RunID]; ok {
+		run.RunNumber = prev.RunNumber
+	} else {
+		s.counters[run.PipelineName]++
+		run.RunNumber = s.counters[run.PipelineName]
+	}
+	s.runs[run.RunID] = *run
 	return nil
 }
 
@@ -541,9 +552,18 @@ func TestHappyPathRunSettlesSucceeded(t *testing.T) {
 		t.Fatalf("Context.md = %q, want it to contain %q", ctxRaw, want)
 	}
 
-	// run.json is the on-disk projection, and the store is the record.
-	if _, err := os.Stat(filepath.Join(h.base, "proj-1", string(runID), "run.json")); err != nil {
+	// run.json is the on-disk projection, and the store is the record. The run
+	// number is allocated by the store, so its presence here is what proves the
+	// engine took it back before writing the projection humans read.
+	runJSON, err := os.ReadFile(filepath.Join(h.base, "proj-1", string(runID), "run.json"))
+	if err != nil {
 		t.Fatalf("run.json: %v", err)
+	}
+	if !strings.Contains(string(runJSON), `"runNumber": 1`) {
+		t.Fatalf("run.json carries no run number: %s", runJSON)
+	}
+	if run.RunNumber != 1 {
+		t.Fatalf("engine run number = %d, want 1", run.RunNumber)
 	}
 	saved, ok := h.store.saved(runID)
 	if !ok || saved.Status != pipeline.RunSucceeded {

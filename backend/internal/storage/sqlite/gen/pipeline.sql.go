@@ -170,7 +170,7 @@ func (q *Queries) GetPipelineDefinitionByName(ctx context.Context, arg GetPipeli
 }
 
 const getPipelineRun = `-- name: GetPipelineRun :one
-SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at FROM pipeline_runs WHERE id = ?
+SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at, run_number FROM pipeline_runs WHERE id = ?
 `
 
 func (q *Queries) GetPipelineRun(ctx context.Context, id string) (PipelineRun, error) {
@@ -197,6 +197,7 @@ func (q *Queries) GetPipelineRun(ctx context.Context, id string) (PipelineRun, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SettledAt,
+		&i.RunNumber,
 	)
 	return i, err
 }
@@ -293,7 +294,7 @@ func (q *Queries) ListPipelineDefinitions(ctx context.Context, projectID domain.
 }
 
 const listPipelineRuns = `-- name: ListPipelineRuns :many
-SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at FROM pipeline_runs
+SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at, run_number FROM pipeline_runs
 WHERE project_id = ?
   AND (?2 IS NULL OR pipeline_name = ?2)
   AND (?3 IS NULL OR status = ?3)
@@ -343,6 +344,7 @@ func (q *Queries) ListPipelineRuns(ctx context.Context, arg ListPipelineRunsPara
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.SettledAt,
+			&i.RunNumber,
 		); err != nil {
 			return nil, err
 		}
@@ -405,7 +407,7 @@ func (q *Queries) ListPipelineStageRunsByRun(ctx context.Context, runID string) 
 }
 
 const listUnsettledPipelineRuns = `-- name: ListUnsettledPipelineRuns :many
-SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at FROM pipeline_runs
+SELECT id, project_id, pipeline_id, pipeline_name, subject_kind, session_id, pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch, from_fork, status, run_dir, definition_json, cancel_reason, created_at, updated_at, settled_at, run_number FROM pipeline_runs
 WHERE project_id = ? AND settled_at IS NULL
 ORDER BY created_at ASC, id ASC
 `
@@ -442,6 +444,7 @@ func (q *Queries) ListUnsettledPipelineRuns(ctx context.Context, projectID domai
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.SettledAt,
+			&i.RunNumber,
 		); err != nil {
 			return nil, err
 		}
@@ -513,14 +516,23 @@ func (q *Queries) UpsertPipelineCredential(ctx context.Context, arg UpsertPipeli
 	return err
 }
 
-const upsertPipelineRun = `-- name: UpsertPipelineRun :exec
+const upsertPipelineRun = `-- name: UpsertPipelineRun :one
 
 INSERT INTO pipeline_runs (
-    id, project_id, pipeline_id, pipeline_name, subject_kind, session_id,
+    id, project_id, pipeline_id, pipeline_name, run_number, subject_kind, session_id,
     pr_number, pr_repo, pr_url, head_sha, pr_head_branch, pr_base_branch,
     from_fork, status, run_dir, definition_json, cancel_reason,
     created_at, updated_at, settled_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (
+    ?1, ?2, ?3, ?4,
+    (SELECT COALESCE(MAX(r.run_number), 0) + 1 FROM pipeline_runs r
+      WHERE r.project_id = ?2 AND r.pipeline_name = ?4),
+    ?5, ?6,
+    ?7, ?8, ?9, ?10,
+    ?11, ?12,
+    ?13, ?14, ?15,
+    ?16, ?17,
+    ?18, ?19, ?20)
 ON CONFLICT (id) DO UPDATE SET
     pipeline_name = excluded.pipeline_name,
     subject_kind = excluded.subject_kind,
@@ -538,6 +550,7 @@ ON CONFLICT (id) DO UPDATE SET
     cancel_reason = excluded.cancel_reason,
     updated_at = excluded.updated_at,
     settled_at = excluded.settled_at
+RETURNING run_number
 `
 
 type UpsertPipelineRunParams struct {
@@ -564,8 +577,15 @@ type UpsertPipelineRunParams struct {
 }
 
 // Pipeline runs --------------------------------------------------------------
-func (q *Queries) UpsertPipelineRun(ctx context.Context, arg UpsertPipelineRunParams) error {
-	_, err := q.db.ExecContext(ctx, upsertPipelineRun,
+// run_number is allocated here, in the statement that inserts the run, so two
+// triggers racing on one pipeline cannot both compute the same next number:
+// the MAX(...)+1 subquery is evaluated inside the insert, and the unique index
+// on (project_id, pipeline_name, run_number) is the backstop. It is absent
+// from the DO UPDATE list on purpose. A number is assigned once and never
+// reassigned, because humans refer to runs by it. RETURNING gives the caller
+// the number on both paths (freshly allocated, or the one the row already had).
+func (q *Queries) UpsertPipelineRun(ctx context.Context, arg UpsertPipelineRunParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, upsertPipelineRun,
 		arg.ID,
 		arg.ProjectID,
 		arg.PipelineID,
@@ -587,7 +607,9 @@ func (q *Queries) UpsertPipelineRun(ctx context.Context, arg UpsertPipelineRunPa
 		arg.UpdatedAt,
 		arg.SettledAt,
 	)
-	return err
+	var run_number int64
+	err := row.Scan(&run_number)
+	return run_number, err
 }
 
 const upsertPipelineStageRun = `-- name: UpsertPipelineStageRun :exec

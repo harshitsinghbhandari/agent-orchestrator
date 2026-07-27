@@ -74,6 +74,7 @@ function detail(overrides: Partial<RunDetail>): RunDetail {
 		runId: "run-1",
 		pipelineId: "def-1",
 		pipelineName: "review",
+		runNumber: 7,
 		status: "running",
 		subjectKind: "session",
 		sessionId: "sess-1",
@@ -205,6 +206,20 @@ describe("PipelineRunDetail header", () => {
 		expect(screen.getByRole("heading", { name: "review" })).toBeInTheDocument();
 		expect(screen.getByText("failed")).toBeInTheDocument();
 		expect(screen.getByText("/Users/x/.ao/pipelines/proj-1/run-1")).toBeInTheDocument();
+	});
+
+	it("shows the run number next to the pipeline, where GitHub puts it", () => {
+		setRun(detail({ runNumber: 199 }));
+		renderDetail("proj-1");
+
+		expect(screen.getByText("#199")).toBeInTheDocument();
+	});
+
+	it("falls back to the run id prefix when the run has no number", () => {
+		setRun(detail({ runId: "run-abc1234-0000", runNumber: 0 }));
+		renderDetail("proj-1");
+
+		expect(screen.getByText("#abc1234")).toBeInTheDocument();
 	});
 
 	it("dates the run by when it was created and when it settled", () => {

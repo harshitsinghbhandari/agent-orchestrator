@@ -22,6 +22,7 @@ import type { components } from "../../api/schema";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { PipelineRunGraph, RunStatusIcon, StageStatusIcon } from "./PipelineRunGraph";
+import { runNumberLabel } from "./PipelineRunRow";
 
 type PipelineStageView = components["schemas"]["PipelineStageView"];
 type RunDetail = components["schemas"]["PipelineRunDetail"];
@@ -129,6 +130,9 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 					>
 						{run.pipelineName}
 					</h1>
+					{/* Where GitHub puts "#199": the per-pipeline run number, which is
+					    what a human says out loud when they mean this run. */}
+					<span className="text-subtitle font-normal text-passive">#{runNumberLabel(run)}</span>
 					<span className="font-mono text-caption text-passive">{run.runId}</span>
 					{run.cancelReason && <span className="text-caption text-passive">· {run.cancelReason}</span>}
 					<div className="ml-auto flex items-center gap-2">

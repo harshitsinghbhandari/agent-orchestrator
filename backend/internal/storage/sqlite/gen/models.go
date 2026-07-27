@@ -169,6 +169,7 @@ type PipelineRun struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	SettledAt      sql.NullTime
+	RunNumber      int64
 }
 
 type PipelineStageRun struct {

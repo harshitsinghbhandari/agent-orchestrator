@@ -42,7 +42,7 @@ func newSignalService(t *testing.T, outcomes map[string]pipeline.Outcome) *pipel
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.SavePipelineRun(ctx, run); err != nil {
+	if err := s.SavePipelineRun(ctx, &run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
 	return pipelinesvc.New(s)

@@ -35,20 +35,22 @@ export type PipelineRunRowModel = {
 	branch?: string;
 };
 
-// Run ids are `run-<uuid>`; the display number is the first block of that uuid.
-// The API has no per-pipeline run counter, and numbering client-side would
-// renumber every run whenever a filter changed, so the row shows a short form of
-// the id it already has: stable, unique, and the same on every screen.
-export function shortRunNumber(runId: string): string {
-	const body = runId.startsWith("run-") ? runId.slice(4) : runId;
-	return body.split("-")[0].slice(0, 7) || runId;
+// The run's display number. `runNumber` is the real per-pipeline counter the
+// daemon allocates at trigger time, so it is stable no matter how the list is
+// filtered. A run from a daemon too old to have numbered it falls back to the
+// first block of its uuid, which is at least unique and the same on every
+// screen.
+export function runNumberLabel(run: Pick<PipelineRunSummary, "runId" | "runNumber">): string {
+	if (run.runNumber > 0) return String(run.runNumber);
+	const body = run.runId.startsWith("run-") ? run.runId.slice(4) : run.runId;
+	return body.split("-")[0].slice(0, 7) || run.runId;
 }
 
 // The sub-line, in GitHub's idiom: what fired the run and on behalf of what. The
 // run DTO carries no actor, so nothing claims one; a PR subject names its number
 // and, when a local session tracks it, that session.
 export function describeRunTrigger(run: PipelineRunSummary, session?: WorkspaceSession): string {
-	const prefix = `${run.pipelineName} #${shortRunNumber(run.runId)}: `;
+	const prefix = `${run.pipelineName} #${runNumberLabel(run)}: `;
 	if (run.subjectKind === "pr" && run.prNumber) {
 		return `${prefix}Pull request #${run.prNumber}${session ? ` in session ${session.title}` : ""}`;
 	}

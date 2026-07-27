@@ -41,7 +41,9 @@ const defaultTickInterval = 2 * time.Second
 // it. SQLite stays the store of record (decision D2); run.json in the run
 // folder is a projection written alongside every save.
 type Store interface {
-	SavePipelineRun(ctx context.Context, run pipeline.RunState) error
+	// SavePipelineRun takes a pointer because the store assigns the run's
+	// per-pipeline RunNumber on insert and hands it back through the argument.
+	SavePipelineRun(ctx context.Context, run *pipeline.RunState) error
 	HydratePipelineEngineState(ctx context.Context, projectID domain.ProjectID) ([]pipeline.RunState, error)
 }
 
@@ -439,7 +441,7 @@ func (e *Engine) persistFolderlessFailure(trigger pendingTrigger, subject pipeli
 			Reason:     fmt.Sprintf("create run folder: %v", cause),
 		}
 	}
-	if err := e.store.SavePipelineRun(e.baseCtx, run); err != nil {
+	if err := e.store.SavePipelineRun(e.baseCtx, &run); err != nil {
 		e.log.Error("pipeline persist run", "run", run.RunID, "err", err)
 	}
 }
@@ -508,8 +510,15 @@ func (e *Engine) persist(runID pipeline.RunID) {
 	if !ok {
 		return
 	}
-	if err := e.store.SavePipelineRun(e.baseCtx, run); err != nil {
+	if err := e.store.SavePipelineRun(e.baseCtx, &run); err != nil {
 		e.log.Error("pipeline persist run", "run", runID, "err", err)
+	}
+	// The first save is where the store hands back the run number, so keep it:
+	// everything downstream of here (run.json, the DTOs, the CLI) reads it, and
+	// re-reading it from the row on every persist would be a query per save.
+	if current, ok := e.runs[runID]; ok && current.RunNumber != run.RunNumber {
+		current.RunNumber = run.RunNumber
+		e.runs[runID] = current
 	}
 	if run.RunDir == "" {
 		return
