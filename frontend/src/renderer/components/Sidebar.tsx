@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { UpdateStatus } from "../../main/update-settings";
-import { APP_SHORTCUTS, shortcutKeys } from "../../shared/shortcuts";
+import { effectiveShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
 import {
 	hasConfiguredOrchestratorAgent,
 	newestActiveOrchestrator,
@@ -60,6 +60,7 @@ import { OrchestratorIcon } from "./icons";
 import aoLogo from "../../../assets/ao-logo.svg";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
+import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateProjectFlow, type CreateProjectInput } from "./CreateProjectFlow";
 import { ResizeHandle } from "./ResizeHandle";
@@ -834,12 +835,9 @@ function RestartToUpdateRailButton({ status, tabIndex }: { status: UpdateStatus;
 }
 
 function SidebarSearchButton({ onOpen }: { onOpen: () => void }) {
-	const paletteShortcut = APP_SHORTCUTS.find((shortcut) => shortcut.id === "command-palette");
-	const shortcutLabel = paletteShortcut
-		? shortcutKeys(paletteShortcut, isMac).join(isMac ? "" : "+")
-		: isMac
-			? "⌘K"
-			: "Ctrl+K";
+	const overrides = useKeybindingsStore((state) => state.overrides);
+	const paletteBinding = effectiveShortcutBindings("command-palette", isMac, overrides)[0];
+	const shortcutLabel = paletteBinding ? shortcutBindingLabel(paletteBinding, isMac) : "Unassigned";
 	const { state } = useSidebar();
 	const isCollapsed = state === "collapsed";
 	return (

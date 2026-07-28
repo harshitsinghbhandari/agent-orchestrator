@@ -24,6 +24,9 @@ const {
 	getMock,
 	putMock,
 	daemonRestart,
+	getKeybindings,
+	setKeybindings,
+	setKeybindingRecording,
 } = vi.hoisted(() => ({
 	getUpdate: vi.fn(),
 	setUpdate: vi.fn(),
@@ -43,6 +46,9 @@ const {
 	getMock: vi.fn(),
 	putMock: vi.fn(),
 	daemonRestart: vi.fn(),
+	getKeybindings: vi.fn(),
+	setKeybindings: vi.fn(),
+	setKeybindingRecording: vi.fn(),
 }));
 
 // PipelinesSection reads/writes the persisted pipelines flag over the daemon
@@ -68,6 +74,11 @@ vi.mock("../lib/bridge", () => ({
 		clipboard: { writeText },
 		daemon: { getStatus: getDaemonStatus, restart: daemonRestart },
 		updateSettings: { get: getUpdate, set: setUpdate },
+		keybindings: {
+			get: getKeybindings,
+			set: setKeybindings,
+			setRecording: setKeybindingRecording,
+		},
 		updates: {
 			getStatus: updGetStatus,
 			check: updCheck,
@@ -110,6 +121,9 @@ beforeEach(() => {
 		getMock,
 		putMock,
 		daemonRestart,
+		getKeybindings,
+		setKeybindings,
+		setKeybindingRecording,
 	]) {
 		m.mockReset();
 	}
@@ -130,6 +144,9 @@ beforeEach(() => {
 	getMock.mockResolvedValue({ data: { enabled: false }, error: undefined });
 	putMock.mockResolvedValue({ data: { enabled: true }, error: undefined });
 	daemonRestart.mockResolvedValue({ state: "ready", port: 3001 });
+	getKeybindings.mockResolvedValue({});
+	setKeybindings.mockImplementation(async (overrides) => overrides);
+	setKeybindingRecording.mockResolvedValue(undefined);
 	// Feature Releases lives behind Developer Mode; reset to the default (off).
 	useUiStore.getState().setDeveloperMode(false);
 });
