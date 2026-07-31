@@ -802,6 +802,12 @@ stage, inherited or explicit.
 
 ```
 ao pipeline list [--project ID] [--json]
+ao pipeline create -f FILE [--project ID] [--json]
+ao pipeline get <pipeline-ref> [--project ID] [--json]
+ao pipeline update <pipeline-ref> -f FILE [--project ID] [--json]
+ao pipeline delete <pipeline-ref> [--yes] [--project ID] [--json]
+ao pipeline validate -f FILE [--project ID] [--json]
+ao pipeline schema
 ao pipeline runs [--project ID] [--pipeline NAME] [--status STATUS] [--limit N] [--json]
 ao pipeline show <runId> [--project ID] [--json]
 ao pipeline run <pipeline-ref> [--project ID] [--session ID] [--pr N] [--json]
@@ -813,12 +819,27 @@ ao pipeline done
 ao pipeline fail --reason "..."
 ```
 
+`ao pipelines` is an alias for `ao pipeline`, and the destructive-verb aliases
+follow the usual shell shapes: `rm` for `delete`, `cat` for `get`.
+
 `--project` falls back to `AO_PROJECT_ID`, then the CLI's usual cwd and
 session-based project resolution. `--status` filters `runs` by run status
 (`pending`, `running`, `succeeded`, `failed`, `cancelled`). `pipeline run`
 accepts a pipeline id or its name and resolves the subject from `--session` or
 `--pr` (the PR's head sha and fork provenance come from the daemon, so there is
 no `--head-sha`); with neither, the subject is the project.
+
+**Definition verbs.** `get`, `update` and `delete` take the same pipeline ref
+`run` does: the definition's id or its name. `create`, `update` and `validate`
+read the YAML document from `-f FILE`, and `-f -` reads stdin, so a document
+pipes in the way you'd expect (`ao pipeline get review | ... | ao pipeline
+update review -f -`). `get` prints the stored YAML exactly as authored.
+`delete` asks for confirmation in an interactive session and requires `--yes`
+in a non-interactive one; past runs and their run folders are kept either way.
+`validate` prints the Errors and Warnings lists separately (warnings arrive
+even for a valid document and do not block saving) and exits 1 when the
+document is invalid, so it slots into CI. `schema` dumps the JSON schema the
+visual editor consumes.
 
 **There is no `resume`.** A settled run is final; re-running means triggering a
 new one.
