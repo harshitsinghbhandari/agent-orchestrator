@@ -1,4 +1,5 @@
 import { AlertCircle } from "lucide-react";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 
 // The Problems panel (mockup 1d): docked under the editor surface, one row per
@@ -31,7 +32,7 @@ export function PipelineProblemsPanel({
 			<div className="flex items-center justify-between px-4.5 pt-2.5 pb-1.5">
 				<p className="flex items-center gap-1.5 text-caption font-semibold text-foreground">
 					Problems
-					<span className="rounded-full bg-error/15 px-1.5 font-mono text-2xs text-error">{problems.length}</span>
+					<Badge variant="error">{problems.length}</Badge>
 				</p>
 				<p className="text-caption text-passive">Must resolve before saving</p>
 			</div>

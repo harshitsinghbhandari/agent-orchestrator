@@ -92,11 +92,11 @@ export function PipelineRunDetail({ runId, project }: { runId: string; project?:
 	});
 
 	if (isLoading) {
-		return <p className="p-6 text-caption text-passive">Loading run…</p>;
+		return <p className="py-10 text-center text-xs text-passive">Loading run…</p>;
 	}
 	if (isError || !run) {
 		return (
-			<p className="p-6 text-caption text-error">
+			<p className="py-10 text-center text-xs text-error">
 				Could not load run{error instanceof Error ? `: ${error.message}` : ""}.
 			</p>
 		);
@@ -228,7 +228,7 @@ function RunRail({
 				onClick={() => onFocusStage(null)}
 			/>
 
-			<p className="mb-1 mt-4 px-2 text-micro font-semibold uppercase tracking-wide text-passive">All jobs</p>
+			<p className="mb-1 mt-4 px-2 font-mono text-2xs font-medium uppercase tracking-wide-sm text-passive">All jobs</p>
 			{run.stages.map((stage) => (
 				<RailItem
 					key={stage.stageId}
@@ -240,7 +240,7 @@ function RunRail({
 			))}
 			{run.stages.length === 0 && <p className="px-2 text-micro text-passive">No stages yet.</p>}
 
-			<p className="mb-1 mt-4 px-2 text-micro font-semibold uppercase tracking-wide text-passive">Run details</p>
+			<p className="mb-1 mt-4 px-2 font-mono text-2xs font-medium uppercase tracking-wide-sm text-passive">Run details</p>
 			<RailItem
 				icon={<FileText className="size-icon-sm text-muted-foreground" aria-hidden="true" />}
 				label="Pipeline definition"

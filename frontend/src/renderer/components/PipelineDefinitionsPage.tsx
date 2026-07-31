@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2, Pencil, Plus, Settings2, Trash2, Workflow } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
 import { apiErrorMessage } from "../lib/api-client";
 import { formatTimeCompact } from "../lib/format-time";
 import { serializeToYaml, type StageDraft } from "../lib/pipeline-draft";
@@ -21,6 +21,7 @@ import { PipelineProblemsPanel, type PipelineProblem } from "./PipelineProblemsP
 import { PipelineSettingsModal } from "./PipelineSettingsModal";
 import { StageInspector } from "./StageInspector";
 import { YamlEditor } from "./YamlEditor";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { cn } from "../lib/utils";
@@ -105,12 +106,11 @@ export function PipelineDefinitionsPage({ projectId }: { projectId?: string }) {
 				) : definitions.length === 0 ? (
 					<div data-testid="pipelines-empty-state" className="flex h-full min-h-0 items-center justify-center">
 						<div className="flex max-w-sm flex-col items-center pb-10 text-center">
-							<Workflow className="size-icon-lg text-passive" aria-hidden="true" />
-							<h2 className="mt-3 text-control font-semibold text-foreground">No pipelines yet</h2>
-							<p className="mt-1.5 text-caption text-passive">
+							<h2 className="text-subtitle font-semibold tracking-tight text-foreground">No pipelines yet</h2>
+							<p className="mt-2 text-md-sm leading-relaxed text-muted-foreground">
 								Author your first pipeline visually, start from a template, or import YAML.
 							</p>
-							<Button size="sm" variant="primary" className="mt-4" onClick={() => setNewOpen(true)}>
+							<Button size="sm" variant="primary" className="mt-5" onClick={() => setNewOpen(true)}>
 								<Plus className="size-icon-md" aria-hidden="true" />
 								New pipeline
 							</Button>
@@ -173,7 +173,8 @@ function DefinitionRow({
 						Edit
 					</Button>
 					<Button
-								variant="ghost"
+						size="sm"
+						variant="ghost"
 						className="h-6 px-2 text-caption text-destructive hover:text-destructive"
 						onClick={() => setConfirmOpen(true)}
 						aria-label={`Delete ${def.name || def.id}`}
@@ -197,7 +198,7 @@ function DefinitionRow({
 					destructive
 					busy={remove.isPending}
 					error={remove.isError ? apiErrorMessage(remove.error) : null}
-						onConfirm={() =>
+					onConfirm={() =>
 						remove.mutate(def.id, {
 							onSuccess: () => setConfirmOpen(false),
 						})
@@ -484,13 +485,10 @@ function ValidityIndicator({
 }) {
 	if (problemCount > 0) {
 		return (
-			<span
-				className="flex items-center gap-1 rounded-full border border-error/40 bg-error/10 px-2 py-0.5 text-caption text-error"
-				aria-live="polite"
-			>
+			<Badge variant="error" aria-live="polite">
 				<AlertCircle className="size-icon-sm" aria-hidden="true" />
 				{`${problemCount} ${problemCount === 1 ? "problem" : "problems"}`}
-			</span>
+			</Badge>
 		);
 	}
 	if (validation.isValidating) {
