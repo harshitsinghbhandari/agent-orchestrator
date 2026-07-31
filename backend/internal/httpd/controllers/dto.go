@@ -141,8 +141,14 @@ type SessionView struct {
 	// unchanged) so the desktop browser panel can re-navigate / refresh on a
 	// repeated preview of the same target. Pulled from the json:"-" domain
 	// Metadata.
-	PreviewRevision int64            `json:"previewRevision,omitempty"`
-	PRs             []SessionPRFacts `json:"prs"`
+	PreviewRevision int64 `json:"previewRevision,omitempty"`
+	// PipelineOrphan is set when a pipeline stage kept this session alive instead
+	// of killing it: the run, the stage, the outcome that spared it and when it
+	// was kept. It is what the session list renders as the pipeline-orphaned
+	// badge, next to the existing kill action. Omitted for every other session.
+	// Pulled from the json:"-" domain Metadata.
+	PipelineOrphan *domain.PipelineOrphanInfo `json:"pipelineOrphan,omitempty"`
+	PRs            []SessionPRFacts           `json:"prs"`
 }
 
 // ListSessionsResponse is the body of GET /api/v1/sessions.
@@ -627,13 +633,6 @@ type OrchestratorResponse struct {
 	ID          domain.SessionID `json:"id"`
 	ProjectID   domain.ProjectID `json:"projectId"`
 	ProjectName string           `json:"projectName,omitempty"`
-}
-
-// CompleteOrchestratorResponse is returned after the orchestrator declares its
-// assigned work complete.
-type CompleteOrchestratorResponse struct {
-	OK        bool             `json:"ok"`
-	SessionID domain.SessionID `json:"sessionId"`
 }
 
 // ListAgentsResponse is the body of GET /api/v1/agents.

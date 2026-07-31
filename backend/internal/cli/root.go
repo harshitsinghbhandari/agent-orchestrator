@@ -17,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
+	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
 )
 
 // Execute runs the ao CLI with process stdio.
@@ -197,6 +198,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newDevCommand(ctx))
 	root.AddCommand(newProjectCommand(ctx))
 	root.AddCommand(newSessionCommand(ctx))
+	root.AddCommand(newPipelineCommand(ctx))
 	root.AddCommand(newOrchestratorCommand(ctx))
 	root.AddCommand(newPRCommand(ctx))
 	root.AddCommand(newReviewCommand(ctx))
@@ -211,8 +213,8 @@ type commandContext struct {
 }
 
 func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
-	commandPath := strings.TrimSpace(cmd.CommandPath())
-	if isRoutineInternalCLICommand(commandPath) {
+	commandPath := telemetrymeta.NormalizeCommandPath(cmd.CommandPath())
+	if telemetrymeta.IsRoutineInternalCLICommand(commandPath) {
 		return false
 	}
 	switch commandPath {
@@ -224,22 +226,6 @@ func shouldEmitCLIInvocation(cmd *cobra.Command) bool {
 		return false
 	default:
 		return true
-	}
-}
-
-func isRoutineInternalCLICommand(commandPath string) bool {
-	switch strings.TrimSpace(commandPath) {
-	case "ao status",
-		"ao session ls",
-		"ao session get",
-		"ao project ls",
-		"ao project get",
-		"ao orchestrator ls",
-		"ao hooks",
-		"ao pty-host":
-		return true
-	default:
-		return false
 	}
 }
 

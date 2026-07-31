@@ -38,7 +38,6 @@ type fakeSessionService struct {
 	claimErr        error
 	listPRErr       error
 	workspaceErr    error
-	completedID     domain.SessionID
 }
 
 type fakeManagedPreviewServer struct {
@@ -177,11 +176,6 @@ func (f *fakeSessionService) SetTerminateOnPRMerge(_ context.Context, id domain.
 	s.TerminateOnPRMerge = terminate
 	f.sessions[id] = s
 	return s, nil
-}
-
-func (f *fakeSessionService) CompleteOrchestrator(_ context.Context, id domain.SessionID) error {
-	f.completedID = id
-	return nil
 }
 
 func (f *fakeSessionService) Restore(_ context.Context, id domain.SessionID) (sessionsvc.RestoreOutcome, error) {
@@ -1105,6 +1099,60 @@ func TestSessionsAPI_SetPreviewMissingAbsoluteFilePathFailsWithoutOverwriting(t 
 	}
 }
 
+// A session a pipeline kept alive carries its badge on the session list: the run
+// and stage that owned it and the outcome that spared it. Without this the
+// reaper's bound is invisible, which is how fifty stale sessions happened.
+func TestSessionsAPI_ListSurfacesPipelineOrphan(t *testing.T) {
+	svc := newFakeSessionService()
+	keptAt := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{
+		PipelineRunID: "run-a",
+		PipelineOrphan: &domain.PipelineOrphanInfo{
+			RunID:    "run-a",
+			Stage:    "review",
+			Outcome:  "no_output",
+			KeptAt:   keptAt,
+			Pipeline: "pr-review",
+		},
+	}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions?project=ao", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET sessions = %d, want 200; body=%s", status, body)
+	}
+	var list struct {
+		Sessions []struct {
+			PipelineOrphan *domain.PipelineOrphanInfo `json:"pipelineOrphan"`
+		} `json:"sessions"`
+	}
+	mustJSON(t, body, &list)
+	if len(list.Sessions) != 1 || list.Sessions[0].PipelineOrphan == nil {
+		t.Fatalf("session list does not carry the pipeline orphan marker: %s", body)
+	}
+	got := *list.Sessions[0].PipelineOrphan
+	if got != *s.Metadata.PipelineOrphan {
+		t.Fatalf("pipelineOrphan = %+v, want %+v", got, *s.Metadata.PipelineOrphan)
+	}
+
+	// The field is omitted for every session no pipeline kept alive, so the badge
+	// never renders on a human's session.
+	plain := newFakeSessionService()
+	body, status, _ = doRequest(t, newSessionTestServer(t, plain), "GET", "/api/v1/sessions?project=ao", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET sessions = %d, want 200; body=%s", status, body)
+	}
+	var raw struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	mustJSON(t, body, &raw)
+	if _, present := raw.Sessions[0]["pipelineOrphan"]; present {
+		t.Fatalf("pipelineOrphan present on a session no pipeline kept: %s", body)
+	}
+}
+
 func TestSessionsAPI_SetPreviewBumpsRevisionOnSameURL(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -1478,31 +1526,6 @@ func TestSessionsAPI_ListOrchestratorsOnly(t *testing.T) {
 	}
 	if _, ok := got["ao-1"]; ok {
 		t.Fatalf("worker session leaked into orchestrator list: %#v", got)
-	}
-}
-
-func TestSessionsAPI_CompleteOrchestrator(t *testing.T) {
-	svc := newFakeSessionService()
-	now := time.Now().UTC()
-	svc.sessions["ao-orch"] = domain.Session{SessionRecord: domain.SessionRecord{
-		ID: "ao-orch", ProjectID: "ao", Kind: domain.KindOrchestrator,
-		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
-		CreatedAt: now, UpdatedAt: now,
-	}}
-	srv := newSessionTestServer(t, svc)
-	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/orchestrators/ao-orch/done", "")
-	if status != http.StatusOK {
-		t.Fatalf("complete orchestrator = %d, want 200; body=%s", status, body)
-	}
-	if svc.completedID != "ao-orch" {
-		t.Fatalf("completed id = %q, want ao-orch", svc.completedID)
-	}
-	var got controllers.CompleteOrchestratorResponse
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if !got.OK || got.SessionID != "ao-orch" {
-		t.Fatalf("response = %#v", got)
 	}
 }
 
