@@ -211,8 +211,9 @@ There are two stage executors:
 
   command  a shell script run with sh; its exit status is the outcome
   agent    a real AO session, which settles itself from inside the session
-           with "ao pipeline done" or "ao pipeline fail --reason ...". Going
-           idle or closing the pane never settles an agent stage.
+           with "ao pipeline done" or "ao pipeline fail --reason ...".
+           Idling or losing the session is not success: the engine nudges an
+           idle session once, then settles the stage no_signal.
 
 Outcomes are wider than pass/fail. A stage is pending or running until it
 settles on one of: succeeded, succeeded_unverified, failed, no_output,
