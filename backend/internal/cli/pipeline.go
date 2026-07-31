@@ -36,6 +36,29 @@ type listPipelineDefinitionsResponse struct {
 	Definitions []pipelineDefinitionSummary `json:"definitions"`
 }
 
+type pipelineDefinitionResponse struct {
+	Definition pipelineDefinitionSummary `json:"definition"`
+}
+
+type deletePipelineDefinitionResponse struct {
+	ID      string `json:"id"`
+	Deleted bool   `json:"deleted"`
+}
+
+type pipelineValidationIssue struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// validatePipelineDefinitionResponse carries both lists whether or not the
+// document is valid: a warned pipeline still saves and still runs, so the two
+// render differently.
+type validatePipelineDefinitionResponse struct {
+	Valid    bool                      `json:"valid"`
+	Issues   []pipelineValidationIssue `json:"issues"`
+	Warnings []pipelineValidationIssue `json:"warnings"`
+}
+
 // pipelineRunSummary is v2's run shape: a run status rollup and the subject the
 // run is about, in place of v1's loop state and termination reason.
 type pipelineRunSummary struct {
@@ -140,18 +163,115 @@ type pipelineRunOptions struct {
 	json     bool
 }
 
+type pipelineCreateOptions struct {
+	project string
+	file    string
+	json    bool
+}
+
+type pipelineGetOptions struct {
+	project string
+	json    bool
+}
+
+type pipelineUpdateOptions struct {
+	project string
+	file    string
+	json    bool
+}
+
+type pipelineDeleteOptions struct {
+	project string
+	yes     bool
+	json    bool
+}
+
+type pipelineValidateOptions struct {
+	project string
+	file    string
+	json    bool
+}
+
 // ---------------------------------------------------------------------------
 // Command wiring
 // ---------------------------------------------------------------------------
+
+// pipelineLongHelp is the root help text: enough for someone who has never
+// used the feature. Every claim here is grounded in docs/pipelines.md and the
+// engine code, not the design spec.
+const pipelineLongHelp = `Pipelines run multi-stage automation against your project, a pull request, or
+a session. A pipeline is a set of stages joined by on_success and on_failure
+edges: when a stage settles, the engine follows the matching edge to whatever
+comes next. Runs are triggered by PR events (created, updated, merge-ready,
+merged), session events (idle, exited, blocked), or manually with
+"ao pipeline run". A run freezes its definition at trigger time and executes
+that copy, so editing a definition never affects a run in flight.
+
+There are two stage executors:
+
+  command  a shell script run with sh; its exit status is the outcome
+  agent    a real AO session, which settles itself from inside the session
+           with "ao pipeline done" or "ao pipeline fail --reason ...". Going
+           idle or closing the pane never settles an agent stage.
+
+Outcomes are wider than pass/fail. A stage is pending or running until it
+settles on one of: succeeded, succeeded_unverified, failed, no_output,
+no_signal, timed_out, cancelled, skipped. The width is the point: an agent
+that claimed success but never wrote the artifact it declared (no_output) is
+a different failure from one that went quiet without claiming anything
+(no_signal), and each calls for a different fix.
+
+An agent stage may declare "produces: <filename>", one artifact the engine
+verifies exists non-empty before calling the stage succeeded. When the signal
+or the artifact is missing, the engine sends the still-live session exactly
+one nudge (two attempts total) before settling the stage.
+
+Each stage picks the tree it runs in with "workspace:": session (the subject
+session's worktree), run (one worktree shared by the run), stage (a fresh
+worktree per entry), checkout (the project's primary checkout), or inherit
+(the tree of the stage that routed here). The default is auto, which is
+session when the subject has one and otherwise run; a stage entered via a
+failure edge defaults to inherit instead.
+
+Concurrency groups (scope plus group name) decide which runs collide: runs
+sharing an effective key serialize, and cancel-in-progress: true makes a new
+run cancel the in-flight one.
+
+Engine-held credentials (see "ao pipeline credential") are injected into
+command stages only, never agent stages, and no verb prints a value back.
+
+Every run keeps its record on disk under ~/.ao/data/pipelines/<project>/<run>/
+(more precisely <AO_DATA_DIR>/pipelines/): the frozen definition, run.json,
+stage logs, and declared artifacts.
+
+Pipelines are experimental and off by default: toggle them in Settings, or
+set AO_PIPELINES=on in the daemon's environment. While off, every pipeline
+API route answers 501.
+
+A typical first session:
+
+  ao pipeline validate -f pipeline.yaml   # dry-run the document
+  ao pipeline create -f pipeline.yaml     # store it
+  ao pipeline run pr-review --pr 42       # trigger a run
+  ao pipeline runs                        # list runs, newest first
+  ao pipeline show <runId>                # stage outcomes for one run`
 
 // newPipelineCommand builds the v2 verb set. There is no `resume`: a settled
 // run is final (spec section 14.1), and re-running means triggering a new run.
 func newPipelineCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "pipeline",
-		Short: "Manage AO pipelines (definitions, runs, credentials)",
+		Use:     "pipeline",
+		Aliases: []string{"pipelines"},
+		Short:   "Manage AO pipelines (definitions, runs, credentials)",
+		Long:    pipelineLongHelp,
 	}
 	cmd.AddCommand(newPipelineListCommand(ctx))
+	cmd.AddCommand(newPipelineCreateCommand(ctx))
+	cmd.AddCommand(newPipelineGetCommand(ctx))
+	cmd.AddCommand(newPipelineUpdateCommand(ctx))
+	cmd.AddCommand(newPipelineDeleteCommand(ctx))
+	cmd.AddCommand(newPipelineValidateCommand(ctx))
+	cmd.AddCommand(newPipelineSchemaCommand(ctx))
 	cmd.AddCommand(newPipelineRunsCommand(ctx))
 	cmd.AddCommand(newPipelineShowCommand(ctx))
 	cmd.AddCommand(newPipelineRunCommand(ctx))
@@ -175,6 +295,128 @@ func newPipelineListCommand(ctx *commandContext) *cobra.Command {
 	f := cmd.Flags()
 	f.StringVarP(&opts.project, "project", "p", "", "Project id to scope to")
 	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func newPipelineCreateCommand(ctx *commandContext) *cobra.Command {
+	var opts pipelineCreateOptions
+	cmd := &cobra.Command{
+		Use:   "create -f <file>",
+		Short: "Create a pipeline definition from a YAML document",
+		Long: "Create a pipeline definition from a YAML document.\n\n" +
+			"The document is validated server-side and stored only if it is valid; its " +
+			"name comes from the document's name: key. Pass `-f -` to read stdin.",
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctx.pipelineCreate(cmd, opts)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVarP(&opts.file, "file", "f", "", "Path to the YAML definition (- for stdin)")
+	f.StringVarP(&opts.project, "project", "p", "", "Project id to scope to")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func newPipelineGetCommand(ctx *commandContext) *cobra.Command {
+	var opts pipelineGetOptions
+	cmd := &cobra.Command{
+		Use:     "get <pipeline-ref>",
+		Aliases: []string{"cat"},
+		Short:   "Print a stored pipeline definition's YAML (by id or name)",
+		Long: "Print a stored pipeline definition's YAML exactly as authored.\n\n" +
+			"The ref is the definition's id or its name, the same as `run` takes. The " +
+			"output is the raw document, so it pipes cleanly into a file or an editor.",
+		Args: onePipelineRefArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ctx.pipelineGet(cmd, args[0], opts)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVarP(&opts.project, "project", "p", "", "Project id to scope to")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func newPipelineUpdateCommand(ctx *commandContext) *cobra.Command {
+	var opts pipelineUpdateOptions
+	cmd := &cobra.Command{
+		Use:   "update <pipeline-ref> -f <file>",
+		Short: "Replace a stored pipeline definition (by id or name)",
+		Long: "Replace a stored pipeline definition with a new YAML document.\n\n" +
+			"The ref is the definition's id or its name. The new document is validated " +
+			"server-side and replaces the stored one only if it is valid; runs already " +
+			"in flight keep their frozen copy. Pass `-f -` to read stdin.",
+		Args: onePipelineRefArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ctx.pipelineUpdate(cmd, args[0], opts)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVarP(&opts.file, "file", "f", "", "Path to the YAML definition (- for stdin)")
+	f.StringVarP(&opts.project, "project", "p", "", "Project id to scope to")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func newPipelineDeleteCommand(ctx *commandContext) *cobra.Command {
+	var opts pipelineDeleteOptions
+	cmd := &cobra.Command{
+		Use:     "delete <pipeline-ref>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a stored pipeline definition (by id or name)",
+		Long: "Delete a stored pipeline definition.\n\n" +
+			"A definition is user-authored content and deleting one is not recoverable " +
+			"from the CLI, so an interactive session is asked to confirm; pass --yes to " +
+			"skip the prompt. Non-interactive sessions require --yes. Past runs are kept.",
+		Args: onePipelineRefArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ctx.pipelineDelete(cmd, args[0], opts)
+		},
+	}
+	f := cmd.Flags()
+	f.BoolVarP(&opts.yes, "yes", "y", false, "Skip the confirmation prompt (required when not interactive)")
+	f.StringVarP(&opts.project, "project", "p", "", "Project id to scope to")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func newPipelineValidateCommand(ctx *commandContext) *cobra.Command {
+	var opts pipelineValidateOptions
+	cmd := &cobra.Command{
+		Use:   "validate -f <file>",
+		Short: "Validate a pipeline YAML document without storing it",
+		Long: "Validate a pipeline YAML document without storing anything.\n\n" +
+			"Errors block saving; warnings do not, and arrive even for a valid document. " +
+			"An invalid document lists its problems and exits 1, so the verb gates CI " +
+			"cleanly. Pass `-f -` to read stdin.",
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctx.pipelineValidate(cmd, opts)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVarP(&opts.file, "file", "f", "", "Path to the YAML definition (- for stdin)")
+	f.StringVarP(&opts.project, "project", "p", "", "Project id to scope to")
+	f.BoolVar(&opts.json, "json", false, "Output as JSON")
+	return cmd
+}
+
+func newPipelineSchemaCommand(ctx *commandContext) *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "schema",
+		Short: "Print the JSON schema for pipeline definition documents",
+		Long: "Print the JSON schema for pipeline definition documents.\n\n" +
+			"This is the same schema the visual editor consumes; point an editor or a " +
+			"linter at it for completion and validation while authoring YAML.",
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ctx.pipelineSchema(cmd)
+		},
+	}
+	// The schema is JSON in both modes; the flag exists so every verb takes it.
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON (the schema always is)")
 	return cmd
 }
 
@@ -400,6 +642,231 @@ func (c *commandContext) pipelineList(cmd *cobra.Command, opts pipelineListOptio
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return writePipelineList(cmd, projectID, res.Definitions)
+}
+
+func (c *commandContext) pipelineCreate(cmd *cobra.Command, opts pipelineCreateOptions) error {
+	yamlSource, err := readPipelineDocument(cmd.InOrStdin(), opts.file)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	projectID, err := c.resolvePipelineProjectID(ctx, opts.project)
+	if err != nil {
+		return err
+	}
+	params := url.Values{}
+	params.Set("project", projectID)
+
+	var raw json.RawMessage
+	if err := c.postJSON(ctx, apiPath("pipelines", params), map[string]string{"yamlSource": yamlSource}, &raw); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), raw)
+	}
+	var res pipelineDefinitionResponse
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "pipeline %s created (%s)\n", res.Definition.Name, res.Definition.ID)
+	return err
+}
+
+func (c *commandContext) pipelineGet(cmd *cobra.Command, ref string, opts pipelineGetOptions) error {
+	ctx := cmd.Context()
+	projectID, err := c.resolvePipelineProjectID(ctx, opts.project)
+	if err != nil {
+		return err
+	}
+	def, err := c.resolvePipelineDefinition(ctx, projectID, ref)
+	if err != nil {
+		return err
+	}
+	if opts.json {
+		// There is no single-definition GET route to re-emit; the decoded
+		// summary is the whole daemon-provided record for this definition.
+		return writeJSON(cmd.OutOrStdout(), def)
+	}
+	src := def.YAMLSource
+	if !strings.HasSuffix(src, "\n") {
+		src += "\n"
+	}
+	_, err = io.WriteString(cmd.OutOrStdout(), src)
+	return err
+}
+
+func (c *commandContext) pipelineUpdate(cmd *cobra.Command, ref string, opts pipelineUpdateOptions) error {
+	yamlSource, err := readPipelineDocument(cmd.InOrStdin(), opts.file)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	projectID, err := c.resolvePipelineProjectID(ctx, opts.project)
+	if err != nil {
+		return err
+	}
+	def, err := c.resolvePipelineDefinition(ctx, projectID, ref)
+	if err != nil {
+		return err
+	}
+
+	var raw json.RawMessage
+	if err := c.putJSON(ctx, "pipelines/"+url.PathEscape(def.ID), map[string]string{"yamlSource": yamlSource}, &raw); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), raw)
+	}
+	var res pipelineDefinitionResponse
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "pipeline %s updated (%s)\n", res.Definition.Name, res.Definition.ID)
+	return err
+}
+
+func (c *commandContext) pipelineDelete(cmd *cobra.Command, ref string, opts pipelineDeleteOptions) error {
+	ctx := cmd.Context()
+	projectID, err := c.resolvePipelineProjectID(ctx, opts.project)
+	if err != nil {
+		return err
+	}
+	def, err := c.resolvePipelineDefinition(ctx, projectID, ref)
+	if err != nil {
+		return err
+	}
+	// A definition is user-authored content and this delete is not recoverable
+	// from the CLI, so it is confirmed interactively. A non-interactive caller
+	// must say --yes; silently proceeding (or silently cancelling) would both
+	// be wrong in a script.
+	if !opts.yes {
+		if !stdinIsInteractive(cmd.InOrStdin()) {
+			return usageError{fmt.Errorf("deleting pipeline %s needs confirmation: pass --yes when not running interactively", def.Name)}
+		}
+		ok, err := confirm(cmd.InOrStdin(), cmd.OutOrStdout(),
+			fmt.Sprintf("Delete pipeline %s (%s)? Past runs are kept.", def.Name, def.ID), false)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "Delete cancelled.")
+			return err
+		}
+	}
+
+	var raw json.RawMessage
+	if err := c.deleteJSON(ctx, "pipelines/"+url.PathEscape(def.ID), &raw); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), raw)
+	}
+	var res deletePipelineDefinitionResponse
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "pipeline %s deleted (%s)\n", def.Name, res.ID)
+	return err
+}
+
+func (c *commandContext) pipelineValidate(cmd *cobra.Command, opts pipelineValidateOptions) error {
+	yamlSource, err := readPipelineDocument(cmd.InOrStdin(), opts.file)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	projectID, err := c.resolvePipelineProjectID(ctx, opts.project)
+	if err != nil {
+		return err
+	}
+	params := url.Values{}
+	params.Set("project", projectID)
+
+	var raw json.RawMessage
+	if err := c.postJSON(ctx, apiPath("pipelines/validate", params), map[string]string{"yamlSource": yamlSource}, &raw); err != nil {
+		return err
+	}
+	var res validatePipelineDefinitionResponse
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if opts.json {
+		if err := writeJSON(cmd.OutOrStdout(), raw); err != nil {
+			return err
+		}
+		return pipelineValidationVerdict(res)
+	}
+	if err := writePipelineValidation(cmd, res); err != nil {
+		return err
+	}
+	return pipelineValidationVerdict(res)
+}
+
+// pipelineValidationVerdict turns an invalid document into a non-zero exit.
+// The problems are already on stdout as data; this is deliberately a plain
+// error (exit 1), not a usageError, because the CLI was used correctly.
+func pipelineValidationVerdict(res validatePipelineDefinitionResponse) error {
+	if res.Valid {
+		return nil
+	}
+	n := len(res.Issues)
+	return fmt.Errorf("pipeline definition is invalid (%d error%s)", n, pluralS(n))
+}
+
+func (c *commandContext) pipelineSchema(cmd *cobra.Command) error {
+	raw, err := c.getPipelineRaw(cmd.Context(), "pipelines/schema")
+	if err != nil {
+		return err
+	}
+	return writeJSON(cmd.OutOrStdout(), raw)
+}
+
+// readPipelineDocument reads the YAML document for create/update/validate from
+// the given path, or from stdin when the path is "-".
+func readPipelineDocument(in io.Reader, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", usageError{fmt.Errorf("-f/--file is required (use `-f -` to read stdin)")}
+	}
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(in)
+	} else {
+		data, err = os.ReadFile(path) // #nosec G304 -- the path is the user's own -f argument.
+	}
+	if err != nil {
+		return "", fmt.Errorf("read pipeline definition: %w", err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return "", usageError{fmt.Errorf("pipeline definition is empty")}
+	}
+	return string(data), nil
+}
+
+// resolvePipelineDefinition resolves a pipeline ref (id or name) against the
+// project's stored definitions. There is no GET /pipelines/{id} route, so the
+// CLI lists and matches client-side, the same reference shape `run` resolves
+// server-side. Ids win over names; names are unique per project.
+func (c *commandContext) resolvePipelineDefinition(ctx context.Context, projectID, ref string) (pipelineDefinitionSummary, error) {
+	var res listPipelineDefinitionsResponse
+	params := url.Values{}
+	params.Set("project", projectID)
+	if err := c.getJSON(ctx, apiPath("pipelines", params), &res); err != nil {
+		return pipelineDefinitionSummary{}, err
+	}
+	ref = strings.TrimSpace(ref)
+	for _, d := range res.Definitions {
+		if d.ID == ref {
+			return d, nil
+		}
+	}
+	for _, d := range res.Definitions {
+		if d.Name == ref {
+			return d, nil
+		}
+	}
+	return pipelineDefinitionSummary{}, fmt.Errorf("no pipeline %q in project %s", ref, projectID)
 }
 
 func (c *commandContext) pipelineRuns(cmd *cobra.Command, opts pipelineRunsOptions) error {
@@ -703,6 +1170,44 @@ func writePipelineList(cmd *cobra.Command, projectID string, defs []pipelineDefi
 		if _, err := fmt.Fprintf(out, "  %s  %s  %d stage%s  %s\n",
 			d.ID, d.Name, n, pluralS(n), formatPipelineTime(d.UpdatedAt)); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// writePipelineValidation renders the two lists distinctly because they mean
+// different things: errors block saving, warnings do not, and warnings arrive
+// whether or not the document is valid.
+func writePipelineValidation(cmd *cobra.Command, res validatePipelineDefinitionResponse) error {
+	out := cmd.OutOrStdout()
+	verdict := "valid"
+	if !res.Valid {
+		verdict = "invalid"
+	}
+	if _, err := fmt.Fprintf(out, "pipeline definition is %s\n", verdict); err != nil {
+		return err
+	}
+	for _, group := range []struct {
+		label  string
+		issues []pipelineValidationIssue
+	}{
+		{"Errors", res.Issues},
+		{"Warnings", res.Warnings},
+	} {
+		if len(group.issues) == 0 {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "\n%s:\n", group.label); err != nil {
+			return err
+		}
+		for _, issue := range group.issues {
+			line := issue.Message
+			if issue.Path != "" {
+				line = issue.Path + ": " + issue.Message
+			}
+			if _, err := fmt.Fprintf(out, "  %s\n", line); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
