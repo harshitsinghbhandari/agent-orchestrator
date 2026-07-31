@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,7 +48,10 @@ func TestPipelineVerbSet(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		got[sub.Name()] = true
 	}
-	for _, want := range []string{"list", "runs", "show", "run", "cancel", "credential", "done", "fail"} {
+	for _, want := range []string{
+		"list", "create", "get", "update", "delete", "validate", "schema",
+		"runs", "show", "run", "cancel", "credential", "done", "fail",
+	} {
 		if !got[want] {
 			t.Errorf("verb %q is missing", want)
 		}
@@ -66,6 +71,21 @@ func TestPipelineVerbSet(t *testing.T) {
 	for _, want := range []string{"set", "ls", "rm"} {
 		if !credentialVerbs[want] {
 			t.Errorf("credential verb %q is missing", want)
+		}
+	}
+
+	// The alias pins: `ao pipelines`, `delete`/`rm`, `get`/`cat`.
+	if len(cmd.Aliases) != 1 || cmd.Aliases[0] != "pipelines" {
+		t.Errorf("root aliases = %v, want [pipelines]", cmd.Aliases)
+	}
+	wantAliases := map[string]string{"delete": "rm", "get": "cat"}
+	for _, sub := range cmd.Commands() {
+		want, ok := wantAliases[sub.Name()]
+		if !ok {
+			continue
+		}
+		if len(sub.Aliases) != 1 || sub.Aliases[0] != want {
+			t.Errorf("%s aliases = %v, want [%s]", sub.Name(), sub.Aliases, want)
 		}
 	}
 }
@@ -650,5 +670,415 @@ func TestPipelineRun_MissingRefIsUsageError(t *testing.T) {
 	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "run")
 	if got := ExitCode(err); got != 2 {
 		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Definition CRUD (create, get, update, delete, validate, schema)
+// ---------------------------------------------------------------------------
+
+// pipelineRoutedServer answers each "METHOD /path" key with its own canned
+// body, for verbs that resolve a ref (a GET of the list) before mutating. The
+// capture records the last request, which for those verbs is the mutation.
+func pipelineRoutedServer(t *testing.T, routes map[string]string) (*httptest.Server, *pipelineCapture) {
+	t.Helper()
+	capture := &pipelineCapture{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capture.method = r.Method
+		capture.path = r.URL.Path
+		capture.query = r.URL.RawQuery
+		capture.body = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		resp, ok := routes[r.Method+" "+r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"no such route","code":"NOT_FOUND"}`)
+			return
+		}
+		_, _ = io.WriteString(w, resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, capture
+}
+
+const (
+	pipelineDefYAML     = "name: review\nstages:\n  - id: a\n"
+	pipelineDefListBody = `{"definitions":[{"id":"pl-1","projectId":"proj","name":"review","yamlSource":"name: review\nstages:\n  - id: a\n","createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T01:00:00Z"}]}`
+	pipelineDefBody     = `{"definition":{"id":"pl-1","projectId":"proj","name":"review","yamlSource":"name: review\nstages:\n  - id: a\n","createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T01:00:00Z"}}`
+)
+
+// writePipelineYAML puts a definition document on disk for the -f flag.
+func writePipelineYAML(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pipeline.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestPipelinesAlias_RoutesToPipeline(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusOK, `{"definitions":[]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, aliveDeps(), "pipelines", "list", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/pipelines" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineCreate_HumanFromFile(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusCreated, pipelineDefBody)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"pipeline", "create", "-f", writePipelineYAML(t, pipelineDefYAML), "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v1/pipelines" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	if capture.query != "project=proj" {
+		t.Fatalf("query = %q", capture.query)
+	}
+	var reqBody map[string]string
+	if err := json.Unmarshal([]byte(capture.body), &reqBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if reqBody["yamlSource"] != pipelineDefYAML {
+		t.Fatalf("yamlSource = %q", reqBody["yamlSource"])
+	}
+	if !strings.Contains(out, "pipeline review created (pl-1)") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestPipelineCreate_Stdin(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusCreated, pipelineDefBody)
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader(pipelineDefYAML)
+	_, errOut, err := executeCLI(t, deps, "pipeline", "create", "-f", "-", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var reqBody map[string]string
+	if err := json.Unmarshal([]byte(capture.body), &reqBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if reqBody["yamlSource"] != pipelineDefYAML {
+		t.Fatalf("yamlSource = %q", reqBody["yamlSource"])
+	}
+}
+
+func TestPipelineCreate_JSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusCreated, pipelineDefBody)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"pipeline", "create", "-f", writePipelineYAML(t, pipelineDefYAML), "--project", "proj", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var res pipelineDefinitionResponse
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("stdout is not raw JSON: %v\nstdout=%s", err, out)
+	}
+	if res.Definition.ID != "pl-1" {
+		t.Fatalf("definition = %+v", res.Definition)
+	}
+}
+
+func TestPipelineCreate_MissingFileFlagIsUsageError(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusCreated, pipelineDefBody)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "create", "--project", "proj")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+	// The telemetry ping is the only call an aborted verb may make.
+	if strings.Contains(capture.path, "pipelines") {
+		t.Fatalf("CLI called the daemon anyway: %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineCreate_MissingFileIsRuntimeError(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusCreated, pipelineDefBody)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, aliveDeps(),
+		"pipeline", "create", "-f", filepath.Join(t.TempDir(), "nope.yaml"), "--project", "proj")
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), "read pipeline definition") {
+		t.Fatalf("error = %v", err)
+	}
+	// The telemetry ping is the only call an aborted verb may make.
+	if strings.Contains(capture.path, "pipelines") {
+		t.Fatalf("CLI called the daemon anyway: %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineGet_PrintsRawYAML(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusOK, pipelineDefListBody)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "get", "review", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/pipelines" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	if out != pipelineDefYAML {
+		t.Fatalf("stdout = %q, want the raw YAML document", out)
+	}
+}
+
+func TestPipelineGet_JSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusOK, pipelineDefListBody)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "get", "pl-1", "--project", "proj", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var def pipelineDefinitionSummary
+	if err := json.Unmarshal([]byte(out), &def); err != nil {
+		t.Fatalf("stdout is not JSON: %v\nstdout=%s", err, out)
+	}
+	if def.ID != "pl-1" || def.Name != "review" {
+		t.Fatalf("definition = %+v", def)
+	}
+}
+
+func TestPipelineGet_UnknownRef(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusOK, pipelineDefListBody)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, aliveDeps(), "pipeline", "get", "nope", "--project", "proj")
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), `no pipeline "nope" in project proj`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPipelineUpdate_ResolvesRefAndPuts(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineRoutedServer(t, map[string]string{
+		"GET /api/v1/pipelines":      pipelineDefListBody,
+		"PUT /api/v1/pipelines/pl-1": pipelineDefBody,
+	})
+	writeRunFileFor(t, cfg, srv)
+
+	const updated = "name: review\nstages:\n  - id: b\n"
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"pipeline", "update", "review", "-f", writePipelineYAML(t, updated), "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPut || capture.path != "/api/v1/pipelines/pl-1" {
+		t.Fatalf("last request = %s %s", capture.method, capture.path)
+	}
+	var reqBody map[string]string
+	if err := json.Unmarshal([]byte(capture.body), &reqBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if reqBody["yamlSource"] != updated {
+		t.Fatalf("yamlSource = %q", reqBody["yamlSource"])
+	}
+	if !strings.Contains(out, "pipeline review updated (pl-1)") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestPipelineUpdate_UnknownRef(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineRoutedServer(t, map[string]string{
+		"GET /api/v1/pipelines": pipelineDefListBody,
+	})
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, aliveDeps(),
+		"pipeline", "update", "nope", "-f", writePipelineYAML(t, pipelineDefYAML), "--project", "proj")
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
+	}
+	if capture.method != http.MethodGet {
+		t.Fatalf("CLI mutated anyway: %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineDelete_NonInteractiveWithoutYesIsUsageError(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineRoutedServer(t, map[string]string{
+		"GET /api/v1/pipelines": pipelineDefListBody,
+	})
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader("") // a pipe, not a TTY
+	_, _, err := executeCLI(t, deps, "pipeline", "delete", "review", "--project", "proj")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("error does not point at --yes: %v", err)
+	}
+	if capture.method == http.MethodDelete {
+		t.Fatalf("CLI deleted anyway: %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineDelete_WithYes(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineRoutedServer(t, map[string]string{
+		"GET /api/v1/pipelines":         pipelineDefListBody,
+		"DELETE /api/v1/pipelines/pl-1": `{"id":"pl-1","deleted":true}`,
+	})
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader("")
+	out, errOut, err := executeCLI(t, deps, "pipeline", "delete", "review", "--yes", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/pipelines/pl-1" {
+		t.Fatalf("last request = %s %s", capture.method, capture.path)
+	}
+	if !strings.Contains(out, "pipeline review deleted (pl-1)") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestPipelineDelete_RmAlias(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineRoutedServer(t, map[string]string{
+		"GET /api/v1/pipelines":         pipelineDefListBody,
+		"DELETE /api/v1/pipelines/pl-1": `{"id":"pl-1","deleted":true}`,
+	})
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader("")
+	_, errOut, err := executeCLI(t, deps, "pipeline", "rm", "pl-1", "--yes", "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/pipelines/pl-1" {
+		t.Fatalf("last request = %s %s", capture.method, capture.path)
+	}
+}
+
+func TestPipelineValidate_ValidWithWarnings(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusOK,
+		`{"valid":true,"issues":[],"warnings":[{"path":"stages[0]","message":"no on_failure anywhere"}]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"pipeline", "validate", "-f", writePipelineYAML(t, pipelineDefYAML), "--project", "proj")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v1/pipelines/validate" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	for _, want := range []string{"pipeline definition is valid", "Warnings:", "stages[0]: no on_failure anywhere"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q\nstdout=%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Errors:") {
+		t.Fatalf("a valid document printed an Errors section:\n%s", out)
+	}
+}
+
+// An invalid document is data plus exit 1, never a usage error (exit 2) and
+// never a bare daemon failure: the CLI was used correctly.
+func TestPipelineValidate_InvalidListsProblemsAndExitsOne(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusOK,
+		`{"valid":false,"issues":[{"path":"stages[1].needs","message":"needs does not match the inbound edges"}],`+
+			`"warnings":[{"path":"","message":"no on_failure anywhere"}]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, _, err := executeCLI(t, aliveDeps(),
+		"pipeline", "validate", "-f", writePipelineYAML(t, "name: broken\n"), "--project", "proj")
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), "pipeline definition is invalid (1 error)") {
+		t.Fatalf("error = %v", err)
+	}
+	for _, want := range []string{
+		"pipeline definition is invalid",
+		"Errors:", "stages[1].needs: needs does not match the inbound edges",
+		"Warnings:", "no on_failure anywhere",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q\nstdout=%s", want, out)
+		}
+	}
+}
+
+func TestPipelineValidate_JSONStillExitsOneOnInvalid(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := pipelineServer(t, http.StatusOK,
+		`{"valid":false,"issues":[{"path":"name","message":"name is required"}],"warnings":[]}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, _, err := executeCLI(t, aliveDeps(),
+		"pipeline", "validate", "-f", writePipelineYAML(t, "stages: []\n"), "--project", "proj", "--json")
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
+	}
+	var res validatePipelineDefinitionResponse
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("stdout is not raw JSON: %v\nstdout=%s", err, out)
+	}
+	if res.Valid || len(res.Issues) != 1 {
+		t.Fatalf("response = %+v", res)
+	}
+}
+
+func TestPipelineSchema_DumpsSchema(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := pipelineServer(t, http.StatusOK, `{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Pipeline"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(), "pipeline", "schema")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/pipelines/schema" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(out), &schema); err != nil {
+		t.Fatalf("stdout is not JSON: %v\nstdout=%s", err, out)
+	}
+	if schema["title"] != "Pipeline" {
+		t.Fatalf("schema = %+v", schema)
 	}
 }
