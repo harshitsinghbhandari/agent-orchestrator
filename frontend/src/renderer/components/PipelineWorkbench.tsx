@@ -100,7 +100,7 @@ export function PipelineWorkbench({ projectId }: { projectId?: string }) {
 				/>
 
 				{isError ? (
-					<p className="py-10 text-center text-caption text-error">
+					<p className="py-10 text-center text-xs text-error">
 						Could not load pipeline runs{error instanceof Error ? `: ${error.message}` : ""}.
 					</p>
 				) : (

@@ -14,6 +14,7 @@ import { formatStageDuration, runStatusLabel, runStatusOf, runStatusTone } from 
 import type { RunStatus } from "../lib/pipeline-draft";
 import type { PipelineRunSummary } from "../hooks/usePipelineRuns";
 import type { WorkspaceSession } from "../types/workspace";
+import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 // What fired a run. The DTO's `subjectKind` is the closest thing we have to
@@ -131,7 +132,7 @@ export function PipelineRunRow({
 			{row.branch && (
 				<span
 					title={row.branch}
-					className="hidden max-w-48 shrink-0 truncate rounded-md bg-accent-weak px-1.5 py-0.5 font-mono text-micro text-accent lg:inline-block"
+					className="hidden max-w-branch-chip shrink-0 truncate rounded-sm bg-accent/12 px-1.5 py-0.5 font-mono text-micro text-accent lg:inline-block"
 				>
 					{row.branch}
 				</span>
@@ -149,11 +150,10 @@ export function PipelineRunRow({
 			</div>
 
 			<DropdownMenu>
-				<DropdownMenuTrigger
-					aria-label={`Actions for ${row.title}`}
-					className="shrink-0 rounded-md p-1 text-passive transition-colors hover:bg-surface hover:text-foreground"
-				>
-					<MoreHorizontal className="size-4" />
+				<DropdownMenuTrigger asChild>
+					<Button variant="ghost" size="icon-sm" className="shrink-0" aria-label={`Actions for ${row.title}`}>
+						<MoreHorizontal className="size-4" aria-hidden="true" />
+					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
 					<DropdownMenuItem onSelect={onOpen}>View run detail</DropdownMenuItem>

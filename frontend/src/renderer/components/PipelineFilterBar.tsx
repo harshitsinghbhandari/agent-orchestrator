@@ -3,6 +3,7 @@ import { cn } from "../lib/utils";
 import { RUN_STATUSES, runStatusLabel } from "../lib/pipeline-display";
 import type { RunStatus } from "../lib/pipeline-draft";
 import type { PipelineRunRowModel, RunEvent } from "./PipelineRunRow";
+import { Button } from "./ui/button";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -116,16 +117,16 @@ function FilterMenu({
 
 	return (
 		<DropdownMenu>
-			<DropdownMenuTrigger
-				disabled={options.length === 0}
-				className={cn(
-					"flex items-center gap-1 rounded-md px-2 py-1 text-control transition-colors",
-					"disabled:cursor-not-allowed disabled:opacity-40",
-					active ? "text-accent" : "text-muted-foreground hover:text-foreground",
-				)}
-			>
-				<span className="max-w-40 truncate">{active ? `${label}: ${active.label}` : label}</span>
-				<ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="ghost"
+					size="sm"
+					disabled={options.length === 0}
+					className={cn("gap-1", active && "text-accent hover:text-accent")}
+				>
+					<span className="max-w-40 truncate">{active ? `${label}: ${active.label}` : label}</span>
+					<ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
 				<DropdownMenuItem onSelect={() => onSelect(undefined)}>
