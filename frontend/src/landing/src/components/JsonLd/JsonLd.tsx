@@ -36,14 +36,13 @@ export function OrganizationJsonLd() {
 		"@type": "Organization",
 		name: COMPANY.NAME,
 		url: COMPANY.MARKETING_URL,
-		logo: `${COMPANY.MARKETING_URL}/logo.png`,
+		logo: `${COMPANY.MARKETING_URL}/ao-logo.svg`,
 		description: "Run 10+ parallel coding agents on your machine",
 		email: supportEmail,
 		contactPoint: {
 			"@type": "ContactPoint",
 			contactType: "customer support",
 			email: supportEmail,
-			url: `${COMPANY.MARKETING_URL}/contact`,
 			availableLanguage: "English",
 		},
 		address: {
@@ -54,10 +53,9 @@ export function OrganizationJsonLd() {
 		},
 		sameAs: [
 			COMPANY.GITHUB_URL,
-			"https://github.com/AgentWrapper",
+			"https://github.com/Untrivial-ai",
 			COMPANY.X_URL,
 			COMPANY.LINKEDIN_URL,
-			COMPANY.YOUTUBE_URL,
 		],
 	};
 
@@ -124,7 +122,7 @@ export function ArticleJsonLd({
 			name: COMPANY.NAME,
 			logo: {
 				"@type": "ImageObject",
-				url: `${COMPANY.MARKETING_URL}/logo.png`,
+				url: `${COMPANY.MARKETING_URL}/ao-logo.svg`,
 			},
 		},
 		datePublished: publishedTime,
@@ -177,7 +175,7 @@ export function ComparisonJsonLd({
 			name: COMPANY.NAME,
 			logo: {
 				"@type": "ImageObject",
-				url: `${COMPANY.MARKETING_URL}/logo.png`,
+				url: `${COMPANY.MARKETING_URL}/ao-logo.svg`,
 			},
 		},
 		datePublished: publishedTime,
