@@ -11,6 +11,7 @@ import (
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 )
 
 // HTTP response envelopes for the projects surface — the SINGLE definition of
@@ -648,6 +649,9 @@ type ProbeAgentResponse = agentsvc.ProbeResult
 
 // AgentInfo is one supported or installed agent entry.
 type AgentInfo = agentsvc.Info
+
+// SystemRequirementsResponse is the body of GET /api/v1/system/requirements.
+type SystemRequirementsResponse = systemcheck.Report
 
 // ListNotificationsQuery is the query string accepted by GET /api/v1/notifications.
 type ListNotificationsQuery struct {
